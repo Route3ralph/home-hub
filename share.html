@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Project Schedule</title>
+  <link rel="stylesheet" href="assets/styles.css">
+</head>
+<body>
+  <div class="page">
+    <header>
+      <p class="eyebrow">Shared project schedule</p>
+      <h1 id="title">Project schedule</h1>
+      <p class="meta" id="meta">Loading…</p>
+    </header>
+    <div id="error" class="banner banner-error" role="alert" hidden></div>
+    <main id="view"></main>
+    <footer class="footer">Dates are estimates and will shift as work is confirmed.</footer>
+  </div>
+
+  <dialog id="detail" aria-labelledby="dTitle"></dialog>
+
+  <script src="config.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.3/dist/umd/supabase.js"></script>
+  <script src="assets/gantt.js"></script>
+  <script>
+  (async function () {
+    'use strict';
+    const cfg = window.HOME_HUB_CONFIG || {};
+    const token = new URLSearchParams(location.search).get('p');
+    const fail = (msg) => {
+      document.getElementById('meta').textContent = '';
+      const box = document.getElementById('error');
+      box.textContent = msg;
+      box.hidden = false;
+    };
+
+    if (!token) return fail('This link is missing its project code. Ask whoever sent it for a new link.');
+    if (!cfg.supabaseUrl || !cfg.supabaseKey) return fail('This site is not finished being set up yet.');
+    if (!window.supabase || !window.HomeGantt) return fail('The page did not load completely. Check your connection and reload.');
+
+    const sb = window.supabase.createClient(cfg.supabaseUrl, cfg.supabaseKey, {
+      auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+    });
+    let result;
+    try {
+      result = await sb.rpc('get_shared_project', { share: token });
+    } catch (err) {
+      result = { error: err };
+    }
+    if (result.error) return fail('The schedule is temporarily unavailable. Please try again in a few minutes.');
+    const project = result.data;
+    if (!project) return fail('This link is no longer active. Ask whoever sent it for a new one.');
+
+    document.title = `${project.name} · Schedule`;
+    document.getElementById('title').textContent = project.name;
+    document.getElementById('meta').textContent = `Last updated ${new Date(project.updated_at).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' })}`;
+    window.HomeGantt.createView(document.getElementById('view'), {
+      schedule: project.schedule,
+      dialog: document.getElementById('detail'),
+      tradeLinks: true,
+      emptyHTML: '<p class="empty">No tasks have been scheduled yet.</p>',
+    });
+  })();
+  </script>
+</body>
+</html>
