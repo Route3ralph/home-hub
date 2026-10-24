@@ -5,4 +5,6 @@
 window.HOME_HUB_CONFIG = {
   supabaseUrl: '',
   supabaseKey: '',
+  // Set to true once the send-email function and its SendGrid secrets are set up (see README).
+  emailSending: false,
 };

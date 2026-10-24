@@ -138,6 +138,28 @@ create policy "Family manages projects" on public.projects
   for all to authenticated using (public.is_member()) with check (public.is_member());
 
 -- ---------------------------------------------------------------------
+-- Email log: every message the hub sends through SendGrid.
+-- The send-email function writes here as the signed-in member, and uses
+-- it to enforce a daily sending limit.
+-- ---------------------------------------------------------------------
+create table public.email_log (
+  id         uuid primary key default gen_random_uuid(),
+  sent_by    text not null default public.current_email(),
+  recipients text[] not null check (cardinality(recipients) > 0),
+  subject    text not null,
+  status     text not null default 'sent' check (status in ('sent', 'failed')),
+  error      text,
+  created_at timestamptz not null default now()
+);
+
+alter table public.email_log enable row level security;
+
+create policy "Family can see sent emails" on public.email_log
+  for select to authenticated using (public.is_member());
+create policy "Members log their own emails" on public.email_log
+  for insert to authenticated with check (public.is_member() and sent_by = public.current_email());
+
+-- ---------------------------------------------------------------------
 -- Public share link: one project, schedule only
 -- ---------------------------------------------------------------------
 create or replace function public.get_shared_project(share text)

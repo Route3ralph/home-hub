@@ -507,7 +507,10 @@
           ${contact}
           <div class="member-when">${rangeShort({ start: from, end: to })} · ${plural(mine.length, 'task')}</div>
           <div class="member-next">${next ? `Next: ${esc(next.task.name)}, ${fmtShort(next.start)}` : 'All done ✓'}</div>
-          <button type="button" class="linkbtn member-filter" data-trade="${esc(k)}">Show only these tasks</button>
+          <div class="member-actions">
+            <button type="button" class="linkbtn member-filter" data-trade="${esc(k)}">Show only these tasks</button>
+            ${opts.teamActions ? opts.teamActions(k) : ''}
+          </div>
         </div>`;
       }).join('');
     }

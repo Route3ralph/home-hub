@@ -117,10 +117,21 @@
     return s;
   }
 
-  function contactFor(project, tradeKey) {
+  function contractorFor(project, tradeKey) {
     const t = project && project.schedule.trades && project.schedule.trades[tradeKey];
-    const c = t && t.contractor_id && data.contractors.find((x) => x.id === t.contractor_id);
+    return (t && t.contractor_id && data.contractors.find((x) => x.id === t.contractor_id)) || null;
+  }
+  const reachable = (c) => !!(c && (c.phone || c.email));
+
+  function contactFor(project, tradeKey) {
+    const c = contractorFor(project, tradeKey);
     return c ? { phone: c.phone, email: c.email } : null;
+  }
+
+  function shareLink(project, tradeKey) {
+    const url = new URL(`share.html?p=${encodeURIComponent(project.share_token)}`, location.href);
+    if (tradeKey) url.searchParams.set('trade', tradeKey);
+    return url.href;
   }
 
   function safeModel(project) {
@@ -235,6 +246,96 @@
     const first = form.querySelector('input:not([type="checkbox"]):not([disabled]), textarea, select');
     if (first && window.innerWidth > 700) first.focus();
   }
+
+  // ============================================
+  // MESSAGES
+  // Text, WhatsApp and "Open in my email" hand a ready-to-send message to the
+  // phone's own apps, so it comes from you and replies come back to you.
+  // "Send email now" goes through the send-email function (SendGrid).
+  // ============================================
+  function phoneDigits(phone) {
+    const d = String(phone || '').replace(/\D/g, '');
+    return d.length === 10 ? `1${d}` : d; // ten digits: assume a US number
+  }
+  const smsHref = (phone, body) => `sms:+${phoneDigits(phone)}?&body=${encodeURIComponent(body)}`;
+  const whatsappHref = (phone, body) => `https://wa.me/${phoneDigits(phone)}?text=${encodeURIComponent(body)}`;
+  const mailtoHref = (email, subject, body) => `mailto:${email}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+
+  const signOff = () => ['', 'Thanks,', firstName(me.name)];
+
+  // The contractor's remaining dates on this project, plus the live link if sharing is on.
+  function scheduleMessage(project, tradeKey, contractor) {
+    const M = view && view.model;
+    const tasks = M && !M.empty
+      ? M.items.filter((r) => r.task.trade === tradeKey && r.task.status !== 'done' && !r.milestone).sort((a, b) => a.start - b.start)
+      : [];
+    const lines = [`Hi ${firstName(contractor.name)},`, ''];
+    if (tasks.length) {
+      lines.push(`Here are your dates for the ${project.name}:`);
+      tasks.forEach((r) => lines.push(`• ${r.task.name}: ${G.rangeLong(r)}`));
+    } else {
+      lines.push(`Following up about the ${project.name}.`);
+    }
+    if (project.sharing_enabled) lines.push('', `The live schedule is here: ${shareLink(project, tradeKey)}`);
+    return { subject: `${project.name}: your schedule`, body: lines.concat(signOff()).join('\n') };
+  }
+
+  function taskMessage(project, r, contractor) {
+    const lines = [`Hi ${firstName(contractor.name)},`, '',
+      `Checking in about "${r.task.name}" for the ${project.name}, scheduled for ${G.rangeLong(r)}.`];
+    if (project.sharing_enabled) lines.push('', `The live schedule is here: ${shareLink(project, r.task.trade)}`);
+    return { subject: `${project.name}: ${r.task.name}`, body: lines.concat(signOff()).join('\n') };
+  }
+
+  function messageDialog(contractor, draft, hint) {
+    wireFormDialog();
+    if (detailDialog.open) detailDialog.close();
+    const c = contractor;
+    const viaHub = !!(cfg.emailSending && c.email);
+    formDialog.innerHTML = `<div class="form d-inner">
+      <div class="d-top"><h3>Message ${esc(c.name)}</h3><button type="button" class="d-close" data-close aria-label="Close">×</button></div>
+      <p class="meta">${[c.company, c.phone, c.email].filter(Boolean).map(esc).join(' · ')}</p>
+      ${c.email ? `<label class="field"><span>Subject (for email)</span><input type="text" name="subject" value="${esc(draft.subject)}"></label>` : ''}
+      <label class="field"><span>Message</span><textarea name="body" rows="9">${esc(draft.body)}</textarea></label>
+      ${hint ? `<p class="meta">${hint}</p>` : ''}
+      <div class="msg-actions">
+        ${c.phone ? '<a class="btn" data-link="sms">Text</a><a class="btn" data-link="whatsapp" target="_blank" rel="noopener">WhatsApp</a>' : ''}
+        ${c.email ? '<a class="btn" data-link="mail">Open in my email</a>' : ''}
+        ${viaHub ? '<button type="button" class="btn btn-primary" data-send>Send email now</button>' : ''}
+      </div>
+      <p class="form-error" hidden></p>
+      <p class="meta">Text, WhatsApp and email open your own apps, so the message comes from you and replies come straight back.${viaHub ? ' "Send email now" sends it from the Home Hub, with your address for replies.' : ''}</p>
+    </div>`;
+    const body = formDialog.querySelector('[name="body"]');
+    const subject = formDialog.querySelector('[name="subject"]');
+    const errBox = formDialog.querySelector('.form-error');
+    const refresh = () => {
+      const text = body.value;
+      const subj = subject ? subject.value : draft.subject;
+      formDialog.querySelectorAll('[data-link]').forEach((a) => {
+        a.href = { sms: () => smsHref(c.phone, text), whatsapp: () => whatsappHref(c.phone, text), mail: () => mailtoHref(c.email, subj, text) }[a.dataset.link]();
+      });
+    };
+    refresh();
+    formDialog.querySelector('.form').addEventListener('input', refresh);
+    const send = formDialog.querySelector('[data-send]');
+    if (send) {
+      send.addEventListener('click', async () => {
+        send.disabled = true;
+        errBox.hidden = true;
+        const { error } = await sb.functions.invoke('send-email', { body: { to: c.email, subject: subject.value, text: body.value } });
+        if (!error) { formDialog.close(); toast(`Email sent to ${firstName(c.name)}`); return; }
+        let message = error.message;
+        try { message = (await error.context.json()).error || message; } catch (e) { /* keep the generic message */ }
+        errBox.textContent = message;
+        errBox.hidden = false;
+        send.disabled = false;
+      });
+    }
+    formDialog.showModal();
+  }
+
+  const sharingHint = (project) => (project.sharing_enabled ? '' : 'Tip: turn on sharing (Share button) to include a link to the live schedule.');
 
   // ============================================
   // SIGN-IN
@@ -526,6 +627,7 @@
     view = G.createView(main.querySelector('#gv'), {
       dialog: detailDialog,
       contactFor: (key) => contactFor(current, key),
+      teamActions: (key) => (reachable(contractorFor(current, key)) ? `<button type="button" class="btn btn-sm" data-msg="${esc(key)}">Message</button>` : ''),
       onTaskClick: (tid, M) => openTaskDetail(tid, M),
       emptyHTML: `<div class="card empty-state"><p>This project has no tasks yet.</p>
         <button class="btn btn-primary" data-act="add-task">+ Add the first task</button></div>`,
@@ -533,6 +635,12 @@
     view.setSchedule(resolvedSchedule(current));
     const actions = { 'add-task': () => taskForm(null), trades: tradesForm, settings: settingsForm, share: shareDialog };
     main.onclick = (e) => {
+      const msg = e.target.closest('[data-msg]');
+      if (msg) {
+        const c = contractorFor(current, msg.dataset.msg);
+        messageDialog(c, scheduleMessage(current, msg.dataset.msg, c), sharingHint(current));
+        return;
+      }
       const act = e.target.closest('[data-act]');
       if (act && actions[act.dataset.act]) actions[act.dataset.act]();
     };
@@ -588,6 +696,12 @@
       const act = b.dataset.taskAct;
       if (act === 'edit') { taskForm(id); return; }
       if (act === 'delete') { deleteTask(id); return; }
+      if (act === 'message') {
+        const r = view.model.byId.get(id);
+        const c = contractorFor(current, r.task.trade);
+        messageDialog(c, taskMessage(current, r, c), sharingHint(current));
+        return;
+      }
       const status = { done: 'done', start: 'in-progress', reopen: null }[act];
       b.disabled = true;
       try {
@@ -607,6 +721,9 @@
     wireDetailActions();
     const r = M.byId.get(id);
     const status = r.task.status;
+    const contractor = contractorFor(current, r.task.trade);
+    const message = reachable(contractor)
+      ? `<button type="button" class="btn" data-task-act="message" data-tid="${esc(id)}">Message ${esc(firstName(contractor.name))}</button>` : '';
     const quick = status === 'done'
       ? `<button type="button" class="btn" data-task-act="reopen" data-tid="${esc(id)}">Reopen</button>`
       : `<button type="button" class="btn" data-task-act="done" data-tid="${esc(id)}">Mark done</button>
@@ -617,6 +734,7 @@
       actionsHTML: `<div class="d-actions">
         <button type="button" class="btn btn-primary" data-task-act="edit" data-tid="${esc(id)}">Edit task</button>
         ${quick}
+        ${message}
         <button type="button" class="btn btn-danger" data-task-act="delete" data-tid="${esc(id)}" style="margin-left:auto">Delete</button>
       </div>`,
     }));
@@ -843,7 +961,7 @@
     wireFormDialog();
     if (detailDialog.open) detailDialog.close();
     const p = current;
-    const link = new URL(`share.html?p=${encodeURIComponent(p.share_token)}`, location.href).href;
+    const link = shareLink(p);
     formDialog.innerHTML = `<div class="form d-inner">
       <div class="d-top"><h3>Share with contractors</h3><button type="button" class="d-close" data-close aria-label="Close">×</button></div>
       <p class="meta">Anyone with the link can see this project's schedule: dates, tasks, trades, and contractor names and companies. Phone numbers, emails and private notes are never shown.</p>
@@ -909,7 +1027,10 @@
       </div>
       ${c.notes ? `<p class="notes">${esc(c.notes)}</p>` : ''}
       ${uses.length ? `<div class="used">On: ${uses.map((u) => `<a href="#/projects/${encodeURIComponent(u.project.id)}">${esc(u.project.name)}</a> (${esc(u.trade)})`).join(', ')}</div>` : ''}
-      <div class="form-actions" style="margin-top:10px"><button type="button" class="btn btn-sm" data-edit="${esc(c.id)}">Edit</button></div>
+      <div class="form-actions" style="margin-top:10px">
+        ${reachable(c) ? `<button type="button" class="btn btn-sm" data-message="${esc(c.id)}">Message</button>` : ''}
+        <button type="button" class="btn btn-sm" data-edit="${esc(c.id)}">Edit</button>
+      </div>
     </div>`;
   }
 
@@ -939,7 +1060,12 @@
     main.onclick = (e) => {
       if (e.target.closest('[data-act="new-contractor"]')) { contractorForm(null, () => route()); return; }
       const edit = e.target.closest('[data-edit]');
-      if (edit) contractorForm(contractors.find((c) => c.id === edit.dataset.edit), () => route());
+      if (edit) { contractorForm(contractors.find((c) => c.id === edit.dataset.edit), () => route()); return; }
+      const msg = e.target.closest('[data-message]');
+      if (msg) {
+        const c = contractors.find((x) => x.id === msg.dataset.message);
+        messageDialog(c, { subject: 'Hello from the Home Hub', body: [`Hi ${firstName(c.name)},`, '', ''].concat(signOff()).join('\n') });
+      }
     };
   }
 

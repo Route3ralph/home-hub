@@ -20,6 +20,16 @@ A private family web app for running the house: projects with Gantt schedules, a
 
 Each task has two kinds of notes. **Notes** appear on the shared link. **Private notes** are family-only and never shared, so they're the place for gate codes and similar details.
 
+## Messaging contractors
+
+A **Message** button appears in three places: a project's Team cards, a task's details, and the Contractors page. It drafts a note with that contractor's upcoming dates and, if sharing is on, a link to their part of the live schedule. Edit the draft, then choose how to send it:
+
+- **Text** or **WhatsApp** opens the app on your phone with the message ready to send.
+- **Open in my email** does the same with your email app.
+- **Send email now** sends it from the hub through SendGrid, with your address set for replies. This only appears once SendGrid is set up (see below).
+
+The first three come from your own phone number or email address, so replies come straight back to you, and they need no setup.
+
 ## How the data is protected
 
 - Everything lives in a Supabase database. Every table has row-level security, so only emails on the family list can read or change anything. Signed-out visitors and other accounts see nothing.
@@ -46,9 +56,31 @@ The kitchen renovation's starting schedule is in [`supabase/kitchen-renovation.j
 
 On Supabase's free plan, a project that sees little use for about a week gets **paused**. Supabase emails a warning first, and nothing is lost. To resume it, open the [Supabase dashboard](https://supabase.com/dashboard), select the project and click **Resume project**. Regular family use keeps it awake.
 
-## Sign-in emails
+## Email through SendGrid (optional)
 
-Supabase's built-in email sender allows only a few sign-in emails per hour. That's fine for a family, since each device stays signed in. If you hit the limit, wait a little and try again, or set up your own email sender under **Authentication → Emails → SMTP Settings**.
+Out of the box, sign-in emails come from Supabase's built-in sender, which allows only a few per hour. SendGrid removes that limit and makes **Send email now** work.
+
+1. **Authenticate a domain you own** in SendGrid: **Settings → Sender Authentication → Authenticate Your Domain**, which adds a few DNS records. Don't send "from" a gmail.com address: SendGrid warns those messages are likely to be rejected or marked as spam.
+2. **Create an API key** with *Mail Send* permission: **Settings → API Keys**.
+3. **Sign-in emails.** In Supabase, open **Authentication → Emails → SMTP Settings** and enter:
+   - Host: `smtp.sendgrid.net`
+   - Port: `587`
+   - Username: `apikey`
+   - Password: your API key
+   - Sender: an address on your domain
+4. **Emails from the hub.** In Supabase, open **Edge Functions → Secrets** and add:
+   - `SENDGRID_API_KEY`
+   - `EMAIL_FROM` (an address on your domain)
+   - `EMAIL_FROM_NAME` (optional; defaults to "Home Hub")
+5. **Deploy and switch on.** Deploy [`supabase/functions/send-email`](supabase/functions/send-email), then set `emailSending: true` in [`config.js`](config.js).
+
+The function only sends for signed-in family members. It sets each email's reply-to address to whoever sent it, sends to at most 10 people at a time, stops after 50 emails in 24 hours, and records every send in the `email_log` table.
+
+Paste API keys only into SendGrid and Supabase, never into this repository or a chat.
+
+## Texting
+
+The **Text** and **WhatsApp** buttons use your own phone, so they need no setup and cost nothing. Having the hub send texts *on its own* is a different matter: for example, an automatic reminder the day before a contractor arrives. In the US that requires a messaging provider such as Twilio, with your number registered under the A2P 10DLC rules. WhatsApp would require Meta's Business Platform, with pre-approved message templates and per-message fees. Neither is set up.
 
 ## Files
 
@@ -60,3 +92,4 @@ Supabase's built-in email sender allows only a few sign-in emails per hour. That
 | `assets/styles.css` | Styles, with automatic light and dark mode |
 | `config.js` | Database connection settings |
 | `supabase/schema.sql` | Tables, security rules and functions |
+| `supabase/functions/send-email/` | Edge Function that sends email through SendGrid |

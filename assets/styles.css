@@ -372,7 +372,8 @@ button.g-label:hover, button.g-label:focus-visible { background: var(--surface-2
 .member-contact { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 13px; margin-top: 4px; }
 .member-when { color: var(--text-3); font-size: 13px; margin-top: 6px; }
 .member-next { font-size: 13px; margin-top: 2px; }
-.member-filter { margin-top: 8px; }
+.member-actions { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-top: 8px; }
+.msg-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 
 .footer { color: var(--text-3); font-size: 13px; margin-top: 24px; text-align: center; }
 
