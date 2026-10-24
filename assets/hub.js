@@ -251,7 +251,7 @@
   // MESSAGES
   // Text, WhatsApp and "Open in my email" hand a ready-to-send message to the
   // phone's own apps, so it comes from you and replies come back to you.
-  // "Send email now" goes through the send-email function (SendGrid).
+  // "Send email now" goes through the send-email function (Resend).
   // ============================================
   function phoneDigits(phone) {
     const d = String(phone || '').replace(/\D/g, '');
@@ -345,15 +345,40 @@
     const p = new URLSearchParams(raw);
     if (!p.get('error') && !p.get('error_description')) return null;
     history.replaceState(null, '', location.pathname);
-    if (p.get('error_code') === 'otp_expired') return 'That sign-in link has expired or was already used. Send yourself a new one.';
-    return p.get('error_description') || 'That sign-in link did not work. Send yourself a new one.';
+    if (p.get('error_code') === 'otp_expired') return 'That sign-in link has expired or was already used, sometimes by an email security scanner. Send yourself a new code and type it in.';
+    return p.get('error_description') || 'That sign-in link did not work. Send yourself a new code and type it in.';
   }
 
   function loginError(error) {
     const msg = error.message || '';
     if (error.status === 429 || /rate limit|too many/i.test(msg)) return 'Too many sign-in emails were sent recently. Wait a few minutes and try again.';
     if (/family list|signups not allowed|not allowed/i.test(msg) || error.status === 403) return "That email isn't on the family list. Ask a family admin to add you.";
+    if (error.status >= 500 || /sending .*email/i.test(msg)) return "The sign-in email couldn't be sent. Try again in a minute. If it keeps happening, the hub's email setup needs checking.";
     return msg || 'Could not send the sign-in email. Try again.';
+  }
+
+  function codeError(error) {
+    const msg = error.message || '';
+    if (error.status === 429 || /rate limit|too many/i.test(msg)) return 'Too many tries. Wait a few minutes, then send yourself a new code.';
+    return "That code didn't work. Check you typed the newest one, or send a new code. Each code works once.";
+  }
+
+  // Sign-in is by a code typed from the email. Email security scanners (Outlook's, for one) open
+  // links in new mail, which uses up a one-time sign-in link and the code that goes with it.
+  // Remember who is waiting for a code, so switching to the mail app and back doesn't lose it.
+  const PENDING_KEY = 'homehub.pendingSignIn';
+  const CODE_LIFETIME = 60 * 60 * 1000;
+  function pendingSignIn() {
+    try {
+      const p = JSON.parse(localStorage.getItem(PENDING_KEY) || 'null');
+      return p && p.email && Date.now() - p.at < CODE_LIFETIME ? p.email : null;
+    } catch (e) { return null; }
+  }
+  function setPendingSignIn(email) {
+    try {
+      if (email) localStorage.setItem(PENDING_KEY, JSON.stringify({ email, at: Date.now() }));
+      else localStorage.removeItem(PENDING_KEY);
+    } catch (e) { /* storage unavailable: the code form just won't survive a reload */ }
   }
 
   function renderLogin(message) {
@@ -366,27 +391,78 @@
       <form class="form" id="loginForm">
         <label class="field"><span>Your email</span>
           <input type="email" name="email" required autocomplete="email" placeholder="you@example.com"></label>
-        <button class="btn btn-primary" type="submit">Email me a sign-in link</button>
+        <button class="btn btn-primary" type="submit">Email me a sign-in code</button>
+      </form>
+      <form class="form" id="codeForm" hidden>
+        <p class="ok" id="codeSent"></p>
+        <label class="field"><span>Sign-in code</span>
+          <input name="code" required inputmode="numeric" autocomplete="one-time-code" pattern="[0-9 ]{6,12}" maxlength="12" size="10" placeholder="123456"></label>
+        <button class="btn btn-primary" type="submit">Sign in</button>
+        <button class="linkbtn" type="button" id="restart">Use a different email or send a new code</button>
       </form>
       <div id="loginMsg"></div>
-      <p class="note">No password needed. The link signs you in on this device, and you stay signed in.</p>
+      <p class="note">No password needed. You stay signed in on this device.</p>
     </div></div>`;
-    $('#loginForm').addEventListener('submit', async (e) => {
+    const loginForm = $('#loginForm');
+    const codeForm = $('#codeForm');
+    let email = '';
+    const askForCode = (address) => {
+      email = address;
+      $('#codeSent').innerHTML = `We emailed a sign-in code to <strong>${esc(email)}</strong>. Type it below.`;
+      loginForm.hidden = true;
+      codeForm.hidden = false;
+      codeForm.code.focus();
+    };
+    loginForm.addEventListener('submit', async (e) => {
       e.preventDefault();
-      const email = e.target.email.value.trim().toLowerCase();
-      const btn = e.target.querySelector('button');
+      email = loginForm.email.value.trim().toLowerCase();
+      const btn = loginForm.querySelector('button');
       btn.disabled = true;
       btn.textContent = 'Sending…';
+      $('#loginMsg').innerHTML = '';
       let error;
       try {
         ({ error } = await sb.auth.signInWithOtp({ email, options: { emailRedirectTo: location.origin + location.pathname } }));
       } catch (err) { error = err; }
       btn.disabled = false;
-      btn.textContent = 'Email me a sign-in link';
-      $('#loginMsg').innerHTML = error
-        ? `<p class="form-error">${esc(loginError(error))}</p>`
-        : `<p class="ok">Check <strong>${esc(email)}</strong> for a sign-in link. Each link works once.</p>`;
+      btn.textContent = 'Email me a sign-in code';
+      if (error) {
+        $('#loginMsg').innerHTML = `<p class="form-error">${esc(loginError(error))}</p>`;
+        return;
+      }
+      setPendingSignIn(email);
+      askForCode(email);
     });
+    codeForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const token = codeForm.code.value.replace(/\D/g, '');
+      const btn = codeForm.querySelector('button[type=submit]');
+      btn.disabled = true;
+      btn.textContent = 'Signing in…';
+      $('#loginMsg').innerHTML = '';
+      let error;
+      try {
+        ({ error } = await sb.auth.verifyOtp({ email, token, type: 'email' }));
+      } catch (err) { error = err; }
+      // On success the auth listener replaces this screen.
+      if (!error) { setPendingSignIn(null); return; }
+      btn.disabled = false;
+      btn.textContent = 'Sign in';
+      $('#loginMsg').innerHTML = `<p class="form-error">${esc(codeError(error))}</p>`;
+    });
+    $('#restart').addEventListener('click', () => {
+      setPendingSignIn(null);
+      codeForm.reset();
+      codeForm.hidden = true;
+      loginForm.hidden = false;
+      $('#loginMsg').innerHTML = '';
+      loginForm.email.focus();
+    });
+    const pending = pendingSignIn();
+    if (pending) {
+      loginForm.email.value = pending;
+      askForCode(pending);
+    }
   }
 
   function renderNotListed(email) {
@@ -411,6 +487,7 @@
       renderLogin(linkError);
       return;
     }
+    setPendingSignIn(null);
     // Supabase can report the same sign-in twice (initial session, then signed in); load once.
     if (session.user.email === sessionEmail) return;
     sessionEmail = session.user.email;

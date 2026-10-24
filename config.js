@@ -5,6 +5,6 @@
 window.HOME_HUB_CONFIG = {
   supabaseUrl: 'https://bvabaalvbgluidgbcurm.supabase.co',
   supabaseKey: 'sb_publishable_0UbOlPUbzaGyLvGBVSPnag_Qjcd0EMU',
-  // Set to true once the send-email function and its SendGrid secrets are set up (see README).
-  emailSending: false,
+  // Shows "Send email now". Needs the send-email function and its Resend secrets (see README).
+  emailSending: true,
 };

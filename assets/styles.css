@@ -535,9 +535,9 @@ input[type="color"] { width: 44px; height: 36px; padding: 2px; border: 1px solid
 .sharebox input { flex: 1; font-size: 13px; }
 
 /* ---------- Login ---------- */
-.login-wrap { min-height: 100vh; display: grid; place-items: center; padding: 24px 16px; }
+.login-wrap { min-height: 100vh; display: grid; place-items: center; grid-template-columns: minmax(0, 420px); justify-content: center; padding: 24px 16px; }
 .login {
-  width: min(420px, 100%);
+  width: 100%;
   padding: 28px 24px;
   background: var(--surface);
   border: 1px solid var(--border);
@@ -549,6 +549,9 @@ input[type="color"] { width: 44px; height: 36px; padding: 2px; border: 1px solid
 .login .form { margin-top: 18px; }
 .login .note { font-size: 13px; color: var(--text-3); margin: 14px 0 0; }
 .login .ok { padding: 10px 12px; border-radius: 9px; background: var(--accent-soft); color: var(--accent); font-size: 14px; }
+.login .form .ok { margin: 0; }
+.login input[name="code"] { font-size: 22px; letter-spacing: 0.2em; font-variant-numeric: tabular-nums; }
+.login .linkbtn { justify-self: start; }
 
 .loading { padding: 60px 16px; text-align: center; color: var(--text-3); }
 
