@@ -81,7 +81,12 @@ as $$
   select lower(coalesce(auth.jwt() ->> 'email', ''));
 $$;
 
-create or replace function public.is_member()
+-- Membership helpers live in a private schema, so the website's API can't call them;
+-- row-level security policies still can.
+create schema if not exists private;
+grant usage on schema private to authenticated;
+
+create or replace function private.is_member()
 returns boolean
 language sql
 stable
@@ -91,7 +96,7 @@ as $$
   select exists (select 1 from public.members m where m.email = public.current_email());
 $$;
 
-create or replace function public.is_admin()
+create or replace function private.is_admin()
 returns boolean
 language sql
 stable
@@ -104,17 +109,6 @@ as $$
   );
 $$;
 
--- The signed-in person's member record, or null if they aren't on the list.
-create or replace function public.whoami()
-returns jsonb
-language sql
-stable
-security definer
-set search_path = ''
-as $$
-  select to_jsonb(m) from public.members m where m.email = public.current_email();
-$$;
-
 -- ---------------------------------------------------------------------
 -- Row-level security
 -- ---------------------------------------------------------------------
@@ -123,19 +117,31 @@ alter table public.contractors enable row level security;
 alter table public.projects    enable row level security;
 
 create policy "Family can see the member list" on public.members
-  for select to authenticated using (public.is_member());
+  for select to authenticated using (private.is_member());
 create policy "Admins add members" on public.members
-  for insert to authenticated with check (public.is_admin());
+  for insert to authenticated with check (private.is_admin());
 create policy "Admins update members" on public.members
-  for update to authenticated using (public.is_admin()) with check (public.is_admin());
+  for update to authenticated using (private.is_admin()) with check (private.is_admin());
 create policy "Admins remove other members" on public.members
-  for delete to authenticated using (public.is_admin() and email <> public.current_email());
+  for delete to authenticated using (private.is_admin() and email <> public.current_email());
 
 create policy "Family manages contractors" on public.contractors
-  for all to authenticated using (public.is_member()) with check (public.is_member());
+  for all to authenticated using (private.is_member()) with check (private.is_member());
 
 create policy "Family manages projects" on public.projects
-  for all to authenticated using (public.is_member()) with check (public.is_member());
+  for all to authenticated using (private.is_member()) with check (private.is_member());
+
+-- The signed-in person's member record, or null if they aren't on the list.
+-- Runs with the caller's own rights: row-level security already limits what they can see.
+create or replace function public.whoami()
+returns jsonb
+language sql
+stable
+security invoker
+set search_path = ''
+as $$
+  select to_jsonb(m) from public.members m where m.email = public.current_email();
+$$;
 
 -- ---------------------------------------------------------------------
 -- Email log: every message the hub sends through SendGrid.
@@ -155,9 +161,9 @@ create table public.email_log (
 alter table public.email_log enable row level security;
 
 create policy "Family can see sent emails" on public.email_log
-  for select to authenticated using (public.is_member());
+  for select to authenticated using (private.is_member());
 create policy "Members log their own emails" on public.email_log
-  for insert to authenticated with check (public.is_member() and sent_by = public.current_email());
+  for insert to authenticated with check (private.is_member() and sent_by = public.current_email());
 
 -- ---------------------------------------------------------------------
 -- Public share link: one project, schedule only
@@ -245,15 +251,16 @@ $$;
 -- ---------------------------------------------------------------------
 -- Function permissions
 -- ---------------------------------------------------------------------
-revoke execute on function public.is_member()  from public, anon;
-revoke execute on function public.is_admin()   from public, anon;
+revoke execute on function private.is_member() from public, anon;
+revoke execute on function private.is_admin()  from public, anon;
 revoke execute on function public.whoami()     from public, anon;
-grant  execute on function public.is_member()  to authenticated;
-grant  execute on function public.is_admin()   to authenticated;
+grant  execute on function private.is_member() to authenticated;
+grant  execute on function private.is_admin()  to authenticated;
 grant  execute on function public.whoami()     to authenticated;
 
-revoke execute on function public.get_shared_project(text) from public;
-grant  execute on function public.get_shared_project(text) to anon, authenticated;
+-- Only the public share page (signed out) calls this; the hub reads projects directly.
+revoke execute on function public.get_shared_project(text) from public, authenticated;
+grant  execute on function public.get_shared_project(text) to anon;
 
 revoke execute on function public.hook_family_only_signup(jsonb) from public, anon, authenticated;
 grant  execute on function public.hook_family_only_signup(jsonb) to supabase_auth_admin;
