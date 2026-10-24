@@ -1,10 +1,10 @@
-// Sends an email through SendGrid on behalf of a signed-in family member.
+// Sends an email through Resend on behalf of a signed-in family member.
 // Kept free of imports so it can be tested outside Supabase; index.ts wires it up.
 //
 // Secrets (Supabase dashboard → Edge Functions → Secrets):
-//   SENDGRID_API_KEY  a SendGrid API key with "Mail Send" permission
-//   EMAIL_FROM        an address on a domain you've authenticated in SendGrid
-//   EMAIL_FROM_NAME   optional, defaults to "Home Hub"
+//   RESEND_API_KEY   a Resend API key with sending access
+//   EMAIL_FROM       an address on a domain you've verified in Resend
+//   EMAIL_FROM_NAME  optional, defaults to "Home Hub"
 
 export const MAX_RECIPIENTS = 10;
 export const DAILY_LIMIT = 50;
@@ -36,6 +36,9 @@ export interface Deps {
 const json = (status: number, body: unknown) =>
   new Response(JSON.stringify(body), { status, headers: { ...CORS, 'Content-Type': 'application/json' } });
 
+// Resend takes the sender as `Name <address>`; keep the name to characters that can't break that format.
+const displayName = (s: string) => s.replace(/[^\p{L}\p{N} '.-]/gu, '').replace(/\s+/g, ' ').trim() || 'Home Hub';
+
 const escapeHtml = (s: string) => s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
 
 // Plain text → simple HTML: keep line breaks, make links clickable.
@@ -51,9 +54,9 @@ export async function handle(req: Request, deps: Deps): Promise<Response> {
   const authorization = req.headers.get('Authorization') || '';
   if (!/^Bearer\s+\S+/.test(authorization)) return json(401, { error: 'Sign in first.' });
 
-  const apiKey = deps.env('SENDGRID_API_KEY');
+  const apiKey = deps.env('RESEND_API_KEY');
   const from = deps.env('EMAIL_FROM');
-  if (!apiKey || !from) return json(503, { error: 'Email sending is not set up yet. Add the SendGrid secrets in Supabase.' });
+  if (!apiKey || !from) return json(503, { error: 'Email sending is not set up yet. Add the Resend secrets in Supabase.' });
 
   let body: { to?: unknown; subject?: unknown; text?: unknown };
   try { body = await req.json(); } catch { return json(400, { error: 'The request was not valid JSON.' }); }
@@ -81,17 +84,18 @@ export async function handle(req: Request, deps: Deps): Promise<Response> {
 
   const fromName = deps.env('EMAIL_FROM_NAME') || 'Home Hub';
   const payload = {
-    personalizations: [{ to: recipients.map((email) => ({ email })) }],
-    from: { email: from, name: `${me.name} via ${fromName}` },
-    reply_to: { email: me.email, name: me.name },
+    from: `${displayName(`${me.name} via ${fromName}`)} <${from}>`,
+    to: recipients,
+    reply_to: me.email,
     subject,
-    content: [{ type: 'text/plain', value: text }, { type: 'text/html', value: toHtml(text) }],
+    text,
+    html: toHtml(text),
   };
 
   let ok = false;
   let detail: string | null = null;
   try {
-    const res = await deps.fetch('https://api.sendgrid.com/v3/mail/send', {
+    const res = await deps.fetch('https://api.resend.com/emails', {
       method: 'POST',
       headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
@@ -103,6 +107,6 @@ export async function handle(req: Request, deps: Deps): Promise<Response> {
   }
 
   await db.from('email_log').insert({ recipients, subject, status: ok ? 'sent' : 'failed', error: detail });
-  if (!ok) return json(502, { error: "SendGrid didn't accept the email. Check the sender address and API key in SendGrid.", detail });
+  if (!ok) return json(502, { error: "Resend didn't accept the email. Check that the sender's domain is verified in Resend and the API key is right.", detail });
   return json(200, { sent: recipients.length });
 }

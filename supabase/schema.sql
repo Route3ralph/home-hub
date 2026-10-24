@@ -144,7 +144,7 @@ as $$
 $$;
 
 -- ---------------------------------------------------------------------
--- Email log: every message the hub sends through SendGrid.
+-- Email log: every message the hub sends through Resend.
 -- The send-email function writes here as the signed-in member, and uses
 -- it to enforce a daily sending limit.
 -- ---------------------------------------------------------------------

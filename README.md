@@ -9,7 +9,7 @@ A private family web app for running the house: projects with Gantt schedules, a
 
 | To… | Do this |
 |---|---|
-| Sign in | Enter your email, then click the link that arrives. Each device stays signed in. |
+| Sign in | Enter your email, then type the code from the email that arrives. Each device stays signed in. |
 | Start a project | **Home → + New project**. Start blank or copy an existing project's tasks. |
 | Add or change a task | Open the project, click **+ Task**, or click any task, then **Edit task**. |
 | Record progress | Click a task, then **Mark done** or **Mark in progress**. |
@@ -26,7 +26,7 @@ A **Message** button appears in three places: a project's Team cards, a task's d
 
 - **Text** or **WhatsApp** opens the app on your phone with the message ready to send.
 - **Open in my email** does the same with your email app.
-- **Send email now** sends it from the hub through SendGrid, with your address set for replies. This only appears once SendGrid is set up (see below).
+- **Send email now** sends it from the hub through Resend, with your address set for replies.
 
 The first three come from your own phone number or email address, so replies come straight back to you, and they need no setup.
 
@@ -48,7 +48,8 @@ The rules are in [`supabase/schema.sql`](supabase/schema.sql).
    - Set **Site URL** to `https://route3ralph.github.io/home-hub/`.
    - Add the same address under **Redirect URLs**.
 5. **Recommended: block strangers from creating logins.** Go to **Authentication → Hooks → Before User Created → Postgres function** and choose `hook_family_only_signup`.
-6. **Publish.** In GitHub, open **Settings → Pages** and deploy from branch `main`, folder `/ (root)`.
+6. **Set up email.** This step is required: see [Email through Resend](#email-through-resend) below.
+7. **Publish.** In GitHub, open **Settings → Pages** and deploy from branch `main`, folder `/ (root)`.
 
 The kitchen renovation's starting schedule is in [`supabase/kitchen-renovation.json`](supabase/kitchen-renovation.json).
 
@@ -56,27 +57,30 @@ The kitchen renovation's starting schedule is in [`supabase/kitchen-renovation.j
 
 On Supabase's free plan, a project that sees little use for about a week gets **paused**. Supabase emails a warning first, and nothing is lost. To resume it, open the [Supabase dashboard](https://supabase.com/dashboard), select the project and click **Resume project**. Regular family use keeps it awake.
 
-## Email through SendGrid (optional)
+## Email through Resend
 
-Out of the box, sign-in emails come from Supabase's built-in sender, which allows only a few per hour. SendGrid removes that limit and makes **Send email now** work.
+Supabase's built-in email sender only delivers to people on your Supabase organization's team, and only a few messages an hour, so family members can't get sign-in codes without a sender of your own. Resend's free plan (3,000 emails a month, up to 100 a day) is plenty. It sends the sign-in emails and powers **Send email now**.
 
-1. **Authenticate a domain you own** in SendGrid: **Settings → Sender Authentication → Authenticate Your Domain**, which adds a few DNS records. Don't send "from" a gmail.com address: SendGrid warns those messages are likely to be rejected or marked as spam.
-2. **Create an API key** with *Mail Send* permission: **Settings → API Keys**.
-3. **Sign-in emails.** In Supabase, open **Authentication → Emails → SMTP Settings** and enter:
-   - Host: `smtp.sendgrid.net`
-   - Port: `587`
-   - Username: `apikey`
+1. **Verify a domain you own** in Resend: **Domains → Add Domain**. Add the DNS records it shows at your domain's DNS host, then wait for **Verified**.
+2. **Create an API key** with sending access: **API Keys → Create API Key**.
+3. **Sign-in emails.** In Supabase, open **Authentication → Emails → SMTP Settings**, turn on custom SMTP and enter:
+   - Host: `smtp.resend.com`
+   - Port: `465`
+   - Username: `resend`
    - Password: your API key
-   - Sender: an address on your domain
-4. **Emails from the hub.** In Supabase, open **Edge Functions → Secrets** and add:
-   - `SENDGRID_API_KEY`
+   - Sender: an address on your domain, such as `home@yourdomain.com`
+4. **Send a code instead of a link.** In **Authentication → Emails → Templates**, set both **Confirm signup** (someone's first sign-in) and **Magic Link** (every sign-in after that) to the subject `Your Home Hub sign-in code` and the body in [`supabase/email-templates/sign-in-code.html`](supabase/email-templates/sign-in-code.html).
+5. **Emails from the hub.** In **Edge Functions → Secrets**, add:
+   - `RESEND_API_KEY`
    - `EMAIL_FROM` (an address on your domain)
    - `EMAIL_FROM_NAME` (optional; defaults to "Home Hub")
-5. **Deploy and switch on.** Deploy [`supabase/functions/send-email`](supabase/functions/send-email), then set `emailSending: true` in [`config.js`](config.js).
+6. **Deploy** [`supabase/functions/send-email`](supabase/functions/send-email) with JWT verification turned off. Supabase's built-in check only works with the legacy API keys, so the function checks who is signed in itself. **Send email now** is switched on by `emailSending` in [`config.js`](config.js).
 
 The function only sends for signed-in family members. It sets each email's reply-to address to whoever sent it, sends to at most 10 people at a time, stops after 50 emails in 24 hours, and records every send in the `email_log` table.
 
-Paste API keys only into SendGrid and Supabase, never into this repository or a chat.
+**Why a code and not a link.** Email security scanners, such as Microsoft's in Outlook and Microsoft 365, open the links in new mail to check them. A sign-in link works only once, so a scanner can use it up before you tap it, and you'd see "Email link is invalid or has expired". The code is the same one-time token, so the email deliberately has no sign-in link for a scanner to open.
+
+Paste API keys only into Resend and Supabase, never into this repository or a chat.
 
 ## Texting
 
@@ -92,4 +96,5 @@ The **Text** and **WhatsApp** buttons use your own phone, so they need no setup 
 | `assets/styles.css` | Styles, with automatic light and dark mode |
 | `config.js` | Database connection settings |
 | `supabase/schema.sql` | Tables, security rules and functions |
-| `supabase/functions/send-email/` | Edge Function that sends email through SendGrid |
+| `supabase/functions/send-email/` | Edge Function that sends email through Resend |
+| `supabase/email-templates/` | The sign-in email, for Supabase's email templates |
