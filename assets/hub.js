@@ -1,29 +1,28 @@
 /* =====================================================================
-   HOME HUB — private family app
-   Sign-in, home dashboard, projects (with editable Gantt schedules),
-   contractor directory and the family member list.
+   HOME HUB — private family app: the core
+   Sign-in, the shell and router, forms, data access, message helpers and
+   toasts. The pages are modules in assets/modules/, loaded after this file;
+   each one calls HomeHub.register(...). The core asks the database for its
+   schema version and shows only the modules made for that version.
    ===================================================================== */
 (function () {
   'use strict';
 
   const G = window.HomeGantt;
-  const { esc, fmt, fmtShort, plural } = G;
+  const { esc } = G;
   const cfg = window.HOME_HUB_CONFIG || {};
   const app = document.getElementById('app');
   const detailDialog = document.getElementById('detail');
   const formDialog = document.getElementById('formDialog');
 
-  const STATUSES = [['active', 'Active'], ['planning', 'Planning'], ['idea', 'Idea'], ['on-hold', 'On hold'], ['done', 'Done']];
-  const STATUS_LABEL = Object.fromEntries(STATUSES);
-  const TASK_STATUSES = [['', 'Planned'], ['in-progress', 'In progress'], ['done', 'Done'], ['delayed', 'Delayed']];
-  const PALETTE = ['#9333ea', '#2563eb', '#0891b2', '#16a34a', '#ca8a04', '#ea580c', '#db2777', '#b91c1c', '#92622f', '#64748b'];
-
   let sb = null;
   let me = null;
   let sessionEmail = null;
-  let view = null;     // the Gantt view on a project page
-  let current = null;  // the project row being viewed
+  let schemaVersion = null; // from hub_schema_version(); 1 for a database that doesn't have it
   const data = { projects: [], contractors: [], members: [] };
+  const modules = [];       // every registered page module, in load order
+  let active = [];          // the modules for this database's schema version, in tab order
+  let pageAbort = null;     // aborts the signal of the page on screen when it is left
 
   // ============================================
   // HELPERS
@@ -263,30 +262,6 @@
 
   const signOff = () => ['', 'Thanks,', firstName(me.name)];
 
-  // The contractor's remaining dates on this project, plus the live link if sharing is on.
-  function scheduleMessage(project, tradeKey, contractor) {
-    const M = view && view.model;
-    const tasks = M && !M.empty
-      ? M.items.filter((r) => r.task.trade === tradeKey && r.task.status !== 'done' && !r.milestone).sort((a, b) => a.start - b.start)
-      : [];
-    const lines = [`Hi ${firstName(contractor.name)},`, ''];
-    if (tasks.length) {
-      lines.push(`Here are your dates for the ${project.name}:`);
-      tasks.forEach((r) => lines.push(`• ${r.task.name}: ${G.rangeLong(r)}`));
-    } else {
-      lines.push(`Following up about the ${project.name}.`);
-    }
-    if (project.sharing_enabled) lines.push('', `The live schedule is here: ${shareLink(project, tradeKey)}`);
-    return { subject: `${project.name}: your schedule`, body: lines.concat(signOff()).join('\n') };
-  }
-
-  function taskMessage(project, r, contractor) {
-    const lines = [`Hi ${firstName(contractor.name)},`, '',
-      `Checking in about "${r.task.name}" for the ${project.name}, scheduled for ${G.rangeLong(r)}.`];
-    if (project.sharing_enabled) lines.push('', `The live schedule is here: ${shareLink(project, r.task.trade)}`);
-    return { subject: `${project.name}: ${r.task.name}`, body: lines.concat(signOff()).join('\n') };
-  }
-
   function messageDialog(contractor, draft, hint) {
     wireFormDialog();
     if (detailDialog.open) detailDialog.close();
@@ -334,8 +309,6 @@
     }
     formDialog.showModal();
   }
-
-  const sharingHint = (project) => (project.sharing_enabled ? '' : 'Tip: turn on sharing (Share button) to include a link to the live schedule.');
 
   // ============================================
   // SIGN-IN
@@ -494,7 +467,10 @@
     app.innerHTML = '<div class="loading">Loading…</div>';
     try {
       me = await api.whoami();
+      // Which pages to show depends on the database's schema version.
+      if (me) activate(await readSchemaVersion());
     } catch (err) {
+      me = null;
       sessionEmail = null;
       renderMessage('Something went wrong', esc(friendly(err)));
       return;
@@ -505,35 +481,98 @@
   }
 
   // ============================================
+  // MODULES & SCHEMA VERSION
+  // A page module registers itself with
+  //   HomeHub.register({ name, schema: { min, max }, nav: { label, order, href, primary },
+  //                      match(parts) → params | null, render(main, ctx), provides })
+  // and is shown only when the database's schema version is within min..max.
+  //   name      lowercase id; also the tab's data-tab. Two modules may share a name only
+  //             if their schema ranges don't overlap (e.g. a v1 and a v2 Family page).
+  //   nav       optional tab: label, order (left to right), href (default "#/<name>"),
+  //             primary (reserved for the phone bottom bar).
+  //   match     gets the hash split on "/" ("#/projects/abc" → ["projects", "abc"]) and returns
+  //             the page's params, or null if the address isn't this page's.
+  //   render    async; ctx = { seq, params, signal, stale() }. signal aborts when the page is
+  //             left (navigation or sign-out): tear down with signal.addEventListener('abort', …)
+  //             or pass { signal } to addEventListener. stale() is true once the page is left.
+  //   provides  optional functions other pages may use: HomeHub.core.use(name).
+  // ============================================
+  function register(def) {
+    const d = def || {};
+    const valid = typeof d.name === 'string' && /^[a-z][a-z0-9-]*$/.test(d.name)
+      && !!d.schema && Number.isInteger(d.schema.min) && Number.isInteger(d.schema.max) && d.schema.min <= d.schema.max
+      && (!d.nav || (typeof d.nav.label === 'string' && Number.isFinite(d.nav.order)))
+      && typeof d.match === 'function' && typeof d.render === 'function';
+    if (!valid) throw new Error(`HomeHub.register(${JSON.stringify(d.name)}): needs a lowercase name, schema { min, max }, match(parts) and render(main, ctx), and nav { label, order } if it has a tab.`);
+    const clash = modules.find((m) => m.name === d.name && m.schema.min <= d.schema.max && d.schema.min <= m.schema.max);
+    if (clash) throw new Error(`HomeHub.register: two "${d.name}" modules for the same schema version.`);
+    modules.push(d);
+  }
+
+  // The modules for this schema version, in tab order (modules without a tab go last).
+  function activate(version) {
+    schemaVersion = version;
+    const order = (m) => (m.nav ? m.nav.order : Number.MAX_SAFE_INTEGER);
+    active = modules.filter((m) => m.schema.min <= version && version <= m.schema.max).sort((a, b) => order(a) - order(b));
+  }
+
+  // Another page's shared pieces, e.g. use('projects').newProjectForm. Only pages shown for this
+  // schema version are available, so call it while rendering, not when the module loads.
+  function use(name) {
+    const m = active.find((x) => x.name === name);
+    if (!m) throw new Error(`The ${name} page isn't available. Reload the page to get the latest version.`);
+    return m.provides || {};
+  }
+
+  // Today's database (v1) has no hub_schema_version(), so "function not found" means version 1.
+  // No answer at all (status 0: the connection dropped just after whoami worked) also means the v1
+  // pages, so sign-in isn't blocked; they work on either database, as the v2 migration only adds.
+  // An error the database answers with (a 500, say) is reported like any other.
+  async function readSchemaVersion() {
+    const { data: version, error, status } = await sb.rpc('hub_schema_version');
+    if (error) {
+      if (error.code === 'PGRST202' || status === 404 || /Could not find the function/i.test(error.message || '')) return 1;
+      if (!status) { console.warn('Could not read the schema version, so showing the v1 pages:', error.message); return 1; }
+      throw error;
+    }
+    return typeof version === 'number' ? version : 1;
+  }
+
+  // ============================================
   // SHELL & ROUTING
   // ============================================
   function renderShell() {
+    const tabs = active.filter((m) => m.nav).map((m) =>
+      `<a href="${esc(m.nav.href || `#/${m.name}`)}" data-tab="${esc(m.name)}">${esc(m.nav.label)}</a>`).join('\n          ');
     app.innerHTML = `
       <header class="topbar"><div class="topbar-inner">
         <a class="brand" href="#/">Home Hub</a>
         <nav class="tabs" aria-label="Sections">
-          <a href="#/" data-tab="home">Home</a>
-          <a href="#/projects" data-tab="projects">Projects</a>
-          <a href="#/contractors" data-tab="contractors">Contractors</a>
-          <a href="#/family" data-tab="family">Family</a>
+          ${tabs}
         </nav>
       </div></header>
       <main class="page" id="main"></main>`;
   }
 
+  // The page for the current address: the first module (in tab order) whose match() accepts it.
+  // An address no page claims shows the first page ("#/"), as it always has.
   function parseRoute() {
     const h = location.hash.replace(/^#\/?/, '');
-    if (/access_token=|error=/.test(h)) return { name: 'home' };
-    const parts = h.split('/').filter(Boolean).map(decodeURIComponent);
-    if (parts[0] === 'projects' && parts[1]) return { name: 'project', id: parts[1], task: parts[2] === 'task' ? parts[3] : null };
-    if (['projects', 'contractors', 'family'].includes(parts[0])) return { name: parts[0] };
-    return { name: 'home' };
+    const parts = /access_token=|error=/.test(h) ? [] : h.split('/').filter(Boolean).map(decodeURIComponent);
+    const find = (p) => {
+      for (const m of active) {
+        const params = m.match(p);
+        if (params) return { module: m, params };
+      }
+      return null;
+    };
+    return find(parts) || find([]);
   }
 
+  // Leaving a page aborts its signal, so it can tear down what it set up (a Gantt view, listeners).
   function destroyView() {
-    if (view) view.destroy();
-    view = null;
-    current = null;
+    if (pageAbort) pageAbort.abort();
+    pageAbort = null;
   }
 
   // Each navigation gets a number; a slower, older page load must not overwrite a newer one.
@@ -544,7 +583,7 @@
     if (!me || !$('#main')) return;
     const seq = ++routeSeq;
     const r = parseRoute();
-    const tab = r.name === 'project' ? 'projects' : r.name;
+    const tab = r ? r.module.name : null;
     document.querySelectorAll('.tabs a').forEach((a) => a.setAttribute('aria-current', a.dataset.tab === tab ? 'page' : 'false'));
     destroyView();
     if (detailDialog.open) detailDialog.close();
@@ -553,714 +592,21 @@
     main.onclick = null;
     main.innerHTML = '<div class="loading">Loading…</div>';
     window.scrollTo(0, 0);
+    if (!r) {
+      // Only when no page is made for this database's version: the site files are older than the database.
+      main.innerHTML = '<div class="card empty-state"><p>This copy of the Home Hub doesn\'t match the database yet. Reload the page to get the latest version.</p></div>';
+      return;
+    }
+    const controller = new AbortController();
+    pageAbort = controller;
+    const ctx = { seq, params: r.params, signal: controller.signal, stale: () => stale(seq) || controller.signal.aborted };
     try {
-      if (r.name === 'home') await renderHome(main, seq);
-      else if (r.name === 'projects') await renderProjects(main, seq);
-      else if (r.name === 'project') await renderProject(main, seq, r.id, r.task);
-      else if (r.name === 'contractors') await renderContractors(main, seq);
-      else if (r.name === 'family') await renderFamily(main, seq);
+      await r.module.render(main, ctx);
     } catch (err) {
       if (stale(seq)) return;
       main.innerHTML = `<div class="banner banner-error">${esc(friendly(err))}</div>`;
       console.error(err);
     }
-  }
-
-  // ============================================
-  // HOME
-  // ============================================
-  function projectCard(p, M) {
-    let foot;
-    if (M && !M.empty) {
-      const s = G.summarize(M);
-      foot = `<div class="progress"><span style="width:${s.pct}%"></span></div>
-        <div class="pcard-foot"><span>${s.pct}% done · finishes ${fmtShort(M.finish)}</span>${s.behind ? `<span class="bad">${s.behind} behind</span>` : ''}</div>`;
-    } else {
-      foot = `<div class="pcard-foot solo"><span${M ? '' : ' class="bad"'}>${M ? 'No tasks yet' : 'Schedule needs attention'}</span></div>`;
-    }
-    return `<a class="pcard" href="#/projects/${encodeURIComponent(p.id)}">
-      <div class="pcard-top"><h3>${esc(p.name)}</h3><span class="pill st-${esc(p.status)}">${esc(STATUS_LABEL[p.status] || p.status)}</span></div>
-      ${p.summary ? `<p>${esc(p.summary)}</p>` : ''}${foot}</a>`;
-  }
-
-  const emptyProjects = () => `<div class="card empty-state"><p>No projects yet. Start with whatever is on your mind: the kitchen, the pool, the sprinklers.</p>
-    <button class="btn btn-primary" data-act="new-project">+ New project</button></div>`;
-
-  async function renderHome(main, seq) {
-    const [projects, contractors] = await Promise.all([api.projects(), api.contractors()]);
-    if (stale(seq)) return;
-    data.projects = projects;
-    data.contractors = contractors;
-    const open = projects.filter((p) => p.status !== 'done');
-    const models = open.map((p) => ({ p, M: safeModel(p) }));
-    const upcoming = [];
-    models.forEach(({ p, M }) => {
-      if (!M || M.empty) return;
-      M.items.forEach((r) => {
-        if (r.task.status !== 'done' && r.end >= M.today && r.start <= M.today + 14) upcoming.push({ p, M, r });
-      });
-    });
-    upcoming.sort((a, b) => a.r.start - b.r.start || a.r.end - b.r.end);
-    const today = G.todayNum();
-    const hour = new Date().getHours();
-    const greeting = hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
-
-    main.innerHTML = `
-      <div class="page-head">
-        <div>
-          <p class="eyebrow">${esc(fmt(today, { weekday: 'long', month: 'long', day: 'numeric' }))}</p>
-          <h1>${greeting}, ${esc(firstName(me.name))}</h1>
-        </div>
-        <div class="page-actions">
-          <button class="btn" data-act="new-contractor">+ Contractor</button>
-          <button class="btn btn-primary" data-act="new-project">+ New project</button>
-        </div>
-      </div>
-      <section class="card">
-        <div class="card-head"><h2>Coming up</h2><span class="card-sub">Next 14 days, across all projects</span></div>
-        <ul class="items">${upcoming.length
-          ? upcoming.slice(0, 12).map(({ p, M, r }) => G.itemHTML(M, r, { context: p.name, attrs: ` data-project="${esc(p.id)}"` })).join('')
-          : '<li class="empty">Nothing scheduled in the next two weeks.</li>'}</ul>
-      </section>
-      <h2 class="section-title">Open projects</h2>
-      ${open.length ? `<div class="grid">${models.map(({ p, M }) => projectCard(p, M)).join('')}</div>` : emptyProjects()}
-      <h2 class="section-title">Contractors</h2>
-      <div class="card"><div class="card-head"><h2>${plural(contractors.length, 'contractor')} on file</h2><span class="spacer"></span><a class="btn btn-sm" href="#/contractors">Open directory</a></div><p class="empty">Names, numbers and notes for everyone who works on the house.</p></div>`;
-
-    main.onclick = (e) => {
-      const act = e.target.closest('[data-act]');
-      if (act && act.dataset.act === 'new-project') { newProjectForm(); return; }
-      if (act && act.dataset.act === 'new-contractor') { contractorForm(null, () => route()); return; }
-      const item = e.target.closest('.item[data-project]');
-      if (item) location.hash = `#/projects/${encodeURIComponent(item.dataset.project)}/task/${encodeURIComponent(item.dataset.id)}`;
-    };
-  }
-
-  // ============================================
-  // PROJECTS LIST
-  // ============================================
-  async function renderProjects(main, seq) {
-    const [projects, contractors] = await Promise.all([api.projects(), api.contractors()]);
-    if (stale(seq)) return;
-    data.projects = projects;
-    data.contractors = contractors;
-    const groups = STATUSES.map(([key, label]) => ({ label, items: projects.filter((p) => p.status === key) })).filter((g) => g.items.length);
-    main.innerHTML = `
-      <div class="page-head">
-        <div><h1>Projects</h1><p class="meta">${plural(projects.length, 'project')}</p></div>
-        <div class="page-actions"><button class="btn btn-primary" data-act="new-project">+ New project</button></div>
-      </div>
-      ${projects.length ? groups.map((g) => `<h2 class="section-title">${esc(g.label)}</h2>
-        <div class="grid">${g.items.map((p) => projectCard(p, safeModel(p))).join('')}</div>`).join('') : emptyProjects()}`;
-    main.onclick = (e) => {
-      if (e.target.closest('[data-act="new-project"]')) newProjectForm();
-    };
-  }
-
-  function newProjectForm() {
-    const templates = data.projects.filter((p) => allTasks(p.schedule || {}).length);
-    openForm({
-      title: 'New project',
-      fields: [
-        { name: 'name', label: 'Project name', type: 'text', required: true, placeholder: 'Pool repairs' },
-        { type: 'row', fields: [
-          { name: 'status', label: 'Status', type: 'select', options: STATUSES, value: 'planning' },
-          { name: 'start', label: 'Start date', type: 'date', required: true, value: nextMonday() },
-        ] },
-        { name: 'summary', label: 'Short description', type: 'textarea', placeholder: 'What needs doing, and why' },
-        { name: 'template', label: 'Start from', type: 'select',
-          options: [['', 'A blank schedule'], ...templates.map((p) => [p.id, `A copy of "${p.name}"`])],
-          help: 'Copying reuses the tasks, trades and timing, without dates or progress.' },
-      ],
-      submitLabel: 'Create project',
-      async onSubmit(v) {
-        let schedule = { project: { start: v.start, holidays: [] }, trades: {}, phases: [] };
-        const source = templates.find((p) => p.id === v.template);
-        if (source) {
-          schedule = clone(source.schedule);
-          schedule.project = Object.assign({}, schedule.project, { start: v.start });
-          allTasks(schedule).forEach((t) => { delete t.status; delete t.start; delete t.private_notes; });
-        }
-        const row = await api.createProject({ name: v.name, status: v.status, summary: v.summary || null, schedule });
-        location.hash = `#/projects/${encodeURIComponent(row.id)}`;
-      },
-    });
-  }
-
-  // ============================================
-  // PROJECT PAGE
-  // ============================================
-  async function renderProject(main, seq, id, taskId) {
-    const [project, contractors] = await Promise.all([api.project(id), api.contractors()]);
-    if (stale(seq)) return;
-    data.contractors = contractors;
-    if (!project) {
-      main.innerHTML = '<div class="card empty-state"><p>That project was not found. It may have been deleted.</p><a class="btn" href="#/projects">Back to projects</a></div>';
-      return;
-    }
-    current = project;
-    main.innerHTML = '<div data-ref="head"></div><div id="gv"></div>';
-    renderProjectHead();
-    view = G.createView(main.querySelector('#gv'), {
-      dialog: detailDialog,
-      contactFor: (key) => contactFor(current, key),
-      teamActions: (key) => (reachable(contractorFor(current, key)) ? `<button type="button" class="btn btn-sm" data-msg="${esc(key)}">Message</button>` : ''),
-      onTaskClick: (tid, M) => openTaskDetail(tid, M),
-      emptyHTML: `<div class="card empty-state"><p>This project has no tasks yet.</p>
-        <button class="btn btn-primary" data-act="add-task">+ Add the first task</button></div>`,
-    });
-    view.setSchedule(resolvedSchedule(current));
-    const actions = { 'add-task': () => taskForm(null), trades: tradesForm, settings: settingsForm, share: shareDialog };
-    main.onclick = (e) => {
-      const msg = e.target.closest('[data-msg]');
-      if (msg) {
-        const c = contractorFor(current, msg.dataset.msg);
-        messageDialog(c, scheduleMessage(current, msg.dataset.msg, c), sharingHint(current));
-        return;
-      }
-      const act = e.target.closest('[data-act]');
-      if (act && actions[act.dataset.act]) actions[act.dataset.act]();
-    };
-    if (taskId && view.model && view.model.byId.has(taskId)) view.openTask(taskId);
-  }
-
-  function renderProjectHead() {
-    const p = current;
-    $('[data-ref="head"]').innerHTML = `
-      <a class="back" href="#/projects">← All projects</a>
-      <div class="page-head">
-        <div>
-          <div class="title-row"><h1>${esc(p.name)}</h1>
-            <span class="pill st-${esc(p.status)}">${esc(STATUS_LABEL[p.status] || p.status)}</span>
-            ${p.sharing_enabled ? '<span class="pill">Share link on</span>' : ''}</div>
-          <p class="meta">${p.summary ? `${esc(p.summary)} · ` : ''}Updated ${stamp(p.updated_at)}</p>
-        </div>
-        <div class="page-actions">
-          <button class="btn" data-act="trades">Trades &amp; contractors</button>
-          <button class="btn" data-act="share">Share</button>
-          <button class="btn" data-act="settings">Settings</button>
-          <button class="btn btn-primary" data-act="add-task">+ Task</button>
-        </div>
-      </div>`;
-  }
-
-  function refreshProject() {
-    renderProjectHead();
-    view.setSchedule(resolvedSchedule(current));
-  }
-
-  // Apply a change to the stored schedule, check it still makes sense, then save.
-  async function saveSchedule(mutate, message) {
-    const next = clone(current.schedule || {});
-    next.project = next.project || {};
-    next.trades = next.trades || {};
-    next.phases = next.phases || [];
-    mutate(next);
-    next.phases = next.phases.filter((p) => (p.tasks || []).length);
-    G.buildModel(next);
-    current = await api.updateProject(current.id, { schedule: next }, current.updated_at);
-    refreshProject();
-    if (message) toast(message);
-  }
-
-  function wireDetailActions() {
-    if (detailDialog.dataset.hubWired) return;
-    detailDialog.dataset.hubWired = '1';
-    detailDialog.addEventListener('click', async (e) => {
-      const b = e.target.closest('[data-task-act]');
-      if (!b || !current) return;
-      const id = b.dataset.tid;
-      const act = b.dataset.taskAct;
-      if (act === 'edit') { taskForm(id); return; }
-      if (act === 'delete') { deleteTask(id); return; }
-      if (act === 'message') {
-        const r = view.model.byId.get(id);
-        const c = contractorFor(current, r.task.trade);
-        messageDialog(c, taskMessage(current, r, c), sharingHint(current));
-        return;
-      }
-      const status = { done: 'done', start: 'in-progress', reopen: null }[act];
-      b.disabled = true;
-      try {
-        await saveSchedule((s) => {
-          const t = allTasks(s).find((x) => x.id === id);
-          if (status) t.status = status; else delete t.status;
-        }, status === 'done' ? 'Marked done' : 'Status updated');
-        view.openTask(id);
-      } catch (err) {
-        b.disabled = false;
-        alert(friendly(err));
-      }
-    });
-  }
-
-  function openTaskDetail(id, M) {
-    wireDetailActions();
-    const r = M.byId.get(id);
-    const status = r.task.status;
-    const contractor = contractorFor(current, r.task.trade);
-    const message = reachable(contractor)
-      ? `<button type="button" class="btn" data-task-act="message" data-tid="${esc(id)}">Message ${esc(firstName(contractor.name))}</button>` : '';
-    const quick = status === 'done'
-      ? `<button type="button" class="btn" data-task-act="reopen" data-tid="${esc(id)}">Reopen</button>`
-      : `<button type="button" class="btn" data-task-act="done" data-tid="${esc(id)}">Mark done</button>
-         ${status !== 'in-progress' ? `<button type="button" class="btn" data-task-act="start" data-tid="${esc(id)}">Mark in progress</button>` : ''}`;
-    G.showDialog(detailDialog, G.detailHTML(M, id, {
-      contact: contactFor(current, r.task.trade),
-      showPrivate: true,
-      actionsHTML: `<div class="d-actions">
-        <button type="button" class="btn btn-primary" data-task-act="edit" data-tid="${esc(id)}">Edit task</button>
-        ${quick}
-        ${message}
-        <button type="button" class="btn btn-danger" data-task-act="delete" data-tid="${esc(id)}" style="margin-left:auto">Delete</button>
-      </div>`,
-    }));
-  }
-
-  function deleteTask(id) {
-    const s = current.schedule;
-    const task = allTasks(s).find((t) => t.id === id);
-    const dependents = allTasks(s).filter((t) => (t.after || []).includes(id));
-    const warning = dependents.length ? `\n\n${plural(dependents.length, 'task')} wait on it and will be rescheduled without it.` : '';
-    if (!window.confirm(`Delete "${task.name}"?${warning}`)) return;
-    detailDialog.close();
-    saveSchedule((next) => {
-      next.phases.forEach((p) => { p.tasks = p.tasks.filter((t) => t.id !== id); });
-      allTasks(next).forEach((t) => {
-        if (t.after) { t.after = t.after.filter((a) => a !== id); if (!t.after.length) delete t.after; }
-        if (t.before === id) { delete t.before; delete t.lead; }
-      });
-    }, 'Task deleted').catch((err) => alert(friendly(err)));
-  }
-
-  function taskForm(taskId) {
-    const s = current.schedule;
-    const phases = s.phases || [];
-    const trades = s.trades || {};
-    let phaseIdx = -1;
-    let task = null;
-    phases.forEach((p, i) => (p.tasks || []).forEach((t) => { if (t.id === taskId) { task = t; phaseIdx = i; } }));
-    const isNew = !task;
-    const t = task || {};
-    const tradeKeys = Object.keys(trades);
-    const unit = t.weeks ? 'weeks' : (!isNew && !t.days ? 'milestone' : 'days');
-
-    openForm({
-      title: isNew ? 'New task' : 'Edit task',
-      fields: [
-        { name: 'name', label: 'Task', type: 'text', required: true, value: t.name, placeholder: 'Install cabinets' },
-        { type: 'row', fields: [
-          { name: 'phase', label: 'Phase', type: 'select',
-            options: [...phases.map((p, i) => [String(i), p.name]), ['__new', 'New phase…']],
-            value: isNew ? (phases.length ? String(phases.length - 1) : '__new') : String(phaseIdx) },
-          { name: 'trade', label: 'Who does it', type: 'select',
-            options: [...tradeKeys.map((k) => [k, trades[k].name]), ['__new', 'New trade…']],
-            value: t.trade || (tradeKeys[0] || '__new') },
-        ] },
-        { name: 'newPhase', label: 'New phase name', type: 'text', required: true, value: phases.length ? '' : 'Tasks', showIf: (v) => v.phase === '__new' },
-        { name: 'newTrade', label: 'New trade name', type: 'text', required: true, placeholder: 'Pool technician', showIf: (v) => v.trade === '__new' },
-        { type: 'row', fields: [
-          { name: 'unit', label: 'How long', type: 'select', value: unit, options: [
-            ['days', 'Working days'], ['weeks', 'Calendar weeks (orders, permits)'], ['milestone', 'Milestone (one moment)']] },
-          { name: 'amount', label: 'Amount', type: 'number', min: 1, required: true, value: t.weeks || t.days || 1, showIf: (v) => v.unit !== 'milestone' },
-        ] },
-        { name: 'after', label: 'Waits on', type: 'checks', value: t.after || [],
-          help: 'Tick the tasks that must finish before this one can start.',
-          groups: phases.map((p) => ({ label: p.name, items: (p.tasks || []).filter((x) => x.id !== taskId).map((x) => [x.id, x.name]) })) },
-        { type: 'row', fields: [
-          { name: 'start', label: 'Confirmed start date', type: 'date', value: t.start || '', help: 'Leave blank to schedule automatically.' },
-          { name: 'status', label: 'Status', type: 'select', options: TASK_STATUSES, value: t.status || '' },
-        ] },
-        { name: 'lag', label: 'Extra wait after those finish (working days)', type: 'number', min: 0, value: t.lag || '', help: 'For drying, curing or acclimating. Usually blank.' },
-        { name: 'notes', label: 'Notes', type: 'textarea', value: t.notes, help: 'Shown on the shared link, so keep it to things contractors can see.' },
-        { name: 'private_notes', label: 'Private notes', type: 'textarea', value: t.private_notes, help: 'Family only. Never shown on the shared link.' },
-      ],
-      submitLabel: isNew ? 'Add task' : 'Save task',
-      extraActions: isNew ? [] : [{ label: 'Delete', danger: true, onClick: () => { formDialog.close(); deleteTask(taskId); return false; } }],
-      async onSubmit(v) {
-        await saveSchedule((next) => {
-          const ids = new Set(allTasks(next).map((x) => x.id));
-          const nt = isNew ? { id: uniqueKey(slug(v.name), ids) } : Object.assign({}, task);
-          nt.name = v.name;
-
-          if (v.trade === '__new') {
-            const key = uniqueKey(slug(v.newTrade), new Set(Object.keys(next.trades)));
-            next.trades[key] = { name: v.newTrade, who: '', color: PALETTE[Object.keys(next.trades).length % PALETTE.length] };
-            nt.trade = key;
-          } else {
-            nt.trade = v.trade;
-          }
-
-          delete nt.days;
-          delete nt.weeks;
-          const amount = Math.max(1, parseInt(v.amount, 10) || 1);
-          if (v.unit === 'days') nt.days = amount;
-          if (v.unit === 'weeks') nt.weeks = amount;
-
-          const setOrDrop = (key, value) => { if (value) nt[key] = value; else delete nt[key]; };
-          setOrDrop('after', v.after.length ? v.after : null);
-          setOrDrop('start', v.start);
-          setOrDrop('status', v.status);
-          setOrDrop('lag', Math.max(0, parseInt(v.lag, 10) || 0));
-          setOrDrop('notes', v.notes);
-          setOrDrop('private_notes', v.private_notes);
-
-          let target;
-          if (v.phase === '__new') {
-            next.phases.push({ name: v.newPhase || 'Tasks', tasks: [] });
-            target = next.phases.length - 1;
-          } else {
-            target = +v.phase;
-          }
-          if (!isNew && target === phaseIdx) {
-            const list = next.phases[phaseIdx].tasks;
-            list[list.findIndex((x) => x.id === nt.id)] = nt;
-          } else {
-            if (!isNew) next.phases[phaseIdx].tasks = next.phases[phaseIdx].tasks.filter((x) => x.id !== nt.id);
-            next.phases[target].tasks.push(nt);
-          }
-        }, isNew ? 'Task added' : 'Task saved');
-      },
-    });
-  }
-
-  function tradesForm() {
-    wireFormDialog();
-    if (detailDialog.open) detailDialog.close();
-    const s = current.schedule;
-    const used = new Set(allTasks(s).map((t) => t.trade));
-    const contractorOptions = (selected) => `<option value="">No contractor linked</option>${data.contractors.map((c) =>
-      `<option value="${esc(c.id)}"${c.id === selected ? ' selected' : ''}>${esc([c.name, c.company].filter(Boolean).join(', '))}${c.trade ? ` (${esc(c.trade)})` : ''}</option>`).join('')}`;
-    const row = (key, t) => `<div class="trade-row" data-key="${esc(key)}">
-      <input type="color" name="color" value="${esc(t.color || PALETTE[0])}" aria-label="Color">
-      <input type="text" name="name" value="${esc(t.name || '')}" placeholder="Trade name" required aria-label="Trade name">
-      <select name="contractor" aria-label="Contractor">${contractorOptions(t.contractor_id)}</select>
-      <button type="button" class="btn btn-sm btn-danger" data-remove${used.has(key) ? ' disabled title="Tasks use this trade"' : ''}>Remove</button>
-      <input type="text" class="who" name="who" value="${esc(t.who || '')}" placeholder="Who, if they're not in your contractor list" aria-label="Who"${t.contractor_id ? ' hidden' : ''}>
-    </div>`;
-
-    formDialog.innerHTML = `<form class="form d-inner">
-      <div class="d-top"><h3>Trades &amp; contractors</h3><button type="button" class="d-close" data-close aria-label="Close">×</button></div>
-      <p class="meta">Link each trade to someone in your <a href="#/contractors">contractor directory</a>. The family sees their phone and email here; the shared link shows only their name and company.</p>
-      <div class="trade-rows">${Object.entries(s.trades || {}).map(([k, t]) => row(k, t)).join('')}</div>
-      <div><button type="button" class="btn btn-sm" data-add>+ Add trade</button></div>
-      <p class="form-error" hidden></p>
-      <div class="form-actions"><button type="button" class="btn" data-close>Cancel</button><button type="submit" class="btn btn-primary">Save</button></div>
-    </form>`;
-    const form = formDialog.querySelector('form');
-    const rows = form.querySelector('.trade-rows');
-    form.addEventListener('click', (e) => {
-      if (e.target.closest('[data-add]')) {
-        const n = rows.children.length;
-        rows.insertAdjacentHTML('beforeend', row('', { color: PALETTE[n % PALETTE.length] }));
-        rows.lastElementChild.querySelector('[name="name"]').focus();
-      }
-      const rm = e.target.closest('[data-remove]');
-      if (rm && !rm.disabled) rm.closest('.trade-row').remove();
-    });
-    form.addEventListener('change', (e) => {
-      if (e.target.name === 'contractor') e.target.closest('.trade-row').querySelector('.who').hidden = !!e.target.value;
-    });
-    form.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      if (!form.reportValidity()) return;
-      const errBox = form.querySelector('.form-error');
-      try {
-        await saveSchedule((next) => {
-          const old = next.trades || {};
-          const fresh = {};
-          const taken = new Set([...rows.children].map((r) => r.dataset.key).filter(Boolean));
-          [...rows.children].forEach((r) => {
-            const name = r.querySelector('[name="name"]').value.trim();
-            const key = r.dataset.key || uniqueKey(slug(name), taken);
-            taken.add(key);
-            const t = Object.assign({}, old[key], { name, color: r.querySelector('[name="color"]').value });
-            const contractor = r.querySelector('[name="contractor"]').value;
-            if (contractor) t.contractor_id = contractor; else delete t.contractor_id;
-            t.who = contractor ? '' : r.querySelector('[name="who"]').value.trim();
-            fresh[key] = t;
-          });
-          next.trades = fresh;
-        }, 'Trades saved');
-        formDialog.close();
-      } catch (err) {
-        errBox.textContent = friendly(err);
-        errBox.hidden = false;
-      }
-    });
-    formDialog.showModal();
-  }
-
-  function settingsForm() {
-    const p = current;
-    const s = p.schedule || {};
-    const phases = s.phases || [];
-    openForm({
-      title: 'Project settings',
-      fields: [
-        { name: 'name', label: 'Project name', type: 'text', required: true, value: p.name },
-        { type: 'row', fields: [
-          { name: 'status', label: 'Status', type: 'select', options: STATUSES, value: p.status },
-          { name: 'start', label: 'Start date', type: 'date', required: true, value: (s.project || {}).start },
-        ] },
-        { name: 'summary', label: 'Short description', type: 'textarea', value: p.summary },
-        ...phases.map((ph, i) => ({ name: `phase_${i}`, label: `Phase ${i + 1} name`, type: 'text', required: true, value: ph.name })),
-        { name: 'holidays', label: 'Days off (no work)', type: 'textarea', value: ((s.project || {}).holidays || []).join('\n'),
-          help: 'One date per line, like 2026-12-25. Weekends are already skipped.' },
-      ],
-      extraActions: [{
-        label: 'Delete project',
-        danger: true,
-        async onClick() {
-          if (!window.confirm(`Delete "${p.name}" and its whole schedule? This can't be undone.`)) return false;
-          await api.deleteProject(p.id);
-          formDialog.close();
-          toast('Project deleted');
-          location.hash = '#/projects';
-          return false;
-        },
-      }],
-      async onSubmit(v) {
-        const holidays = v.holidays.split(/[\s,]+/).filter(Boolean);
-        holidays.forEach((d) => G.parseDate(d));
-        const next = clone(s);
-        next.project = Object.assign({}, next.project, { start: v.start, holidays });
-        (next.phases || []).forEach((ph, i) => { ph.name = v[`phase_${i}`]; });
-        G.buildModel(next);
-        current = await api.updateProject(p.id, { name: v.name, status: v.status, summary: v.summary || null, schedule: next }, p.updated_at);
-        refreshProject();
-        toast('Settings saved');
-      },
-    });
-  }
-
-  function shareDialog() {
-    wireFormDialog();
-    if (detailDialog.open) detailDialog.close();
-    const p = current;
-    const link = shareLink(p);
-    formDialog.innerHTML = `<div class="form d-inner">
-      <div class="d-top"><h3>Share with contractors</h3><button type="button" class="d-close" data-close aria-label="Close">×</button></div>
-      <p class="meta">Anyone with the link can see this project's schedule: dates, tasks, trades, and contractor names and companies. Phone numbers, emails and private notes are never shown.</p>
-      ${p.sharing_enabled ? `
-        <label class="field"><span>Share link</span>
-          <div class="sharebox"><input type="text" readonly value="${esc(link)}" aria-label="Share link"><button type="button" class="btn" data-share="copy">Copy</button></div>
-          <small>Tip: open the link and tap a trade to get a link showing only that trade's dates.</small></label>
-        <div class="form-actions">
-          <button type="button" class="btn btn-danger left" data-share="off">Turn off sharing</button>
-          <button type="button" class="btn" data-share="rotate">Get a new link</button>
-          <button type="button" class="btn btn-primary" data-close>Done</button>
-        </div>` : `
-        <div class="form-actions">
-          <button type="button" class="btn" data-close>Cancel</button>
-          <button type="button" class="btn btn-primary" data-share="on">Turn on sharing</button>
-        </div>`}
-      <p class="form-error" hidden></p>
-    </div>`;
-    formDialog.querySelectorAll('[data-share]').forEach((b) => b.addEventListener('click', async () => {
-      const act = b.dataset.share;
-      if (act === 'copy') {
-        try { await navigator.clipboard.writeText(link); toast('Link copied'); }
-        catch (err) { window.prompt('Copy this link:', link); }
-        return;
-      }
-      if (act === 'rotate' && !window.confirm('Make a new link? The old link will stop working for anyone you sent it to.')) return;
-      const patch = act === 'on' ? { sharing_enabled: true } : act === 'off' ? { sharing_enabled: false } : { share_token: randomToken() };
-      try {
-        current = await api.updateProject(p.id, patch, p.updated_at);
-        refreshProject();
-        shareDialog();
-      } catch (err) {
-        const box = formDialog.querySelector('.form-error');
-        box.textContent = friendly(err);
-        box.hidden = false;
-      }
-    }));
-    if (!formDialog.open) formDialog.showModal();
-  }
-
-  // ============================================
-  // CONTRACTORS
-  // ============================================
-  function usageOf(contractorId) {
-    const uses = [];
-    data.projects.forEach((p) => Object.values((p.schedule || {}).trades || {}).forEach((t) => {
-      if (t.contractor_id === contractorId) uses.push({ project: p, trade: t.name });
-    }));
-    return uses;
-  }
-
-  function contractorCard(c) {
-    const uses = usageOf(c.id);
-    return `<div class="ccard">
-      <div class="ccard-top">
-        <div><h3>${esc(c.name)}</h3>${c.company ? `<div class="company">${esc(c.company)}</div>` : ''}</div>
-        ${c.trade ? `<span class="pill">${esc(c.trade)}</span>` : ''}
-      </div>
-      <div class="links">
-        ${c.phone ? `<a href="${esc(telHref(c.phone))}">${esc(c.phone)}</a>` : ''}
-        ${c.email ? `<a href="mailto:${esc(c.email)}">${esc(c.email)}</a>` : ''}
-        ${c.website ? `<a href="${esc(webHref(c.website))}" target="_blank" rel="noopener">${esc(c.website.replace(/^https?:\/\//i, ''))}</a>` : ''}
-      </div>
-      ${c.notes ? `<p class="notes">${esc(c.notes)}</p>` : ''}
-      ${uses.length ? `<div class="used">On: ${uses.map((u) => `<a href="#/projects/${encodeURIComponent(u.project.id)}">${esc(u.project.name)}</a> (${esc(u.trade)})`).join(', ')}</div>` : ''}
-      <div class="form-actions" style="margin-top:10px">
-        ${reachable(c) ? `<button type="button" class="btn btn-sm" data-message="${esc(c.id)}">Message</button>` : ''}
-        <button type="button" class="btn btn-sm" data-edit="${esc(c.id)}">Edit</button>
-      </div>
-    </div>`;
-  }
-
-  async function renderContractors(main, seq) {
-    const [contractors, projects] = await Promise.all([api.contractors(), api.projects()]);
-    if (stale(seq)) return;
-    data.contractors = contractors;
-    data.projects = projects;
-    main.innerHTML = `
-      <div class="page-head">
-        <div><h1>Contractors</h1><p class="meta">${plural(contractors.length, 'contractor')} · visible to the family only</p></div>
-        <div class="page-actions"><button class="btn btn-primary" data-act="new-contractor">+ Add contractor</button></div>
-      </div>
-      ${contractors.length ? `<div class="searchbar"><input type="search" placeholder="Search by name, company, trade or notes" aria-label="Search contractors"></div>` : ''}
-      <div class="grid" data-ref="list"></div>
-      ${contractors.length ? '' : `<div class="card empty-state"><p>Keep every plumber, painter and pool tech's details in one place.</p>
-        <button class="btn btn-primary" data-act="new-contractor">+ Add your first contractor</button></div>`}`;
-    const list = main.querySelector('[data-ref="list"]');
-    const draw = (term) => {
-      const t = (term || '').toLowerCase();
-      const shown = contractors.filter((c) => !t || [c.name, c.company, c.trade, c.notes, c.email, c.phone].some((x) => String(x || '').toLowerCase().includes(t)));
-      list.innerHTML = shown.map(contractorCard).join('') || '<p class="empty">No contractors match that search.</p>';
-    };
-    draw('');
-    const search = main.querySelector('.searchbar input');
-    if (search) search.addEventListener('input', () => draw(search.value));
-    main.onclick = (e) => {
-      if (e.target.closest('[data-act="new-contractor"]')) { contractorForm(null, () => route()); return; }
-      const edit = e.target.closest('[data-edit]');
-      if (edit) { contractorForm(contractors.find((c) => c.id === edit.dataset.edit), () => route()); return; }
-      const msg = e.target.closest('[data-message]');
-      if (msg) {
-        const c = contractors.find((x) => x.id === msg.dataset.message);
-        messageDialog(c, { subject: 'Hello from the Home Hub', body: [`Hi ${firstName(c.name)},`, '', ''].concat(signOff()).join('\n') });
-      }
-    };
-  }
-
-  function contractorForm(c, after) {
-    const x = c || {};
-    openForm({
-      title: c ? 'Edit contractor' : 'Add contractor',
-      fields: [
-        { type: 'row', fields: [
-          { name: 'name', label: 'Name', type: 'text', required: true, value: x.name, placeholder: 'Pat Lee' },
-          { name: 'company', label: 'Company', type: 'text', value: x.company, placeholder: 'Lee Electric' },
-        ] },
-        { name: 'trade', label: 'Trade', type: 'text', value: x.trade, placeholder: 'Electrician' },
-        { type: 'row', fields: [
-          { name: 'phone', label: 'Phone', type: 'tel', value: x.phone },
-          { name: 'email', label: 'Email', type: 'email', value: x.email },
-        ] },
-        { name: 'website', label: 'Website', type: 'text', value: x.website, placeholder: 'leeelectric.com' },
-        { name: 'notes', label: 'Notes', type: 'textarea', value: x.notes, placeholder: 'Licence number, who referred them, what they charged, how it went' },
-      ],
-      submitLabel: c ? 'Save' : 'Add contractor',
-      extraActions: c ? [{
-        label: 'Delete',
-        danger: true,
-        async onClick() {
-          const uses = usageOf(c.id);
-          const note = uses.length ? `\n\nThey're linked on ${plural(uses.length, 'project')}; those projects will keep their name but lose the link.` : '';
-          if (!window.confirm(`Delete ${c.name}?${note}`)) return false;
-          await unlinkContractor(c, uses);
-          await api.deleteContractor(c.id);
-          formDialog.close();
-          toast('Contractor deleted');
-          after();
-          return false;
-        },
-      }] : [],
-      async onSubmit(v) {
-        const row = { name: v.name, company: v.company || null, trade: v.trade || null, phone: v.phone || null,
-          email: v.email || null, website: v.website || null, notes: v.notes || null };
-        if (c) row.id = c.id;
-        await api.saveContractor(row);
-        toast(c ? 'Contractor saved' : 'Contractor added');
-        after();
-      },
-    });
-  }
-
-  // Before deleting a contractor, turn each link into plain text so projects still say who did the work.
-  async function unlinkContractor(c, uses) {
-    const label = [c.name, c.company].filter(Boolean).join(', ');
-    const projects = [...new Set(uses.map((u) => u.project))];
-    for (const p of projects) {
-      const next = clone(p.schedule);
-      Object.values(next.trades || {}).forEach((t) => {
-        if (t.contractor_id === c.id) { delete t.contractor_id; t.who = label; }
-      });
-      await api.updateProject(p.id, { schedule: next }, p.updated_at);
-    }
-  }
-
-  // ============================================
-  // FAMILY
-  // ============================================
-  async function renderFamily(main, seq) {
-    const members = await api.members();
-    if (stale(seq)) return;
-    data.members = members;
-    const admin = me.role === 'admin';
-    main.innerHTML = `
-      <div class="page-head">
-        <div><h1>Family</h1><p class="meta">Signed in as ${esc(me.name)} (${esc(me.email)})</p></div>
-        <div class="page-actions">
-          <button class="btn" data-act="sign-out">Sign out</button>
-          ${admin ? '<button class="btn btn-primary" data-act="add-member">+ Add family member</button>' : ''}
-        </div>
-      </div>
-      <section class="card">
-        <div class="card-head"><h2>Who can sign in</h2><span class="card-sub">${admin ? 'As an admin, you can add and remove people' : 'Ask an admin to add someone'}</span></div>
-        <ul class="rows">${members.map((m) => `<li>
-          <div class="grow"><strong>${esc(m.name)}</strong>${m.email === me.email ? ' (you)' : ''}<div class="sub">${esc(m.email)}</div></div>
-          <span class="pill${m.role === 'admin' ? ' role-admin' : ''}">${m.role === 'admin' ? 'Admin' : 'Member'}</span>
-          ${admin && m.email !== me.email ? `<button type="button" class="btn btn-sm btn-danger" data-remove="${esc(m.email)}">Remove</button>` : ''}
-        </li>`).join('')}</ul>
-      </section>
-      <section class="card">
-        <div class="card-head"><h2>How sign-in works</h2></div>
-        <p class="empty">Each person signs in with their own email address. They get a one-time link, and after that their device stays signed in.
-        Removing someone here blocks their access right away. Members can edit projects and contractors; admins can also manage this list.</p>
-      </section>`;
-    main.onclick = async (e) => {
-      const act = e.target.closest('[data-act]');
-      if (act && act.dataset.act === 'sign-out') { await sb.auth.signOut(); return; }
-      if (act && act.dataset.act === 'add-member') { memberForm(); return; }
-      const rm = e.target.closest('[data-remove]');
-      if (rm && window.confirm(`Remove ${rm.dataset.remove}? They will lose access to the Home Hub.`)) {
-        try { await api.removeMember(rm.dataset.remove); toast('Removed'); route(); }
-        catch (err) { alert(friendly(err)); }
-      }
-    };
-  }
-
-  function memberForm() {
-    openForm({
-      title: 'Add family member',
-      intro: 'They sign in with this email address. Nothing is sent until they ask for a sign-in link on the Home Hub page.',
-      fields: [
-        { name: 'name', label: 'Name', type: 'text', required: true },
-        { name: 'email', label: 'Email', type: 'email', required: true },
-        { name: 'role', label: 'Role', type: 'select', value: 'member',
-          options: [['member', 'Member: can edit projects and contractors'], ['admin', 'Admin: can also manage this list']] },
-      ],
-      submitLabel: 'Add',
-      async onSubmit(v) {
-        await api.addMember({ name: v.name, email: v.email.toLowerCase(), role: v.role });
-        toast(`${firstName(v.name)} can now sign in`);
-        route();
-      },
-    });
   }
 
   // ============================================
@@ -1287,5 +633,24 @@
     window.addEventListener('hashchange', route);
   }
 
-  boot();
+  // What page modules get. See MODULES & SCHEMA VERSION above for register().
+  window.HomeHub = Object.freeze({
+    register,
+    core: Object.freeze({
+      G, esc, cfg, detailDialog, formDialog,
+      get sb() { return sb; },
+      get me() { return me; },
+      get schemaVersion() { return schemaVersion; },
+      data, api, q,
+      $, clone, firstName, slug, uniqueKey, allTasks, stamp, webHref, telHref, nextMonday, randomToken, toast, friendly,
+      resolvedSchedule, contractorFor, reachable, contactFor, shareLink, safeModel,
+      openForm, wireFormDialog,
+      phoneDigits, smsHref, whatsappHref, mailtoHref, signOff, messageDialog,
+      route, stale, use,
+    }),
+  });
+
+  // The page modules load after this file: start once the page has been parsed, so they have all registered.
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
+  else boot();
 })();
