@@ -732,6 +732,45 @@ const emailOf = (req) => {
     ]) && (await text(page, '.today-sec[aria-label="Projects today"] .sec-count')) === '2', JSON.stringify(overlap));
   await page.context().close();
 
+  // =====================================================================
+  // 9c. One person's day lists the project jobs they're on that start today (as their morning email
+  //     does): not jobs already under way, done ones, or jobs in an idea / on-hold / done project.
+  //     Everyone's day leaves jobs to "Projects today".
+  // =====================================================================
+  db = todayDb();
+  db.agenda = db.agenda.filter((x) => x.kind !== 'project').concat([
+    job('Cabinets on order (≈6 weeks)', '2026-10-12', '2026-11-20'),
+    job('Countertop template & install', TODAY, '2026-10-30'),
+    job('Electrical inspection', TODAY, TODAY, PAT),
+    job('Haul away the old cabinets', TODAY, TODAY, { status: 'done' }),
+    job('Blow out sprinkler lines', TODAY, TODAY, { item_id: 'p-sprinkler', project_id: 'p-sprinkler', project_name: 'Sprinkler winterization' }),
+    job('Tile delivery', TODAY, TODAY, { responsible_id: ID.sam }),
+  ]);
+  ({ page } = await open({ label: 'jobs-in-day', db }));
+  const myDay = await titles(page, 'day');
+  check('your day: the jobs you\'re on that start today, after the events and before the tasks; not one under way, a done one, an idea project\'s or someone else\'s',
+    same(myDay, ['Grandma visiting', 'School run', 'Countertop template & install', 'Electrical inspection', 'Call the plumber', 'Heartworm pill']), JSON.stringify(myDay));
+  check('your day: the count includes them, and there is no "Nothing for you today"',
+    (await tc(page, '.today-sec[aria-label="Your day"] .sec-head')) === 'Your day6' && !(await page.$('.today-empty')), await tc(page, '.today-sec[aria-label="Your day"] .sec-head'));
+  const jobRow = page.locator('[data-list="day"] .irow', { hasText: 'Electrical inspection' });
+  check('your day: a job row names its project and contractor, has a call link and no checkbox',
+    /Kitchen Renovation · Pat Lee/.test(await jobRow.innerText()) && (await jobRow.locator('.irow-call').count()) === 1 && (await jobRow.locator('.irow-check').count()) === 0,
+    await jobRow.innerText());
+  await jobRow.locator('.irow-main').click();
+  await page.waitForTimeout(200);
+  check('your day: tapping a job opens its project', (await page.evaluate(() => location.hash)) === '#/projects/p-kitchen', await page.evaluate(() => location.hash));
+  await go(page, '#/');
+  await chip(page, 'Sam').click();
+  await page.waitForTimeout(100);
+  check('someone else\'s day: their job starting today', (await titles(page, 'day')).includes('Tile delivery') && !(await titles(page, 'day')).includes('Electrical inspection'),
+    JSON.stringify(await titles(page, 'day')));
+  await page.locator('.today-chips [data-view="all"]').click();
+  await page.waitForTimeout(100);
+  const allDay = await titles(page, 'day');
+  check('everyone\'s day: no job rows (they\'re in "Projects today")', !allDay.some((t) => /Countertop|Electrical|Tile delivery/.test(t))
+    && (await page.$('.today-sec[aria-label="Projects today"]')) !== null, JSON.stringify(allDay));
+  await page.context().close();
+
   // Left open overnight: looked at again, it moves on to the household's new day.
   ({ page, db, log } = await open({ label: 'left-open' }));
   const shown = () => page.evaluate(() => {

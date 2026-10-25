@@ -319,9 +319,9 @@
     </section>`;
   }
 
-  // Events first (all-day, then by time), then tasks (by time, then the rest; done ones last).
+  // Events first (all-day, then by time), then project jobs, then tasks (by time, then the rest; done ones last).
   function dayOrder(a, b) {
-    const rank = (it) => (it.kind === 'event' ? (it.local_start ? 1 : 0) : it.status === 'open' ? 2 : 3);
+    const rank = (it) => (it.kind === 'event' ? (it.local_start ? 1 : 0) : it.kind === 'project' ? 2 : it.status === 'open' ? 3 : 4);
     // 'HH:MM:SS' sorts as text; no time goes last.
     const time = (it) => it.local_start || '99';
     return rank(a) - rank(b) || (time(a) < time(b) ? -1 : time(a) > time(b) ? 1 : 0) || String(a.title).localeCompare(String(b.title));
@@ -416,8 +416,13 @@
     // Everyone's view leaves out what nobody is on when "Nobody's on it" lists it.
     const shown = (it) => (focus ? involves(it, focus) : !(showNobody && unassigned(it)));
     const dayKinds = (it) => (it.kind === 'event' || it.kind === 'task') && it.status !== 'cancelled';
+    // One person's day also lists the project jobs they're on that start today, as their morning
+    // email does (private.person_items); Everyone's day leaves jobs to "Projects today".
+    const projectById = new Map(d.projects.map((p) => [p.id, p]));
+    const jobStarting = (it) => it.kind === 'project' && it.status !== 'done' && it.day === d.today
+      && !(projectById.has(it.project_id) && !liveProject(projectById.get(it.project_id).status));
 
-    const dayItems = d.agenda.filter((it) => dayKinds(it) && shown(it)).sort(dayOrder);
+    const dayItems = d.agenda.filter((it) => (dayKinds(it) || (focus && jobStarting(it))) && shown(it)).sort(dayOrder);
     const late = d.late.filter(shown);
     const heads = d.heads.filter((it) => (it.kind === 'contract' ? household : !focus || involves(it, focus)));
     const nobody = showNobody
