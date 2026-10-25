@@ -86,6 +86,15 @@ Paste API keys only into Resend and Supabase, never into this repository or a ch
 
 The **Text** and **WhatsApp** buttons use your own phone, so they need no setup and cost nothing. Having the hub send texts *on its own* is a different matter: for example, an automatic reminder the day before a contractor arrives. In the US that requires a messaging provider such as Twilio, with your number registered under the A2P 10DLC rules. WhatsApp would require Meta's Business Platform, with pre-approved message templates and per-message fees. Neither is set up.
 
+## Working on the hub with Claude Code
+
+Claude Code sessions on this repo reach the home-hub Supabase project through [`.mcp.json`](.mcp.json), separately from the Supabase connector in claude.ai, so that connector can stay on another organization. The connection needs, in the cloud environment's settings:
+
+- A secret `SUPABASE_ACCESS_TOKEN`: a Supabase *scoped* access token limited to the home-hub project (Account → Access Tokens). Don't use a classic token: it reaches every organization on the account.
+- `mcp.supabase.com` and `api.supabase.com` under **Network access → Allowed domains**.
+
+Never commit the token.
+
 ## Files
 
 | File | What it is |
@@ -98,3 +107,4 @@ The **Text** and **WhatsApp** buttons use your own phone, so they need no setup 
 | `supabase/schema.sql` | Tables, security rules and functions |
 | `supabase/functions/send-email/` | Edge Function that sends email through Resend |
 | `supabase/email-templates/` | The sign-in email, for Supabase's email templates |
+| `.mcp.json`, `.claude/settings.json` | Supabase access for Claude Code sessions (token comes from the environment) |
