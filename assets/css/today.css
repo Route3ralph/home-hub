@@ -1,0 +1,101 @@
+/* Home Hub v2: styles for the today page (assets/modules/today.js). Shared pieces are in styles.css. */
+
+/* ---------- Head: the date and the greeting (Add is in the top bar, or the bottom bar's ＋ on phones) ---------- */
+.today-head { margin-bottom: 10px; }
+
+/* ---------- Person chips: Me · each person · Everyone ---------- */
+.today-chips { display: flex; flex-wrap: wrap; gap: 8px; padding: 4px 2px 6px; }
+.today-all { --pc: var(--accent); }
+.today-all-dot { box-shadow: inset 0 0 0 2px var(--surface); }
+/* Phones: one row that scrolls sideways inside itself (never the page), edge to edge. */
+@media (max-width: 640px) {
+  .today-chips {
+    flex-wrap: nowrap; overflow-x: auto; overscroll-behavior-x: contain;
+    margin: 0 -16px; padding: 6px 16px 8px; scrollbar-width: none;
+  }
+  .today-chips::-webkit-scrollbar { display: none; }
+  .today-chips .pchip { flex: none; }
+}
+
+/* ---------- Sections: the person's day, Late and Heads-up; on wide screens the household side ---------- */
+.today-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0 28px; max-width: 760px; }
+@media (min-width: 961px) {
+  .today-grid.has-side { grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); align-items: start; max-width: none; }
+}
+.today-col { min-width: 0; }
+.today-sec { min-width: 0; }
+.today-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 2px 12px;
+}
+.today-card.irows { padding: 0 12px 0 8px; }
+@media (max-width: 640px) { .today-card.irows { padding: 0 6px 0 4px; } }
+.today-empty { padding: 14px 16px; }
+.today-note { margin: 0; color: var(--text-3); font-size: 14px; }
+.today-more {
+  display: inline-flex; align-items: center; min-height: 44px; padding: 0 4px;
+  font-size: 14px; font-weight: 600;
+}
+.today-take { flex: none; min-height: 44px; margin-left: 2px; white-space: nowrap; }
+
+/* ---------- "Which one is you?" ---------- */
+.today-who { margin-bottom: 12px; }
+section.today-who { padding: 14px 16px 16px; }
+.today-who h2 { margin: 0 0 4px; font-size: 17px; font-weight: 650; }
+.today-who .who-chips { margin-top: 8px; }
+.today-who-actions { display: flex; justify-content: flex-end; margin-top: 10px; }
+.today-who-actions .btn { min-height: 44px; }
+
+/* ---------- Send their day ---------- */
+.today-send { list-style: none; margin: 0; padding: 0; }
+.today-send li { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+.today-send li:last-child { border-bottom: 0; }
+.today-send-who { display: flex; align-items: center; gap: 8px; flex: 1 1 160px; min-width: 0; overflow-wrap: anywhere; }
+.today-send-btns { display: flex; gap: 8px; flex-wrap: wrap; }
+.today-send-btns .btn { min-height: 44px; min-width: 44px; justify-content: center; }
+.today-preview { flex: 1 1 100%; color: var(--text-3); font-size: 13px; }
+.today-preview summary { display: inline-flex; align-items: center; min-height: 44px; cursor: pointer; }
+.today-preview pre {
+  margin: 0 0 4px; padding: 10px 12px; border-radius: 10px; background: var(--surface-2); color: var(--text-2);
+  font: inherit; font-size: 14px; white-space: pre-wrap; overflow-wrap: anywhere;
+}
+
+/* ---------- Projects today: one line per project ---------- */
+.today-projects { list-style: none; margin: 0; padding: 0; }
+.today-projects li { display: flex; align-items: center; gap: 4px; border-bottom: 1px solid var(--line); }
+.today-projects li:last-child { border-bottom: 0; }
+.today-proj {
+  flex: 1; min-width: 0; min-height: 44px; display: block; padding: 11px 4px; line-height: 22px;
+  border-radius: 8px; color: var(--text); text-decoration: none; overflow-wrap: anywhere;
+}
+.today-proj:hover, .today-proj:focus-visible { background: var(--surface-2); outline: none; }
+.today-proj b { margin-right: 4px; font-weight: 650; }
+.today-proj-line, .today-proj-jobs { display: block; }
+.today-proj-jobs { color: var(--text-3); font-size: 13px; line-height: 18px; }
+.today-proj-count { white-space: nowrap; } /* "4 in progress" stays together; the line breaks at a "·" */
+.today-call { flex: none; display: grid; place-items: center; width: 44px; height: 44px; border-radius: 50%; color: var(--accent); }
+.today-call:hover, .today-call:focus-visible { background: var(--accent-soft); outline: none; }
+.today-call svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linejoin: round; }
+
+/* ---------- First-run checklist ---------- */
+.today-setup { margin-top: 22px; padding: 14px 16px 10px; }
+.today-setup-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.today-setup h2 { margin: 0; font-size: 17px; font-weight: 650; }
+.today-steps { list-style: none; margin: 8px 0 4px; padding: 0; }
+.today-steps li { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.today-steps li:last-child { border-bottom: 0; }
+.today-step-mark {
+  flex: none; display: grid; place-items: center; width: 26px; height: 26px; border-radius: 50%;
+  border: 2px solid var(--border); background: var(--surface);
+}
+.today-step-mark svg { width: 16px; height: 16px; fill: none; stroke: var(--surface); stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
+.today-steps li.is-done .today-step-mark { background: var(--accent); border-color: var(--accent); }
+.today-steps li.is-done .today-step-text b { color: var(--text-3); font-weight: 550; text-decoration: line-through; }
+.today-step-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.today-step-text b, .today-step-text small { display: block; }
+.today-step-text small { color: var(--text-3); font-size: 13px; }
+.today-steps .btn { flex: none; min-height: 44px; }
+.today-hide { display: inline-flex; align-items: center; min-height: 44px; }

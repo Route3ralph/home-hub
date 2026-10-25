@@ -12,6 +12,8 @@ select test.is((select string_agg(name || ':' || role || ':' || color || ':' || 
                 from people where email in ('alex@example.com', 'sam@example.com')),
                'Alex:parent:#9333ea:0 Sam:adult:#2563eb:1', 'members became people (admin → parent, member → adult), with colours in order');
 select test.is((select email_verified_at from people where name = 'Alex'), null, 'seeded people start with an unconfirmed email');
+select test.is((select count(*) from people_confirm c join people p on p.id = c.person_id where p.name in ('Alex', 'Sam')), 2::bigint,
+               '... and each has a confirmation secret');
 select test.is((select count(*) || ' ' || tz || ' ' || digest_time from household group by tz, digest_time),
                '1 America/New_York 06:30:00', 'one household row with the defaults');
 select test.throws($$insert into household (id) values (false)$$, 'violates check constraint', 'household has only one row');
@@ -46,8 +48,8 @@ select test.is((select string_agg(c.relname, ', ') from pg_class c
                null, 'every public table has row-level security');
 select test.is((select string_agg(p.proname, ', ' order by p.proname) from pg_proc p
                 where p.pronamespace = 'public'::regnamespace and has_function_privilege('anon', p.oid, 'execute')),
-               'complete_by_token, confirm_digest, get_person_day, get_shared_project, stop_digest',
-               'anon can execute only get_shared_project and the four token functions');
+               'complete_by_token, confirm_digest, get_person_day, get_shared_project, stop_digest, undo_by_token',
+               'anon can execute only get_shared_project and the five token functions');
 select test.is(has_schema_privilege('anon', 'private', 'usage'), false, 'anon cannot use the private schema');
 select test.is((select string_agg(n.nspname || '.' || p.proname, ', ') from pg_proc p join pg_namespace n on n.oid = p.pronamespace
                 where n.nspname in ('public', 'private') and not coalesce(p.proconfig, '{}') @> '{"search_path=\"\""}'),
@@ -55,12 +57,15 @@ select test.is((select string_agg(n.nspname || '.' || p.proname, ', ') from pg_p
 select test.is((select string_agg(p.proname, ', ' order by p.proname) from pg_proc p
                 where p.pronamespace = 'public'::regnamespace and p.prosecdef),
                'complete_by_token, complete_task, confirm_digest, get_person_day, get_shared_project, hook_family_only_signup, '
-               'remove_person, rotate_day_token, save_person, skip_task, stop_digest, undo_task',
+               'mark_signed_in, remove_person, rotate_day_token, save_person, skip_task, stop_digest, undo_by_token, undo_task',
                'the only definer functions in public are the RPCs that check membership, admin or a token');
 select test.is((select string_agg(p.proname, ', ' order by p.proname) from pg_proc p
                 where p.pronamespace = 'private'::regnamespace and has_function_privilege('authenticated', p.oid, 'execute')
-                  and p.proname in ('complete_task', 'person_by_token', 'my_day_item', 'digest_item')),
+                  and p.proname in ('complete_task', 'undo_task', 'roll_task', 'person_by_token', 'my_day_item', 'digest_item', 'people_confirm_sync')),
                null, 'members cannot call the private helpers that act for someone else');
+select test.is((select string_agg(r, ', ' order by r) from unnest(array['anon', 'authenticated', 'service_role']) r
+                where has_table_privilege(r, 'public.people_confirm', 'insert, update, delete, truncate, references, trigger')),
+               null, 'nobody but the owner can write confirmation secrets');
 
 -- ---------------------------------------------------------------------
 -- Tables: what each role can do (rows seen or changed, or denied)
@@ -81,6 +86,8 @@ insert into test.samples (tbl, ins, upd) values
                          $$update public.household set days_off = days_off$$),
   ('people',             $$insert into public.people (name, role) values ('Robin', 'kid')$$,
                          $$update public.people set name = name$$),
+  ('people_confirm',     $$insert into public.people_confirm (person_id) values (test.person('Taylor'))$$,
+                         $$update public.people_confirm set token = token$$),
   ('events',             $$insert into public.events (title, start_date) values ('Dentist', '2026-11-03')$$,
                          $$update public.events set title = title$$),
   ('event_changes',      $$insert into public.event_changes (event_id, on_date, cancelled) values (test.event('Piano'), '2026-11-16', true)$$,
@@ -104,6 +111,7 @@ insert into test.samples (tbl, ins, upd) values
 :as_anon
 select test.matrix('anon', 'household',          'rows:0', 'denied', 'rows:0', 'rows:0');
 select test.matrix('anon', 'people',             'rows:0', 'denied', 'rows:0', 'rows:0');
+select test.matrix('anon', 'people_confirm',     'denied', 'denied', 'denied', 'denied');
 select test.matrix('anon', 'events',             'rows:0', 'denied', 'rows:0', 'rows:0');
 select test.matrix('anon', 'event_changes',      'rows:0', 'denied', 'rows:0', 'rows:0');
 select test.matrix('anon', 'tasks',              'rows:0', 'denied', 'rows:0', 'rows:0');
@@ -117,6 +125,7 @@ select test.matrix('anon', 'job_runs',           'rows:0', 'denied', 'rows:0', '
 :as_stranger
 select test.matrix('stranger', 'household',          'rows:0', 'denied', 'rows:0', 'rows:0');
 select test.matrix('stranger', 'people',             'rows:0', 'denied', 'rows:0', 'rows:0');
+select test.matrix('stranger', 'people_confirm',     'denied', 'denied', 'denied', 'denied');
 select test.matrix('stranger', 'events',             'rows:0', 'denied', 'rows:0', 'rows:0');
 select test.matrix('stranger', 'event_changes',      'rows:0', 'denied', 'rows:0', 'rows:0');
 select test.matrix('stranger', 'tasks',              'rows:0', 'denied', 'rows:0', 'rows:0');
@@ -130,6 +139,7 @@ select test.matrix('stranger', 'job_runs',           'rows:0', 'denied', 'rows:0
 :as_removed
 select test.matrix('removed', 'household',          'rows:0', 'denied', 'rows:0', 'rows:0');
 select test.matrix('removed', 'people',             'rows:0', 'denied', 'rows:0', 'rows:0');
+select test.matrix('removed', 'people_confirm',     'denied', 'denied', 'denied', 'denied');
 select test.matrix('removed', 'events',             'rows:0', 'denied', 'rows:0', 'rows:0');
 select test.matrix('removed', 'event_changes',      'rows:0', 'denied', 'rows:0', 'rows:0');
 select test.matrix('removed', 'tasks',              'rows:0', 'denied', 'rows:0', 'rows:0');
@@ -140,15 +150,17 @@ select test.matrix('removed', 'projects',           'rows:0', 'denied', 'rows:0'
 select test.matrix('removed', 'notification_log',   'rows:0', 'denied', 'rows:0', 'rows:0');
 select test.matrix('removed', 'job_runs',           'rows:0', 'denied', 'rows:0', 'rows:0');
 
--- City Water has an account number, so only an admin can change or remove it.
+-- City Water has an account number, so only an admin can change or remove it: a statement
+-- by anyone else that touches it is refused (with a reason), not quietly skipped.
 :as_adult
 select test.matrix('adult', 'household',          'rows:1', 'denied', 'rows:0', 'rows:0');
 select test.matrix('adult', 'people',             'rows:5', 'denied', 'rows:0', 'rows:0');
+select test.matrix('adult', 'people_confirm',     'denied', 'denied', 'denied', 'denied');
 select test.matrix('adult', 'events',             'rows:1', 'rows:1', 'rows:1', 'rows:1');
 select test.matrix('adult', 'event_changes',      'rows:1', 'rows:1', 'rows:1', 'rows:1');
 select test.matrix('adult', 'tasks',              'rows:2', 'rows:1', 'rows:2', 'rows:2');
 select test.matrix('adult', 'task_log',           'rows:1', 'denied', 'rows:0', 'rows:0');
-select test.matrix('adult', 'contractors',        'rows:3', 'rows:1', 'rows:2', 'rows:2');
+select test.matrix('adult', 'contractors',        'rows:3', 'rows:1', 'denied', 'denied');
 select test.matrix('adult', 'contractor_secrets', 'rows:0', 'denied', 'rows:0', 'rows:0');
 select test.matrix('adult', 'projects',           'rows:1', 'rows:1', 'rows:1', 'rows:1');
 select test.matrix('adult', 'notification_log',   'rows:0', 'denied', 'rows:0', 'rows:0');
@@ -157,6 +169,7 @@ select test.matrix('adult', 'job_runs',           'rows:0', 'denied', 'rows:0', 
 :as_admin
 select test.matrix('admin', 'household',          'rows:1', 'denied', 'rows:1', 'rows:0');
 select test.matrix('admin', 'people',             'rows:5', 'denied', 'rows:0', 'rows:0');
+select test.matrix('admin', 'people_confirm',     'denied', 'denied', 'denied', 'denied');
 select test.matrix('admin', 'events',             'rows:1', 'rows:1', 'rows:1', 'rows:1');
 select test.matrix('admin', 'event_changes',      'rows:1', 'rows:1', 'rows:1', 'rows:1');
 select test.matrix('admin', 'tasks',              'rows:2', 'rows:1', 'rows:2', 'rows:2');
@@ -167,9 +180,12 @@ select test.matrix('admin', 'projects',           'rows:1', 'rows:1', 'rows:1', 
 select test.matrix('admin', 'notification_log',   'rows:1', 'denied', 'rows:0', 'rows:0');
 select test.matrix('admin', 'job_runs',           'rows:1', 'denied', 'rows:0', 'rows:0');
 
--- hub-jobs writes the email log and job runs; account numbers are closed to it.
+-- hub-jobs writes the email log and job runs, and reads confirmation secrets; account numbers are closed to it.
 :as_service
 select test.matrix('service', 'contractor_secrets', 'denied', 'denied', 'denied', 'denied');
+select test.matrix('service', 'people_confirm',     'rows:4', 'denied', 'denied', 'denied');
+select test.is((select count(*) from people_confirm where token ~ '^[0-9a-f]{32}$'), 4::bigint,
+               'service reads each unconfirmed person''s 32-hex confirmation secret (for the email link)');
 select test.matrix('service', 'notification_log',   'rows:1', 'rows:1', 'rows:1', 'rows:1');
 select test.matrix('service', 'job_runs',           'rows:1', 'rows:1', 'rows:1', 'rows:1');
 select test.is(test.try('select * from public.people'), 'rows:5', 'service select people');
@@ -197,9 +213,11 @@ insert into rpc values
   ('save_person',        $$select save_person('{"name": "Robin", "role": "kid"}', false)$$,                 'denied', 'denied', 'denied', 'denied', 'ok',     'denied'),
   ('remove_person',      $$select remove_person(test.person('Taylor'))$$,                                   'denied', 'denied', 'denied', 'denied', 'ok',     'denied'),
   ('rotate_day_token',   $$select rotate_day_token(test.person('Taylor'))$$,                                'denied', 'denied', 'denied', 'denied', 'ok',     'denied'),
+  ('mark_signed_in',     'select mark_signed_in()',                                                         'denied', 'ok',     'ok',     'ok',     'ok',     'denied'),
   ('get_person_day',     $$select get_person_day(test.token('Taylor'))$$,                                   'ok',     'ok',     'ok',     'ok',     'ok',     'denied'),
-  ('complete_by_token',  $$select complete_by_token(test.token('Taylor'), test.task('Trash'), null)$$,      'ok',     'ok',     'ok',     'ok',     'ok',     'denied'),
-  ('confirm_digest',     $$select confirm_digest(test.token('Morgan'))$$,                                   'ok',     'ok',     'ok',     'ok',     'ok',     'denied'),
+  ('complete_by_token',  $$select complete_by_token(test.token('Taylor'), test.task('Trash'), '2026-11-02')$$, 'ok',   'ok',     'ok',     'ok',     'ok',     'denied'),
+  ('undo_by_token',      $$select undo_by_token(repeat('0', 32), gen_random_uuid())$$,                      'ok',     'ok',     'ok',     'ok',     'ok',     'denied'),
+  ('confirm_digest',     $$select confirm_digest(test.confirm_token('Morgan'))$$,                          'ok',     'ok',     'ok',     'ok',     'ok',     'denied'),
   ('stop_digest',        $$select stop_digest(test.token('Morgan'))$$,                                      'ok',     'ok',     'ok',     'ok',     'ok',     'denied'),
   ('roll_missed_tasks',  'select roll_missed_tasks()',                                                      'denied', 'denied', 'denied', 'denied', 'denied', 'ok'),
   ('email_budget_left',  'select email_budget_left()',                                                      'denied', 'denied', 'denied', 'denied', 'denied', 'ok'),
@@ -235,8 +253,11 @@ select test.ok((select count(*) from agenda('2026-11-01', '2026-11-30')) > 0, 'a
 -- Directory entries with account numbers
 -- ---------------------------------------------------------------------
 :as_adult
-select test.is(test.try($$update contractors set phone = '555-0161' where name = 'City Water'$$), 'rows:0', 'adult cannot change an entry with an account number');
-select test.is(test.try($$delete from contractors where name = 'City Water'$$), 'rows:0', 'adult cannot remove an entry with an account number');
+select test.throws($$update contractors set phone = '555-0161' where name = 'City Water'$$,
+                   'Only an admin can change City Water, because it has account details saved', 'adult cannot change an entry with an account number');
+select test.throws($$delete from contractors where name = 'City Water'$$,
+                   'Only an admin can delete City Water, because it has account details saved', 'adult cannot remove an entry with an account number');
+select test.is(test.try($$delete from contractors where name = 'City Water'$$), 'denied', '... the refusal is a permission error (42501), so a v1 page says so');
 select test.is(test.try($$update contractors set phone = '555-0151' where name = 'Rivera Music'$$), 'rows:1', 'adult can change other entries');
 select test.is((select phone from contractors where name = 'City Water'), '555-0160', 'adult still sees the entry itself');
 :as_admin

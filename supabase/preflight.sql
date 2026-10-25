@@ -5,7 +5,10 @@
 --   • The v1 baseline from schema.sql is there: tables and their columns,
 --     row-level security, policies, functions, triggers, the private schema,
 --     pgcrypto and the API roles.
---   • Nothing migration 0002 creates exists yet (it would stop half-way).
+--   • Nothing migration 0002 creates exists yet (it would stop half-way):
+--     no table, index, sequence, type or function of the same name, and none of
+--     the triggers, policies and columns it adds to the v1 tables.
+--     (tests/db/run.sh checks this list against what the migration really creates.)
 --   • There is at least one admin, who becomes the first parent.
 -- The first row is the server version, for the record.
 -- =====================================================================
@@ -47,6 +50,7 @@ with expected (n, kind, name, want) as (
     -- Not there yet: everything migration 0002 creates
     (7, 'table',     'public.household', false),
     (7, 'table',     'public.people', false),
+    (7, 'table',     'public.people_confirm', false),
     (7, 'table',     'public.events', false),
     (7, 'table',     'public.event_changes', false),
     (7, 'table',     'public.tasks', false),
@@ -55,22 +59,51 @@ with expected (n, kind, name, want) as (
     (7, 'table',     'public.notification_log', false),
     (7, 'table',     'public.job_runs', false),
     (7, 'type',      'public.agenda_item', false),
+    -- Index and sequence names share the namespace with tables, so they can clash too.
+    (7, 'relation',  'public.contractor_secrets_pkey', false),
+    (7, 'relation',  'public.event_changes_pkey', false),
+    (7, 'relation',  'public.events_pkey', false),
+    (7, 'relation',  'public.events_start_idx', false),
+    (7, 'relation',  'public.household_pkey', false),
+    (7, 'relation',  'public.job_runs_pkey', false),
+    (7, 'relation',  'public.notification_log_claimed_idx', false),
+    (7, 'relation',  'public.notification_log_person_id_local_date_kind_channel_key', false),
+    (7, 'relation',  'public.notification_log_pkey', false),
+    (7, 'relation',  'public.people_confirm_pkey', false),
+    (7, 'relation',  'public.people_confirm_token_key', false),
+    (7, 'relation',  'public.people_day_token_key', false),
+    (7, 'relation',  'public.people_email_key', false),
+    (7, 'relation',  'public.people_pkey', false),
+    (7, 'relation',  'public.task_log_pkey', false),
+    (7, 'relation',  'public.task_log_seq_seq', false),
+    (7, 'relation',  'public.task_log_task_idx', false),
+    (7, 'relation',  'public.tasks_due_idx', false),
+    (7, 'relation',  'public.tasks_pkey', false),
     (8, 'column',    'public.contractors.kind', false),
     (8, 'column',    'public.contractors.category', false),
     (8, 'column',    'public.contractors.address', false),
     (8, 'column',    'public.contractors.contract_end', false),
     (8, 'column',    'public.contractors.updated_by', false),
     (8, 'column',    'public.projects.task_dates', false),
+    (8, 'column',    'public.projects.task_dates_at', false),
     (8, 'column',    'public.projects.on_calendar', false),
     (8, 'column',    'public.projects.owner_id', false),
+    (8, 'trigger',   'public.contractors: contractors_stamp', false),
+    (8, 'trigger',   'public.contractors: contractors_guard', false),
+    (8, 'trigger',   'public.projects: projects_mark_dates_stale', false),
+    (8, 'policy',    'public.contractors: Family can see the directory', false),
+    (8, 'policy',    'public.contractors: Family adds to the directory', false),
+    (8, 'policy',    'public.contractors: Family updates the directory', false),
+    (8, 'policy',    'public.contractors: Family removes from the directory', false),
     (9, 'named',     'public: hub_schema_version clock today_local agenda late_items heads_up day_text complete_task '
                      'skip_task undo_task roll_missed_tasks save_person remove_person rotate_day_token get_person_day '
                      'complete_by_token confirm_digest stop_digest email_budget_left digest_due claim_notification '
-                     'finish_notification digest_for', false),
-    (9, 'named',     'private: now tz stamp people_email_changed events_weekdays tasks_defaults projects_mark_dates_stale '
-                     'has_secrets monday in_weekly_series add_units months_between series_after series_on_or_before '
-                     'safe_date word day_label short_date time_label task_item item_order person_items names who_text '
-                     'text_line complete_task person_by_token my_day_item digest_item', false)
+                     'finish_notification digest_for undo_by_token mark_signed_in', false),
+    (9, 'named',     'private: now tz stamp people_email_changed people_confirm_sync event_changes_in_charge events_weekdays '
+                     'tasks_defaults projects_mark_dates_stale contractors_guard has_secrets monday in_weekly_series add_units '
+                     'months_between series_after series_on_or_before safe_date word count_word day_label short_date time_label '
+                     'current_due task_item item_order person_items short_name names who_text text_line roll_task complete_task '
+                     'undo_task person_by_token my_day_item active_person active_only digest_item', false)
 ),
 found as (
   select e.n, e.kind, e.name, e.want,
@@ -80,6 +113,7 @@ found as (
            when 'extension' then exists (select 1 from pg_extension where extname = e.name)
            when 'function'  then to_regprocedure(e.name) is not null
            when 'table'     then to_regclass(e.name) is not null
+           when 'relation'  then to_regclass(e.name) is not null
            when 'type'      then to_regtype(e.name) is not null
            when 'rls'       then coalesce((select relrowsecurity from pg_class where oid = to_regclass(e.name)), false)
            when 'columns'   then not exists (

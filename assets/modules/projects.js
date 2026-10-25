@@ -1,8 +1,16 @@
 /* =====================================================================
-   HOME HUB — Projects (v1)
+   HOME HUB — Projects (v1 and v2)
    The project list and each project's page: the editable Gantt schedule,
    task details, and the task, trades, settings and share forms. Also the
-   project cards and "New project" form that the Home page uses.
+   project cards and "New project" form that the Home page (v1) uses, and
+   that Today (v2) may use: use('projects').
+   With a v2 database (core.schemaVersion >= 2) the same pages also get:
+   dates by the household's clock, never the device's; an owner and "Show
+   in Home Hub calendar" in the settings; and a Tasks card on each project
+   (the tasks table's rows for it), where a task can be ticked off, added,
+   or put on the schedule as a Gantt task. v1 mode never reaches the v2
+   code, so the v1 pages behave exactly as before. v2 styles are in
+   assets/css/projects.css.
    ===================================================================== */
 (function () {
   'use strict';
@@ -21,12 +29,62 @@
 
   let view = null;     // the Gantt view on a project page
   let current = null;  // the project row being viewed
+  let tasksLoads = 0;  // v2: numbers each read of the Tasks card, so only the newest one draws
 
   // Leaving a project page (for another page, or signing out) tears down its Gantt view.
   function destroyView() {
     if (view) view.destroy();
     view = null;
     current = null;
+  }
+
+  // ============================================
+  // V2 (schemaVersion >= 2)
+  // Dates come from the household's clock (core.v2), so the schedule's "today", the cards and the
+  // forms follow the household's calendar, never the device's. Nothing here runs in v1 mode.
+  // ============================================
+  const isV2 = () => core.schemaVersion >= 2;
+  const { v2, q } = core;
+  const householdToday = () => v2.dates.today();
+
+  // The Gantt model with the household's date as "today" (Coming up, Behind, the Today line).
+  function modelFor(p) {
+    try { return G.buildModel(resolvedSchedule(p), { today: householdToday() }); } catch (err) { return null; }
+  }
+
+  // The Monday after the household's today (a Monday gives the one after), like nextMonday().
+  const nextMondayLocal = () => v2.dates.addDays(v2.dates.mondayOf(householdToday()), 7);
+
+  // 'Oct 24, 2026': the household's date of an instant, like stamp().
+  function stampLocal(iso) {
+    const tz = (v2.household && v2.household.tz) || (v2.clock && v2.clock.tz) || 'America/New_York';
+    const d = new Date(iso);
+    return isNaN(d) ? '' : d.toLocaleDateString('en-US', { timeZone: tz, month: 'short', day: 'numeric', year: 'numeric' });
+  }
+
+  // The owner gets the project's lines in the morning email, which only parents get; with no owner
+  // every parent does. So the choices are the active parents, plus whoever owns it now.
+  function ownerOptions(ownerId) {
+    const people = v2.people().filter((x) => (x.role === 'parent' && x.active !== false) || x.id === ownerId);
+    return [['', 'No owner: every parent'], ...people.map((x) => [x.id, x.active === false ? `${x.name} (inactive)` : x.name])];
+  }
+
+  // v2 forms get the .proj-form class (44px buttons and checkboxes, in projects.css).
+  function markForm() {
+    ensureStyles();
+    const form = formDialog.querySelector('.form');
+    if (form) form.classList.add('proj-form');
+  }
+
+  // The v2 styles are in assets/css/projects.css. index.html links each page's stylesheet; if it
+  // doesn't link this one, add it here, with the same ?v= as hub.js so a release fetches it fresh.
+  function ensureStyles() {
+    if (document.querySelector('link[href*="assets/css/projects.css"]')) return;
+    const hub = document.querySelector('script[src*="assets/hub.js"]');
+    const version = hub ? (hub.getAttribute('src').split('?')[1] || '') : '';
+    document.head.appendChild(Object.assign(document.createElement('link'), {
+      rel: 'stylesheet', href: `assets/css/projects.css${version ? `?${version}` : ''}`,
+    }));
   }
 
   // ============================================
@@ -61,8 +119,10 @@
 
   // ============================================
   // PROJECT CARDS (also on the Home page)
+  // In v2 a caller may leave out M; the card then works it out by the household's date.
   // ============================================
   function projectCard(p, M) {
+    if (M === undefined && isV2()) M = modelFor(p);
     let foot;
     if (M && !M.empty) {
       const s = G.summarize(M);
@@ -88,19 +148,30 @@
     data.projects = projects;
     data.contractors = contractors;
     const groups = STATUSES.map(([key, label]) => ({ label, items: projects.filter((p) => p.status === key) })).filter((g) => g.items.length);
-    main.innerHTML = `
+    const model = isV2() ? modelFor : safeModel;
+    const html = `
       <div class="page-head">
         <div><h1>Projects</h1><p class="meta">${plural(projects.length, 'project')}</p></div>
         <div class="page-actions"><button class="btn btn-primary" data-act="new-project">+ New project</button></div>
       </div>
       ${projects.length ? groups.map((g) => `<h2 class="section-title">${esc(g.label)}</h2>
-        <div class="grid">${g.items.map((p) => projectCard(p, safeModel(p))).join('')}</div>`).join('') : emptyProjects()}`;
+        <div class="grid">${g.items.map((p) => projectCard(p, model(p))).join('')}</div>`).join('') : emptyProjects()}`;
+    main.innerHTML = isV2() ? `<div class="proj2">${html}</div>` : html;
     main.onclick = (e) => {
       if (e.target.closest('[data-act="new-project"]')) newProjectForm();
     };
   }
 
+  // v2: Today, unlike v1's Home, doesn't read the project list, so "Start from" reads it first.
   function newProjectForm() {
+    if (isV2() && !data.projects.length) {
+      api.projects().then((rows) => { data.projects = rows; openNewProjectForm(); }, (err) => toast(friendly(err), { error: true }));
+      return;
+    }
+    openNewProjectForm();
+  }
+
+  function openNewProjectForm() {
     const templates = data.projects.filter((p) => allTasks(p.schedule || {}).length);
     openForm({
       title: 'New project',
@@ -108,7 +179,7 @@
         { name: 'name', label: 'Project name', type: 'text', required: true, placeholder: 'Pool repairs' },
         { type: 'row', fields: [
           { name: 'status', label: 'Status', type: 'select', options: STATUSES, value: 'planning' },
-          { name: 'start', label: 'Start date', type: 'date', required: true, value: nextMonday() },
+          { name: 'start', label: 'Start date', type: 'date', required: true, value: isV2() ? nextMondayLocal() : nextMonday() },
         ] },
         { name: 'summary', label: 'Short description', type: 'textarea', placeholder: 'What needs doing, and why' },
         { name: 'template', label: 'Start from', type: 'select',
@@ -128,6 +199,7 @@
         location.hash = `#/projects/${encodeURIComponent(row.id)}`;
       },
     });
+    if (isV2()) markForm();
   }
 
   // ============================================
@@ -142,18 +214,32 @@
       return;
     }
     current = project;
-    main.innerHTML = '<div data-ref="head"></div><div id="gv"></div>';
+    // v2: the Tasks card sits between the heading and the schedule.
+    main.innerHTML = isV2()
+      ? '<div class="proj2"><div data-ref="head"></div><div data-ref="ptasks"></div><div id="gv"></div></div>'
+      : '<div data-ref="head"></div><div id="gv"></div>';
     renderProjectHead();
-    view = G.createView(main.querySelector('#gv'), {
+    view = G.createView(main.querySelector('#gv'), Object.assign({
       dialog: detailDialog,
       contactFor: (key) => contactFor(current, key),
       teamActions: (key) => (reachable(contractorFor(current, key)) ? `<button type="button" class="btn btn-sm" data-msg="${esc(key)}">Message</button>` : ''),
       onTaskClick: (tid, M) => openTaskDetail(tid, M),
       emptyHTML: `<div class="card empty-state"><p>This project has no tasks yet.</p>
         <button class="btn btn-primary" data-act="add-task">+ Add the first task</button></div>`,
-    });
+    }, isV2() ? {
+      today: householdToday(),
+      emptyHTML: `<div class="card empty-state"><p>Nothing on the schedule yet.</p>
+        <button class="btn btn-primary" data-act="add-task">+ Add the first schedule task</button></div>`,
+    } : {}));
     view.setSchedule(resolvedSchedule(current));
     const actions = { 'add-task': () => taskForm(null), trades: tradesForm, settings: settingsForm, share: shareDialog };
+    if (isV2()) {
+      Object.assign(actions, {
+        'ptask-add': () => openTodoForm({ project_id: current.id, onSaved: () => drawTasksCard() }),
+        'ptasks-retry': () => drawTasksCard(),
+      });
+      drawTasksCard();
+    }
     main.onclick = (e) => {
       const msg = e.target.closest('[data-msg]');
       if (msg) {
@@ -168,6 +254,7 @@
   }
 
   function renderProjectHead() {
+    if (isV2()) { renderProjectHeadV2(); return; }
     const p = current;
     $('[data-ref="head"]').innerHTML = `
       <a class="back" href="#/projects">← All projects</a>
@@ -183,6 +270,33 @@
           <button class="btn" data-act="share">Share</button>
           <button class="btn" data-act="settings">Settings</button>
           <button class="btn btn-primary" data-act="add-task">+ Task</button>
+        </div>
+      </div>`;
+  }
+
+  // v2: the same heading, by the household's date, with the owner, whether it's on the calendar, and
+  // a quiet note while the dates the calendar and the morning email use are stale (task_dates null:
+  // the core fills them in when the project is read; a schedule that can't be drawn explains itself).
+  function renderProjectHeadV2() {
+    const p = current;
+    const owner = p.owner_id ? v2.person(p.owner_id) : null;
+    const staleDates = p.task_dates === null && !!modelFor(p);
+    $('[data-ref="head"]').innerHTML = `
+      <a class="back" href="#/projects">← All projects</a>
+      <div class="page-head">
+        <div>
+          <div class="title-row"><h1>${esc(p.name)}</h1>
+            <span class="pill st-${esc(p.status)}">${esc(STATUS_LABEL[p.status] || p.status)}</span>
+            ${p.sharing_enabled ? '<span class="pill">Share link on</span>' : ''}
+            ${p.on_calendar === false ? '<span class="pill">Not on the calendar</span>' : ''}</div>
+          <p class="meta">${[p.summary ? esc(p.summary) : '', `Updated ${esc(stampLocal(p.updated_at))}`, owner ? `Owner: ${esc(owner.name)}` : ''].filter(Boolean).join(' · ')}</p>
+          ${staleDates ? '<p class="proj-stale" role="status">Dates are being refreshed for the calendar and the morning email.</p>' : ''}
+        </div>
+        <div class="page-actions">
+          <button class="btn" data-act="trades">Trades &amp; contractors</button>
+          <button class="btn" data-act="share">Share</button>
+          <button class="btn" data-act="settings">Settings</button>
+          <button class="btn btn-primary" data-act="add-task">+ Schedule task</button>
         </div>
       </div>`;
   }
@@ -204,6 +318,223 @@
     current = await api.updateProject(current.id, { schedule: next }, current.updated_at);
     refreshProject();
     if (message) toast(message);
+  }
+
+  // ============================================
+  // TASKS CARD (v2)
+  // The tasks table's open rows for this project: one-offs not yet ticked off, and repeating ones.
+  // Tick one off (complete_task, with Undo), tap one to edit it, add one with the Tasks page's form
+  // (use('tasks').openTaskForm), or put one on the schedule. Paused ones have no box: the database
+  // won't tick them off until they're turned back on (on the Tasks page).
+  // ============================================
+  const repeats = (t) => t.repeat_mode === 'schedule' || t.repeat_mode === 'after_done';
+  const alreadyDone = (err) => /^already (done|completed)$/.test((err && err.message) || '');
+  const cmp = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+  // By due date (no date last), then time (none last), then name.
+  const byDue = (a, b) => cmp(a.due_date || '9999', b.due_date || '9999') || cmp(a.due_time || '99', b.due_time || '99')
+    || String(a.title).localeCompare(String(b.title));
+
+  // The Tasks page's form, for a new task on this project or to edit one; errors show in a toast.
+  function openTodoForm(defaults) {
+    try {
+      const open = core.use('tasks').openTaskForm;
+      if (typeof open !== 'function') throw new Error("Adding tasks isn't available yet. Reload the page to get the latest version.");
+      Promise.resolve(open(defaults)).catch((err) => toast(friendly(err), { error: true }));
+    } catch (err) { toast(friendly(err), { error: true }); }
+  }
+
+  function tasksCardHTML(id, count, body) {
+    return `<section class="card ptasks" aria-labelledby="ptasks-title">
+      <div class="card-head">
+        <h2 id="ptasks-title">Tasks</h2>${count ? `<span class="sec-count">${count}</span>` : ''}
+        <span class="card-sub">To-dos for this project that aren't on the schedule</span>
+        <span class="ptasks-tools">
+          <a class="btn" href="#/tasks/project/${encodeURIComponent(id)}">On the Tasks page</a>
+          <button type="button" class="btn btn-primary" data-act="ptask-add">+ Task</button>
+        </span>
+      </div>
+      ${body}
+    </section>`;
+  }
+
+  // (Re)draw the card from the database. Resolves to the rows drawn, or null (an error, or the page
+  // was left, or a newer read is on its way).
+  async function drawTasksCard() {
+    const box = $('[data-ref="ptasks"]');
+    if (!box || !current) return null;
+    const id = current.id;
+    const seq = ++tasksLoads;
+    const gone = () => seq !== tasksLoads || !current || current.id !== id || !box.isConnected;
+    if (!box.firstElementChild) box.innerHTML = tasksCardHTML(id, 0, '<p class="empty-line ptasks-note">Loading tasks…</p>');
+    let rows;
+    try {
+      rows = (await q(core.sb.from('tasks').select('*').eq('project_id', id).is('done_at', null))) || [];
+    } catch (err) {
+      if (gone()) return null;
+      box.innerHTML = tasksCardHTML(id, 0, `<div class="ptasks-body"><p class="form-error" role="alert">Couldn't load this project's tasks. ${esc(friendly(err))}</p>
+        <button type="button" class="btn ptasks-retry" data-act="ptasks-retry">Try again</button></div>`);
+      return null;
+    }
+    if (gone()) return null;
+    rows.sort(byDue);
+    box.innerHTML = tasksCardHTML(id, rows.length, rows.length
+      ? '<div class="irows ptasks-list"></div>'
+      : '<p class="empty-line ptasks-note">No tasks for this project. Add calls, orders and errands here; put one on the schedule when it needs a trade and dates.</p>');
+    const list = box.querySelector('.ptasks-list');
+    if (list) {
+      const today = householdToday();
+      const contacts = new Map(data.contractors.map((c) => [c.id, c]));
+      rows.forEach((t) => list.appendChild(taskRow(t, today, contacts)));
+    }
+    return rows;
+  }
+
+  // One task: the shared item row (tick box, day, who, call) with a Paused badge, and "Put on the
+  // schedule" beside it (under it on phones).
+  function taskRow(t, today, contacts) {
+    const c = t.contractor_id ? contacts.get(t.contractor_id) : null;
+    const paused = t.active === false;
+    const item = {
+      kind: 'task', item_id: t.id, occurrence: t.due_date, title: t.title,
+      day: t.due_date, end_day: t.due_date, all_day: !t.due_time, start_at: null, end_at: null,
+      local_start: t.due_time || null, local_end: null, responsible_id: t.responsible_id || null, participant_ids: [],
+      status: !paused && t.due_date && t.due_date < today ? 'late' : 'open',
+      category: t.category, project_id: t.project_id, project_name: null,
+      contractor_id: t.contractor_id || null, contractor_name: c ? c.name : null, contractor_phone: c ? c.phone : null,
+      location: null, notes: null, private: !!t.private, repeating: repeats(t), changed: false, lead_days: t.lead_days || 0, milestone: false,
+    };
+    const row = v2.ui.itemRow(item, {
+      checkbox: !paused, showWho: true, showDate: true,
+      onOpen: () => openTodoForm({ task: t, onSaved: () => drawTasksCard() }),
+      onToggle: () => tickTask(t),
+    });
+    row.dataset.task = t.id;
+    if (!t.due_date) {
+      const time = row.querySelector('.irow-time');
+      time.classList.add('untimed');
+      time.innerHTML = '<span>No date</span>';
+    }
+    if (paused) {
+      let sub = row.querySelector('.irow-sub');
+      if (!sub) {
+        sub = document.createElement('span');
+        sub.className = 'irow-sub';
+        row.querySelector('.irow-main').appendChild(sub);
+      }
+      sub.insertAdjacentHTML('afterbegin', '<span class="badge">Paused</span>');
+      // Where the tick box would be, so the titles line up.
+      row.querySelector('.irow-time').insertAdjacentHTML('afterend', '<span class="ptask-nobox" aria-hidden="true"></span>');
+    }
+    const wrap = document.createElement('div');
+    wrap.className = 'ptask';
+    wrap.dataset.task = t.id;
+    wrap.innerHTML = '<div class="ptask-acts"><button type="button" class="btn ptask-sched">Put on the schedule</button></div>';
+    const b = wrap.querySelector('.ptask-sched');
+    b.setAttribute('aria-label', `Put "${t.title}" on the schedule`);
+    b.addEventListener('click', () => putOnSchedule(t));
+    wrap.prepend(row);
+    return wrap;
+  }
+
+  // Tick a task off (today), with Undo. A repeating one moves to its next date. If it throws, the
+  // shared row unticks the box and shows the error.
+  async function tickTask(t) {
+    let logId;
+    try {
+      logId = await v2.call('complete_task', { p_id: t.id, p_occurrence: t.due_date || null });
+    } catch (err) {
+      if (!alreadyDone(err)) throw err;
+      toast('Someone already ticked that off. This is the latest.');
+      drawTasksCard();
+      return;
+    }
+    const rows = await drawTasksCard();
+    const now = rows && rows.find((x) => x.id === t.id);
+    const next = repeats(t) && now && now.due_date ? ` · next ${v2.fmt.short(now.due_date)}` : '';
+    toast(`Done: ${t.title}${next}`, {
+      action: {
+        label: 'Undo',
+        async onClick() {
+          await v2.call('undo_task', { p_log_id: logId });
+          toast(`Not done: ${t.title}`);
+          drawTasksCard();
+        },
+      },
+    });
+  }
+
+  // ============================================
+  // PUT ON THE SCHEDULE (v2)
+  // A task becomes a Gantt task: name, trade (one of the project's, or a new one), working days
+  // (1 unless changed) and an optional start date. It goes at the end of the last phase, through
+  // saveSchedule like any schedule change, and only then is the task row deleted. The task's notes
+  // become the Gantt task's private notes (family only, never on the shared link).
+  // ============================================
+  function putOnSchedule(t) {
+    const s = current.schedule || {};
+    const trades = s.trades || {};
+    const keys = Object.keys(trades);
+    const phases = s.phases || [];
+    const phase = phases.length ? phases[phases.length - 1].name : 'Tasks';
+    const contact = t.contractor_id ? data.contractors.find((c) => c.id === t.contractor_id) : null;
+    const linked = contact ? keys.find((k) => trades[k].contractor_id === contact.id) : null;
+    const today = householdToday();
+    const projectStart = (s.project || {}).start || '';
+    // Its due date if that's still to come; today if the project is under way; otherwise blank, so
+    // the schedule puts it at the project's start.
+    const start = t.due_date && t.due_date >= today ? t.due_date : projectStart && projectStart <= today ? today : '';
+    openForm({
+      title: 'Put on the schedule',
+      intro: `${esc(`It goes at the end of "${phase}", and "${t.title}" comes off the task list.`)}${repeats(t) ? ' <strong>It repeats: putting it on the schedule ends the repeats.</strong>' : ''}`,
+      fields: [
+        { name: 'name', label: 'Task', type: 'text', required: true, value: t.title },
+        { type: 'row', fields: [
+          { name: 'trade', label: 'Who does it', type: 'select',
+            options: [...keys.map((k) => [k, trades[k].name]), ['__new', 'New trade…']], value: linked || keys[0] || '__new' },
+          { name: 'days', label: 'Working days', type: 'number', min: 1, required: true, value: 1 },
+        ] },
+        { name: 'newTrade', label: 'New trade name', type: 'text', required: true, placeholder: 'Handyman',
+          value: contact ? contact.category || contact.trade || '' : '', showIf: (v) => v.trade === '__new',
+          help: contact ? `Linked to ${contact.name} from the directory.` : '' },
+        { name: 'start', label: 'Start date', type: 'date', value: start, help: 'Optional. Leave blank to schedule it automatically.' },
+      ],
+      submitLabel: 'Put on the schedule',
+      async onSubmit(v) {
+        const days = Math.max(1, parseInt(v.days, 10) || 1);
+        let added = null;
+        await saveSchedule((next) => {
+          const ids = new Set(allTasks(next).map((x) => x.id));
+          const nt = { id: uniqueKey(slug(v.name), ids), name: v.name };
+          if (v.trade === '__new') {
+            const key = uniqueKey(slug(v.newTrade), new Set(Object.keys(next.trades)));
+            next.trades[key] = { name: v.newTrade, who: '', color: PALETTE[Object.keys(next.trades).length % PALETTE.length] };
+            if (contact) next.trades[key].contractor_id = contact.id;
+            nt.trade = key;
+          } else {
+            nt.trade = v.trade;
+          }
+          nt.days = days;
+          if (v.start) nt.start = v.start;
+          if (t.notes) nt.private_notes = t.notes;
+          if (!next.phases.length) next.phases.push({ name: 'Tasks', tasks: [] });
+          next.phases[next.phases.length - 1].tasks.push(nt);
+          added = nt.id;
+        });
+        // The schedule has it now; only then take it off the task list.
+        const r = view && view.model && view.model.byId.get(added);
+        const when = r ? ` · ${G.rangeLong(r)}` : '';
+        try {
+          await q(core.sb.from('tasks').delete().eq('id', t.id));
+        } catch (err) {
+          toast(`"${v.name}" is on the schedule, but couldn't come off the task list: ${friendly(err)}`, { error: true, ms: 8000 });
+          drawTasksCard();
+          return;
+        }
+        toast(`On the schedule: ${v.name}${when}`);
+        drawTasksCard();
+      },
+    });
+    markForm();
   }
 
   function wireDetailActions() {
@@ -251,7 +582,7 @@
     G.showDialog(detailDialog, G.detailHTML(M, id, {
       contact: contactFor(current, r.task.trade),
       showPrivate: true,
-      actionsHTML: `<div class="d-actions">
+      actionsHTML: `<div class="d-actions${isV2() ? ' proj-d' : ''}">
         <button type="button" class="btn btn-primary" data-task-act="edit" data-tid="${esc(id)}">Edit task</button>
         ${quick}
         ${message}
@@ -365,6 +696,7 @@
         }, isNew ? 'Task added' : 'Task saved');
       },
     });
+    if (isV2()) markForm();
   }
 
   function tradesForm() {
@@ -372,7 +704,9 @@
     if (detailDialog.open) detailDialog.close();
     const s = current.schedule;
     const used = new Set(allTasks(s).map((t) => t.trade));
-    const contractorOptions = (selected) => `<option value="">No contractor linked</option>${data.contractors.map((c) =>
+    // v2: the directory also holds accounts and emergency numbers; trades link contractors and services.
+    const linkable = (c, selected) => !isV2() || c.id === selected || !c.kind || c.kind === 'contractor' || c.kind === 'service';
+    const contractorOptions = (selected) => `<option value="">No contractor linked</option>${data.contractors.filter((c) => linkable(c, selected)).map((c) =>
       `<option value="${esc(c.id)}"${c.id === selected ? ' selected' : ''}>${esc([c.name, c.company].filter(Boolean).join(', '))}${c.trade ? ` (${esc(c.trade)})` : ''}</option>`).join('')}`;
     const row = (key, t) => `<div class="trade-row" data-key="${esc(key)}">
       <input type="color" name="color" value="${esc(t.color || PALETTE[0])}" aria-label="Color">
@@ -382,9 +716,9 @@
       <input type="text" class="who" name="who" value="${esc(t.who || '')}" placeholder="Who, if they're not in your contractor list" aria-label="Who"${t.contractor_id ? ' hidden' : ''}>
     </div>`;
 
-    formDialog.innerHTML = `<form class="form d-inner">
+    formDialog.innerHTML = `<form class="form d-inner${isV2() ? ' proj-form' : ''}">
       <div class="d-top"><h3>Trades &amp; contractors</h3><button type="button" class="d-close" data-close aria-label="Close">×</button></div>
-      <p class="meta">Link each trade to someone in your <a href="#/contractors">contractor directory</a>. The family sees their phone and email here; the shared link shows only their name and company.</p>
+      <p class="meta">Link each trade to someone in your <a href="${isV2() ? '#/directory' : '#/contractors'}">contractor directory</a>. The family sees their phone and email here; the shared link shows only their name and company.</p>
       <div class="trade-rows">${Object.entries(s.trades || {}).map(([k, t]) => row(k, t)).join('')}</div>
       <div><button type="button" class="btn btn-sm" data-add>+ Add trade</button></div>
       <p class="form-error" hidden></p>
@@ -447,6 +781,12 @@
           { name: 'start', label: 'Start date', type: 'date', required: true, value: (s.project || {}).start },
         ] },
         { name: 'summary', label: 'Short description', type: 'textarea', value: p.summary },
+        // v2: who gets the project's lines in the morning email, and whether its tasks show on the calendar.
+        ...(isV2() ? [
+          { name: 'owner_id', label: 'Owner', type: 'select', options: ownerOptions(p.owner_id), value: p.owner_id || '',
+            help: "Gets this project's lines in the morning email. With no owner, every parent gets them." },
+          { name: 'on_calendar', label: 'Show in Home Hub calendar', type: 'checkbox', value: p.on_calendar !== false },
+        ] : []),
         ...phases.map((ph, i) => ({ name: `phase_${i}`, label: `Phase ${i + 1} name`, type: 'text', required: true, value: ph.name })),
         { name: 'holidays', label: 'Days off (no work)', type: 'textarea', value: ((s.project || {}).holidays || []).join('\n'),
           help: 'One date per line, like 2026-12-25. Weekends are already skipped.' },
@@ -470,11 +810,20 @@
         next.project = Object.assign({}, next.project, { start: v.start, holidays });
         (next.phases || []).forEach((ph, i) => { ph.name = v[`phase_${i}`]; });
         G.buildModel(next);
-        current = await api.updateProject(p.id, { name: v.name, status: v.status, summary: v.summary || null, schedule: next }, p.updated_at);
+        const patch = { name: v.name, status: v.status, summary: v.summary || null, schedule: next };
+        if (isV2()) Object.assign(patch, { owner_id: v.owner_id || null, on_calendar: !!v.on_calendar });
+        try {
+          current = await api.updateProject(p.id, patch, p.updated_at);
+        } catch (err) {
+          // v2: the owner was removed from Family while the form was open.
+          if (isV2() && err && err.code === '23503') throw new Error('That person was removed a moment ago. Reload the page and pick the owner again.');
+          throw err;
+        }
         refreshProject();
         toast('Settings saved');
       },
     });
+    if (isV2()) markForm();
   }
 
   function shareDialog() {
@@ -482,7 +831,7 @@
     if (detailDialog.open) detailDialog.close();
     const p = current;
     const link = shareLink(p);
-    formDialog.innerHTML = `<div class="form d-inner">
+    formDialog.innerHTML = `<div class="form d-inner${isV2() ? ' proj-form' : ''}">
       <div class="d-top"><h3>Share with contractors</h3><button type="button" class="d-close" data-close aria-label="Close">×</button></div>
       <p class="meta">Anyone with the link can see this project's schedule: dates, tasks, trades, and contractor names and companies. Phone numbers, emails and private notes are never shown.</p>
       ${p.sharing_enabled ? `
@@ -524,8 +873,10 @@
 
   HomeHub.register({
     name: 'projects',
-    schema: { min: 1, max: 1 },
-    nav: { label: 'Projects', order: 20 },
+    schema: { min: 1, max: 99 },
+    // After Home in v1; after Today, Calendar and Tasks in v2. The core reads the order once it
+    // knows the database's schema version.
+    nav: { label: 'Projects', get order() { return isV2() ? 40 : 20; } },
     // #/projects, #/projects/<id>, #/projects/<id>/task/<task id>
     match: (parts) => {
       if (parts[0] !== 'projects') return null;
@@ -533,6 +884,7 @@
     },
     render(main, ctx) {
       ctx.signal.addEventListener('abort', destroyView);
+      if (isV2()) ensureStyles();
       return ctx.params.id ? renderProject(main, ctx.seq, ctx.params.id, ctx.params.task) : renderProjects(main, ctx.seq);
     },
     provides: { projectCard, emptyProjects, newProjectForm },

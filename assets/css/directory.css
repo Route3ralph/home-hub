@@ -1,0 +1,113 @@
+/* =====================================================================
+   Home Hub v2: styles for the directory page (assets/modules/directory.js).
+   Shared pieces (cards, pills, badges, dialogs, forms) are in styles.css.
+   Colours come from its variables, so light and dark both work. Every tap
+   target is at least 44px, and nothing scrolls the page sideways at 390px.
+   ===================================================================== */
+
+/* ---------- Head and kind filter: All · Contractors · Accounts & utilities · Services · Emergency ---------- */
+.dir-head { margin-bottom: 10px; }
+.dir-add { min-height: 48px; padding: 10px 18px; border-radius: 12px; font-size: 16px; }
+.dir-add svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; }
+.dir-kinds { display: flex; flex-wrap: wrap; gap: 8px; padding: 4px 2px 10px; }
+.dir-chip {
+  display: inline-flex; align-items: center; gap: 8px;
+  min-height: 44px; padding: 0 16px;
+  border: 1.5px solid var(--border); border-radius: 999px;
+  background: var(--surface); color: var(--text);
+  font-size: 15px; font-weight: 550; white-space: nowrap; cursor: pointer;
+}
+.dir-chip:hover { border-color: var(--text-3); }
+.dir-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.dir-chip .n { color: var(--text-3); font-size: 13px; font-variant-numeric: tabular-nums; }
+.dir-chip[aria-pressed="true"] { background: var(--text); border-color: var(--text); color: var(--surface); }
+.dir-chip[aria-pressed="true"] .n { color: inherit; opacity: 0.7; }
+.dir-searchbar input { min-height: 44px; }
+/* Phones: one row of chips that scrolls sideways inside itself (never the page), edge to edge. */
+@media (max-width: 640px) {
+  .dir-head h1 { margin-bottom: 0; }
+  .dir-add { min-height: 44px; padding: 8px 14px; font-size: 15px; }
+  .dir-kinds {
+    flex-wrap: nowrap; overflow-x: auto; overscroll-behavior-x: contain;
+    margin: 0 -16px; padding: 6px 16px 10px; scrollbar-width: none;
+  }
+  .dir-kinds::-webkit-scrollbar { display: none; }
+  .dir-chip { flex: none; }
+}
+
+/* ---------- Sections (the All view groups by kind) and cards ---------- */
+.dir-sec .sec-head { margin-top: 18px; }
+.dir-sec:first-child .sec-head { margin-top: 6px; }
+.dir-grid { grid-template-columns: repeat(auto-fill, minmax(min(100%, 330px), 1fr)); min-width: 0; }
+.dir-card { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.dir-card.is-target { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 30%, transparent); }
+.dir-title { min-width: 0; }
+.dir-card h3 { overflow-wrap: anywhere; }
+.dir-card h3:focus { outline: none; }
+.dir-sub { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin-top: 2px; }
+.dir-card .company { min-width: 0; overflow-wrap: anywhere; }
+.dir-pill { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.dir-edit { flex: none; margin: -4px -6px 0 0; }
+.dir-pill.k-account { background: var(--accent-soft); color: var(--accent); }
+.dir-pill.k-emergency { background: var(--danger-soft); color: var(--danger); }
+
+/* How to reach them: each line is a 44px link; the phone line adds Text and WhatsApp. */
+.dir-lines { display: grid; margin: 4px -6px 0; }
+.dir-line { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; }
+.dir-link {
+  display: flex; align-items: center; gap: 10px;
+  min-height: 44px; min-width: 0; padding: 4px 6px;
+  border-radius: 8px; color: var(--accent); font-size: 15px; text-decoration: none;
+}
+.dir-link span { min-width: 0; overflow-wrap: anywhere; }
+.dir-phone .dir-link { flex: 1 1 140px; font-variant-numeric: tabular-nums; font-weight: 600; }
+.dir-link:hover, .dir-link:focus-visible { background: var(--accent-soft); outline: none; }
+.dir-link svg { flex: none; width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
+.dir-btn { min-height: 44px; min-width: 44px; justify-content: center; }
+.dir-phone .dir-btn { flex: none; }
+
+/* Contract or promo end, with a badge from 30 days before. */
+.dir-end { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin: 4px 0 0; color: var(--text-2); font-size: 14px; }
+.badge.dir-near { background: var(--warn-soft); color: var(--warn); }
+.badge.dir-soon, .badge.dir-ended { background: var(--danger-soft); color: var(--danger); }
+.dir-card .dir-notes { margin-top: 4px; overflow-wrap: anywhere; }
+
+/* Account details (admins): masked until Show. */
+.dir-account {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px;
+  margin-top: 6px; padding: 2px 4px 2px 10px;
+  border-radius: 10px; background: var(--surface-2); color: var(--text-2); font-size: 14px;
+}
+.dir-acct-icon svg { display: block; width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
+/* The number stays on one line; when there's no room beside it, the buttons go below. */
+.dir-acct-text { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.dir-acct-num { color: var(--text); font-weight: 650; letter-spacing: 0.03em; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.dir-acct-btns { display: flex; flex: none; gap: 6px; margin-left: auto; }
+.dir-account .dir-btn { flex: none; background: var(--surface); }
+.dir-acct-more { flex: 1 1 100%; padding: 0 0 8px; color: var(--text-2); white-space: pre-line; overflow-wrap: anywhere; }
+
+/* "On: Kitchen Renovation (Electrician)": each project link is a 44px target. */
+.dir-used { display: flex; flex-wrap: wrap; align-items: center; gap: 0 6px; color: var(--text-3); font-size: 13px; }
+.dir-use a { display: inline-flex; align-items: center; min-height: 44px; font-size: 14px; font-weight: 600; }
+
+.dir-empty .dir-btn { min-height: 44px; }
+.dir-none { padding: 14px 2px; }
+.dir-note { margin: 0 0 10px; }
+
+/* ---------- The add / edit form ---------- */
+dialog:has(> .dir-form) { width: min(620px, calc(100vw - 16px)); }
+.dir-form .d-close { width: 44px; height: 44px; }
+.dir-form input:not([type="checkbox"]), .dir-form select { min-height: 44px; }
+.dir-form .form-actions .btn { min-height: 44px; }
+.dir-fs { display: grid; gap: 12px; min-width: 0; margin: 0; padding: 10px 14px 14px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface-2); }
+.dir-fs legend { padding: 0 6px; color: var(--text-2); font-size: 13px; font-weight: 700; }
+.dir-fs legend small { color: var(--text-3); font-weight: 550; }
+.dir-fs input, .dir-fs textarea { background: var(--surface); }
+.dir-fs .dir-note { margin: 0; }
+.dir-secret { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.dir-secret input { flex: 1 1 200px; width: auto; min-width: 0; }
+.dir-mask { color: var(--text); font-weight: 650; letter-spacing: 0.03em; font-variant-numeric: tabular-nums; }
+.dir-help { color: var(--text-3); font-size: 12px; }
+@media (max-width: 640px) {
+  .dir-form { padding: 16px; }
+}

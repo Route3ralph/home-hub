@@ -4,45 +4,16 @@
 # tests/db/*.test.sql against its own fresh copy of that database.
 # Prints one "PASS  name" or "FAIL  name  (detail)" line per check, then the totals,
 # and exits non-zero if anything failed.
-# Needs the PostgreSQL 16 server binaries (PG_BIN overrides where they are). initdb refuses to
-# run as root, so as root the throwaway server runs as the postgres user.
+# Needs the PostgreSQL 16 server binaries (PG_BIN overrides where they are); cluster.sh starts
+# the throwaway server (as the postgres user when run as root, since initdb refuses root).
 #
 # A test file starts with "\ir roles.sql" (and "\ir fixtures.sql" for the shared v2 household),
 # switches who it runs as with lines like ":as_admin" or ":as_anon", pins the clock with
 # "set hub.now = '…'", and checks with test.is, test.ok, test.throws and test.matrix (lib.sql).
 set -u
 cd "$(dirname "$0")/../.."
-# Sessions run in UTC, as on Supabase, so timestamps print the same on any machine.
-export PGTZ=UTC
-
-PG_BIN=${PG_BIN:-$(ls -d /usr/lib/postgresql/*/bin 2>/dev/null | sort -V | tail -n 1)}
-if [[ -z $PG_BIN || ! -x $PG_BIN/initdb ]]; then
-  echo "FAIL  database tests: PostgreSQL server binaries not found (set PG_BIN)"
-  exit 1
-fi
-
-as_owner() { if [[ $(id -u) -eq 0 ]]; then runuser -u postgres -- "$@"; else "$@"; fi; }
-
-dir=$(mktemp -d)
-[[ $(id -u) -eq 0 ]] && chown postgres "$dir"
-cleanup() {
-  as_owner "$PG_BIN/pg_ctl" -D "$dir/data" -m immediate stop >/dev/null 2>&1
-  rm -rf "$dir"
-}
-trap cleanup EXIT
-
-# The server listens only on a socket in $dir; the port just has to be one nobody else is using.
-port=$((50000 + RANDOM % 10000))
-while (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null; do port=$((port + 1)); done
-
-as_owner "$PG_BIN/initdb" -D "$dir/data" -U postgres -A trust --no-sync >"$dir/initdb.log" 2>&1 \
-  || { echo "FAIL  database tests: initdb failed"; cat "$dir/initdb.log"; exit 1; }
-as_owner "$PG_BIN/pg_ctl" -D "$dir/data" -l "$dir/server.log" -w \
-  -o "-p $port -k $dir -c listen_addresses='' -c fsync=off" start >/dev/null \
-  || { echo "FAIL  database tests: Postgres didn't start"; cat "$dir/server.log"; exit 1; }
-
-sql() { "$PG_BIN/psql" -h "$dir" -p "$port" -U postgres -X -q -v ON_ERROR_STOP=1 -v VERBOSITY=terse "$@"; }
-quiet() { PGOPTIONS='-c client_min_messages=warning' sql "$@"; }
+# The throwaway server, and the sql / quiet helpers (shared with tests/contract/check.sh).
+source tests/db/cluster.sh
 
 pass=0
 fail=0
@@ -79,7 +50,73 @@ out=$(quiet -d hub_again -f supabase/migrations/0002_home_hub_v2.sql 2>&1)
 if [[ $out == *"already installed"* ]]; then report "PASS  migration 0002 refuses to run twice"
 else report "FAIL  migration 0002 refuses to run twice  (${out:0:200})"; fi
 
-# 5. Each test file gets a fresh copy, with the helpers in schema "test".
+# 5. preflight.sql's promise, "nothing migration 0002 creates exists yet", covers everything the
+#    migration creates that a live database could already have under the same name (which would
+#    stop the migration): every table, index, sequence and type name in public, every trigger,
+#    policy and column it adds to a v1 table, and every function name in public and private.
+#    The objects come from comparing the database before and after the migrations.
+objects() { # one line per object: "<kind> <name>", in preflight's spelling
+  quiet -d "$1" -A -t <<'SQL'
+select 'table public.' || c.relname from pg_class c where c.relnamespace = 'public'::regnamespace and c.relkind in ('r', 'p')
+union all
+select 'type public.' || t.typname from pg_type t
+where t.typnamespace = 'public'::regnamespace and t.typtype in ('c', 'd', 'e', 'm', 'r')
+  and (t.typrelid = 0 or (select c.relkind from pg_class c where c.oid = t.typrelid) = 'c')
+union all
+select 'relation public.' || c.relname from pg_class c where c.relnamespace = 'public'::regnamespace and c.relkind not in ('r', 'p', 'c')
+union all
+select 'trigger public.' || c.relname || ': ' || g.tgname from pg_trigger g join pg_class c on c.oid = g.tgrelid
+where c.relnamespace = 'public'::regnamespace and not g.tgisinternal
+union all
+select 'policy public.' || p.tablename || ': ' || p.policyname from pg_policies p where p.schemaname = 'public'
+union all
+select 'column public.' || c.relname || '.' || a.attname from pg_attribute a join pg_class c on c.oid = a.attrelid
+where c.relnamespace = 'public'::regnamespace and c.relkind in ('r', 'p') and a.attnum > 0 and not a.attisdropped
+union all
+select distinct 'function ' || n.nspname || '.' || p.proname from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+where n.nspname in ('public', 'private');
+SQL
+}
+objects hub_v1 | sort -u >"$dir/before.txt"
+objects hub | sort -u >"$dir/after.txt"
+# New objects; triggers, policies and columns only count on tables that were already there.
+comm -13 "$dir/before.txt" "$dir/after.txt" | while IFS= read -r line; do
+  case $line in
+    trigger*|policy*) t=${line#* }; t=${t%%: *} ;;
+    column*) t=${line#column }; t=${t%.*} ;;
+    *) echo "$line"; continue ;;
+  esac
+  grep -qxF "table $t" "$dir/before.txt" && echo "$line"
+done | sort -u >"$dir/created.txt"
+# What preflight checks is not there yet ("named" rows list function names).
+quiet -d hub_v1 -A -t -F ' | ' -f supabase/preflight.sql | sed -n 's/^\([a-z]*\) not there yet: \(.*\) | t | ok$/\1 \2/p' \
+  | while IFS= read -r line; do
+      case $line in
+        named*) s=${line#named }; for f in ${s#*: }; do echo "function ${s%%:*}.$f"; done ;;
+        *) echo "$line" ;;
+      esac
+    done | sort -u >"$dir/checked.txt"
+missing=$(comm -23 "$dir/created.txt" "$dir/checked.txt" | tr '\n' ';')
+if [[ -s $dir/created.txt && -z $missing ]]; then
+  report "PASS  preflight checks every name migration 0002 creates ($(wc -l <"$dir/created.txt") objects)"
+else report "FAIL  preflight checks every name migration 0002 creates  (not checked: ${missing:-nothing found})"; fi
+
+# 6. ... and flags one that is already there: a trigger, a policy and an index made by hand on a v1 database.
+sql -d postgres -c 'create database hub_clash template hub_v1'
+quiet -d hub_clash >/dev/null <<'SQL'
+create trigger contractors_stamp before update on public.contractors for each row execute function public.touch_updated_at();
+create policy "Family can see the directory" on public.contractors for select to authenticated using (true);
+create index tasks_due_idx on public.contractors (name);
+SQL
+got=$(quiet -d hub_clash -A -t -F ' | ' -f supabase/preflight.sql | grep ' | f | ' | sed 's/ | f | .*//' | sort | tr '\n' ';')
+want='policy not there yet: public.contractors: Family can see the directory;relation not there yet: public.tasks_due_idx;trigger not there yet: public.contractors: contractors_stamp;'
+if [[ $got == "$want" ]]; then report "PASS  preflight flags a trigger, policy or index name the migration would create"
+else report "FAIL  preflight flags a trigger, policy or index name the migration would create  (flagged: ${got:-nothing})"; fi
+out=$(quiet -d hub_clash -f supabase/migrations/0002_home_hub_v2.sql 2>&1)
+if [[ $out == *"already exists"* ]]; then report "PASS  ... which really would stop the migration"
+else report "FAIL  ... which really would stop the migration  (${out:0:200})"; fi
+
+# 7. Each test file gets a fresh copy, with the helpers in schema "test".
 quiet -d hub -f tests/db/lib.sql >/dev/null
 for f in tests/db/*.test.sql; do
   name=$(basename "$f" .test.sql)

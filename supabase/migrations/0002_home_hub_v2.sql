@@ -4,11 +4,12 @@
 -- checks that the live database matches schema.sql and has no v2 objects.
 --
 -- What it adds
---   • Tables: household, people, events, event_changes, tasks, task_log,
---     contractor_secrets, notification_log, job_runs.
+--   • Tables: household, people, people_confirm, events, event_changes, tasks,
+--     task_log, contractor_secrets, notification_log, job_runs.
 --   • contractors becomes the Directory (kind, category, address, contract
 --     end); projects gains computed task dates, a calendar switch and an owner.
---   • whoami() also returns the caller's person row.
+--   • whoami() also returns the caller's person row; mark_signed_in() confirms
+--     the caller's own email address.
 --   • Functions for the pages (agenda, late_items, heads_up, day_text), task
 --     actions, the family list, the My day page's token functions and the
 --     morning-email jobs.
@@ -19,7 +20,10 @@
 --   • Every table has row-level security gated on private.is_member(). In v2
 --     only parents and adults can sign in, so members are the grown-ups.
 --   • Kids and helpers have no login. Their My day link carries a secret
---     token; the four token functions are the only new ones anon can call.
+--     token; the five token functions are the only new ones anon can call.
+--   • Confirming the morning email takes a secret that only the confirmation
+--     email carries (people_confirm, service_role only), and nothing else: the
+--     email's link has no My day token, so a mistyped address never gets one.
 --   • Account numbers (contractor_secrets) are admins only, and revoked from
 --     anon and service_role.
 --   • created_by, updated_by and done_by come from the signed-in email,
@@ -71,7 +75,7 @@ create table public.people (
   day_token         text not null unique default encode(extensions.gen_random_bytes(16), 'hex')
                     check (day_token ~ '^[0-9a-f]{32}$'),
   digest_enabled    boolean not null default false,
-  digest_time       time,          -- null = the household's time
+  digest_time       time check (digest_time <= '23:45'),   -- null = the household's time; 11:45pm at the latest (see digest_due)
   digest_day        text not null default 'today' check (digest_day in ('today', 'tomorrow')),  -- 'tomorrow' = evening preview
   digest_scope      text not null default 'mine' check (digest_scope in ('mine', 'everyone')),
   sort_order        int not null default 0,
@@ -81,13 +85,27 @@ create table public.people (
   check (digest_scope = 'mine' or role = 'parent')
 );
 
+-- The secret in a confirmation email's link (day.html?c=<token>#confirm), and the only key
+-- confirm_digest takes. The link carries no My day token, so an email that goes to a
+-- mistyped address gives away nothing but the chance to confirm that address; and a
+-- My day link (which kids, helpers or a WhatsApp group may have) can't confirm anything.
+-- One per email address: made when the address is added or changed (the old link stops
+-- working), kept once it's used (a second tap still says "confirmed"), and gone with the
+-- address. The triggers on people keep it (private.people_confirm_sync). Only hub-jobs
+-- (service_role) can read it, to build the link.
+create table public.people_confirm (
+  person_id  uuid primary key references public.people (id) on delete cascade,
+  token      text not null unique default encode(extensions.gen_random_bytes(16), 'hex') check (token ~ '^[0-9a-f]{32}$'),
+  created_at timestamptz not null default private.now()
+);
+
 -- One row of household settings.
 create table public.household (
   id             boolean primary key default true check (id),
   tz             text not null default 'America/New_York'
                  check (tz in ('America/New_York', 'America/Chicago', 'America/Denver', 'America/Phoenix',
                                'America/Los_Angeles', 'America/Anchorage', 'Pacific/Honolulu')),
-  digest_time    time not null default '06:30',
+  digest_time    time not null default '06:30' check (digest_time <= '23:45'),
   days_off       date[] not null default '{}',   -- school holidays etc.
   pets_owner_id  uuid references public.people (id) on delete set null,
   house_owner_id uuid references public.people (id) on delete set null,
@@ -128,16 +146,23 @@ create table public.events (
 );
 
 -- One-day changes to a repeating event: cancel it, change the time, or
--- change who's on it. on_date is the occurrence's own date.
+-- change who's on it. on_date is the occurrence's own date. A null column
+-- means "as usual" (the series' time, person in charge or people along).
+-- nobody_in_charge: nobody is in charge that day. remove_person sets it when the
+-- person covering the day leaves the family list, so the day doesn't quietly go back
+-- to the usual person; a person in responsible_id always wins (and clears it).
+-- note: the day's note, for whoever is on it ("Pick up at the side door"): unlike the
+-- event's own notes it reaches their My day, day_text and morning email.
 create table public.event_changes (
-  event_id        uuid not null references public.events (id) on delete cascade,
-  on_date         date not null,
-  cancelled       boolean not null default false,
-  start_time      time,
-  end_time        time,
-  responsible_id  uuid references public.people (id) on delete set null,
-  participant_ids uuid[],
-  note            text,
+  event_id         uuid not null references public.events (id) on delete cascade,
+  on_date          date not null,
+  cancelled        boolean not null default false,
+  start_time       time,
+  end_time         time,
+  responsible_id   uuid references public.people (id) on delete set null,
+  participant_ids  uuid[],
+  nobody_in_charge boolean not null default false,
+  note             text,
   primary key (event_id, on_date)
 );
 
@@ -183,7 +208,7 @@ create table public.tasks (
 create table public.task_log (
   id             uuid primary key default gen_random_uuid(),
   task_id        uuid not null references public.tasks (id) on delete cascade,
-  occurrence     date,             -- the due date this entry is for
+  occurrence     date,             -- the due date this entry is for ("a while after it's done": the day it was done)
   status         text not null check (status in ('done', 'skipped', 'missed')),
   done_on        date,
   done_by        text,
@@ -215,12 +240,14 @@ create table public.contractor_secrets (
 );
 
 -- task_dates is the Gantt engine's output, written by the client with every
--- schedule change: [{id, name, trade, trade_name, start, end, days, status, milestone}].
+-- schedule change: [{id, name, trade, trade_name, start, end, days, status, milestone}],
+-- together with task_dates_at, the time it computed them.
 -- null = stale (see private.projects_mark_dates_stale).
 alter table public.projects
-  add column task_dates  jsonb check (task_dates is null or jsonb_typeof(task_dates) = 'array'),
-  add column on_calendar boolean not null default true,
-  add column owner_id    uuid references public.people (id) on delete set null;
+  add column task_dates    jsonb check (task_dates is null or jsonb_typeof(task_dates) = 'array'),
+  add column task_dates_at timestamptz,
+  add column on_calendar   boolean not null default true,
+  add column owner_id      uuid references public.people (id) on delete set null;
 
 -- Morning emails and confirmation emails: one row per person, day and kind.
 -- The unique key is the claim, so two job runs never send the same email.
@@ -281,7 +308,8 @@ create type public.agenda_item as (
   repeating        boolean,
   changed          boolean,     -- an event_changes row applies to this day
   lead_days        int,
-  milestone        boolean
+  milestone        boolean,
+  day_note         text         -- an event's note for this one day (event_changes.note), for whoever is on it
 );
 
 -- ---------------------------------------------------------------------
@@ -384,7 +412,61 @@ $$;
 create trigger people_email_changed before update on public.people
   for each row execute function private.people_email_changed();
 
--- A weekly event always happens on its first day's weekday.
+-- Keeps people_confirm in step with people:
+--   • a new or changed email gets a new confirmation secret (the old link stops working),
+--     and the person's earlier confirmation emails are forgotten, so one can go to the
+--     new address the same day;
+--   • turning the morning email on makes sure there is a secret (keeping one an earlier
+--     email already carries);
+--   • confirming keeps it: the link in that email then answers "already confirmed";
+--   • no address, no secret.
+-- Runs with the owner's rights: nobody else can write people_confirm.
+create function private.people_confirm_sync()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  if new.email is null then
+    delete from public.people_confirm where person_id = new.id;
+  elsif tg_op = 'INSERT' or new.email is distinct from old.email then
+    insert into public.people_confirm (person_id) values (new.id)
+    on conflict (person_id) do update set token = excluded.token, created_at = excluded.created_at;
+  elsif new.digest_enabled and not old.digest_enabled then
+    insert into public.people_confirm (person_id) values (new.id)
+    on conflict (person_id) do nothing;
+  end if;
+
+  if tg_op = 'UPDATE' and new.email is distinct from old.email then
+    delete from public.notification_log where person_id = new.id and kind = 'confirm';
+  end if;
+  return null;
+end;
+$$;
+
+create trigger people_confirm_sync after insert or update on public.people
+  for each row execute function private.people_confirm_sync();
+
+-- Someone put in charge of a changed day: that day is no longer nobody's.
+create function private.event_changes_in_charge()
+returns trigger
+language plpgsql
+set search_path = ''
+as $$
+begin
+  if new.responsible_id is not null then
+    new.nobody_in_charge := false;
+  end if;
+  return new;
+end;
+$$;
+
+create trigger event_changes_in_charge before insert or update on public.event_changes
+  for each row execute function private.event_changes_in_charge();
+
+-- A weekly event always happens on its first day's weekday; any other event
+-- has no weekdays (so switching one to "doesn't repeat" just works).
 create function private.events_weekdays()
 returns trigger
 language plpgsql
@@ -394,6 +476,8 @@ begin
   if new.repeat = 'weekly' then
     new.repeat_weekdays := array(
       select distinct w from unnest(new.repeat_weekdays || extract(isodow from new.start_date)::int) w order by w);
+  else
+    new.repeat_weekdays := '{}';
   end if;
   return new;
 end;
@@ -403,22 +487,40 @@ create trigger events_weekdays before insert or update on public.events
   for each row execute function private.events_weekdays();
 
 -- A one-off task has no repeat settings; a repeating one counts from its
--- first due date unless told otherwise.
+-- first due date unless told otherwise, and only a weekly schedule has weekdays.
+-- Someone editing a repeating task's date (or how it repeats) restarts the
+-- series from the new due date, unless the same change sets anchor_date itself:
+-- "the 1st of every month" moved to the 5th means the 5th from now on.
+-- The hub's own moves (complete, skip, undo, the daily roll) keep the anchor, so
+-- Jan 31 monthly still comes back to Mar 31 after Feb 28; they say so with
+-- set_config('hub.task_move', 'on', true) around their update.
 create function private.tasks_defaults()
 returns trigger
 language plpgsql
 set search_path = ''
 as $$
 begin
+  if not (new.repeat_mode = 'schedule' and new.every_unit = 'week') then
+    new.repeat_weekdays := '{}';
+  end if;
+  new.repeat_weekdays := array(select distinct w from unnest(new.repeat_weekdays) w order by w);
+
   if new.repeat_mode = 'none' then
     new.every_count := null;
     new.every_unit := null;
     new.anchor_date := null;
-    new.repeat_weekdays := '{}';
+  elsif tg_op = 'UPDATE'
+        and coalesce(current_setting('hub.task_move', true), '') <> 'on'
+        and new.anchor_date is not distinct from old.anchor_date
+        and (new.due_date is distinct from old.due_date
+             or new.repeat_mode is distinct from old.repeat_mode
+             or new.every_count is distinct from old.every_count
+             or new.every_unit is distinct from old.every_unit
+             or new.repeat_weekdays is distinct from old.repeat_weekdays) then
+    new.anchor_date := new.due_date;
   elsif new.anchor_date is null then
     new.anchor_date := new.due_date;
   end if;
-  new.repeat_weekdays := array(select distinct w from unnest(new.repeat_weekdays) w order by w);
   return new;
 end;
 $$;
@@ -426,15 +528,18 @@ $$;
 create trigger tasks_defaults before insert or update on public.tasks
   for each row execute function private.tasks_defaults();
 
--- The v2 client writes task_dates with every schedule change. A schedule
--- written without new task_dates (an old client) marks the dates stale.
+-- The v2 client writes task_dates and a new task_dates_at with every schedule
+-- change. A schedule written without a new task_dates_at (an old client, or
+-- one that forgot) marks the dates stale. The timestamp, not the dates, is
+-- the signal: a schedule change that leaves every date where it was still
+-- sends the same task_dates, and those are fresh.
 create function private.projects_mark_dates_stale()
 returns trigger
 language plpgsql
 set search_path = ''
 as $$
 begin
-  if new.schedule is distinct from old.schedule and new.task_dates is not distinct from old.task_dates then
+  if new.schedule is distinct from old.schedule and new.task_dates_at is not distinct from old.task_dates_at then
     new.task_dates := null;
   end if;
   return new;
@@ -443,6 +548,31 @@ $$;
 
 create trigger projects_mark_dates_stale before update on public.projects
   for each row execute function private.projects_mark_dates_stale();
+
+-- Only an admin changes or deletes a directory entry that has account details
+-- (contractor_secrets). Anyone else signed in gets a permission error with the reason.
+-- Without a signed-in email (service_role, the SQL editor) nothing is checked.
+create function private.contractors_guard()
+returns trigger
+language plpgsql
+set search_path = ''
+as $$
+begin
+  if public.current_email() = '' then
+    return case when tg_op = 'DELETE' then old else new end;
+  end if;
+  if not private.is_admin() and private.has_secrets(old.id) then
+    raise exception 'Only an admin can % %, because it has account details saved. Ask an admin to % it.',
+                    case when tg_op = 'DELETE' then 'delete' else 'change' end, old.name,
+                    case when tg_op = 'DELETE' then 'delete' else 'change' end
+      using errcode = '42501';
+  end if;
+  return case when tg_op = 'DELETE' then old else new end;
+end;
+$$;
+
+create trigger contractors_guard before update or delete on public.contractors
+  for each row execute function private.contractors_guard();
 
 -- ---------------------------------------------------------------------
 -- Row-level security
@@ -462,6 +592,7 @@ $$;
 
 alter table public.household          enable row level security;
 alter table public.people             enable row level security;
+alter table public.people_confirm     enable row level security;
 alter table public.events             enable row level security;
 alter table public.event_changes      enable row level security;
 alter table public.tasks              enable row level security;
@@ -479,6 +610,11 @@ create policy "Admins change the household" on public.household
 create policy "Family can see the family list" on public.people
   for select to authenticated using (private.is_member());
 
+-- Confirmation secrets: no policies, and no rights for anon or signed-in users.
+-- hub-jobs (service_role) only reads them, to put the link in the email.
+revoke all on public.people_confirm from public, anon, authenticated, service_role;
+grant select on public.people_confirm to service_role;
+
 create policy "Family manages events" on public.events
   for all to authenticated using (private.is_member()) with check (private.is_member());
 create policy "Family manages event changes" on public.event_changes
@@ -491,19 +627,19 @@ create policy "Family can see task history" on public.task_log
   for select to authenticated using (private.is_member());
 
 -- The Directory: members manage it, except that entries with an account
--- number can be changed or removed only by an admin.
+-- number can be changed or removed only by an admin. That part is a trigger
+-- (private.contractors_guard), not the policies: a policy would quietly skip the
+-- row, and a page (the v1 Contractors page too) would say "Contractor deleted"
+-- when nothing was. The trigger refuses, with a reason.
 drop policy "Family manages contractors" on public.contractors;
 create policy "Family can see the directory" on public.contractors
   for select to authenticated using (private.is_member());
 create policy "Family adds to the directory" on public.contractors
   for insert to authenticated with check (private.is_member());
 create policy "Family updates the directory" on public.contractors
-  for update to authenticated
-  using (private.is_member() and (private.is_admin() or not private.has_secrets(id)))
-  with check (private.is_member() and (private.is_admin() or not private.has_secrets(id)));
+  for update to authenticated using (private.is_member()) with check (private.is_member());
 create policy "Family removes from the directory" on public.contractors
-  for delete to authenticated
-  using (private.is_member() and (private.is_admin() or not private.has_secrets(id)));
+  for delete to authenticated using (private.is_member());
 
 create policy "Admins manage account numbers" on public.contractor_secrets
   for all to authenticated using (private.is_admin()) with check (private.is_admin());
@@ -680,24 +816,37 @@ as $$
   select coalesce(w -> p_lang ->> p_key, w -> 'en' ->> p_key, p_key)
   from (select '{
     "en": {
-      "today": "Today", "tomorrow": "Tomorrow", "late": "Late", "n_late": "{n} late",
+      "today": "Today", "tomorrow": "Tomorrow", "late": "Late", "n_late": "{n} late", "n_late_one": "1 late",
       "heads_up": "Heads-up", "all_day": "All day", "with": "with", "more": "+{n} more",
       "and_more": "and {n} more", "nobody": "Nobody''s on it", "projects": "Projects",
-      "their_day": "Their day", "inbox": "Inbox: {n} tasks with no date",
+      "their_day": "Their day", "inbox": "Inbox: {n} tasks with no date", "inbox_one": "Inbox: 1 task with no date",
       "nothing_planned": "Nothing planned", "private_item": "Private item", "due": "due {d}",
       "contract_ends": "contract ends {d}", "starts": "starts", "open_my_day": "Open my day",
       "send_whatsapp": "WhatsApp", "send_text": "Text", "stop_emails": "Stop these emails"
     },
     "es": {
-      "today": "Hoy", "tomorrow": "Mañana", "late": "Atrasado", "n_late": "{n} atrasadas",
+      "today": "Hoy", "tomorrow": "Mañana", "late": "Atrasado", "n_late": "{n} atrasadas", "n_late_one": "1 atrasada",
       "heads_up": "Atención", "all_day": "Todo el día", "with": "con", "more": "+{n} más",
       "and_more": "y {n} más", "nobody": "Sin responsable", "projects": "Proyectos",
-      "their_day": "Su día", "inbox": "Bandeja: {n} tareas sin fecha",
+      "their_day": "Su día", "inbox": "Bandeja: {n} tareas sin fecha", "inbox_one": "Bandeja: 1 tarea sin fecha",
       "nothing_planned": "Nada planeado", "private_item": "Asunto privado", "due": "vence {d}",
       "contract_ends": "el contrato vence {d}", "starts": "empieza", "open_my_day": "Abrir mi día",
       "send_whatsapp": "WhatsApp", "send_text": "Mensaje", "stop_emails": "No enviar más correos"
     }
   }'::jsonb as w) dictionary;
+$$;
+
+-- A word with a count in it: "1 late" / "3 late", "1 atrasada" / "3 atrasadas".
+-- Uses <key>_one for 1 when the dictionary has it.
+create function private.count_word(p_key text, p_n int, p_lang text)
+returns text
+language sql
+immutable
+set search_path = ''
+as $$
+  select replace(case when p_n = 1 and private.word(p_key || '_one', p_lang) <> p_key || '_one'
+                      then private.word(p_key || '_one', p_lang) else private.word(p_key, p_lang) end,
+                 '{n}', p_n::text);
 $$;
 
 -- "Tue Oct 27" / "mar 27 oct"
@@ -750,6 +899,29 @@ $$;
 -- Read model
 -- ---------------------------------------------------------------------
 
+-- A task's due date as the pages show it: where the daily roll (roll_missed_tasks)
+-- leaves it. A task on set dates whose next date has come undone is due on its latest
+-- date that has come (today, for a daily pill), not on the first date it was missed.
+-- So the pages are right whether or not the hourly job has run (or been set up at all);
+-- the job, or ticking the task off, then does the same move for real and logs the
+-- missed dates. Anything else: its due date.
+create function private.current_due(t public.tasks)
+returns date
+language plpgsql
+stable
+set search_path = ''
+as $$
+declare
+  today date := public.today_local();
+begin
+  if t.repeat_mode = 'schedule' and t.active and t.due_date < today
+     and private.series_after(t, t.due_date) <= today then
+    return private.series_on_or_before(t, today);
+  end if;
+  return t.due_date;
+end;
+$$;
+
 -- One task as an agenda row.
 create function private.task_item(t public.tasks, p_day date, p_status text)
 returns public.agenda_item
@@ -763,7 +935,7 @@ as $$
     t.responsible_id, '{}', p_status, t.category,
     t.project_id, (select p.name from public.projects p where p.id = t.project_id),
     t.contractor_id, k.name, k.phone,
-    null, t.notes, t.private, t.repeat_mode <> 'none', false, t.lead_days, false
+    null, t.notes, t.private, t.repeat_mode <> 'none', false, t.lead_days, false, null
   )::public.agenda_item
   from (select 1) one
   left join public.contractors k on k.id = t.contractor_id;
@@ -773,9 +945,11 @@ $$;
 -- caller's rights: members see everything, everyone else sees nothing.
 --   events:   every occurrence (a multi-day event is one row, day to end_day);
 --             cancelled days come back with status 'cancelled'
---   tasks:    open tasks due in the range, done one-off tasks, and the done or
---             skipped entries of repeating tasks; future repeats aren't projected
---   projects: Gantt tasks overlapping the range, for projects on the calendar
+--   tasks:    open tasks due in the range (by private.current_due), done one-off
+--             tasks, and the done or skipped entries of repeating tasks; future
+--             repeats aren't projected
+--   projects: Gantt tasks overlapping the range, for projects on the calendar that
+--             are under way: not an idea, on hold or done (as on the Today page)
 create function public.agenda(p_from date, p_to date)
 returns setof public.agenda_item
 language plpgsql
@@ -819,7 +993,9 @@ begin
            case when c.start_time is not null or c.end_time is not null
                 then c.end_time is not null and c.end_time <= coalesce(c.start_time, o.start_time)
                 else o.ends_next_day end as next_day,
-           coalesce(c.responsible_id, o.responsible_id) as resp,
+           case when c.responsible_id is not null then c.responsible_id
+                when c.nobody_in_charge then null
+                else o.responsible_id end as resp,
            coalesce(c.participant_ids, o.participant_ids) as parts
     from occurrence o
     left join public.event_changes c on c.event_id = o.id and c.on_date = o.day
@@ -836,10 +1012,11 @@ begin
   ),
   -- Tasks: open ones due in the range, done one-offs, and the history of repeating ones.
   task_rows as (
-    select t as task, t.due_date as occ,
+    select t as task, cd.due as occ,
            case when t.repeat_mode = 'none' and t.done_at is not null then 'done' else 'open' end as st
     from public.tasks t
-    where t.due_date between p_from and p_to
+    cross join lateral (select private.current_due(t) as due) cd
+    where cd.due between p_from and p_to
       and ((t.repeat_mode = 'none' and t.done_at is not null) or t.active)
     union all
     select t, l.occurrence, l.status
@@ -853,7 +1030,7 @@ begin
            private.safe_date(x.value ->> 'end') as e_day
     from public.projects p
     cross join lateral jsonb_array_elements(p.task_dates) x
-    where p.on_calendar and p.task_dates is not null
+    where p.on_calendar and p.task_dates is not null and p.status not in ('idea', 'on-hold', 'done')
   )
   select u.*
   from (
@@ -868,7 +1045,7 @@ begin
            null::text, null::uuid, null::text,
            t.contractor_id, k.name, k.phone,
            t.location, nullif(concat_ws(E'\n\n', t.change_note, t.notes), ''),
-           t.private, t.repeat <> 'none', t.changed, null::int, false
+           t.private, t.repeat <> 'none', t.changed, null::int, false, nullif(t.change_note, '')
     from timed t
     left join public.contractors k on k.id = t.contractor_id
     union all
@@ -881,7 +1058,7 @@ begin
            g.owner_id, '{}', case when g.task ->> 'status' = 'done' then 'done' else 'open' end,
            null, g.id, g.name,
            k.id, k.name, k.phone,
-           null, null, false, false, false, null, coalesce(g.task -> 'milestone' = 'true', false)
+           null, null, false, false, false, null, coalesce(g.task -> 'milestone' = 'true', false), null
     from gantt g
     left join public.contractors k
       on k.id::text = g.schedule -> 'trades' -> (g.task ->> 'trade') ->> 'contractor_id'
@@ -889,12 +1066,12 @@ begin
   ) u (kind, item_id, occurrence, title, day, end_day, all_day, start_at, end_at, local_start, local_end,
        responsible_id, participant_ids, status, category, project_id, project_name,
        contractor_id, contractor_name, contractor_phone, location, notes, private, repeating, changed,
-       lead_days, milestone)
+       lead_days, milestone, day_note)
   order by u.day, u.local_start nulls last, u.kind, u.title;
 end;
 $$;
 
--- Open tasks that are past due.
+-- Open tasks that are past due (by private.current_due).
 create function public.late_items()
 returns setof public.agenda_item
 language sql
@@ -904,9 +1081,10 @@ set search_path = ''
 as $$
   select i.*
   from public.tasks t
-  cross join lateral private.task_item(t, t.due_date, 'late') i
-  where t.active and t.done_at is null and t.due_date < public.today_local()
-  order by t.due_date, t.due_time nulls last, t.title;
+  cross join lateral (select private.current_due(t) as due) cd
+  cross join lateral private.task_item(t, cd.due, 'late') i
+  where t.active and t.done_at is null and cd.due < public.today_local()
+  order by cd.due, t.due_time nulls last, t.title;
 $$;
 
 -- What to mention ahead of time on p_day: tasks inside their lead time, and
@@ -922,15 +1100,16 @@ as $$
   from (
     select i.*
     from public.tasks t
-    cross join lateral private.task_item(t, t.due_date, 'open') i
+    cross join lateral (select private.current_due(t) as due) cd
+    cross join lateral private.task_item(t, cd.due, 'open') i
     where t.active and t.done_at is null and t.lead_days > 0
-      and t.due_date - t.lead_days <= p_day and p_day < t.due_date
+      and cd.due - t.lead_days <= p_day and p_day < cd.due
     union all
     select 'contract', k.id, k.contract_end, k.name, k.contract_end, k.contract_end, true,
            null, null, null, null,
            null, '{}', 'open', k.category, null, null,
            k.id, k.name, k.phone,
-           k.address, null, false, false, false, null, false
+           k.address, null, false, false, false, null, false, null
     from public.contractors k
     where k.contract_end between p_day and p_day + 30
   ) u
@@ -964,14 +1143,28 @@ as $$
   order by private.item_order(a), a.local_start, a.title;
 $$;
 
--- People's names, in the household's order: "Taylor, Sam".
+-- What messages call someone: their first name ("Jordan" for "Jordan Example"), or
+-- their whole name when someone else active on the family list has the same first name.
+create function private.short_name(p public.people)
+returns text
+language sql
+stable
+set search_path = ''
+as $$
+  select case when exists (select 1 from public.people o
+                           where o.id <> p.id and o.active and split_part(o.name, ' ', 1) = split_part(p.name, ' ', 1))
+              then p.name else split_part(p.name, ' ', 1) end;
+$$;
+
+-- People's names, in the household's order: "Taylor, Sam". Inactive people
+-- (off the family list for now) aren't named.
 create function private.names(p_ids uuid[])
 returns text
 language sql
 stable
 set search_path = ''
 as $$
-  select string_agg(p.name, ', ' order by p.sort_order, p.name) from public.people p where p.id = any (p_ids);
+  select string_agg(private.short_name(p), ', ' order by p.sort_order, p.name) from public.people p where p.id = any (p_ids) and p.active;
 $$;
 
 -- Who else is on an item, from p_person's point of view:
@@ -992,8 +1185,9 @@ as $$
   end;
 $$;
 
--- One line of a day's message: "3:00pm Piano · with Taylor · Rivera Music 555-0150".
--- Private items show as "Private item", without who or which contractor.
+-- One line of a day's message: "3:00pm Piano · with Taylor · Rivera Music 555-0150 · Side door".
+-- The last part is the day's own note, if a parent left one (never the event's notes).
+-- Private items show as "Private item", without who, which contractor or a note.
 create function private.text_line(a public.agenda_item, p_person uuid, p_lang text)
 returns text
 language sql
@@ -1007,13 +1201,15 @@ as $$
       || case when a.kind = 'project' then a.project_name || ': ' else '' end
       || case when a.private then private.word('private_item', p_lang) else a.title end,
     case when not a.private then private.who_text(a, p_person, p_lang) end,
-    case when not a.private then nullif(concat_ws(' ', a.contractor_name, a.contractor_phone), '') end);
+    case when not a.private then nullif(concat_ws(' ', a.contractor_name, a.contractor_phone), '') end,
+    case when not a.private then a.day_note end);
 $$;
 
 -- The message for one person's day, in their language: timed items in order,
 -- all-day events, tasks due, then up to 3 late tasks. Used by the Today
 -- page's "Send their day" buttons and by the morning email.
--- Never notes, never account numbers; private items show as "Private item".
+-- People by first name. Never notes (only a changed day's own note), never account
+-- numbers; private items show as "Private item".
 create function public.day_text(p_person uuid, p_day date)
 returns text
 language plpgsql
@@ -1033,7 +1229,7 @@ begin
   end if;
   lang := me.language;
 
-  lines := array[me.name || ' · ' || private.day_label(p_day, lang)]
+  lines := array[private.short_name(me) || ' · ' || private.day_label(p_day, lang)]
         || array(select private.text_line(a, p_person, lang)
                  from private.person_items(p_person, p_day) a
                  where a.status = 'open'
@@ -1044,14 +1240,16 @@ begin
 
   select count(*) into late_n
   from public.tasks t
-  where t.responsible_id = p_person and t.active and t.done_at is null and t.due_date < p_day;
+  where t.responsible_id = p_person and t.active and t.done_at is null and private.current_due(t) < p_day;
   if late_n > 0 then
     lines := lines || (private.word('late', lang) || ':')
-          || array(select '☐ ' || case when t.private then private.word('private_item', lang) else t.title end
-                          || ' (' || private.short_date(t.due_date, lang) || ')'
-                   from public.tasks t
-                   where t.responsible_id = p_person and t.active and t.done_at is null and t.due_date < p_day
-                   order by t.due_date, t.title
+          || array(select '☐ ' || case when x.private then private.word('private_item', lang) else x.title end
+                          || ' (' || private.short_date(x.due, lang) || ')'
+                   from (select t.private, t.title, private.current_due(t) as due
+                         from public.tasks t
+                         where t.responsible_id = p_person and t.active and t.done_at is null) x
+                   where x.due < p_day
+                   order by x.due, x.title
                    limit 3);
     if late_n > 3 then
       lines := lines || replace(private.word('more', lang), '{n}', (late_n - 3)::text);
@@ -1066,8 +1264,34 @@ $$;
 -- Tasks: done, skip, undo, and the daily roll-on of missed dates
 -- ---------------------------------------------------------------------
 
+-- Moves one missed task on, to where the pages already show it (private.current_due):
+-- its due date is logged as missed and the latest date that has come becomes its due
+-- date. Returns true if it moved. The caller has locked the task's row.
+create function private.roll_task(t public.tasks)
+returns boolean
+language plpgsql
+set search_path = ''
+as $$
+declare
+  v_due date := private.current_due(t);
+begin
+  if v_due is not distinct from t.due_date then
+    return false;
+  end if;
+  insert into public.task_log (task_id, occurrence, status, prev_due, prev_last_done)
+  values (t.id, t.due_date, 'missed', t.due_date, t.last_done);
+  perform set_config('hub.task_move', 'on', true);   -- the series keeps its anchor (private.tasks_defaults)
+  update public.tasks set due_date = v_due where id = t.id;
+  perform set_config('hub.task_move', '', true);
+  return true;
+end;
+$$;
+
 -- Shared by complete_task (signed in) and complete_by_token (My day).
--- p_who is recorded as done_by.
+-- p_who is recorded as done_by. A repeating task's log entry is for its due date,
+-- except "a while after it's done", whose entry is for the day it was done: done a
+-- day early, its next due date can be the very date it was due, and one day must not
+-- show it both done and still to do.
 create function private.complete_task(p_id uuid, p_occurrence date, p_done_on date, p_note text, p_who text)
 returns uuid
 language plpgsql
@@ -1085,8 +1309,15 @@ begin
   if not found then
     raise exception 'That task no longer exists.' using errcode = 'P0002';
   end if;
+  if not t.active then
+    raise exception 'This task is paused. Turn it back on before ticking it off.' using errcode = '22023';
+  end if;
   if done_on > today then
     raise exception 'A task can''t be done on a day that hasn''t happened yet.' using errcode = '22023';
+  end if;
+  -- A missed date the pages already show as moved on moves on for real first.
+  if private.roll_task(t) then
+    select * into t from public.tasks where id = p_id;
   end if;
 
   if t.repeat_mode = 'none' then
@@ -1112,9 +1343,12 @@ begin
                 when 'schedule' then private.series_after(t, greatest(t.due_date, done_on))
                 else private.add_units(done_on, t.every_count, t.every_unit)
               end;
+  perform set_config('hub.task_move', 'on', true);   -- the series keeps its anchor (private.tasks_defaults)
   update public.tasks set due_date = next_due, last_done = done_on where id = t.id;
+  perform set_config('hub.task_move', '', true);
   insert into public.task_log (task_id, occurrence, status, done_on, done_by, note, prev_due, prev_last_done)
-  values (t.id, t.due_date, 'done', done_on, p_who, p_note, t.due_date, t.last_done)
+  values (t.id, case when t.repeat_mode = 'after_done' then done_on else t.due_date end, 'done', done_on, p_who, p_note,
+          t.due_date, t.last_done)
   returning id into log_id;
   return log_id;
 end;
@@ -1159,6 +1393,12 @@ begin
   if t.repeat_mode = 'none' then
     raise exception 'Only repeating tasks can be skipped.' using errcode = '22023';
   end if;
+  if not t.active then
+    raise exception 'This task is paused. Turn it back on before skipping it.' using errcode = '22023';
+  end if;
+  if private.roll_task(t) then   -- as in private.complete_task
+    select * into t from public.tasks where id = p_id;
+  end if;
   if p_occurrence is not null and p_occurrence is distinct from t.due_date then
     raise exception 'already completed' using errcode = 'P0001', hint = 'This date was already ticked off or skipped.';
   end if;
@@ -1169,7 +1409,9 @@ begin
                 when 'schedule' then private.series_after(t, greatest(t.due_date, today))
                 else private.add_units(greatest(t.due_date, today), t.every_count, t.every_unit)
               end;
+  perform set_config('hub.task_move', 'on', true);
   update public.tasks set due_date = next_due where id = t.id;
+  perform set_config('hub.task_move', '', true);
   insert into public.task_log (task_id, occurrence, status, done_by, prev_due, prev_last_done)
   values (t.id, t.due_date, 'skipped', public.current_email(), t.due_date, t.last_done)
   returning id into log_id;
@@ -1177,9 +1419,13 @@ begin
 end;
 $$;
 
--- Undo a done, skip or missed entry: only the task's latest one, within 7 days.
+-- Shared by undo_task (signed in) and undo_by_token (My day). Puts back what one
+-- task_log entry changed and deletes it; only the task's latest entry can be undone.
+--   p_person null: anyone signed in, any entry, within 7 days.
+--   p_person set:  only a 'done' entry that person made on My day (done_by = p_who),
+--                  on a task they are in charge of, within 15 minutes.
 -- Returns the task id.
-create function public.undo_task(p_log_id uuid)
+create function private.undo_task(p_log_id uuid, p_person uuid, p_who text)
 returns uuid
 language plpgsql
 security definer
@@ -1189,9 +1435,6 @@ declare
   l public.task_log;
   t public.tasks;
 begin
-  if not private.is_member() then
-    raise exception 'Only family members can do that.' using errcode = '42501';
-  end if;
   select * into l from public.task_log where id = p_log_id;
   if not found then
     raise exception 'There''s nothing to undo.' using errcode = 'P0002';
@@ -1203,27 +1446,54 @@ begin
     raise exception 'There''s nothing to undo.' using errcode = 'P0002';
   end if;
 
+  if p_person is not null
+     and (t.responsible_id is distinct from p_person or l.status <> 'done' or l.done_by is distinct from p_who) then
+    raise exception 'Only something you ticked off on this page can be undone here.' using errcode = '42501';
+  end if;
   -- Entries for one task are written while it is locked, so seq is their real order.
   -- (created_at is when each transaction started, which can be the other way round.)
   if exists (select 1 from public.task_log x where x.task_id = l.task_id and x.seq > l.seq) then
     raise exception 'Only the latest change to a task can be undone.' using errcode = '22023';
   end if;
-  if l.created_at < private.now() - interval '7 days' then
+  if p_person is null and l.created_at < private.now() - interval '7 days' then
     raise exception 'That was more than 7 days ago, so it can''t be undone.' using errcode = '22023';
   end if;
+  if p_person is not null and l.created_at < private.now() - interval '15 minutes' then
+    raise exception 'That was more than 15 minutes ago, so it can''t be undone here.' using errcode = '22023';
+  end if;
 
+  perform set_config('hub.task_move', 'on', true);
   if t.repeat_mode = 'none' then
     update public.tasks set done_at = l.prev_done_at, done_by = null where id = t.id;
   else
     update public.tasks set due_date = l.prev_due, last_done = l.prev_last_done where id = t.id;
   end if;
+  perform set_config('hub.task_move', '', true);
   delete from public.task_log where id = l.id;
   return t.id;
 end;
 $$;
 
--- Daily: a task on set dates whose next date has arrived undone is logged
--- 'missed' and moves to its latest date that isn't in the future.
+-- Undo a done, skip or missed entry: only the task's latest one, within 7 days.
+-- Returns the task id.
+create function public.undo_task(p_log_id uuid)
+returns uuid
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  if not private.is_member() then
+    raise exception 'Only family members can do that.' using errcode = '42501';
+  end if;
+  return private.undo_task(p_log_id, null, null);
+end;
+$$;
+
+-- Hourly (cron.sql) and before each morning-email run: a task on set dates whose
+-- next date has arrived undone is logged 'missed' and moves to its latest date that
+-- isn't in the future (private.roll_task). The pages already show it there
+-- (private.current_due), so this only writes the move down.
 -- Tasks done "a while after" never roll; they stay late until done.
 -- Returns how many tasks moved.
 create function public.roll_missed_tasks()
@@ -1234,19 +1504,15 @@ set search_path = ''
 as $$
 declare
   t     public.tasks;
-  today date := public.today_local();
   moved int := 0;
 begin
   for t in
     select * from public.tasks
-    where active and repeat_mode = 'schedule' and due_date < today
+    where active and repeat_mode = 'schedule' and due_date < public.today_local()
     order by id
     for update
   loop
-    if private.series_after(t, t.due_date) <= today then
-      insert into public.task_log (task_id, occurrence, status, prev_due, prev_last_done)
-      values (t.id, t.due_date, 'missed', t.due_date, t.last_done);
-      update public.tasks set due_date = private.series_on_or_before(t, today) where id = t.id;
+    if private.roll_task(t) then
       moved := moved + 1;
     end if;
   end loop;
@@ -1263,6 +1529,10 @@ $$;
 -- value. p_can_sign_in adds, updates or removes their sign-in.
 -- Parents who can sign in are admins; adults are members; kids and helpers
 -- can't sign in. Nobody can remove, rename or demote their own sign-in here.
+-- Taking someone's sign-in away also takes what came with it: everyone's items in
+-- their morning email (digest_scope back to 'mine'), and the My day link they could
+-- copy while signed in (a new one is made). Their morning email itself, with a parent's
+-- blocks for the kids and helpers, goes on until it is turned off (the Family page asks).
 create function public.save_person(p jsonb, p_can_sign_in boolean)
 returns public.people
 language plpgsql
@@ -1275,6 +1545,8 @@ declare
   r   public.people;
   -- Never taken from the client.
   fixed text[] := array['id', 'day_token', 'email_verified_at', 'created_at', 'updated_at'];
+  -- Their sign-in is being taken away (they were on the sign-in list, and won't be).
+  loses_sign_in boolean := false;
 begin
   if not private.is_admin() then
     raise exception 'Only an admin can change the family list.' using errcode = '42501';
@@ -1297,8 +1569,13 @@ begin
   r.name  := trim(r.name);
   r.email := lower(nullif(trim(r.email), ''));
   r.phone := nullif(trim(r.phone), '');
-  if r.role is distinct from 'parent' then
+  loses_sign_in := not p_can_sign_in and old.email is not null
+                   and exists (select 1 from public.members m where m.email = old.email);
+  if r.role is distinct from 'parent' or loses_sign_in then
     r.digest_scope := 'mine';
+  end if;
+  if r.digest_time > '23:45' then
+    raise exception 'The latest time for the email is 11:45pm.' using errcode = '22023';
   end if;
 
   if p_can_sign_in then
@@ -1331,7 +1608,8 @@ begin
     update public.people
     set name = r.name, role = r.role, email = r.email, phone = r.phone, color = r.color, language = r.language,
         digest_enabled = r.digest_enabled, digest_time = r.digest_time, digest_day = r.digest_day,
-        digest_scope = r.digest_scope, sort_order = r.sort_order, active = r.active
+        digest_scope = r.digest_scope, sort_order = r.sort_order, active = r.active,
+        day_token = case when loses_sign_in then encode(extensions.gen_random_bytes(16), 'hex') else day_token end
     where id = old.id
     returning * into r;
   end if;
@@ -1353,7 +1631,8 @@ end;
 $$;
 
 -- Take someone off the family list, with their sign-in. Their items stay,
--- with nobody in charge.
+-- with nobody in charge; so do the days they were covering for someone (a
+-- changed day of a repeating event), rather than going back to the usual person.
 create function public.remove_person(p_person uuid)
 returns void
 language plpgsql
@@ -1375,6 +1654,8 @@ begin
   end if;
 
   delete from public.members where email = old.email;
+  update public.event_changes set responsible_id = null, nobody_in_charge = true
+  where responsible_id = old.id;
   update public.events set participant_ids = array_remove(participant_ids, old.id)
   where old.id = any (participant_ids);
   update public.event_changes set participant_ids = array_remove(participant_ids, old.id)
@@ -1407,8 +1688,10 @@ end;
 $$;
 
 -- ---------------------------------------------------------------------
--- My day page (no sign-in). The token is the only key; these four are the
--- only new functions anon can call.
+-- My day page (no sign-in). A secret is the only key: the My day token for
+-- four of them, the confirmation secret for confirm_digest. These five are the
+-- only new functions anon can call. Ticks from My day are logged as
+-- "<name> (My day)", which is also what undo_by_token looks for.
 -- ---------------------------------------------------------------------
 create function private.person_by_token(p_token text)
 returns public.people
@@ -1421,8 +1704,8 @@ as $$
   where p_token ~ '^[0-9a-f]{32}$' and p.day_token = p_token and p.active;
 $$;
 
--- One My day item: what the page shows, and nothing more (no notes, no
--- other people's details). Private items show as "Private item".
+-- One My day item: what the page shows, and nothing more (no notes but a changed
+-- day's own note, no other people's details). Private items show as "Private item".
 create function private.my_day_item(a public.agenda_item, p_person uuid, p_lang text)
 returns jsonb
 language sql
@@ -1443,6 +1726,7 @@ as $$
     'location', case when not a.private then a.location end,
     'contractor_name', case when not a.private then a.contractor_name end,
     'contractor_phone', case when not a.private then a.contractor_phone end,
+    'note', case when not a.private then a.day_note end,
     'status', a.status,
     'mine', a.kind = 'task' and a.responsible_id = p_person);
 $$;
@@ -1476,17 +1760,48 @@ begin
                                          from private.person_items(me.id, d.day) a), '[]'))
                     order by d.day)
              from (values (today), (today + 1)) d (day)),
-    'late', coalesce((select jsonb_agg(private.my_day_item(i, me.id, me.language) order by t.due_date, t.title)
+    'late', coalesce((select jsonb_agg(private.my_day_item(i, me.id, me.language) order by cd.due, t.title)
                       from public.tasks t
-                      cross join lateral private.task_item(t, t.due_date, 'late') i
-                      where t.responsible_id = me.id and t.active and t.done_at is null and t.due_date < today),
+                      cross join lateral (select private.current_due(t) as due) cd
+                      cross join lateral private.task_item(t, cd.due, 'late') i
+                      where t.responsible_id = me.id and t.active and t.done_at is null and cd.due < today),
                      '[]'));
 end;
 $$;
 
 -- Tick off one of their own tasks (only tasks they're in charge of).
--- Returns the task_log id, or null for an unknown link.
+-- p_occurrence is the due date the page showed; a repeating task needs it, so a
+-- page left open overnight can't tick off the next date by mistake.
+-- Returns the task_log id (for undo_by_token), or null for an unknown link.
 create function public.complete_by_token(p_token text, p_task_id uuid, p_occurrence date)
+returns uuid
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  me public.people;
+  t  public.tasks;
+begin
+  me := private.person_by_token(p_token);
+  if me.id is null then
+    return null;
+  end if;
+  select * into t from public.tasks where id = p_task_id and responsible_id = me.id;
+  if not found then
+    raise exception 'That task isn''t on your list.' using errcode = '42501';
+  end if;
+  if t.repeat_mode <> 'none' and p_occurrence is null then
+    raise exception 'already completed' using errcode = 'P0001', hint = 'Reload the page to see the task''s current date.';
+  end if;
+  return private.complete_task(p_task_id, p_occurrence, null, null, me.name || ' (My day)');
+end;
+$$;
+
+-- Undo their own tick from My day (the toast's Undo): only the task's latest
+-- entry, made on My day by that person, within 15 minutes.
+-- Returns the task id, or null for an unknown link.
+create function public.undo_by_token(p_token text, p_log_id uuid)
 returns uuid
 language plpgsql
 security definer
@@ -1499,15 +1814,17 @@ begin
   if me.id is null then
     return null;
   end if;
-  if not exists (select 1 from public.tasks t where t.id = p_task_id and t.responsible_id = me.id) then
-    raise exception 'That task isn''t on your list.' using errcode = '42501';
-  end if;
-  return private.complete_task(p_task_id, p_occurrence, null, null, me.name || ' (My day)');
+  return private.undo_task(p_log_id, me.id, me.name || ' (My day)');
 end;
 $$;
 
--- The "Yes, send me the morning email" button. True if the link was valid.
-create function public.confirm_digest(p_token text)
+-- The "Yes, send me the morning email" button on the page the confirmation email
+-- opens (day.html?c=<secret>#confirm). The secret is the whole key: the link has no
+-- My day token, and a My day token confirms nothing.
+-- True if that address is now confirmed (also when it already was: a second tap, or
+-- the email opened again later); false for an unknown, malformed or replaced secret
+-- (the address changed since), or someone who isn't active.
+create function public.confirm_digest(p_confirm text)
 returns boolean
 language plpgsql
 security definer
@@ -1516,11 +1833,22 @@ as $$
 declare
   me public.people;
 begin
-  me := private.person_by_token(p_token);
-  if me.id is null or me.email is null then
+  if p_confirm is null or p_confirm !~ '^[0-9a-f]{32}$' then
     return false;
   end if;
-  update public.people set email_verified_at = private.now() where id = me.id;
+  select p.* into me from public.people_confirm c join public.people p on p.id = c.person_id where c.token = p_confirm;
+  if not found then
+    return false;
+  end if;
+  -- Lock the row, then look again: an email change (a new secret) may have slipped in.
+  select * into me from public.people where id = me.id for update;
+  if not me.active or me.email is null
+     or not exists (select 1 from public.people_confirm c where c.person_id = me.id and c.token = p_confirm) then
+    return false;
+  end if;
+  if me.email_verified_at is null then
+    update public.people set email_verified_at = private.now() where id = me.id;
+  end if;
   return true;
 end;
 $$;
@@ -1566,10 +1894,18 @@ $$;
 
 -- Who should get an email now:
 --   digest:  people with the morning email on and a confirmed address, whose
---            time came in the last 3 hours (local_date = the day it's about;
---            a 'tomorrow' person's evening email is about the next day)
---   confirm: people with the morning email on but an unconfirmed address,
---            at most one confirmation email every 3 days
+--            time came today, in the last 3 hours (local_date = the day it's
+--            about; a 'tomorrow' person's evening email is about the next day,
+--            and without a time of their own it goes at 19:00, not at the
+--            household's morning time). Never after midnight: a run that missed
+--            it would send yesterday's "Today" email, or a "Tomorrow" email about
+--            the day that has started. (Email times are 11:45pm at the latest,
+--            the day's last quarter-hour run.)
+--   confirm: people with the morning email on but an unconfirmed address and a
+--            confirmation secret (people_confirm). The first one goes at once;
+--            a reminder goes 3 days after the last one, at their email time (as
+--            a digest would), and after 3 sent the reminders stop. A new address
+--            starts afresh (private.people_confirm_sync forgets the old ones).
 -- Rows already sent, skipped, in flight or out of attempts are left out.
 create function public.digest_due(p_limit int default 50)
 returns table (person_id uuid, local_date date, kind text)
@@ -1582,23 +1918,38 @@ as $$
     select private.now() as now, public.today_local() as today, private.tz() as tz,
            (select h.digest_time from public.household h) as digest_time
   ),
+  -- When each person's email goes today.
+  sends as (
+    select p.*,
+           (c.today + coalesce(p.digest_time,
+                               case when p.digest_day = 'tomorrow' then time '19:00' end,
+                               c.digest_time, '06:30')) at time zone c.tz as send_at
+    from public.people p
+    cross join clock c
+    where p.active and p.digest_enabled and p.email is not null
+  ),
   candidates as (
-    select p.id as person_id,
-           s.send_date + case p.digest_day when 'tomorrow' then 1 else 0 end as local_date,
+    select s.id as person_id,
+           c.today + case s.digest_day when 'tomorrow' then 1 else 0 end as local_date,
            'digest'::text as kind,
-           (s.send_date + coalesce(p.digest_time, c.digest_time, '06:30')) at time zone c.tz as due_at
-    from public.people p
+           s.send_at as due_at
+    from sends s
     cross join clock c
-    cross join lateral (values (c.today - 1), (c.today)) s (send_date)
-    where p.active and p.digest_enabled and p.email is not null and p.email_verified_at is not null
+    where s.email_verified_at is not null
     union all
-    select p.id, c.today, 'confirm', c.now
-    from public.people p
+    select s.id, c.today, 'confirm',
+           case when exists (select 1 from public.notification_log n
+                             where n.person_id = s.id and n.kind = 'confirm' and n.local_date < c.today)
+                then s.send_at else c.now end
+    from sends s
     cross join clock c
-    where p.active and p.digest_enabled and p.email is not null and p.email_verified_at is null
+    where s.email_verified_at is null
+      and exists (select 1 from public.people_confirm pc where pc.person_id = s.id)
       and not exists (select 1 from public.notification_log n
-                      where n.person_id = p.id and n.kind = 'confirm'
+                      where n.person_id = s.id and n.kind = 'confirm'
                         and n.local_date > c.today - 3 and n.local_date < c.today)
+      and (select count(*) from public.notification_log n
+           where n.person_id = s.id and n.kind = 'confirm' and n.status = 'sent' and n.local_date < c.today) < 3
   )
   select x.person_id, x.local_date, x.kind
   from candidates x
@@ -1648,7 +1999,36 @@ begin
 end;
 $$;
 
--- One item in the morning email.
+-- The person, if they are still active; null otherwise. In the morning email an
+-- item whose person in charge is inactive (off the family list for now) is
+-- nobody's, so it reaches the parents under "Nobody's on it".
+create function private.active_person(p_id uuid)
+returns uuid
+language sql
+stable
+set search_path = ''
+as $$
+  select p.id from public.people p where p.id = p_id and p.active;
+$$;
+
+-- An agenda row without its inactive people (see private.active_person).
+create function private.active_only(a public.agenda_item)
+returns public.agenda_item
+language plpgsql
+stable
+set search_path = ''
+as $$
+begin
+  a.responsible_id := private.active_person(a.responsible_id);
+  a.participant_ids := array(select u.x from unnest(a.participant_ids) with ordinality u (x, n)
+                             where private.active_person(u.x) is not null order by u.n);
+  return a;
+end;
+$$;
+
+-- One item in the morning email. detail: p_detail (when it was due, for instance), who
+-- else is on it, its contractor and a changed day's own note; a hidden private item
+-- ("Private item" for kids and helpers) has only p_detail.
 create function private.digest_item(a public.agenda_item, p_person uuid, p_lang text, p_hide boolean,
                                     p_time text, p_detail text)
 returns jsonb
@@ -1665,18 +2045,22 @@ as $$
     'title', case when p_hide then private.word('private_item', p_lang) else a.title end,
     'detail', case when p_hide then p_detail
                    else nullif(concat_ws(' · ', p_detail, private.who_text(a, p_person, p_lang),
-                                         case when a.kind <> 'contract' then a.contractor_name end), '') end,
+                                         case when a.kind <> 'contract' then a.contractor_name end, a.day_note), '') end,
     'contractor_phone', case when not p_hide then a.contractor_phone end,
     'status', a.status);
 $$;
 
 -- Everything the morning email needs, for one person and the day it's about.
--- Sections: today, late (3 at most), heads_up; parents also get people (one
--- block per kid or helper, with the text to send them), nobody (items nobody
--- is on), projects (one line per project with tasks starting that day) and,
--- on Mondays, inbox_count. empty = a non-parent with nothing to say (send nothing).
+-- Sections: today, late (3 at most), heads_up, projects (one line per project of
+-- theirs with tasks starting that day); parents also get people (one block per kid
+-- or helper, with the text to send them), nobody (items nobody is on), the lines
+-- of projects no parent owns and, on Mondays, inbox_count (when there's anything
+-- with no date). empty = a non-parent with nothing to say (send nothing).
+-- The subject never has a private item's title, whoever it's for: it shows on lock
+-- screens and watches.
 -- An evening-before email (digest_day 'tomorrow') is read the day before: its
 -- "today" label says Tomorrow, and the morning after is named by its day.
+-- Inactive people are left off every item, so what only they were on counts as nobody's.
 create function public.digest_for(p_person uuid, p_local_date date)
 returns jsonb
 language plpgsql
@@ -1714,7 +2098,7 @@ begin
   hide     := me.role in ('kid', 'helper');
   evening  := me.digest_day = 'tomorrow';
 
-  day_rows := array(select a from public.agenda(d, d) a where a.status = 'open');
+  day_rows := array(select private.active_only(a) from public.agenda(d, d) a where a.status = 'open');
 
   -- Today: their events and tasks (with 'everyone', everybody's), in time order.
   -- Items nobody is on go to the parents' "Nobody's on it" instead.
@@ -1728,18 +2112,19 @@ begin
   -- Late: at most 3, oldest first.
   select count(*) into late_n
   from public.tasks t
-  where t.active and t.done_at is null and t.due_date < d
-    and case when everyone then t.responsible_id is not null else t.responsible_id = me.id end;
+  where t.active and t.done_at is null and private.current_due(t) < d
+    and case when everyone then private.active_person(t.responsible_id) is not null else t.responsible_id = me.id end;
   select coalesce(jsonb_agg(private.digest_item(x.i, me.id, lang, hide and x.private, null,
-                                                replace(private.word('due', lang), '{d}', private.short_date(x.due_date, lang)))
-                            order by x.due_date, x.title), '[]')
+                                                replace(private.word('due', lang), '{d}', private.short_date(x.due, lang)))
+                            order by x.due, x.title), '[]')
   into v_late
-  from (select i, t.private, t.due_date, t.title
+  from (select private.active_only(i) as i, t.private, cd.due, t.title
         from public.tasks t
-        cross join lateral private.task_item(t, t.due_date, 'late') i
-        where t.active and t.done_at is null and t.due_date < d
-          and case when everyone then t.responsible_id is not null else t.responsible_id = me.id end
-        order by t.due_date, t.title
+        cross join lateral (select private.current_due(t) as due) cd
+        cross join lateral private.task_item(t, cd.due, 'late') i
+        where t.active and t.done_at is null and cd.due < d
+          and case when everyone then private.active_person(t.responsible_id) is not null else t.responsible_id = me.id end
+        order by cd.due, t.title
         limit 3) x;
 
   -- Heads-up: tasks inside their lead time, contracts ending within 30 days
@@ -1753,7 +2138,8 @@ begin
                replace(private.word(case when a.kind = 'contract' then 'contract_ends' else 'due' end, lang),
                        '{d}', private.short_date(a.day, lang))) as item,
              a.kind, a.item_id, a.day, 1 as sort, a.title
-      from public.heads_up(d) a
+      from public.heads_up(d) h
+      cross join lateral private.active_only(h) a
       where (a.kind = 'task' and (a.responsible_id = me.id or (parent and (everyone or a.responsible_id is null))))
          or (a.kind = 'contract' and parent)
       union all
@@ -1761,7 +2147,8 @@ begin
                case when evening then private.day_label(d + 1, lang) else private.word('tomorrow', lang) end
                  || ' ' || private.time_label(a.local_start, lang), null),
              a.kind, a.item_id, a.day, 0, a.title
-      from public.agenda(d + 1, d + 1) a
+      from public.agenda(d + 1, d + 1) n
+      cross join lateral private.active_only(n) a
       where a.status = 'open' and a.kind in ('event', 'task') and a.local_start < '09:00'
         and case when everyone then a.responsible_id is not null or cardinality(a.participant_ids) > 0
                  else a.responsible_id = me.id or me.id = any (a.participant_ids) end
@@ -1769,10 +2156,32 @@ begin
     order by u.kind, u.item_id, u.sort
   ) h;
 
+  -- Projects: one line per project with tasks starting today. Each owner gets their own
+  -- projects' lines, whoever they are (day_text and My day show them those tasks too);
+  -- a project with no owner who is an active parent goes to every parent as well.
+  select coalesce(jsonb_agg(jsonb_build_object('project_id', x.project_id, 'name', x.project_name,
+                                               'text', x.project_name || ': ' || x.line, 'items', x.items)
+                            order by x.project_name), '[]')
+  into v_projects
+  from (
+    select a.project_id, a.project_name,
+           string_agg(a.title || case when a.milestone then '' else ' ' || private.word('starts', lang) end
+                        || coalesce(' (' || nullif(concat_ws(' ', a.contractor_name, a.contractor_phone), '') || ')', ''),
+                      '; ' order by a.title) as line,
+           jsonb_agg(jsonb_build_object('title', a.title, 'milestone', a.milestone,
+                                        'contractor_name', a.contractor_name, 'contractor_phone', a.contractor_phone)
+                     order by a.title) as items
+    from unnest(day_rows) a
+    where a.kind = 'project' and a.day = d
+      and (a.responsible_id = me.id
+           or (parent and not exists (select 1 from public.people o where o.id = a.responsible_id and o.role = 'parent' and o.active)))
+    group by a.project_id, a.project_name
+  ) x;
+
   if parent then
     -- One block per kid or helper, with the message to send them.
     select coalesce(jsonb_agg(jsonb_build_object(
-             'person_id', p.id, 'name', p.name, 'role', p.role, 'phone', p.phone, 'language', p.language,
+             'person_id', p.id, 'name', private.short_name(p), 'role', p.role, 'phone', p.phone, 'language', p.language,
              'count', (select count(*) from private.person_items(p.id, d) a where a.status = 'open'),
              'text', public.day_text(p.id, d))
            order by p.sort_order, p.name), '[]')
@@ -1788,11 +2197,13 @@ begin
       where a.kind in ('event', 'task') and a.responsible_id is null and cardinality(a.participant_ids) = 0
       union all
       select private.digest_item(i, me.id, lang, false, null,
-               replace(private.word('due', lang), '{d}', private.short_date(t.due_date, lang))),
-             1, t.due_date, 3, null, t.title
+               replace(private.word('due', lang), '{d}', private.short_date(cd.due, lang))),
+             1, cd.due, 3, null, t.title
       from public.tasks t
-      cross join lateral private.task_item(t, t.due_date, 'late') i
-      where t.active and t.done_at is null and t.due_date < d and t.responsible_id is null
+      cross join lateral (select private.current_due(t) as due) cd
+      cross join lateral private.task_item(t, cd.due, 'late') l
+      cross join lateral private.active_only(l) i
+      where t.active and t.done_at is null and cd.due < d and private.active_person(t.responsible_id) is null
     )
     select coalesce((select jsonb_agg(item order by grp, day, o, local_start, title)
                      from (select * from unassigned order by grp, day, o, local_start, title limit 5) top), '[]'),
@@ -1800,42 +2211,22 @@ begin
     into v_nobody, nobody_n
     from unassigned;
 
-    -- Projects: one line per project with tasks starting today. A project owned
-    -- by a parent goes to that parent; any other (no owner, or an owner who gets
-    -- no project lines because they aren't an active parent) goes to every parent.
-    select coalesce(jsonb_agg(jsonb_build_object('project_id', x.project_id, 'name', x.project_name,
-                                                 'text', x.project_name || ': ' || x.line, 'items', x.items)
-                              order by x.project_name), '[]')
-    into v_projects
-    from (
-      select a.project_id, a.project_name,
-             string_agg(a.title || case when a.milestone then '' else ' ' || private.word('starts', lang) end
-                          || coalesce(' (' || nullif(concat_ws(' ', a.contractor_name, a.contractor_phone), '') || ')', ''),
-                        '; ' order by a.title) as line,
-             jsonb_agg(jsonb_build_object('title', a.title, 'milestone', a.milestone,
-                                          'contractor_name', a.contractor_name, 'contractor_phone', a.contractor_phone)
-                       order by a.title) as items
-      from unnest(day_rows) a
-      where a.kind = 'project' and a.day = d
-        and (a.responsible_id = me.id
-             or not exists (select 1 from public.people o where o.id = a.responsible_id and o.role = 'parent' and o.active))
-      group by a.project_id, a.project_name
-    ) x;
-
+    -- Mondays: how many tasks have no date yet (no line when there are none).
     if extract(isodow from d) = 1 then
-      select count(*) into v_inbox from public.tasks t where t.active and t.done_at is null and t.due_date is null;
+      select nullif(count(*), 0) into v_inbox from public.tasks t where t.active and t.done_at is null and t.due_date is null;
     end if;
   end if;
 
   -- The subject carries the content: "Tue Oct 27: 8:00am Drop off dogs · 3:00pm Pick up Taylor · +2".
+  -- A private item is "Private item" here even for a parent (the email itself has its title).
   subject := private.day_label(d, lang) || ': ' || coalesce(
     (select string_agg(coalesce(private.time_label(mine[i].local_start, lang) || ' ', '')
-                         || case when hide and mine[i].private then private.word('private_item', lang) else mine[i].title end,
+                         || case when mine[i].private then private.word('private_item', lang) else mine[i].title end,
                        ' · ' order by i)
      from generate_subscripts(mine, 1) i
      where i <= 2)
       || case when cardinality(mine) > 2 then ' · +' || (cardinality(mine) - 2) else '' end,
-    case when late_n > 0 then replace(private.word('n_late', lang), '{n}', late_n::text) end,
+    case when late_n > 0 then private.count_word('n_late', late_n, lang) end,
     private.word('nothing_planned', lang));
 
   return jsonb_build_object(
@@ -1854,7 +2245,8 @@ begin
     'nobody_more', greatest(nobody_n - 5, 0),
     'projects', v_projects,
     'inbox_count', v_inbox,
-    'empty', not parent and cardinality(mine) = 0 and late_n = 0 and jsonb_array_length(v_heads) = 0,
+    'empty', not parent and cardinality(mine) = 0 and late_n = 0 and jsonb_array_length(v_heads) = 0
+             and jsonb_array_length(v_projects) = 0,
     'labels', jsonb_build_object(
       'today', private.word(case when evening then 'tomorrow' else 'today' end, lang),
       'tomorrow', private.word('tomorrow', lang),
@@ -1865,7 +2257,7 @@ begin
       'nobody', private.word('nobody', lang),
       'nobody_more', case when nobody_n > 5 then replace(private.word('and_more', lang), '{n}', (nobody_n - 5)::text) end,
       'projects', private.word('projects', lang),
-      'inbox', case when v_inbox is not null then replace(private.word('inbox', lang), '{n}', v_inbox::text) end,
+      'inbox', case when v_inbox is not null then private.count_word('inbox', v_inbox, lang) end,
       'nothing_planned', private.word('nothing_planned', lang),
       'open_my_day', private.word('open_my_day', lang),
       'send_whatsapp', private.word('send_whatsapp', lang),
@@ -1900,6 +2292,27 @@ as $$
            select jsonb_build_object('id', p.id, 'name', p.name, 'role', p.role, 'language', p.language, 'color', p.color)
            from public.people p where p.email = m.email))
   from public.members m where m.email = public.current_email();
+$$;
+
+-- Signing in with a code sent to an address proves it works, so the hub calls
+-- this after sign-in: a member's own person row counts as confirmed (the first
+-- time only). Its confirmation secret stays, so the button in a confirmation email
+-- sent earlier says "confirmed" too. Does nothing for anyone else.
+create function public.mark_signed_in()
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  me text := public.current_email();
+begin
+  if me = '' or not private.is_member() then
+    return;
+  end if;
+  update public.people set email_verified_at = coalesce(email_verified_at, private.now())
+  where email = me and email_verified_at is null;
+end;
 $$;
 
 -- ---------------------------------------------------------------------
@@ -1945,20 +2358,24 @@ revoke execute on function public.undo_task(uuid)                       from pub
 revoke execute on function public.save_person(jsonb, boolean)           from public, anon, service_role;
 revoke execute on function public.remove_person(uuid)                   from public, anon, service_role;
 revoke execute on function public.rotate_day_token(uuid)                from public, anon, service_role;
+revoke execute on function public.mark_signed_in()                      from public, anon, service_role;
 grant  execute on function public.complete_task(uuid, date, date, text) to authenticated;
 grant  execute on function public.skip_task(uuid, date)                 to authenticated;
 grant  execute on function public.undo_task(uuid)                       to authenticated;
 grant  execute on function public.save_person(jsonb, boolean)           to authenticated;
 grant  execute on function public.remove_person(uuid)                   to authenticated;
 grant  execute on function public.rotate_day_token(uuid)                to authenticated;
+grant  execute on function public.mark_signed_in()                      to authenticated;
 
 -- The My day page: the token is the key.
 revoke execute on function public.get_person_day(text)                 from public, service_role;
 revoke execute on function public.complete_by_token(text, uuid, date)  from public, service_role;
+revoke execute on function public.undo_by_token(text, uuid)            from public, service_role;
 revoke execute on function public.confirm_digest(text)                 from public, service_role;
 revoke execute on function public.stop_digest(text)                    from public, service_role;
 grant  execute on function public.get_person_day(text)                 to anon, authenticated;
 grant  execute on function public.complete_by_token(text, uuid, date)  to anon, authenticated;
+grant  execute on function public.undo_by_token(text, uuid)            to anon, authenticated;
 grant  execute on function public.confirm_digest(text)                 to anon, authenticated;
 grant  execute on function public.stop_digest(text)                    to anon, authenticated;
 
@@ -1984,7 +2401,7 @@ grant  execute on function public.touch_updated_at() to authenticated, service_r
 
 -- Helpers in private: none for anon. The read model's helpers run with the
 -- caller's rights; the ones that act for someone else (complete_task with a
--- given name, person_by_token) are reachable only through the RPCs above.
+-- given name, undo_task, person_by_token) are reachable only through the RPCs above.
 revoke execute on all functions in schema private from public, anon;
 grant  execute on function private.is_member()   to authenticated;
 grant  execute on function private.is_admin()    to authenticated;
@@ -1999,15 +2416,21 @@ grant  execute on function private.series_after(public.tasks, date)         to a
 grant  execute on function private.series_on_or_before(public.tasks, date)  to authenticated, service_role;
 grant  execute on function private.safe_date(text)                          to authenticated, service_role;
 grant  execute on function private.word(text, text)                         to authenticated, service_role;
+grant  execute on function private.count_word(text, int, text)              to authenticated, service_role;
 grant  execute on function private.day_label(date, text)                    to authenticated, service_role;
 grant  execute on function private.short_date(date, text)                   to authenticated, service_role;
 grant  execute on function private.time_label(time, text)                   to authenticated, service_role;
+grant  execute on function private.current_due(public.tasks)                to authenticated, service_role;
 grant  execute on function private.task_item(public.tasks, date, text)      to authenticated, service_role;
 grant  execute on function private.item_order(public.agenda_item)           to authenticated, service_role;
 grant  execute on function private.person_items(uuid, date)                 to authenticated, service_role;
+grant  execute on function private.short_name(public.people)               to authenticated, service_role;
 grant  execute on function private.names(uuid[])                            to authenticated, service_role;
 grant  execute on function private.who_text(public.agenda_item, uuid, text) to authenticated, service_role;
 grant  execute on function private.text_line(public.agenda_item, uuid, text) to authenticated, service_role;
 grant  execute on function private.digest_item(public.agenda_item, uuid, text, boolean, text, text) to service_role;
+grant  execute on function private.active_person(uuid)                      to service_role;
+grant  execute on function private.active_only(public.agenda_item)          to service_role;
+grant  execute on function private.roll_task(public.tasks)                  to service_role;
 
 commit;

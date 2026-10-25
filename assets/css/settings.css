@@ -1,0 +1,78 @@
+/* =====================================================================
+   Home Hub v2: styles for the Settings page (assets/modules/settings.js).
+   Shared pieces (cards, banners, badges, dialogs, forms) are in styles.css.
+   Colours come from its variables, so light and dark both work. Every tap
+   target is at least 44px, and nothing scrolls the page sideways at 390px.
+   ===================================================================== */
+
+.set-head { margin-bottom: 10px; }
+.set-card { max-width: 760px; }
+.set-body { padding: 4px 18px 18px; }
+.set-help { margin: 0 0 10px; color: var(--text-3); font-size: 14px; }
+.set-btn { min-height: 44px; min-width: 44px; justify-content: center; }
+.set-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+
+/* ---------- Household ---------- */
+.set-form input[type="time"] {
+  width: 100%; max-width: 220px; min-height: 44px; padding: 8px 10px;
+  border: 1px solid var(--border); border-radius: 9px; background: var(--surface); font-size: 15px;
+}
+.set-form select, .set-dayoff input { min-height: 44px; }
+.set-form .set-help { margin: -6px 0 0; font-size: 12px; }
+.set-dl { display: grid; grid-template-columns: minmax(120px, max-content) 1fr; gap: 8px 16px; margin: 0; font-size: 15px; }
+.set-dl dt { color: var(--text-3); }
+.set-dl dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+
+/* ---------- Days off ---------- */
+.set-dayoff { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; align-items: end; gap: 10px 12px; margin-bottom: 10px; max-width: 560px; }
+.set-dayoff .field { min-width: 0; }
+.set-dayoff input { min-width: 0; }
+.set-dayoff + .form-error { margin-bottom: 10px; }
+.set-dayoffs { list-style: none; margin: 0; padding: 0; }
+.set-dayoff-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 52px; padding: 4px 0; border-bottom: 1px solid var(--line); }
+.set-dayoff-row:last-child { border-bottom: 0; }
+.set-dayoff-label { min-width: 0; font-weight: 550; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.set-dayoff-n { color: var(--text-3); font-weight: 500; white-space: nowrap; }
+/* Repeating events that still happen on days off, each with "Skip on days off". */
+.set-stillon:not(:empty) { margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--line); }
+.set-stillon .set-help { margin: 0 0 4px; }
+.set-stillon small { display: block; color: var(--text-3); font-weight: 500; }
+.set-stillon .btn { flex: none; }
+.set-past { margin-top: 8px; }
+.set-past summary { display: flex; align-items: center; min-height: 44px; color: var(--text-3); font-size: 14px; cursor: pointer; }
+.set-past summary::before { content: "▸"; margin-right: 8px; }
+.set-past[open] summary::before { content: "▾"; }
+.set-past summary::-webkit-details-marker { display: none; }
+.set-past .set-dayoff-label { color: var(--text-3); font-weight: 500; }
+
+/* ---------- Morning email ---------- */
+.set-status { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin: 0 0 6px; font-size: 15px; }
+.set-messages { margin: 6px 0 10px; }
+.set-preview pre.set-text {
+  margin: 0; max-height: 50vh; overflow: auto; padding: 12px 14px;
+  border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); color: var(--text);
+  font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.set-preview .d-close { width: 44px; height: 44px; }
+.set-preview .meta, .set-preview .d-warn { margin: 0; }
+.set-subject { display: grid; gap: 2px; }
+.set-subject span { color: var(--text-3); font-size: 12px; font-weight: 650; letter-spacing: 0.04em; text-transform: uppercase; }
+.set-subject strong { overflow-wrap: anywhere; }
+dialog:has(> .set-preview) { width: min(680px, calc(100vw - 16px)); }
+
+/* ---------- Google Calendar & Hearth, the Home Screen, Signed in ---------- */
+.set-row { display: flex; align-items: center; min-height: 44px; color: var(--text-2); }
+.set-steps { margin: 0; padding-left: 20px; display: grid; gap: 8px; color: var(--text-2); }
+.set-ok { margin: 10px 0 0; padding: 8px 12px; border-radius: 9px; background: var(--accent-soft); color: var(--accent); font-size: 14px; }
+.set-account { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; }
+.set-who { margin: 0; min-width: 0; overflow-wrap: anywhere; color: var(--text-2); }
+
+@media (max-width: 640px) {
+  .set-body { padding: 4px 16px 16px; }
+  .set-form input[type="time"] { font-size: 16px; } /* iPhone zooms in on smaller text */
+  .set-dayoff { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .set-dayoff .btn { justify-self: start; }
+  .set-dl { grid-template-columns: 1fr; gap: 2px; }
+  .set-dl dd { margin-bottom: 8px; }
+  .set-preview { padding: 16px; }
+}

@@ -21,8 +21,14 @@ select test.is((select string_agg(day::text, ' ' order by day) from agenda('2026
                '2026-11-04 2026-11-09 2026-11-11', 'weekly Mon+Wed from a Wednesday, every week');
 insert into events (title, start_date, start_time, repeat) values ('Soccer', '2026-11-07', '09:00', 'weekly');
 select test.is((select repeat_weekdays from events where title = 'Soccer'), '{6}'::int[], 'weekly with no days repeats on the first day''s weekday');
-select test.throws($$insert into events (title, start_date, repeat_weekdays) values ('Bad', '2026-11-07', '{6}')$$,
-                   'violates check constraint', 'weekdays only for weekly events');
+insert into events (title, start_date, repeat_weekdays) values ('Garage sale', '2026-11-07', '{6}');
+select test.is((select repeat_weekdays from events where title = 'Garage sale'), '{}'::int[], 'weekdays only for weekly events: a one-off has them cleared');
+update events set repeat = 'none' where title = 'Soccer';
+select test.is((select repeat || ' ' || repeat_weekdays::text from events where title = 'Soccer'), 'none {}',
+               'switching a weekly event to "doesn''t repeat" clears its weekdays');
+select test.is((select count(*) from agenda('2026-11-01', '2026-11-30') where title = 'Soccer'), 1::bigint, '... and it happens once');
+update events set repeat = 'weekly' where title = 'Soccer';
+select test.is((select repeat_weekdays from events where title = 'Soccer'), '{6}'::int[], 'and back to weekly: its first day''s weekday again');
 
 -- Until is the last day that can have an occurrence.
 insert into events (title, start_date, start_time, repeat, repeat_until) values ('Practice', '2026-11-05', '19:30', 'weekly', '2026-11-19');
@@ -56,6 +62,25 @@ select test.is((select local_start || ' ' || local_end || ' ' || start_at || ' '
                '17:30:00 18:30:00 2026-11-23 22:30:00+00 true', 'move: new time and instant, marked changed');
 select test.is((select notes from agenda('2026-11-23', '2026-11-23') where title = 'Piano'), E'Teacher is late\n\nBring the blue book',
                'move: the day''s note comes first');
+-- The day's note is for whoever is on it ("Pick up at the side door"): it reaches their day
+-- text, My day and morning email. The series' own notes stay family-only.
+select test.is((select day_note from agenda('2026-11-23', '2026-11-23') where title = 'Piano'), 'Teacher is late', 'the day''s note on its own: day_note');
+select test.is((select day_note from agenda('2026-11-11', '2026-11-11') where title = 'Piano'), null, '... none on an ordinary day');
+select test.is(day_text(test.person('Taylor'), '2026-11-23'), E'Taylor · Mon Nov 23\n5:30pm Piano · Morgan · Teacher is late',
+               'day_text carries the day''s note, never the series'' notes');
+:as_owner
+set hub.now = '2026-11-23 08:00 America/New_York';
+:as_anon
+select test.is((select i ->> 'note' from jsonb_array_elements(get_person_day(test.token('Morgan')) -> 'days' -> 0 -> 'items') i where i ->> 'title' = 'Piano'),
+               'Teacher is late', 'My day shows the day''s note');
+select test.is(get_person_day(test.token('Morgan'))::text like '%blue book%', false, '... never the series'' notes');
+:as_service
+select test.is((select x ->> 'detail' from jsonb_array_elements(digest_for(test.person('Morgan'), '2026-11-23') -> 'today') x where x ->> 'title' = 'Piano'),
+               'con Taylor · Teacher is late', 'the morning email shows it too');
+select test.is(digest_for(test.person('Morgan'), '2026-11-23')::text like '%blue book%', false, '... never the series'' notes');
+:as_owner
+reset hub.now;
+:as_adult
 select test.is((select (responsible_id = test.person('Sam'))::text || ' ' || (participant_ids = array[test.person('Taylor')])::text
                 from agenda('2026-11-25', '2026-11-25') where title = 'Piano'),
                'true true', 'reassign: new person in charge, and they aren''t also listed as with');
@@ -138,8 +163,12 @@ select test.is(private.series_after(test.task_row('Lessons'), '2026-11-09'), '20
 select test.is(private.series_after(test.task_row('Lessons'), '2026-11-11'), '2026-11-23'::date, 'task every 2 weeks Mon+Wed: Nov 11 → Nov 23');
 select test.is(private.series_on_or_before(test.task_row('Lessons'), '2026-11-20'), '2026-11-11'::date, 'task every 2 weeks Mon+Wed: on or before Nov 20 → Nov 11');
 select test.is(private.add_units('2026-11-05', 60, 'day'), '2027-01-04'::date, '60 days after Nov 5 is Jan 4');
-select test.throws($$insert into tasks (title, due_date, repeat_mode, every_count, every_unit, repeat_weekdays) values ('Bad', '2026-11-02', 'schedule', 1, 'month', '{1}')$$,
-                   'violates check constraint', 'weekdays only for weekly schedules');
+insert into tasks (title, due_date, repeat_mode, every_count, every_unit, repeat_weekdays) values ('Monthly check', '2026-11-02', 'schedule', 1, 'month', '{1}');
+select test.is((select repeat_weekdays from tasks where title = 'Monthly check'), '{}'::int[], 'weekdays only for weekly schedules: others have them cleared');
+insert into tasks (title, due_date, repeat_mode, every_count, every_unit, repeat_weekdays) values ('Plant care', '2026-11-02', 'after_done', 1, 'week', '{1}');
+select test.is((select repeat_weekdays from tasks where title = 'Plant care'), '{}'::int[], '... including "a while after it''s done"');
+update tasks set every_unit = 'month' where title = 'Lessons';
+select test.is((select repeat_weekdays from tasks where title = 'Lessons'), '{}'::int[], 'switching a weekly schedule to monthly clears its weekdays');
 select test.throws($$insert into tasks (title, repeat_mode, every_count, every_unit) values ('Bad', 'schedule', 1, 'month')$$,
                    'violates check constraint', 'a repeating task needs a due date');
 select test.throws($$insert into tasks (title, due_time) values ('Bad', '09:00')$$, 'violates check constraint', 'a time needs a date');

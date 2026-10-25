@@ -1,0 +1,20 @@
+# Supabase CLI settings for this repository. Only what the deploys need is here; the CLI fills in
+# its defaults for everything else.
+#
+# project_id is the CLI's local name for the project (used for local containers), not the hosted
+# project's ref: never put the real ref here (the repository is public).
+project_id = "home-hub"
+
+# Both functions check who is calling themselves, so the gateway must not ask for a JWT:
+#   hub-jobs    is called by pg_cron through pg_net, which sends no Authorization header. With
+#               the gateway's check on, every run is refused with 401 before the function starts,
+#               and nothing reaches job_runs (Settings would only say it "has never run").
+#   send-email  checks the caller's sign-in itself (the gateway check only knows the legacy keys).
+# Pinned here so a plain `supabase functions deploy` keeps it off. A deploy through another tool
+# (the dashboard, or the Supabase MCP's deploy_edge_function, whose verify_jwt defaults to true)
+# must still turn it off by hand.
+[functions.hub-jobs]
+verify_jwt = false
+
+[functions.send-email]
+verify_jwt = false

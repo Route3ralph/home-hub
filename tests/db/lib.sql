@@ -111,6 +111,9 @@ create function test.person(p_name text) returns uuid language sql stable securi
   $$ select id from public.people where name = p_name $$;
 create function test.token(p_name text) returns text language sql stable security definer set search_path = '' as
   $$ select day_token from public.people where name = p_name $$;
+-- The confirmation secret in a person's confirmation email (null when they have none).
+create function test.confirm_token(p_name text) returns text language sql stable security definer set search_path = '' as
+  $$ select c.token from public.people_confirm c join public.people p on p.id = c.person_id where p.name = p_name $$;
 create function test.task(p_title text) returns uuid language sql stable security definer set search_path = '' as
   $$ select id from public.tasks where title = p_title $$;
 create function test.event(p_title text) returns uuid language sql stable security definer set search_path = '' as
@@ -119,6 +122,10 @@ create function test.contractor(p_name text) returns uuid language sql stable se
   $$ select id from public.contractors where name = p_name $$;
 create function test.project(p_name text) returns uuid language sql stable security definer set search_path = '' as
   $$ select id from public.projects where name = p_name $$;
+-- A task's latest task_log entry (of one status, if given): what an Undo button holds.
+create function test.last_log(p_title text, p_status text default null) returns uuid language sql stable security definer set search_path = '' as
+  $$ select l.id from public.task_log l join public.tasks t on t.id = l.task_id
+     where t.title = p_title and (p_status is null or l.status = p_status) order by l.seq desc limit 1 $$;
 -- A task row as the database sees it (for private.series_after and friends).
 create function test.task_row(p_title text) returns public.tasks language sql stable security definer set search_path = '' as
   $$ select t from public.tasks t where title = p_title $$;

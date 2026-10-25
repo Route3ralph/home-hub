@@ -58,6 +58,12 @@ const probeModule = ({ name = 'probe', min = 1, max = 1, nav = null, root = fals
         route.abort('internetdisconnected');
       });
     }
+    if (opts.noV2Pages) {
+      // 'all' also blanks projects.js, which is a v1 page and a v2 page (schema 1..99).
+      for (const m of ['today', 'calendar', 'tasks', 'directory', 'people', 'settings'].concat(opts.noV2Pages === 'all' ? ['projects'] : [])) {
+        await page.route(`**/assets/modules/${m}.js*`, (route) => route.fulfill({ contentType: 'application/javascript', body: '' }));
+      }
+    }
     if (opts.probes || opts.delayLastModule) {
       // The last module script: optionally slow (to prove boot waits for it), plus any probe modules.
       await page.route('**/assets/modules/family.js*', async (route) => {
@@ -78,7 +84,8 @@ const probeModule = ({ name = 'probe', min = 1, max = 1, nav = null, root = fals
   let { page, db } = await open({ label: 'scripts' });
   const scripts = await page.$$eval('script[src]', (s) => s.map((x) => ({ src: x.getAttribute('src'), async: x.async || x.defer })));
   const order = scripts.map((s) => s.src.replace(/\?.*$/, '').replace(/^https:\/\/cdn\.jsdelivr\.net\/.*\/supabase\.js$/, 'supabase-js'));
-  const expected = ['config.js', 'supabase-js', 'assets/gantt.js', 'assets/hub.js', 'assets/modules/home.js', 'assets/modules/projects.js', 'assets/modules/contractors.js', 'assets/modules/family.js'];
+  const expected = ['config.js', 'supabase-js', 'assets/gantt.js', 'assets/hub.js', 'assets/modules/home.js', 'assets/modules/projects.js', 'assets/modules/contractors.js', 'assets/modules/family.js',
+    ...['today', 'calendar', 'tasks', 'directory', 'people', 'settings'].map((m) => `assets/modules/${m}.js`)];
   check('scripts load core first, then each module, in a fixed order', JSON.stringify(order) === JSON.stringify(expected), order.join(', '));
   check('no script is async or deferred', scripts.every((s) => !s.async));
   const versions = new Set(scripts.concat(await page.$$eval('link[rel=stylesheet]', (l) => l.map((x) => ({ src: x.getAttribute('href') }))))
@@ -149,8 +156,10 @@ const probeModule = ({ name = 'probe', min = 1, max = 1, nav = null, root = fals
   check('opening a module page by its address works', (await text(page, '#probe')) === 'probe xyz');
 
   // 8. v2 database, no v2 modules yet: v1 pages hide, the shell still works
-  const v2 = { hub_schema_version: () => 2 };
-  ({ page } = await open({ label: 'v2-empty', rpc: v2 }));
+  const v2 = { hub_schema_version: () => 2, mark_signed_in: () => null,
+    clock: () => ({ local_date: '2026-11-01', local_time: '09:00:00', tz: 'America/New_York' }) };
+  const v2Db = () => Object.assign(makeDb(), { people: [], household: [{ id: true, tz: 'America/New_York', digest_time: '06:30:00', days_off: [] }] });
+  ({ page } = await open({ label: 'v2-empty', rpc: v2, db: v2Db(), noV2Pages: 'all' }));
   check('hub_schema_version 2 is read as v2', (await page.evaluate(() => HomeHub.core.schemaVersion)) === 2);
   check('v2: v1-only pages are hidden (no tabs)', (await tabs(page)).length === 0 && (await page.isVisible('.topbar .brand')));
   check('v2 with no pages shows a reload hint instead of crashing', (await text(page, '#main')).includes('Reload the page'), await text(page, '#main'));
@@ -160,10 +169,13 @@ const probeModule = ({ name = 'probe', min = 1, max = 1, nav = null, root = fals
 
   // 9. v2 database with a v2 module: only it shows; in v1 mode it stays hidden
   const today = probeModule({ name: 'today', min: 2, max: 2, nav: { label: 'Today', order: 5, href: '#/' }, root: true });
-  ({ page } = await open({ label: 'v2-today', rpc: v2, probes: [today] }));
+  ({ page } = await open({ label: 'v2-today', rpc: v2, db: v2Db(), noV2Pages: 'all', probes: [today] }));
   check('v2: only modules made for v2 get tabs', JSON.stringify(await tabs(page)) === JSON.stringify([['Today', '#/', 'today']]));
   check('v2: the v2 module serves the first page', (await text(page, '#probe')).trim() === 'today');
-  ({ page } = await open({ label: 'v1-today', probes: [today] }));
+  ({ page } = await open({ label: 'v2-projects', rpc: v2, db: v2Db(), noV2Pages: true, probes: [today] }));
+  check('v2: Projects is made for v1 and v2, so it shows in v2 too, after the v2 pages (order 40)',
+    JSON.stringify(await tabs(page)) === JSON.stringify([['Today', '#/', 'today'], ['Projects', '#/projects', 'projects']]), JSON.stringify(await tabs(page)));
+  ({ page } = await open({ label: 'v1-today', noV2Pages: true, probes: [today] }));
   check('v1: a v2-only module stays hidden', JSON.stringify(await tabs(page)) === JSON.stringify(V1_TABS));
 
   // 10. hub_schema_version failing for another reason is an error, not a silent v1
