@@ -99,7 +99,8 @@ Never commit the token.
 
 | File | What it is |
 |---|---|
-| `index.html`, `assets/hub.js` | The private hub |
+| `index.html`, `assets/hub.js` | The private hub: `hub.js` is the core (sign-in, tabs, forms, data access) |
+| `assets/modules/` | The hub's pages (Home, Projects, Contractors, Family), one file each |
 | `share.html` | The public, read-only project page |
 | `assets/gantt.js` | Schedule engine and Gantt chart, shared by both pages |
 | `assets/styles.css` | Styles, with automatic light and dark mode |
@@ -108,3 +109,5 @@ Never commit the token.
 | `supabase/functions/send-email/` | Edge Function that sends email through Resend |
 | `supabase/email-templates/` | The sign-in email, for Supabase's email templates |
 | `.mcp.json`, `.claude/settings.json` | Supabase access for Claude Code sessions (token comes from the environment) |
+| `tests/` | Automated tests: run `tests/run.sh` (see [`tests/README.md`](tests/README.md)) |
+| `CLAUDE.md` | Rules for changing this repo: tests, migrations, deploy order, test data |

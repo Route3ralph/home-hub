@@ -1,0 +1,3 @@
+# Test output: screenshots from the browser tests, and scratch space for test runs
+tests/e2e/shots/
+tests/.tmp/
