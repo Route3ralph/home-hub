@@ -3,8 +3,8 @@
 // digest_for on the tests/db fixture household, with fixed ids).
 // Run alone with: node --experimental-strip-types tests/fn/hub-jobs.test.ts
 import { handle, sameSecret, serviceKey, BATCH, KEEP_RUNS_DAYS, SEND_GAP_MS } from '../../supabase/functions/hub-jobs/handler.ts';
-import { renderDigest, renderConfirm, phoneDigits, siteBase, oneLine } from '../../supabase/functions/hub-jobs/render.ts';
-import { readFileSync } from 'node:fs';
+import { renderDigest, renderConfirm, phoneDigits, siteBase, oneLine, esc } from '../../supabase/functions/hub-jobs/render.ts';
+import { readFileSync, readdirSync } from 'node:fs';
 
 const results: string[] = [];
 const check = (name: string, ok: boolean, detail = '') => results.push(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail && !ok ? `  (${detail})` : ''}`);
@@ -672,6 +672,40 @@ const detailOf = (s: ReturnType<typeof setup>) => JSON.parse(s.runs()[0]?.detail
   check('subject is one line', ev.subject === 'Mon Nov 9: hi Bcc: victim@example.com', JSON.stringify(ev.subject));
   check('the WhatsApp text is URL-encoded, so it can\'t break out of the link',
     hrefs(ev.html).filter((l) => l.startsWith('https://wa.me/')).every((l) => /^https:\/\/wa\.me\/\d+\?text=[A-Za-z0-9%\-_.!~*'()]*$/.test(l)));
+  // Google Calendar (v1.1, docs/v1.1-google-calendar.md §5.6): digest_for's calendar block, parents only.
+  const calBlock = {
+    warning: "Google Calendar isn't up to date (last synced Mon 6:05am). See Settings.",
+    items_failed: "1 item couldn't be copied to Google. See Settings.",
+    put_back: ['Piano, Thu Nov 5: deleted in Google and put back. To cancel one day, use Skip this day in Home Hub.', 'Dentist, Fri Nov 6: changed in Google and put back.'],
+  };
+  const withCal = renderDigest({ ...alexDigest(), calendar: calBlock } as any, SITE, { canSignIn: true });
+  const firstToday = withCal.html.indexOf('Drop off dogs', withCal.html.indexOf('</h1>'));   // (the <title> has the subject)
+  check('the parents\' Google Calendar lines show under the heading, before Today\'s items (HTML and text)',
+    [calBlock.warning, calBlock.items_failed, ...calBlock.put_back].every((l) => { const at = withCal.html.indexOf(esc(l)); return at > withCal.html.indexOf('</h1>') && at < firstToday; })
+    && withCal.text.startsWith(`Today · Mon Nov 9\n${calBlock.warning}\n${calBlock.items_failed}\n${calBlock.put_back[0]}\n${calBlock.put_back[1]}\n\n8:00am  Drop off dogs`), withCal.text.slice(0, 400));
+  check('... the warnings in the warning colour, the put-back lines muted',
+    withCal.html.includes(`<div class="hh-warn" style="color:#8a5a00;font-size:13px;margin:2px 0;">${esc(calBlock.warning)}</div>`)
+    && withCal.html.includes(`class="hh-muted" style="color:#6f675c;font-size:13px;margin:2px 0;">${esc(calBlock.put_back[1])}</div>`));
+  check('... no calendar block (null, or not set up) → no lines', renderDigest({ ...alexDigest(), calendar: null } as any, SITE).text === renderDigest(alexDigest() as any, SITE).text
+    && !renderDigest(alexDigest() as any, SITE).html.includes('hh-warn" style="color:#8a5a00;font-size:13px'));
+  const partCal = renderDigest({ ...alexDigest(), calendar: { warning: null, items_failed: null, put_back: [calBlock.put_back[0]] } } as any, SITE);
+  check('... only the lines it has (a put-back line alone)', partCal.text.includes(calBlock.put_back[0]) && !partCal.text.includes('up to date') && !partCal.text.includes('copied'), partCal.text.slice(0, 200));
+  const manyCal = renderDigest({ ...alexDigest(), calendar: { warning: null, items_failed: null, put_back: ['a1', 'a2', 'a3', 'a4', 'a5'] } } as any, SITE);
+  check('... at most 3 put-back lines', manyCal.text.includes('a3') && !manyCal.text.includes('a4'));
+  const kidCal = renderDigest({ ...morganDigest(), calendar: calBlock } as any, SITE);
+  check('... never for anyone but a parent (even if the block were there)', !kidCal.html.includes('up to date') && !kidCal.text.includes('put back'));
+  // A hostile title typed into Google: as an item of Today, in the subject and in a put-back line.
+  const hostile = '<img src=x onerror=alert(1)>';
+  const gDigest = { ...alexDigest(), today: [{ ...item('google', 'All day', hostile), detail: '<b>Field 3</b>' }, ...alexDigest().today],
+    subject: `Mon Nov 9: ${hostile} · 8:00am Drop off dogs`, calendar: { warning: null, items_failed: null, put_back: [`${hostile}, Thu Nov 5: deleted in Google and put back.`] } };
+  const gMail = renderDigest(gDigest as any, SITE, { canSignIn: true });
+  check('a Google title like <img src=x onerror=…> is escaped in the body (item, put-back line) and the HTML title',
+    !/<img|<b>/.test(gMail.html) && (gMail.html.match(/&lt;img src=x onerror=alert\(1\)&gt;/g) || []).length === 3 && gMail.html.includes('<title>Mon Nov 9: &lt;img src=x'), (gMail.html.match(/&lt;img/g) || []).length);
+  check('... the subject stays one line of plain text (it isn\'t HTML), and the text part has it as text',
+    gMail.subject === `Mon Nov 9: ${hostile} · 8:00am Drop off dogs` && gMail.text.includes(`All day  ${hostile} · <b>Field 3</b>`), gMail.subject);
+  const SEP = String.fromCharCode(0x2028, 0x2029);   // the Unicode line and paragraph separators, never written out here
+  const sepTitle = renderDigest({ ...gDigest, subject: `Mon Nov 9: a${SEP[0]}b\r\nBcc: x@example.com`, calendar: { warning: `w${SEP[1]}x\ny`, items_failed: null, put_back: [] } } as any, SITE);
+  check('... line breaks and separators can\'t split the subject or a calendar line', sepTitle.subject === 'Mon Nov 9: a b Bcc: x@example.com' && sepTitle.text.includes('\nw x y\n'), JSON.stringify(sepTitle.subject));
   const evC = renderConfirm({ name: '<b>Mo</b>', language: 'en' }, `${SITE}day.html?c=${CONFIRM_MORGAN}#confirm`);
   check('confirmation email escapes the name', evC.html.includes('Hi &lt;b&gt;Mo&lt;/b&gt;,') && !evC.html.includes('<b>Mo'));
 
@@ -790,9 +824,12 @@ const detailOf = (s: ReturnType<typeof setup>) => JSON.parse(s.runs()[0]?.detail
   check('oneLine: control characters and the Unicode line and paragraph separators become single spaces',
     oneLine(`a${SEPARATORS[0]}b${SEPARATORS[1]}c\u0001\n d\t\r\ne`) === 'a b c d e' && oneLine(` x${SEPARATORS} `) === 'x',
     JSON.stringify(oneLine(`a${SEPARATORS[0]}b${SEPARATORS[1]}c\u0001\n d\t\r\ne`)));
-  const sources = ['index.ts', 'handler.ts', 'render.ts'].map((f) => readFileSync(new URL(`../../supabase/functions/hub-jobs/${f}`, import.meta.url), 'utf8'));
+  // Every file of the function (v1.1 added util.ts, google.ts and calendar.ts), not only the first three.
+  const fnFiles = readdirSync(new URL('../../supabase/functions/hub-jobs/', import.meta.url)).filter((f) => f.endsWith('.ts'));
+  const sources = fnFiles.map((f) => readFileSync(new URL(`../../supabase/functions/hub-jobs/${f}`, import.meta.url), 'utf8'));
   check('hub-jobs source has no \\u2028 or \\u2029 escapes, nor the raw characters (they break the deploy)',
-    sources.every((src) => !/\\u202[89]|\\u\{202[89]\}/.test(src) && !src.includes(SEPARATORS[0]) && !src.includes(SEPARATORS[1])));
+    ['index.ts', 'handler.ts', 'render.ts', 'util.ts', 'google.ts', 'calendar.ts'].every((f) => fnFiles.includes(f))
+    && sources.every((src) => !/\\u202[89]|\\u\{202[89]\}/.test(src) && !src.includes(SEPARATORS[0]) && !src.includes(SEPARATORS[1])), fnFiles.join(','));
   s = setup({ tables: { job_runs: [runRow(5, 0, false, { stop: 'config', error: 'SITE_URL is not set' })] } });
   res = await handle(asUser({ action: 'status' }), s.deps);
   out = await res.json();

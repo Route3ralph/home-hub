@@ -1,7 +1,8 @@
 // Browser tests for My day (day.html?t=<token>), the public page for kids and helpers: what it loads
 // (config.js and supabase-js only, no hub, no manifest, noindex and no-referrer), today / late / tomorrow
 // in English and Spanish, ticking off with Undo, refreshes, links that don't work, the #confirm and #stop
-// questions (nothing changes on load), the "Add to Home Screen" hint, phone width and dark mode.
+// questions (nothing changes on load), the "Add to Home Screen" hint, phone width and dark mode; and (schema 3)
+// a Google Calendar event (kind 'google'): no box to tick, an outlined dot, a hostile title shown as text.
 //
 // The fake RPCs answer with the shapes in supabase/migrations/0002_home_hub_v2.sql:
 //   get_person_day(p_token) → { person: { name, language, digest_enabled, email_confirmed }, today,
@@ -614,6 +615,29 @@ const ANDROID = 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KH
   await page.context().close();
   ({ page, db } = await open({ label: 'stop-unknown', path: `/day.html?t=${UNKNOWN}#stop` }));
   check('#stop with a link that doesn\'t work: the new-link message, nothing sent', /Ask the family for a new link/.test(await text(page, '.day-problem')) && calls(db, 'stop_digest').length === 0);
+  await page.context().close();
+
+  // =====================================================================
+  // 8b. Google Calendar events (kind 'google', from migration 0003's person_items): never a box to tick
+  // =====================================================================
+  db = dayDb();
+  db.my[TAYLOR].days[0].push(
+    item({ kind: 'google', item_id: crypto.randomUUID(), title: '<img src=x onerror="window.__xss=1">Swim meet', start_time: '11:00', end_time: '12:00', time_label: '11:00am',
+      location: 'javascript:alert(1)' }),
+    item({ kind: 'google', item_id: crypto.randomUUID(), title: 'Private item', all_day: true }),
+  );
+  ({ page } = await open({ label: 'google', db, path: `/day.html?t=${TAYLOR}` }));
+  const google = (await rowsOf(page, 'today')).filter((r) => /k-google/.test(r.cls));
+  check('a Google event: no box to tick, its time and place', same(google.map((r) => [r.title, r.top, r.sub, r.details, r.box]), [
+    ['<img src=x onerror="window.__xss=1">Swim meet', '11:00am', '12:00pm', 'javascript:alert(1)', null], ['Private item', 'All day', '', '', null]]), JSON.stringify(google));
+  check('a Google event: the hostile title and place are text (no image, no link), nothing runs', !(await page.$('.irow img, .irow-sub a')) && await page.evaluate(() => !window.__xss));
+  const dot = await page.$eval('.irow.k-google .irow-title', (t) => { const b = getComputedStyle(t, '::before'); return [b.borderTopStyle, b.borderRadius, b.backgroundColor]; });
+  check('a Google event: an outlined dot before its title (day.css)', dot[0] === 'solid' && dot[1] === '50%' && dot[2] === 'rgba(0, 0, 0, 0)', JSON.stringify(dot));
+  await page.screenshot({ path: SHOTS + 'day-google.png', fullPage: true });
+  await page.context().close();
+  ({ page } = await open({ label: 'google-phone', db, path: `/day.html?t=${TAYLOR}`, ctx: Object.assign(phone(), { colorScheme: 'dark' }) }));
+  check('a Google event (phone, dark): no sideways scroll; still no box', await noSideScroll(page) && !(await page.$('.irow.k-google .day-check')));
+  await page.screenshot({ path: SHOTS + 'day-google-phone-dark.png', fullPage: true });
   await page.context().close();
 
   // =====================================================================

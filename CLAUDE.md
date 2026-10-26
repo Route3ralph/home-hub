@@ -10,14 +10,15 @@ A private family web app (static site on GitHub Pages + Supabase). See `README.m
   - the Edge Function tests (`tests/fn/*.test.ts`);
   - the browser tests (`tests/e2e/*.test.js`), against a JavaScript fake of Supabase (`tests/e2e/mock.js`);
   - the real-database tests (`tests/realdb/run.sh`): the same pages in Chromium against the real schema, migrations, RLS and functions, so the fakes can't drift unnoticed (about 1.5 minutes);
-  - the docs check (`tests/docs/*.test.js`): this file, `README.md` and `docs/v2-design.md` against the code (deploy secrets, test suites, function signatures, tables and columns).
+  - the docs check (`tests/docs/*.test.js`): this file, `README.md` and `docs/v2-design.md` against the code (deploy secrets, test suites, function signatures, tables and columns), and the function signatures in `docs/v1.1-google-calendar.md`.
   `tests/run.sh fn e2e` runs only the suites named. See `tests/README.md`.
 - New behaviour gets new tests. Never weaken or delete an existing check to make a change pass; fix the code, or explain in the PR why the old expectation was wrong.
 
 ## Database changes
 
 - `supabase/schema.sql` is the v1 baseline. Don't edit it for new work.
-- Every schema change is a new, numbered file in `supabase/migrations/` (`0002_home_hub_v2.sql`, then `0003_…`). A fresh install is `schema.sql` followed by `migrations/*.sql` in order.
+- Every schema change is a new, numbered file in `supabase/migrations/` (`0002_home_hub_v2.sql`, `0003_google_calendar.sql`, then `0004_…`). A fresh install is `schema.sql` followed by `migrations/*.sql` in order.
+- `supabase/preflight.sql` is for 0002 only (a v1 database before v2). 0003 checks for itself: it refuses to run without 0002, or twice, and any clash rolls it back.
 - Migrations are additive, so the site that is already live keeps working until it is updated, and each runs in one transaction.
 - Follow the rules in `docs/v2-design.md` §3: RLS on every table, `set search_path = ''` on every function, and explicit `revoke … from public, anon` / `grant … to authenticated` on every new public function.
 - Keep `docs/v2-design.md` in step: a new or changed table, column or public function, or a changed signature, goes in it in the same PR (the docs check names what's missing).
@@ -28,12 +29,12 @@ A private family web app (static site on GitHub Pages + Supabase). See `README.m
 1. Run `supabase/preflight.sql` (read-only checks) and `list_migrations`.
 2. Merge the client PRs. The site stays in v1 mode until step 3 (the core reads `hub_schema_version()`; when it's missing, the site shows the v1 pages).
 3. Apply the migration (the site switches to v2 on next load).
-4. Deploy `hub-jobs` from main with verify_jwt false (`supabase/config.toml` pins it for the CLI; with the dashboard or the Supabase MCP's `deploy_edge_function`, whose default is true, turn it off by hand). Secrets: `HUB_CRON_SECRET` (at least 32 characters); `SITE_URL` (required: the site's address, for the links in the emails; without it every run stops with `stop: 'config'` and Settings → Preview answers 503); `RESEND_API_KEY` and `EMAIL_FROM` (required) and `EMAIL_FROM_NAME`, the same as for `send-email`; and `HEALTHCHECK_URL`, which is optional.
-5. Create the two Vault secrets by hand (`hub_cron_secret`, the same value as `HUB_CRON_SECRET`, and `hub_jobs_url`, the function's address), then run `supabase/cron.sql`. Its header has the exact commands; it refuses to run while either is missing or a placeholder.
+4. Deploy `hub-jobs` from main with verify_jwt false (`supabase/config.toml` pins it for the CLI; with the dashboard or the Supabase MCP's `deploy_edge_function`, whose default is true, turn it off by hand). Secrets: `HUB_CRON_SECRET` (at least 32 characters); `SITE_URL` (required: the site's address, for the links in the emails; without it every run stops with `stop: 'config'` and Settings → Preview answers 503); `RESEND_API_KEY` and `EMAIL_FROM` (required) and `EMAIL_FROM_NAME`, the same as for `send-email`; `HEALTHCHECK_URL`, which is optional; and for Google Calendar (v1.1) `GOOGLE_SA_JSON`, also optional: the whole service-account key file (without it the calendar job stops with `not_set_up` and the morning email is unchanged).
+5. Create the two Vault secrets by hand (`hub_cron_secret`, the same value as `HUB_CRON_SECRET`, and `hub_jobs_url`, the function's address), then run `supabase/cron.sql`. Its header has the exact commands; it refuses to run while either is missing or a placeholder. Run it again after every release that changes it (v1.1 adds the `hub-calendar` job); it is safe to run again.
 6. Smoke checks: no header → 401; preview → rendered JSON; Settings shows the last run; next morning `notification_log` has sent rows.
 7. Ops hardening: Auth email rate limit about 6/hour; the signup hook stays on; Resend click/open tracking off.
 
-Never apply a migration before the client code that understands it is live.
+Never apply a migration before the client code that understands it is live. For v1.1 (migration 0003) that means the site and `hub-jobs` go live first; its order is in `docs/v1.1-google-calendar.md` §8.3.
 
 ## Test data
 

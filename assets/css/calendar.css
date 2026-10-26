@@ -168,6 +168,24 @@
 }
 .cal-panel { padding: 2px 16px 8px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); }
 
+/* ---------- Events read from Google Calendar (kind 'google'; also Today's rows) ----------
+   Drawn like events, with an outlined dot in the person's colour (neutral for Family) instead of a
+   filled one or a stripe, and "Google" on the second line. No checkbox: they're changed in Google. */
+.irow.k-google .irow-title::before {
+  content: ""; display: inline-block; box-sizing: border-box; width: 10px; height: 10px; margin-right: 7px;
+  border: 2px solid var(--pc, var(--text-3)); border-radius: 50%;
+}
+.cal-list .irow.k-google { box-shadow: none; }
+.badge.g-tag { background: transparent; color: var(--text-3); box-shadow: inset 0 0 0 1px var(--border); }
+.cal-lab.k-google .cal-dot { background: transparent; box-shadow: inset 0 0 0 2px var(--pc, var(--text-3)); }
+.cal-bar.k-google, .cal-mbar.k-google { background: var(--surface); box-shadow: inset 0 0 0 1.5px var(--pc, var(--text-3)); }
+.cal-bar.k-google:hover { background: var(--surface-2); }
+@media (max-width: 640px) { .cal-mbar.k-google { background: transparent; } }
+.cal-gdot { background: transparent; box-shadow: inset 0 0 0 2px var(--c); }
+/* "Google events couldn't be loaded." and "Google Calendar events show from … to …". */
+.cal-gnote { margin: -4px 0 12px; color: var(--text-3); font-size: 14px; }
+.cal-gnote.is-bad { padding: 8px 12px; border-radius: 9px; background: var(--warn-soft); color: var(--warn); }
+
 /* ---------- Details dialog ---------- */
 .cal-details .d-close, .cal-form .d-close { width: 44px; height: 44px; }
 .cal-details .d-actions .btn { min-height: 44px; }

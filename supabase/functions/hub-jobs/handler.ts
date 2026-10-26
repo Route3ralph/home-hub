@@ -1,6 +1,6 @@
-// hub-jobs: Home Hub's morning email. One Edge Function, deployed with verify_jwt off;
-// each action checks who is asking itself. Kept free of outside imports so it can be
-// tested in Node; index.ts wires it up. (send-email is a separate function, unchanged.)
+// hub-jobs: Home Hub's morning email and its Google Calendar copy. One Edge Function, deployed
+// with verify_jwt off; each action checks who is asking itself. Kept free of outside imports so it
+// can be tested in Node; index.ts wires it up. (send-email is a separate function, unchanged.)
 //
 // POST JSON { action }:
 //   digest   pg_cron (supabase/cron.sql) every 15 minutes, with the header x-hub-cron: <HUB_CRON_SECRET>.
@@ -17,16 +17,30 @@
 //   preview  admins (their own sign-in): { date?: 'YYYY-MM-DD', person_id?: uuid } → the rendered
 //            emails, one per person, without sending or logging anything.
 //   status   admins: the last 10 runs and today's emails, as counts and fixed messages.
+//   calendar pg_cron (supabase/cron.sql) every 5 minutes with x-hub-cron, or an admin's Sync now
+//            (their own sign-in; it also reads every calendar): copies hub items to Google and reads
+//            Google's events back (calendar.ts, docs/v1.1-google-calendar.md §3.4).
+//   calendar_test  admins: { calendar_id } → checks one calendar in Google (calendar.ts).
+//            Both answer 503 {stop: 'no_schema'} until migration 0003 is applied. The body is ignored
+//            except for action and calendar_id.
 //
 // Secrets (Supabase dashboard → Edge Functions → Secrets):
 //   HUB_CRON_SECRET  at least 32 random characters; the same value as the Vault secret hub_cron_secret
 //   SITE_URL         the site's address, e.g. https://<you>.github.io/<repo>/ (for the links in emails)
 //   RESEND_API_KEY, EMAIL_FROM, EMAIL_FROM_NAME (optional)   as for send-email
 //   HEALTHCHECK_URL  optional, e.g. a healthchecks.io ping URL (it must also answer at <url>/fail)
+//   GOOGLE_SA_JSON   optional: the Google service-account key file, for the calendar (read in calendar.ts)
 // Supabase provides SUPABASE_URL, the publishable key and the secret (service-role) key.
 
-import { renderConfirm, renderDigest, siteBase, confirmUrl, oneLine } from './render.ts';
+import { renderConfirm, renderDigest, siteBase, confirmUrl } from './render.ts';
 import type { Digest, Email } from './render.ts';
+import { CORS, DETAIL_MAX, json, message, oneLine, sameSecret, isUuid } from './util.ts';
+import type { Db, Deps } from './util.ts';
+import { runCalendar, testCalendar } from './calendar.ts';
+
+// What the tests and index.ts import from here.
+export { CORS, sameSecret };
+export type { Db, Deps, Result } from './util.ts';
 
 export const BATCH = 20;              // emails per run (digest_due's limit)
 export const KEEP_RUNS_DAYS = 30;     // job_runs older than this are removed after each run
@@ -34,48 +48,12 @@ export const SEND_GAP_MS = 600;       // Resend allows 2 requests a second by de
 export const CONFIRM_MAX = 2;         // confirmation emails per address: the first and one reminder
 const SEND_TIMEOUT_MS = 15000;
 const MIN_SECRET = 32;
-const DETAIL_MAX = 300;
-
-export const CORS = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
-  'Access-Control-Allow-Methods': 'POST, OPTIONS',
-};
-
-// The parts of supabase-js used here. Queries are chained and awaited, like supabase-js.
-export type Result<T = any> = { data: T | null; error: { message?: string } | null };
-export interface Db {
-  rpc(fn: string, args?: Record<string, unknown>): PromiseLike<Result>;
-  from(table: string): any;
-}
-export interface Deps {
-  env: (name: string) => string | undefined;
-  fetch: typeof fetch;
-  service: () => Db;                     // the service-role key: the job functions and people_confirm
-  user: (authorization: string) => Db;   // the caller's sign-in and the publishable key: whoami, status
-  now?: () => number;
-  sleep?: (ms: number) => Promise<void>;
-}
 
 type Row = { person_id: string; local_date: string; kind: string };
 type Outcome = { status: 'sent' | 'skipped' | 'failed'; detail: string | null };
 
-const json = (status: number, body: unknown) =>
-  new Response(JSON.stringify(body), { status, headers: { ...CORS, 'Content-Type': 'application/json' } });
-
-const message = (err: unknown) => oneLine((err as { message?: string })?.message ?? err).slice(0, DETAIL_MAX) || 'unknown error';
-
 // Resend takes the sender as `"Name" <address>`; keep the name to characters that can't break that.
 const displayName = (s: string) => s.replace(/[^\p{L}\p{N} '.-]/gu, '').replace(/\s+/g, ' ').trim() || 'Home Hub';
-
-// Compares secrets without stopping at the first difference, so timing doesn't reveal how much matched.
-export function sameSecret(given: string, expected: string): boolean {
-  const a = new TextEncoder().encode(given);
-  const b = new TextEncoder().encode(expected);
-  let diff = a.length ^ b.length;
-  for (let i = 0; i < Math.max(a.length, b.length); i++) diff |= (a[i] ?? 0) ^ (b[i] ?? 0);
-  return diff === 0;
-}
 
 // The service-role key: SUPABASE_SECRET_KEYS ({"default": "sb_secret_…"}), else the legacy SUPABASE_SERVICE_ROLE_KEY.
 export function serviceKey(env: Deps['env']): string | null {
@@ -95,7 +73,6 @@ const isDate = (s: unknown): s is string => {
   const t = Date.parse(`${s}T00:00:00Z`);
   return !Number.isNaN(t) && new Date(t).toISOString().slice(0, 10) === s;
 };
-const isUuid = (s: unknown): s is string => typeof s === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s);
 const addDays = (d: string, n: number) => new Date(Date.parse(`${d}T00:00:00Z`) + n * 86400000).toISOString().slice(0, 10);
 
 // 16 hex characters of the secret's SHA-256: enough to tell one address's secret from the next,
@@ -157,7 +134,35 @@ export async function handle(req: Request, deps: Deps): Promise<Response> {
     if (error || !me || me.role !== 'admin') return json(403, { error: 'Only family admins can do this.' });
     return action === 'preview' ? preview(body, deps) : status(userDb, deps);
   }
-  return json(400, { error: 'Unknown action. Use digest, preview or status.' });
+  if (action === 'calendar' || action === 'calendar_test') return calendar(req, action, body, deps);
+  return json(400, { error: 'Unknown action. Use digest, preview, status, calendar or calendar_test.' });
+}
+
+// ---------------------------------------------------------------------
+// calendar and calendar_test: who may ask (the work is in calendar.ts)
+// calendar: pg_cron's x-hub-cron header (compared in constant time, as for digest), or a signed-in
+// admin, whose run is Sync now and reads every calendar. calendar_test: admins only.
+// ---------------------------------------------------------------------
+async function calendar(req: Request, action: 'calendar' | 'calendar_test', body: Record<string, unknown>, deps: Deps): Promise<Response> {
+  const given = (req.headers.get('x-hub-cron') || '').trim();
+  let force = false;
+  if (action === 'calendar' && given) {
+    const secret = (deps.env('HUB_CRON_SECRET') || '').trim();
+    if (secret.length < MIN_SECRET) {
+      return json(503, { error: `The calendar job is not set up: HUB_CRON_SECRET must be at least ${MIN_SECRET} characters.` });
+    }
+    if (!sameSecret(given, secret)) return json(401, { error: 'Not allowed.' });
+  } else {
+    const authorization = req.headers.get('Authorization') || '';
+    if (!/^Bearer\s+\S+/.test(authorization)) return json(401, { error: action === 'calendar' ? 'Not allowed.' : 'Sign in first.' });
+    const { data: me, error } = await deps.user(authorization).rpc('whoami');
+    if (error || !me || me.role !== 'admin') return json(403, { error: 'Only family admins can do this.' });
+    force = true;
+  }
+  if (!deps.env('SUPABASE_URL') || !serviceKey(deps.env)) {
+    return json(503, { error: 'The function has no Supabase service key (SUPABASE_URL and SUPABASE_SECRET_KEYS).' });
+  }
+  return action === 'calendar' ? runCalendar(deps, { force }) : testCalendar(body, deps);
 }
 
 // ---------------------------------------------------------------------

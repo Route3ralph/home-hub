@@ -2,6 +2,9 @@
 # Database tests. Starts a throwaway Postgres, loads the Supabase stand-ins, supabase/schema.sql,
 # a v1-era household (v1_data.sql) and supabase/migrations/*.sql in order, then runs each
 # tests/db/*.test.sql against its own fresh copy of that database.
+# Before that: preflight.sql's checks, each migration's refusal to run twice (or too early), and
+# that migration 0003 leaves the email, day_text and My day exactly as 0002 made them while no
+# Google calendar is set up (same_output.sql).
 # Prints one "PASS  name" or "FAIL  name  (detail)" line per check, then the totals,
 # and exits non-zero if anything failed.
 # Needs the PostgreSQL 16 server binaries (PG_BIN overrides where they are); cluster.sh starts
@@ -49,12 +52,27 @@ sql -d postgres -c 'create database hub_again template hub'
 out=$(quiet -d hub_again -f supabase/migrations/0002_home_hub_v2.sql 2>&1)
 if [[ $out == *"already installed"* ]]; then report "PASS  migration 0002 refuses to run twice"
 else report "FAIL  migration 0002 refuses to run twice  (${out:0:200})"; fi
+out=$(quiet -d hub_again -f supabase/migrations/0003_google_calendar.sql 2>&1)
+if [[ $out == *"already installed"* ]]; then report "PASS  migration 0003 refuses to run twice"
+else report "FAIL  migration 0003 refuses to run twice  (${out:0:200})"; fi
+sql -d postgres -c 'create database hub_v1_again template hub_v1'
+out=$(quiet -d hub_v1_again -f supabase/migrations/0003_google_calendar.sql 2>&1)
+if [[ $out == *"isn't installed"* ]] && [[ -z $(quiet -d hub_v1_again -A -t -c "select to_regclass('public.calendars')") ]]; then
+  report "PASS  migration 0003 refuses to run on a v1 database (0002 isn't installed), and changes nothing"
+else report "FAIL  migration 0003 refuses to run on a v1 database  (${out:0:200})"; fi
+
+# The database with migration 0002 only, as it is live before 0003 (steps 5 and 5b).
+sql -d postgres -c 'create database hub_02 template hub_v1'
+if ! quiet -d hub_02 -f supabase/migrations/0002_home_hub_v2.sql >"$dir/load.log" 2>&1; then
+  report "FAIL  migration 0002 applies to hub_02  ($(tail -n 1 "$dir/load.log"))"; exit 1
+fi
 
 # 5. preflight.sql's promise, "nothing migration 0002 creates exists yet", covers everything the
 #    migration creates that a live database could already have under the same name (which would
 #    stop the migration): every table, index, sequence and type name in public, every trigger,
 #    policy and column it adds to a v1 table, and every function name in public and private.
-#    The objects come from comparing the database before and after the migrations.
+#    The objects come from comparing the database before and after migration 0002 (hub_02: later
+#    migrations open with their own guard, and preflight.sql is for 0002 only).
 objects() { # one line per object: "<kind> <name>", in preflight's spelling
   quiet -d "$1" -A -t <<'SQL'
 select 'table public.' || c.relname from pg_class c where c.relnamespace = 'public'::regnamespace and c.relkind in ('r', 'p')
@@ -78,7 +96,7 @@ where n.nspname in ('public', 'private');
 SQL
 }
 objects hub_v1 | sort -u >"$dir/before.txt"
-objects hub | sort -u >"$dir/after.txt"
+objects hub_02 | sort -u >"$dir/after.txt"
 # New objects; triggers, policies and columns only count on tables that were already there.
 comm -13 "$dir/before.txt" "$dir/after.txt" | while IFS= read -r line; do
   case $line in
@@ -115,6 +133,57 @@ else report "FAIL  preflight flags a trigger, policy or index name the migration
 out=$(quiet -d hub_clash -f supabase/migrations/0002_home_hub_v2.sql 2>&1)
 if [[ $out == *"already exists"* ]]; then report "PASS  ... which really would stop the migration"
 else report "FAIL  ... which really would stop the migration  (${out:0:200})"; fi
+
+# 5b. Migration 0003 replaces six functions (hub_schema_version, item_order, text_line, digest_item,
+#     person_items and digest_for). With no Google calendar set up, the email, day_text and My day
+#     must come out exactly as before: same_output.sql loads a household into hub_02, a copy of it
+#     gets the later migrations, and both give the same digest_for, day_text and get_person_day
+#     JSON for every person and the 14 days around the Nov 1 clock change (digest_for's new
+#     "calendar": null aside).
+quiet -d hub_02 -f tests/db/lib.sql >/dev/null
+if ! (cd tests/db && quiet -d hub_02 -f same_output.sql) >"$dir/load.log" 2>&1; then
+  report "FAIL  same output: loading same_output.sql  ($(tail -n 1 "$dir/load.log"))"
+else
+  sql -d postgres -c 'create database hub_02_later template hub_02'
+  ok=1
+  for m in supabase/migrations/*.sql; do
+    [[ $(basename "$m") < 0003 ]] && continue
+    if ! quiet -d hub_02_later -f "$m" >"$dir/load.log" 2>&1; then
+      report "FAIL  same output: migration $(basename "$m") applies to a database with data  ($(tail -n 1 "$dir/load.log"))"; ok=0
+    fi
+  done
+  same_output() { # one line per person, day and function, sorted
+    quiet -d "$1" -A -t <<'SQL'
+create temp table same_out (k text, v text);
+do $$
+declare
+  d date;
+begin
+  for d in select g::date from generate_series(date '2026-10-25', date '2026-11-07', interval '1 day') g loop
+    perform set_config('hub.now', to_char(d, 'YYYY-MM-DD') || ' 07:00 America/New_York', false);
+    insert into same_out
+    select p.name || ' ' || d || ' ' || f, v
+    from public.people p
+    cross join lateral (
+      select 'digest_for', (select case when j -> 'calendar' = 'null' then j - 'calendar' else j end
+                            from (select public.digest_for(p.id, d) as j) x)::text
+      union all select 'day_text', public.day_text(p.id, d)
+      union all select 'get_person_day', public.get_person_day(p.day_token)::text) x (f, v);
+  end loop;
+end;
+$$;
+select k || ' = ' || coalesce(v, 'null') from same_out order by k;
+SQL
+  }
+  same_output hub_02 >"$dir/same_02.txt" 2>&1
+  same_output hub_02_later >"$dir/same_later.txt" 2>&1
+  rows=$(grep -c ' = ' "$dir/same_02.txt")
+  if [[ $ok -eq 1 && $rows -gt 100 ]] && cmp -s "$dir/same_02.txt" "$dir/same_later.txt"; then
+    report "PASS  same output: with no Google calendar, 0003 leaves digest_for, day_text and get_person_day as 0002 made them ($rows results)"
+  else
+    report "FAIL  same output: with no Google calendar, 0003 leaves digest_for, day_text and get_person_day as 0002 made them  ($rows results; first difference: $(diff "$dir/same_02.txt" "$dir/same_later.txt" | head -n 3 | cut -c 1-300 | tr '\n' ' '))"
+  fi
+fi
 
 # 7. Each test file gets a fresh copy, with the helpers in schema "test".
 quiet -d hub -f tests/db/lib.sql >/dev/null

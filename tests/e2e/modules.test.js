@@ -194,6 +194,18 @@ const probeModule = ({ name = 'probe', min = 1, max = 1, nav = null, root = fals
   check('a dropped connection on the schema version call falls back to v1', db.dropped > 0 && (await page.evaluate(() => HomeHub.core.schemaVersion)) === 1 && JSON.stringify(await tabs(page)) === JSON.stringify(V1_TABS), `${db.dropped || 0} dropped; ${dropped.slice(0, 120)}`);
   check('a dropped connection on the schema version call does not block sign-in', /Good (morning|afternoon|evening), Alex/.test(await text(page, '#main')), dropped.slice(0, 120));
 
+  // 13. Schema version 3 (migration 0003, Google Calendar): the same v2 pages and tabs as version 2
+  const V2_TABS = [['Today', '#/', 'today'], ['Calendar', '#/calendar', 'calendar'], ['Tasks', '#/tasks', 'tasks'], ['Projects', '#/projects', 'projects'],
+    ['Directory', '#/directory', 'directory'], ['Family', '#/people', 'people'], ['Settings', '#/settings', 'settings']];
+  const probe23 = probeModule({ name: 'probe', min: 2, max: 3 });
+  ({ page } = await open({ label: 'v2-tabs', rpc: v2, db: v2Db(), path: '/#/probe', probes: [probe23] }));
+  const tabs2 = await tabs(page);
+  ({ page } = await open({ label: 'v3-tabs', rpc: Object.assign({}, v2, { hub_schema_version: () => 3 }), db: v2Db(), path: '/#/probe', probes: [probe23] }));
+  const tabs3 = await tabs(page);
+  check('hub_schema_version 3 is read as 3, and is v2 mode (the bottom bar)', (await page.evaluate(() => HomeHub.core.schemaVersion)) === 3 && !!(await page.$('.bottombar')));
+  check('version 3 shows the v2 tabs, the same as version 2', JSON.stringify(tabs3) === JSON.stringify(V2_TABS) && JSON.stringify(tabs2) === JSON.stringify(V2_TABS), JSON.stringify([tabs2, tabs3]));
+  check('version 3: a page made for 2..3 serves its address', (await text(page, '#probe')).trim() === 'probe');
+
   console.log(results.join('\n'));
   console.log(`\n${results.filter((r) => r.startsWith('PASS')).length}/${results.length} passed`);
   console.log('PAGE ERRORS:', errors.length ? '\n' + errors.join('\n') : 'none');

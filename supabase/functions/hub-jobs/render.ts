@@ -6,8 +6,11 @@
 // A My day link is a bearer link (no sign-in), so it goes only to people who can't sign in:
 // a forwarded email from a parent or adult who can sign in hands out nothing.
 
+import { oneLine } from './util.ts';
+export { oneLine };
+
 export type Item = {
-  kind: string;                 // 'event', 'task', 'project' or 'contract'
+  kind: string;                 // 'event', 'task', 'project', 'contract' or 'google' (read from Google Calendar)
   item_id?: string;
   occurrence?: string;
   time: string | null;          // a label: "8:00am", "15:00", "All day", "Tomorrow 7:30am"
@@ -36,6 +39,9 @@ export type Digest = {
   nobody_more: number;
   projects: ProjectLine[];
   inbox_count: number | null;
+  // Parents only, when a Google calendar is set up and there is something to say (§5.6 of
+  // docs/v1.1-google-calendar.md): each a line in their language, from the database.
+  calendar?: { warning: string | null; items_failed: string | null; put_back: string[] | null } | null;
   empty: boolean;
   labels: Labels;
 };
@@ -44,11 +50,8 @@ export type Email = { subject: string; html: string; text: string };
 export const esc = (s: unknown) =>
   String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
 
-// One line of text: no line breaks or control characters (titles, names, subjects).
-// \s also matches the Unicode line and paragraph separators (U+2028, U+2029). Don't write those two
-// as escapes here: deployed through the Supabase MCP, they reached the bundler as real line breaks,
-// which end a regular expression, and the deploy failed ("Unterminated regexp literal").
-export const oneLine = (s: unknown) => String(s ?? '').replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim();
+// oneLine (one line of text: titles, names, subjects) lives in util.ts, which says why the Unicode
+// line and paragraph separators are never written out in this function's source.
 
 // Several lines (day_text): keep the line breaks, drop other control characters.
 const lines = (s: unknown) => String(s ?? '').replace(/\r\n?/g, '\n').replace(/[\u0000-\u0009\u000b-\u001f\u007f]+/g, ' ').trim();
@@ -155,7 +158,8 @@ const heading = (label: string, tone: 'plain' | 'late' | 'warn' = 'plain') => {
 const muted = (html: string, extra = '') =>
   `<div class="hh-muted" style="color:${C.text3};font-size:13px;${extra}">${html}</div>`;
 
-// The left column: the time, or a box for a task with no time.
+// The left column: the time, or a box for a task with no time. (A Google event is drawn like an
+// event: digest_for gives it a time, or "All day".)
 const lead = (it: Item) => oneLine(it.time) || (it.kind === 'task' ? '☐' : '');
 
 // "with Taylor · Rivera Music · 555-0150"
@@ -215,7 +219,25 @@ export function renderDigest(d: Digest, site: string, opts: { canSignIn?: boolea
   const t: string[] = [];
 
   h.push(`<h1 class="hh-text" style="margin:0 0 6px;font-family:${SERIF};font-size:22px;line-height:1.25;font-weight:600;color:${C.text};">${esc(title)}</h1>`);
-  t.push(title, '');
+  t.push(title);
+  // Google Calendar (parents only): short lines under the heading. Not up to date and items that
+  // keep failing are warnings; events put back after a change in Google are notes. Each line comes
+  // from the database already in their language; titles in it are the hub's or Google's, so escaped.
+  const cal = parent && d.calendar ? d.calendar : null;
+  const calLines = cal
+    ? [
+      ...[cal.warning, cal.items_failed].map(oneLine).filter(Boolean).map((line) => ({ line, warn: true })),
+      ...(Array.isArray(cal.put_back) ? cal.put_back : []).map(oneLine).filter(Boolean).slice(0, 3).map((line) => ({ line, warn: false })),
+    ]
+    : [];
+  for (const { line, warn } of calLines) {
+    h.push(warn
+      ? `<div class="hh-warn" style="color:${C.warn};font-size:13px;margin:2px 0;">${esc(line)}</div>`
+      : muted(esc(line), 'margin:2px 0;'));
+    t.push(line);
+  }
+  if (calLines.length) h.push('<div style="height:8px;line-height:8px;">&nbsp;</div>');
+  t.push('');
   if (today.length) {
     h.push(itemRows(today));
     t.push(...today.map(itemText));

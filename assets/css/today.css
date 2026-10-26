@@ -99,3 +99,15 @@ section.today-who { padding: 14px 16px 16px; }
 .today-step-text small { color: var(--text-3); font-size: 13px; }
 .today-steps .btn { flex: none; min-height: 44px; }
 .today-hide { display: inline-flex; align-items: center; min-height: 44px; }
+
+/* ---------- Google Calendar (schema 3) ----------
+   Google events in the day use the look in calendar.css (.irow.k-google: an outlined dot, "Google").
+   The one-time notice that the calendar now goes to Google and the wall, with a 44px close button. */
+.today-gnotice { display: flex; align-items: center; gap: 6px; padding: 4px 4px 4px 16px; background: var(--accent-soft); color: var(--text); }
+.today-gnotice p { flex: 1; min-width: 0; margin: 0; padding: 8px 0; }
+.today-gnotice-x {
+  flex: none; width: 44px; height: 44px; border: 0; border-radius: 50%;
+  background: none; color: var(--text-2); font-size: 22px; line-height: 1; cursor: pointer;
+}
+.today-gnotice-x:hover, .today-gnotice-x:focus-visible { background: var(--surface); outline: none; }
+.today-gfail { margin: 0 0 8px; padding: 8px 12px; border-radius: 9px; background: var(--warn-soft); color: var(--warn); font-size: 14px; }

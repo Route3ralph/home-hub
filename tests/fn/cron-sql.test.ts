@@ -103,14 +103,19 @@ check('the test can leave out the two "create extension" lines', !/^\s*create ex
     check('a placeholder secret: refused, nothing scheduled', !r.ok && /placeholder|at least 32/.test(r.err) && q('select count(*) from cron.job').out === '0', r.err);
     q(`update vault.decrypted_secrets set decrypted_secret = '${SECRET}' where name = 'hub_cron_secret'`);
 
-    // ---- Schedules the jobs.
+    // ---- Schedules the jobs. v1.1 adds hub-calendar, so there are four (this expectation changed on
+    // purpose: docs/v1.1-google-calendar.md §8.1).
     r = runCron();
     const jobs = q("select jobname || ' ' || schedule from cron.job order by jobname").out.split('\n');
-    check('with real secrets: hub-cron-cleanup (daily), hub-digest (every 15 minutes), hub-roll-missed (hourly)',
-      r.ok && jobs.length === 3 && jobs[0].startsWith('hub-cron-cleanup ') && /^hub-cron-cleanup \d+ \d+ \* \* \*$/.test(jobs[0])
-      && jobs[1] === 'hub-digest */15 * * * *' && jobs[2] === 'hub-roll-missed 7 * * * *', `${r.err} ${jobs.join(' | ')}`);
+    check('with real secrets: hub-calendar (every 5 minutes), hub-cron-cleanup (daily), hub-digest (every 15 minutes), hub-roll-missed (hourly)',
+      r.ok && jobs.length === 4 && jobs[0] === 'hub-calendar 2,7,12,17,22,27,32,37,42,47,52,57 * * * *'
+      && jobs[1].startsWith('hub-cron-cleanup ') && /^hub-cron-cleanup \d+ \d+ \* \* \*$/.test(jobs[1])
+      && jobs[2] === 'hub-digest */15 * * * *' && jobs[3] === 'hub-roll-missed 7 * * * *', `${r.err} ${jobs.join(' | ')}`);
+    const minutes = (jobs[0] || '').split(' ')[1]?.split(',').map(Number) || [];
+    check('hub-calendar runs every 5 minutes, never on hub-digest\'s quarter hours',
+      minutes.length === 12 && minutes.every((m, i) => m === 2 + 5 * i) && minutes.every((m) => m % 15 !== 0), minutes.join(','));
     r = runCron();
-    check('running it again replaces the jobs (still three)', r.ok && q('select count(*) from cron.job').out === '3', r.err);
+    check('running it again replaces the jobs (still four)', r.ok && q('select count(*) from cron.job').out === '4', r.err);
 
     // ---- The digest job reads the URL and the secret from Vault when it runs.
     const digestCmd = q("select command from cron.job where jobname = 'hub-digest'").out;
@@ -118,6 +123,21 @@ check('the test can leave out the two "create extension" lines', !/^\s*create ex
     const call = q("select url || ' ' || (headers->>'x-hub-cron') || ' ' || (body->>'action') from net.calls").out;
     check('the digest job posts {"action":"digest"} to the Vault URL with the Vault secret', r.ok && call === `${URL_OK} ${SECRET} digest`, `${r.err} ${call}`);
     check('neither secret is stored in the job itself', !digestCmd.includes(SECRET) && !digestCmd.includes(URL_OK));
+
+    // ---- The calendar job: the same URL and header from Vault, {"action":"calendar"}, 60 seconds.
+    q('delete from net.calls');
+    const calendarCmd = q("select command from cron.job where jobname = 'hub-calendar'").out;
+    r = psql('crontest', [], calendarCmd.trim().replace(/;?\s*$/, ';'));
+    const calCall = q("select url || ' ' || (headers->>'x-hub-cron') || ' ' || (headers->>'Content-Type') || ' ' || body::text || ' ' || timeout_milliseconds from net.calls").out;
+    check('the calendar job posts {"action":"calendar"} to the Vault URL with the Vault secret, timeout 60 s',
+      r.ok && calCall === `${URL_OK} ${SECRET} application/json {"action": "calendar"} 60000`, `${r.err} ${calCall}`);
+    check('... and stores neither secret in the job itself', !calendarCmd.includes(SECRET) && !calendarCmd.includes(URL_OK) && /hub_cron_secret/.test(calendarCmd) && /hub_jobs_url/.test(calendarCmd));
+    q(`update vault.decrypted_secrets set decrypted_secret = 'https://other.example/functions/v1/hub-jobs' where name = 'hub_jobs_url'`);
+    q('delete from net.calls');
+    psql('crontest', [], calendarCmd.trim().replace(/;?\s*$/, ';'));
+    check('... reading Vault each time it runs (a changed URL is used without running cron.sql again)',
+      q('select url from net.calls').out === 'https://other.example/functions/v1/hub-jobs', q('select url from net.calls').out);
+    q(`update vault.decrypted_secrets set decrypted_secret = '${URL_OK}' where name = 'hub_jobs_url'`);
 
     // ---- The cleanup job: cron.job_run_details would otherwise keep ~120 rows a day forever.
     q(`insert into cron.job (jobname, schedule, command) values ('family-backup', '0 2 * * *', 'select 1')`);
