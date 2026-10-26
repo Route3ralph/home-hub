@@ -3,7 +3,7 @@
 // digest_for on the tests/db fixture household, with fixed ids).
 // Run alone with: node --experimental-strip-types tests/fn/hub-jobs.test.ts
 import { handle, sameSecret, serviceKey, BATCH, KEEP_RUNS_DAYS, SEND_GAP_MS } from '../../supabase/functions/hub-jobs/handler.ts';
-import { renderDigest, renderConfirm, phoneDigits, siteBase } from '../../supabase/functions/hub-jobs/render.ts';
+import { renderDigest, renderConfirm, phoneDigits, siteBase, oneLine } from '../../supabase/functions/hub-jobs/render.ts';
 import { readFileSync } from 'node:fs';
 
 const results: string[] = [];
@@ -784,6 +784,15 @@ const detailOf = (s: ReturnType<typeof setup>) => JSON.parse(s.runs()[0]?.detail
     /^verify_jwt\s*=\s*false\s*$/m.test(section('hub-jobs')) && /^verify_jwt\s*=\s*false\s*$/m.test(section('send-email')), toml.slice(0, 200) || 'no supabase/config.toml');
   check('supabase/config.toml has a project_id (the CLI needs one) that is not a real project ref',
     /^project_id\s*=\s*"[a-z0-9-]+"\s*$/m.test(toml) && !/^project_id\s*=\s*"[a-z]{20}"\s*$/m.test(toml));
+  // A \u2028 or \u2029 escape in the source reached Supabase's bundler as a real line break (deployed
+  // through the Supabase MCP), which ends a regular expression: the deploy failed. oneLine leaves them to \s.
+  const SEPARATORS = String.fromCharCode(0x2028, 0x2029);
+  check('oneLine: control characters and the Unicode line and paragraph separators become single spaces',
+    oneLine(`a${SEPARATORS[0]}b${SEPARATORS[1]}c\u0001\n d\t\r\ne`) === 'a b c d e' && oneLine(` x${SEPARATORS} `) === 'x',
+    JSON.stringify(oneLine(`a${SEPARATORS[0]}b${SEPARATORS[1]}c\u0001\n d\t\r\ne`)));
+  const sources = ['index.ts', 'handler.ts', 'render.ts'].map((f) => readFileSync(new URL(`../../supabase/functions/hub-jobs/${f}`, import.meta.url), 'utf8'));
+  check('hub-jobs source has no \\u2028 or \\u2029 escapes, nor the raw characters (they break the deploy)',
+    sources.every((src) => !/\\u202[89]|\\u\{202[89]\}/.test(src) && !src.includes(SEPARATORS[0]) && !src.includes(SEPARATORS[1])));
   s = setup({ tables: { job_runs: [runRow(5, 0, false, { stop: 'config', error: 'SITE_URL is not set' })] } });
   res = await handle(asUser({ action: 'status' }), s.deps);
   out = await res.json();

@@ -45,7 +45,10 @@ export const esc = (s: unknown) =>
   String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
 
 // One line of text: no line breaks or control characters (titles, names, subjects).
-export const oneLine = (s: unknown) => String(s ?? '').replace(/[\u0000-\u001f\u007f\u2028\u2029]+/g, ' ').replace(/\s+/g, ' ').trim();
+// \s also matches the Unicode line and paragraph separators (U+2028, U+2029). Don't write those two
+// as escapes here: deployed through the Supabase MCP, they reached the bundler as real line breaks,
+// which end a regular expression, and the deploy failed ("Unterminated regexp literal").
+export const oneLine = (s: unknown) => String(s ?? '').replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim();
 
 // Several lines (day_text): keep the line breaks, drop other control characters.
 const lines = (s: unknown) => String(s ?? '').replace(/\r\n?/g, '\n').replace(/[\u0000-\u0009\u000b-\u001f\u007f]+/g, ' ').trim();
