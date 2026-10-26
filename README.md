@@ -18,7 +18,7 @@ v2 turns on by itself once the database is upgraded (see [Upgrading to v2](#upgr
 | **Projects** | As before, plus an **owner** (who gets the project in their morning email), **Show in Home Hub calendar**, and a **Tasks** card for calls, orders and errands. **Put on the schedule** turns one of those into a Gantt task. |
 | **Directory** | Replaces Contractors. Contractors, **accounts and utilities**, services and emergency numbers, with search and one tap to call, text, WhatsApp, email or open the website. Account numbers are for admins only, masked until **Show**. A contract or promo end date gets a reminder 30 days ahead. |
 | **Family** | One list of everyone in the house: parents, adults, kids and helpers, each with a colour, language (English or Spanish), phone and email. Parents and adults can sign in; kids and helpers get a **My day link** (Copy, WhatsApp, Text, New link). |
-| **Settings** | Time zone, the usual morning-email time, days off (school holidays: repeating events can skip them), who new pet and house tasks go to, and whether the morning email is running. |
+| **Settings** | Time zone, the usual morning-email time, days off (school holidays: repeating events can skip them), who new pet and house tasks go to, whether the morning email is running, and (v1.1) [Google Calendar and Hearth](#google-calendar-and-hearth). |
 
 **Event or task?** The ＋ button asks first. *Piano, pickups, appointments → Event. Pills, filters, chores, calls → Task.*
 
@@ -66,6 +66,7 @@ The first three come from your own phone number or email address, so replies com
 - A **My day** link shows only that person's own items for today and tomorrow, never notes or anyone else's details. Items marked **Private** show as "Private item".
 - The email that asks someone to confirm their address carries its own confirmation code, never their My day link, so an email that goes to a mistyped address gives nothing away.
 - The share page can read one project by its secret link. It returns only the schedule plus each contractor's name and company. It never returns phone numbers, emails or private notes. Turning sharing off, or clicking **Get a new link**, stops the old link immediately.
+- **Google Calendar (v1.1)** copies to the kitchen wall only what everyone in the house may see, and only after an admin has looked at it: see [Privacy](#privacy) under Google Calendar and Hearth.
 - This repository is public, but it contains only code. `config.js` holds a *publishable* key, which is designed to be public. Never put a `service_role` or secret key in this repo.
 
 The rules are in [`supabase/schema.sql`](supabase/schema.sql) and [`supabase/migrations/`](supabase/migrations/).
@@ -100,22 +101,143 @@ The order matters, and it's written out in [`CLAUDE.md`](CLAUDE.md) under **Depl
    - `SITE_URL`: the site's address, such as `https://route3ralph.github.io/home-hub/`, for the My day and confirmation links in the emails.
    - `HEALTHCHECK_URL` (optional): a ping address, such as one from healthchecks.io, called after every good run, so you hear about it if the email stops.
    - `RESEND_API_KEY`, `EMAIL_FROM` and `EMAIL_FROM_NAME` are the same as for `send-email`.
-5. Create two Vault secrets by hand (`hub_cron_secret`, with the same value as `HUB_CRON_SECRET`, and `hub_jobs_url`), then run [`supabase/cron.sql`](supabase/cron.sql). Its header shows the exact commands. It refuses to run with a missing or placeholder secret and is safe to run again.
+   - `GOOGLE_SA_JSON` (optional, for [Google Calendar and Hearth](#google-calendar-and-hearth)): the whole service-account key file (step B there). Without it the calendar job stops at once and the morning email is unchanged.
+5. Create two Vault secrets by hand (`hub_cron_secret`, with the same value as `HUB_CRON_SECRET`, and `hub_jobs_url`), then run [`supabase/cron.sql`](supabase/cron.sql). Its header shows the exact commands. It refuses to run with a missing or placeholder secret and is safe to run again. Run it again after a release that changes it: v1.1 adds the `hub-calendar` job.
 6. Smoke checks: a POST to hub-jobs without the header answers 401; **Settings → Preview my morning email** shows an email; **Settings → Morning email** shows the last run; the next morning `notification_log` has `sent` rows.
 7. Ops hardening: set the Auth email rate limit to about 6 an hour, keep the signup hook on, and turn Resend's click and open tracking off (so links in emails aren't rewritten).
 
 Until hub-jobs is deployed, Settings says the morning email is **Not set up yet**; everything else works.
 
-## Coming next: Google Calendar and Hearth (v1.1)
+## Google Calendar and Hearth
 
-Hearth shows Google calendars only, one column per calendar. v1.1 will copy hub items one way into one Google calendar per Hearth column (one per person, plus pets, house and family), and show the other Google events on the Calendar page and in the morning email. Settings already has a "Not connected yet" row for it.
+Hearth, the kitchen wall display, shows Google calendars only, one column per calendar. Home Hub copies its items, one way, into one Google calendar per column ("Hub – Alex", "Hub – Jordan", …, "Hub – Family", and "Hub – Pets" and "Hub – House" if wanted), within 5 minutes of a change. It also reads the events people type into Google (on a phone, or into the family account's own calendar) and shows them in the hub. Home Hub stays the source of truth: a change made in Google to one of the hub's events is put back, and the parents are told. The design, with every rule, is [`docs/v1.1-google-calendar.md`](docs/v1.1-google-calendar.md).
 
-Before any of it is built, the owner runs two short tests on a real calendar, because the plan depends on both:
+**What goes where.**
+- An event or task goes on the calendar of the person in charge. Everyone along gets a copy that says who's in charge ("Piano (Taylor)"). An event with 4 or more family members goes once on Family instead.
+- A task nobody is in charge of goes on Pets, House or Family, by its category. An event nobody is on goes on Family.
+- Done tasks and skipped days are taken off Google. Late tasks become one line on today ("2 late: Heartworm pill, Nail trim").
+- Private items and health tasks show as "Private item", with no place and no details.
+- Someone without a Hub calendar gets nothing on Google: Settings lists them under **Not on Google**.
+- Hub items reach Google up to 60 days ahead. Events read from Google show in the hub from yesterday to 60 days ahead.
+- Events read from Google show on the Calendar and Today pages (with a "Google" tag and no box to tick) and in grown-ups' morning emails. A kid's or helper's My day, texts and email get the events of a calendar that is theirs (their Hub calendar, or a calendar to read given to them under **Whose**), and of Pets or House if they look after those. A kid also gets Hub – Family's and those of a Family calendar marked **Show to kids**; a helper never gets a Family calendar's. The hub never changes them: change them in Google Calendar.
 
-1. **The service-account key downloads.** In a Google Cloud project created while signed in as the family Gmail (not a work Workspace, whose newer organizations block keys by default), enable the Calendar API, create a service account and download its JSON key.
-2. **It can add and delete an event on a shared calendar.** In the family Gmail, create one secondary calendar, share it with the service account's `…iam.gserviceaccount.com` address as **Make changes to events**, then add one test event through the API and delete it again (about 5 minutes).
+### Turning it on
 
-If either fails, v1.1 uses Google sign-in (OAuth, with the app published "In production") instead. Events will never have attendees: who an event is for comes from which calendar it's on.
+The order matters (the design's §8.3):
+1. `tests/run.sh` ends with `0 failed`; merge. The site stays on schema 2, and Settings' Google card says **Waiting for the database update**.
+2. Deploy `hub-jobs` (`index.ts`, `handler.ts`, `render.ts`, `util.ts`, `google.ts`, `calendar.ts`) with JWT verification off. Until the migration is applied it answers the calendar job with 503 `no_schema`, and the morning email is unchanged.
+3. The owner runs [`supabase/migrations/0003_google_calendar.sql`](supabase/migrations/0003_google_calendar.sql) in the Supabase SQL editor, then [`supabase/cron.sql`](supabase/cron.sql) again (it adds the `hub-calendar` job).
+4. The owner sets up the calendars and Hearth (steps D to G below).
+
+### Setting it up (about 2 to 2½ hours, over three sittings)
+
+Before you start, turn on 2-step verification for the family Gmail (it holds the calendars and signs the wall in) and for the parent's own Google account used in step A.
+
+**Sitting 1: the key (about 25 minutes)**
+
+A. **Google Cloud and the key.** Signed in as a parent's own personal Gmail (not a work or school account), at console.cloud.google.com:
+   1. Make a new project "Home Hub", with Location **No organization**. Accept the terms if asked.
+   2. **APIs & Services → Library → Google Calendar API → Enable.**
+   3. **IAM & Admin → Service Accounts → Create service account**: name it `home-hub-sync` and give it no roles.
+   4. Open it → **Keys → Add key → Create new key → JSON**. The file downloads. If Google says "Service account key creation is disabled", stop here and tell Claude: the hub then signs in another way.
+   5. Check that **Keys** lists exactly one key.
+   6. **IAM → Grant access**: the other parent's Google account, role **Owner**, so the project doesn't depend on one person. They accept the invitation email; then check that **IAM** lists them as Owner (until they accept, the project still depends on one person).
+
+B. **The secret.** Supabase → **Edge Functions → Secrets**: add `GOOGLE_SA_JSON`. Its value is the whole JSON file: open it in a text editor, select all, copy, paste. Then delete the file and empty the trash. Never email it, put it in a chat or commit it.
+
+**Between sittings: when the new site and hub-jobs are live**
+
+C. **Database and schedule.** In the Supabase SQL editor, run `supabase/migrations/0003_google_calendar.sql`, then `supabase/cron.sql` again.
+
+**Sitting 2: the calendars (about an hour)**
+
+D. **One pass per calendar.** Open the hub's **Settings → Google Calendar & Hearth** next to Google Calendar (signed in as the family Gmail, on a computer). Do Taylor's first, then Alex, Morgan, Sam, Jordan and Family. For each row:
+   1. In Settings, press **Copy** next to the name it suggests ("Hub – Taylor").
+   2. In Google Calendar: **Other calendars → + → Create new calendar** → paste the name → **Create calendar**.
+   3. Open that calendar's **Settings and sharing**:
+      - **Share with specific people → Add people**: paste the hub's address (Settings has a **Copy** button for it) and choose **Make changes and see event details** (not "Make changes and manage sharing", and not "Make changes (see private events as free/busy)") → **Send**.
+      - **Event notifications** and **All-day event notifications**: remove every notification, or every phone signed in to the family account rings for every hub item.
+      - **Integrate calendar → Calendar ID**: copy it.
+   4. In Settings, **Set** on that row → paste → **Save**. The hub tests the calendar, shows its name in Google, then lists everything it will copy there: yesterday to 60 days ahead (later days follow as they come). Press **Make private** on anything that shouldn't be on the wall (health, trips and away days, anything with a code or money), then **Start copying**. Make private changes the item itself: kids and helpers then see only "Private item" for it, even for their own, on every day it repeats. To keep a project's jobs off the wall, untick **Show in Home Hub calendar** on the project.
+   If, after sharing it with **Make changes and see event details** (step 3), Taylor's Test still says "Home Hub can't change this calendar", "Shared correctly, but Google won't let Home Hub add an event to it", "Google refused…" or "Google answered differently than expected", stop and tell Claude. (A Test that names "Make changes (see private events as free/busy)" only means that option was chosen: share it again with **Make changes and see event details**.)
+
+E. **The family account's main calendar.** Events typed on a phone usually land here. In Google Calendar, the family Gmail's own calendar → **Settings and sharing → Share with specific people**: the hub's address, **See event details**. Then in Settings → **Calendars to read → Family account's main calendar → Set** → the family Gmail address → **Save**.
+
+Optional: **Pets and House**, only if pet or house tasks are often left with nobody in charge: make "Hub – Pets" and "Hub – House" the same way as step D.
+
+Settings shows "Copying N items to Google…" for about 30 minutes after the first calendars are set.
+
+**Sitting 3: Hearth (about 45 minutes, once Copying has reached 0)**
+
+F. **Hearth.** In the Hearth Companion app, signed in as a parent whose profile will stay (if that profile is ever deleted, every calendar it connected leaves the wall):
+   1. **Calendars**: note what is connected now, and from which profile. If the family Gmail is already connected, open it and tick the Hub calendars; don't add it a second time and don't untick anything. Otherwise **add Google**, sign in as the family Gmail, and tick the Hub calendars and the main calendar.
+   2. Profiles: Taylor as a kid **without email** (never an adult profile), and a no-email profile called "Family".
+   3. Give each Hub calendar to its person's profile, and Hub – Family and the main calendar to Family. Pets and House go to profiles of their own or to Family.
+   4. Look at the wall, then time how long a change in the hub takes to reach it (use **Resync** in the app if needed). Add one event on the wall in Jordan's column, and see whether, and in which calendar, it shows up in Google Calendar. If it does, add that calendar under **Calendars to read**; if not, add events in the hub or in Google, not on the wall.
+
+G. **Phones** (optional). Share Hub calendars with people's own personal Google accounts (never a school or work account): each parent gets **Make changes and see event details** on every Hub calendar; everyone else gets **See event details** on their own. Each person sets that calendar's notifications on their phone. Parents: keep Family and your own calendar shown and hide the rest, or events with two people show twice.
+
+### What Settings says
+
+| It says | What it means |
+|---|---|
+| **Not set up:** add the Google key… | `GOOGLE_SA_JSON` isn't in hub-jobs' secrets (step B). Add it, then press **Sync now**. |
+| In red: "Google refused the key…", "GOOGLE_SA_JSON isn't a service-account key…", "The Google Calendar API isn't turned on…" | The last run stopped. Do what it says: make a new key (step A.4) and replace the secret, paste the whole file again, or turn the API on (step A.2). |
+| Signed in as `home-hub-sync@…` · key …a1b2c3 | The address to share each Hub calendar with, and the end of the key's id: Cloud Console's **Keys** tab must list exactly one key, ending the same way. |
+| Not checked yet · Waiting: press Preview, then Start copying · Connected | Press **Test**; press **Preview**, look at what it copies and press **Start copying**; all is well. |
+| Can't reach it | The calendar isn't shared with the hub's address, or only to see events, or with "Make changes (see private events as free/busy)". Share it with **Make changes and see event details** (a calendar it only reads: **See event details**). The hub notices by itself within an hour. |
+| Problem | Usually the calendar's name doesn't start with "Hub" (the hub writes only to calendars named "Hub …"), or it was shared with "Make changes and manage sharing". Rename it, or share it again with **Make changes and see event details**. While it is a Problem, the hub still takes off what it put there that was made private or deleted. |
+| "This calendar is called 'Hub – Jordan'. Is that Taylor's?" | The Calendar ID on that row may be the wrong one. **Set** it again with the right one. |
+| Copying N items to Google… / Hiding N items in Google… | The first copy, or a burst of changes, is on its way: up to 60 changes every 5 minutes, nearest days first, private ones first. |
+| Paused by Google until 3:40pm | Google asked the hub to slow down. It carries on by itself. |
+| Last synced more than 30 minutes ago… | The calendar job isn't running: run `supabase/cron.sql` again, and check hub-jobs was deployed with JWT verification off (see the log below). |
+| Waiting for the hub-jobs update | The hub-jobs that is deployed is from before v1.1, or isn't deployed: deploy it. |
+| **Problems** | Items Google refused, with its reason. Each is tried again by itself, further apart each time. The parents' morning email mentions one only after 24 hours. An item that keeps failing until its day has passed is dropped from the list: Google keeps the copy it has, as for any past day. "Someone keeps changing it in Google" means a family member keeps editing it on a phone: change it in the hub instead. |
+| **Changed in Google and put back** | Someone changed or deleted one of the hub's events in Google, and the hub put it back. Change it in the hub instead; to skip one day of a repeat, use **Skip this day**. |
+| **Projects with stale dates** | That project's work isn't updated on Google until the project is opened in Projects. |
+
+The parents' morning email also says "Google Calendar isn't up to date…" when the last good sync is more than 2 hours old or a calendar can't be reached, and lists what was put back.
+
+### Day to day
+
+- **Mark Private** in the hub anything about health, trips and away days, or with codes or money: everyone in the house sees the wall, including the helper and visitors. Google's own Private setting doesn't hide anything on the wall, because Hearth reads each calendar as its owner. Any member can change an item, and from yesterday onward the change reaches the wall within 5 minutes. Earlier days stay on Google as they were: only Private or Delete takes a past item off.
+- **To put an event in Jordan's column from Google,** choose "Hub – Jordan" in the event's calendar menu.
+- **To end a repeat,** set its end date in the hub. Deleting it also takes its past days off Google.
+- **Something missing from the wall?** In the Hearth app, press **Resync**.
+- **A new person** needs a new Hub calendar, set in Settings, and ticked and given to their profile in the Hearth app.
+
+### When a helper leaves
+
+1. On the Family page, remove her: her Hub calendar goes with her, and the hub's events come off it. (Only turned off the list? Settings reminds you to **Disconnect** her calendar.) Give the next helper their own My day link.
+2. In Google Calendar, stop sharing "Hub – Taylor" with her own Google account.
+3. Delete her Hearth profile.
+4. For the next helper, make a new Hub calendar rather than reusing the old one.
+
+### Looking at the job, and stopping it
+
+In the Supabase SQL editor:
+
+```sql
+-- The calendar job's last runs, and what hub-jobs answered (counts and fixed codes only)
+select status, return_message, start_time from cron.job_run_details d
+  join cron.job j using (jobid) where j.jobname = 'hub-calendar' order by start_time desc limit 10;
+select status_code, error_msg, left(content, 300) as answer, created from net._http_response order by created desc limit 10;
+-- What the job last did
+select last_run_at, last_ok_at, last_stop, last_error, last_result from public.calendar_sync;
+```
+
+A 401 in `net._http_response` on every run means hub-jobs was deployed with JWT verification on.
+
+To stop it: **Disconnect** a calendar in Settings (the hub's events are taken off it within a few minutes, if the hub can still reach it: one that says **Can't reach it** keeps them, so delete that calendar in Google Calendar, or share it again and wait for it to connect before you Disconnect), or stop the whole job with `select cron.unschedule('hub-calendar');` (what is already in Google stays). Migration 0003 only adds, so the site's pages work either way.
+
+### Privacy
+
+- **The wall is public in the house.** Copied: titles, times, an event's place, a project job's name, and a linked directory entry's name and business number. Never copied: notes and a day's own note, private items' and health tasks' titles and places, the family's phone numbers and emails, account numbers, My day and confirmation links.
+- **The key is a password for every Hub calendar.** It lives only in Supabase's Edge Function secrets, never in this repository, the database, a chat or a log. To rotate it: Cloud Console → the service account → **Keys → Add key**, replace `GOOGLE_SA_JSON`, delete the old key, and check that Settings shows the new key id. If it ever leaks, delete it in Cloud Console at once: that revokes it.
+- **The hub writes only** to a calendar that an admin set in Settings, whose ID ends in `@group.calendar.google.com` (never someone's main calendar), whose Google name starts with "Hub", that is shared with **Make changes and see event details** (which can't change sharing), and whose preview (everything it copies, yesterday to 60 days ahead) an admin looked at before pressing **Start copying**.
+- **Reading is opt-in per calendar.** Only calendars an admin sets are read, and only ordinary events the calendar made or accepted: an invitation from a stranger never reaches an email or a helper's My day. A Google event marked private is kept without its title or place. A place from Google is shown as plain text, never as a link.
+- **No attendees and no reminders** are ever set, so Google sends nobody an invitation or an email.
+- **Phones:** share Hub calendars only with personal Google accounts, never a school or work account. Never turn on **Make available to public**, and never hand out the **Secret address in iCal format**.
 
 ## If the hub says it can't reach the database
 
@@ -172,14 +294,15 @@ Never commit the token. The rules for changing the repo (tests, migrations, depl
 | `manifest.webmanifest`, `assets/icons/` | The Home Screen app: name, colours and icons |
 | `config.js` | Database connection settings |
 | `supabase/schema.sql` | The v1 tables, security rules and functions (the baseline) |
-| `supabase/migrations/` | Every database change since, in order: `0002_home_hub_v2.sql` is v2 |
-| `supabase/preflight.sql` | Read-only checks to run before applying the v2 migration |
-| `supabase/cron.sql` | Schedules the morning email (pg_cron) once hub-jobs is deployed |
+| `supabase/migrations/` | Every database change since, in order: `0002_home_hub_v2.sql` is v2, `0003_google_calendar.sql` is v1.1 (Google Calendar) |
+| `supabase/preflight.sql` | Read-only checks to run before applying the v2 migration (0002 only) |
+| `supabase/cron.sql` | Schedules the morning email and the Google Calendar job (pg_cron) once hub-jobs is deployed |
 | `supabase/config.toml` | Supabase CLI settings: both Edge Functions deploy with JWT verification off |
-| `supabase/functions/hub-jobs/` | Edge Function for the morning email: sending, preview and status |
+| `supabase/functions/hub-jobs/` | Edge Function for the morning email (sending, preview and status) and the Google Calendar job: `handler.ts` checks who is asking, `render.ts` makes the email, `calendar.ts` runs the calendar job and Test, `google.ts` signs in to Google and calls it, `util.ts` holds what they share |
 | `supabase/functions/send-email/` | Edge Function that sends email through Resend |
 | `supabase/email-templates/` | The sign-in email, for Supabase's email templates |
 | `docs/v2-design.md` | The v2 design: what was built and why |
+| `docs/v1.1-google-calendar.md` | The v1.1 design: Google Calendar and Hearth |
 | `.mcp.json`, `.claude/settings.json` | Supabase access for Claude Code sessions (token comes from the environment) |
 | `tests/` | Automated tests: run `tests/run.sh` (see [`tests/README.md`](tests/README.md)) |
 | `CLAUDE.md` | Rules for changing this repo: tests, migrations, deploy order, test data |

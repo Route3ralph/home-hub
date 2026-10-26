@@ -53,6 +53,208 @@ function makeDb() {
   };
 }
 
+// ---- Schema 3 (supabase/migrations/0003_google_calendar.sql): Google Calendar.
+// withCalendars(db) adds the four tables, as a database with 0003 has them. makeDb() leaves them out,
+// so on schema 2 a stray read of them answers 404, as it would in production.
+//   calendars       members read; admins write the setting columns only (the migration's column
+//                   grants), with its checks, its unique Google ID, one writing calendar per column, and
+//                   its trigger (Google ID lowercased, label trimmed, a new Google ID or a switch between
+//                   writing and reading starts the calendar again). Deleting one deletes its Google
+//                   events and leaves its links without a calendar, as the foreign keys do.
+//   calendar_links  admins read (members get no rows); google_events, calendar_sync: members read.
+//                   Nobody signed in writes those three (hub-jobs does, as service_role).
+const CAL_TABLES = ['calendars', 'calendar_links', 'google_events', 'calendar_sync'];
+const CAL_INSERT = ['google_id', 'kind', 'person_id', 'label', 'writes', 'for_kids'];
+const CAL_UPDATE = CAL_INSERT.concat(['copy_approved_at']);
+function withCalendars(db, sync) {
+  return Object.assign(db, {
+    calendars: [], calendar_links: [], google_events: [],
+    calendar_sync: [Object.assign({ id: true, auth: null, account: null, key_id: null, running_since: null, run_id: null, last_run_at: null, last_ok_at: null,
+      last_stop: null, last_error: null, last_result: {}, window_from: null, window_to: null, paused_until: null, pause_step: 0 }, sync)],
+  });
+}
+// A calendars row with the table's defaults.
+const calendarRow = (o) => Object.assign({
+  id: uuid(), google_id: null, kind: 'person', person_id: null, label: '', writes: true, for_kids: false, copy_approved_at: null,
+  google_name: null, access_role: null, status: 'new', status_detail: null, checked_at: null, read_at: null,
+  created_at: now(), updated_at: now(), updated_by: null,
+}, o);
+// A calendar_links row (what hub-jobs wrote to Google) and a google_events row (an event read from Google).
+const linkRow = (o) => Object.assign({
+  google_calendar: null, base_id: `hh${crypto.randomBytes(16).toString('hex')}`, event_id: null, gen: 0, calendar_id: null, item_kind: 'event', item_id: null,
+  job_id: null, occurrence: null, part: '', day: null, end_day: null, title: '', hash: null, tried_hash: null, google_hash: null, google_updated: null,
+  repairs: 0, repaired_at: null, repair_kind: null, status: 'ok', attempts: 0, next_try_at: null, failing_since: null, error: null, synced_at: null, created_at: now(),
+}, o);
+const googleEventRow = (o) => Object.assign({
+  calendar_id: null, google_calendar: null, event_id: crypto.randomBytes(8).toString('hex'), title: '', location: null, all_day: true,
+  start_day: null, end_day: null, start_at: null, end_at: null, private: false, repeating: false, google_updated: null, read_at: now(),
+}, o);
+
+const pgErr = (status, code, message) => ({ status, body: { code, message, details: null, hint: null } });
+const CHECK = (name) => pgErr(400, '23514', `new row for relation "calendars" violates check constraint "${name}"`);
+// The migration's checks and unique indexes on one calendars row (others: the rest of the table).
+function calendarProblem(row, others) {
+  if (!/^[a-z0-9._+#-]{1,200}@[a-z0-9.-]+\.[a-z]{2,}$/.test(row.google_id || '')) return CHECK('calendars_google_id_check');
+  if (!['person', 'pets', 'house', 'family'].includes(row.kind)) return CHECK('calendars_kind_check');
+  if (!(String(row.label || '').length >= 1 && String(row.label).length <= 40)) return CHECK('calendars_label_check');
+  if ((row.kind === 'person') !== (row.person_id != null)) return CHECK('calendars_check');
+  if (row.writes && !/^[a-z0-9._-]+@group\.calendar\.google\.com$/.test(row.google_id)) return CHECK('calendars_check1');
+  if (row.for_kids && !(row.kind === 'family' && !row.writes)) return CHECK('calendars_check2');
+  if (others.some((o) => o.google_id === row.google_id)) return pgErr(409, '23505', 'duplicate key value violates unique constraint "calendars_google_id_key"');
+  if (row.writes && others.some((o) => o.writes && o.kind === row.kind && (o.person_id || null) === (row.person_id || null))) {
+    return pgErr(409, '23505', 'duplicate key value violates unique constraint "calendars_one_writer"');
+  }
+  return null;
+}
+const tidyCalendar = (r) => {
+  const t = Object.assign({}, r);
+  if ('label' in t && t.label != null) t.label = String(t.label).trim();
+  if ('google_id' in t && t.google_id != null) t.google_id = String(t.google_id).trim().toLowerCase();
+  return t;
+};
+
+// The calendar tables' row-level security and grants. Returns { status, body, rows } or null (not one of them).
+function calendarTables(db, table, method, body, member, rows) {
+  if (!CAL_TABLES.includes(table) || !db[table]) return null;
+  const denied = pgErr(403, '42501', `permission denied for table ${table}`);
+  const admin = member.role === 'admin';
+  if (method === 'GET') return { rows: table === 'calendar_links' && !admin ? [] : rows };
+  if (table !== 'calendars') return denied;
+  if (method === 'POST') {
+    const items = Array.isArray(body) ? body : [body];
+    if (items.some((r) => Object.keys(r).some((k) => !CAL_INSERT.includes(k)))) return denied;
+    if (!admin) return pgErr(403, '42501', 'new row violates row-level security policy for table "calendars"');
+    const made = [];
+    for (const r of items) {
+      const row = calendarRow(tidyCalendar(r));
+      const bad = calendarProblem(row, db.calendars.concat(made));
+      if (bad) return bad;
+      made.push(row);
+    }
+    db.calendars.push(...made);
+    return { status: 201, rows: made };
+  }
+  if (method === 'PATCH') {
+    if (Object.keys(body || {}).some((k) => !CAL_UPDATE.includes(k))) return denied;
+    if (!admin) return { status: 200, rows: [] };
+    const patch = tidyCalendar(body);
+    const next = rows.map((r) => {
+      const n = Object.assign({}, r, patch, { updated_at: now() });
+      if (n.google_id !== r.google_id || n.writes !== r.writes) {
+        Object.assign(n, { status: 'new', status_detail: null, access_role: null, checked_at: null, read_at: null, copy_approved_at: null });
+        if (n.google_id !== r.google_id) n.google_name = null;
+      }
+      return n;
+    });
+    for (const n of next) {
+      const bad = calendarProblem(n, db.calendars.filter((o) => o.id !== n.id));
+      if (bad) return bad;
+    }
+    rows.forEach((r, i) => Object.assign(r, next[i]));
+    return { status: 200, rows };
+  }
+  if (method === 'DELETE') {
+    if (!admin) return { status: 204, rows: [] };
+    const gone = new Set(rows.map((r) => r.id));
+    db.calendars.splice(0, db.calendars.length, ...db.calendars.filter((r) => !gone.has(r.id)));
+    db.google_events.splice(0, db.google_events.length, ...db.google_events.filter((g) => !gone.has(g.calendar_id)));
+    db.calendar_links.forEach((l) => { if (gone.has(l.calendar_id)) l.calendar_id = null; });
+    return { status: 204, rows };
+  }
+  return denied;
+}
+
+// The household's wall-clock time of an instant, 'HH:MM:SS'.
+function wallTime(instant, tz) {
+  const o = {};
+  new Intl.DateTimeFormat('en-US', { timeZone: tz, hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' })
+    .formatToParts(new Date(instant)).forEach((p) => { o[p.type] = p.value; });
+  return `${o.hour === '24' ? '00' : o.hour}:${o.minute}:${o.second}`;
+}
+const md5uuid = (s) => crypto.createHash('md5').update(s).digest('hex').replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/, '$1-$2-$3-$4-$5');
+
+// google_items(p_from, p_to), as the migration builds its agenda_item rows (§5.3): Google events
+// overlapping the range, read from their calendar's current Google ID. db.googleFail makes it fail.
+function googleItems(db, b) {
+  (db.googleCalls = db.googleCalls || []).push([b.p_from, b.p_to]);
+  if (db.googleFail) return { __status: 500, body: { code: 'XX000', message: 'Database restarting', details: null, hint: null } };
+  const days = (x) => Date.parse(`${x}T00:00:00Z`) / 864e5;
+  if (!b.p_from || !b.p_to || b.p_to < b.p_from || days(b.p_to) - days(b.p_from) > 61) {
+    return { __status: 400, body: { code: '22023', message: 'google_items() needs a range of 1 to 62 days.', details: null, hint: null } };
+  }
+  const hh = (db.household && db.household[0]) || {};
+  const tz = hh.tz || 'America/New_York';
+  const out = db.google_events.filter((g) => g.start_day <= b.p_to && g.end_day >= b.p_from).map((g) => {
+    const c = db.calendars.find((x) => x.id === g.calendar_id && x.google_id === g.google_calendar);
+    if (!c) return null;
+    return {
+      kind: 'google', item_id: md5uuid(`${g.calendar_id}/${g.event_id}`), occurrence: g.start_day, title: g.title, day: g.start_day, end_day: g.end_day,
+      all_day: g.all_day, start_at: g.start_at, end_at: g.end_at, local_start: g.start_at ? wallTime(g.start_at, tz) : null, local_end: g.end_at ? wallTime(g.end_at, tz) : null,
+      responsible_id: c.kind === 'person' ? c.person_id : c.kind === 'pets' ? hh.pets_owner_id || null : c.kind === 'house' ? hh.house_owner_id || null : null,
+      participant_ids: [], status: 'open', category: { family: 'family', pets: 'pets', house: 'home' }[c.kind] || null,
+      project_id: null, project_name: null, contractor_id: null, contractor_name: null, contractor_phone: null,
+      location: g.location, notes: `From Google Calendar · ${c.google_name || c.label}`,
+      private: g.private, repeating: g.repeating, changed: false, lead_days: null, milestone: false, day_note: null,
+    };
+  }).filter(Boolean);
+  const cmp = (x, y) => (x < y ? -1 : x > y ? 1 : 0);
+  return out.sort((x, y) => cmp(x.day, y.day) || (x.local_start == null) - (y.local_start == null) || cmp(x.local_start || '', y.local_start || '')
+    || cmp(x.title, y.title) || cmp(x.item_id, y.item_id));
+}
+
+// calendar_preview(p_calendar): admins only. The rows come from db.previewRows[calendar id or its
+// Google ID] (what calendar_desired would give for the job's window, yesterday to 60 days ahead:
+// { day, title, private, item_kind, item_id, place, details }); an event or task that is private now
+// reads "Private item", without place or details, so Make private shows in the next read.
+function calendarPreview(db, b, email) {
+  (db.previewCalls = db.previewCalls || []).push(b);
+  const m = db.members.find((x) => x.email === email);
+  if (!m || m.role !== 'admin') return { __status: 403, body: { code: '42501', message: 'Only an admin can see what goes on a calendar.', details: null, hint: null } };
+  const c = (db.calendars || []).find((x) => x.id === b.p_calendar);
+  const rows = (db.previewRows || {})[b.p_calendar] || (c && (db.previewRows || {})[c.google_id]) || [];
+  return rows.map((r) => {
+    const src = r.item_kind === 'event' ? (db.events || []).find((x) => x.id === r.item_id) : r.item_kind === 'task' ? (db.tasks || []).find((x) => x.id === r.item_id) : null;
+    const priv = !!(r.private || (src && src.private));
+    return { day: r.day, title: priv ? 'Private item' : r.title, private: priv, item_kind: r.item_kind, item_id: r.item_id,
+      place: priv ? null : r.place || null, details: priv ? null : r.details || null };
+  });
+}
+const calendarRpc = { google_items: googleItems, calendar_preview: calendarPreview };
+
+// hub-jobs { action: 'calendar' } (Sync now) and { action: 'calendar_test', calendar_id }, in the
+// shapes the build contract gives (docs/v1.1-google-calendar.md §3.4, §6.5), for a signed-in admin.
+// db.jobMode[action]: 'old' (a hub-jobs from before v1.1: 400 Unknown action), 'missing' (not
+// deployed: 404) or 'no_schema' (503). db.testReplies[google_id] overrides a Test's answer (it is
+// recorded on the calendar, as calendar_mark does); db.syncReply is Sync now's ({ __status, body } for
+// a failure).
+const TEST_STEPS = [
+  { step: 'list', ok: true, http: 200 }, { step: 'insert', ok: true, http: 200 }, { step: 'delete', ok: true, http: 204 },
+  { step: 'restore', ok: true, http: 200 }, { step: 'read', ok: true, http: 200 }, { step: 'compare', ok: true, http: null }, { step: 'cleanup', ok: true, http: 204 },
+];
+function calendarJob(db, body, email) {
+  (db.jobCalls = db.jobCalls || []).push({ body, email });
+  const mode = (db.jobMode || {})[body.action];
+  if (mode === 'old') return { status: 400, body: { error: 'Unknown action. Use digest, preview or status.' } };
+  if (mode === 'missing') return { status: 404, body: { code: 'NOT_FOUND', message: 'Requested function was not found' } };
+  if (mode === 'no_schema') return { status: 503, body: { stop: 'no_schema', error: 'Google Calendar (migration 0003) isn\'t installed.' } };
+  const m = db.members.find((x) => x.email === email);
+  if (!m) return { status: 401, body: { error: 'Sign in first.' } };
+  if (m.role !== 'admin') return { status: 403, body: { error: 'Only family admins can do this.' } };
+  if (body.action === 'calendar_test') {
+    const c = db.calendars.find((x) => x.id === body.calendar_id);
+    if (!c) return { status: 400, body: { error: 'calendar_id must name a calendar.' } };
+    const r = Object.assign({ ok: true, status: 'ok', message: c.writes ? 'Home Hub can write to this calendar.' : 'Home Hub can read this calendar.',
+      name: c.writes ? `Hub – ${c.label}` : c.label, role: c.writes ? 'writer' : 'reader',
+      steps: c.writes ? TEST_STEPS : TEST_STEPS.slice(0, 1) }, (db.testReplies || {})[c.google_id]);
+    if (r.__status) return { status: r.__status, body: r.body };
+    Object.assign(c, { status: r.status, status_detail: r.ok ? null : r.message, google_name: r.name || c.google_name, access_role: r.role || c.access_role, checked_at: now() });
+    return { status: 200, body: r };
+  }
+  const r = db.syncReply || { read: 2, stored: 5, skipped: 0, repaired: 0, inserted: 3, updated: 1, deleted: 0, failed: 0, pending: 0, hiding: 0, stop: null };
+  if (r.__status) return { status: r.__status, body: r.body };
+  return { status: 200, body: r };
+}
+
 function emailFrom(req) {
   const auth = req.headers()['authorization'] || '';
   const tok = auth.replace(/^Bearer\s+/i, '');
@@ -129,6 +331,10 @@ async function install(page, db, log, opts = {}) {
     // ---- Edge functions
     if (path.startsWith('/functions/v1/')) {
       (db.functionCalls = db.functionCalls || []).push({ path, body, email: emailFrom(req) });
+      if (db.calendars && path === '/functions/v1/hub-jobs' && body && (body.action === 'calendar' || body.action === 'calendar_test')) {
+        const r = calendarJob(db, body, emailFrom(req));
+        return reply(r.status, r.body);
+      }
       return reply(opts.fnStatus || 200, opts.fnBody || { sent: 1 });
     }
 
@@ -165,8 +371,13 @@ async function install(page, db, log, opts = {}) {
       if (rows.length !== 1) return reply(406, { code: 'PGRST116', message: 'JSON object requested, multiple (or no) rows returned' });
       return reply(status, rows[0]);
     };
+    // Schema 3's calendar tables: their own row-level security and grants (calendarTables above).
+    const cal = calendarTables(db, table, method, body, member, db[table].filter(match));
+    if (cal && cal.body) return reply(cal.status, cal.body);
+    if (cal && method === 'DELETE') return route.fulfill({ status: 204, headers: CORS });
+    if (cal && method !== 'GET') return out(cal.rows, cal.status);
     if (method === 'GET') {
-      let rows = db[table].filter(match);
+      let rows = cal ? cal.rows : db[table].filter(match);
       const order = url.searchParams.get('order');
       if (order) {
         const keys = order.split(',').map((o) => { const [col, dir, nulls] = o.split('.'); return { col, desc: dir === 'desc', nullsFirst: nulls === 'nullsfirst' }; });
@@ -221,4 +432,4 @@ async function signIn(context, email) {
   await context.addInitScript((s) => { try { localStorage.setItem('sb-test-auth-token', s); } catch (e) {} }, session);
 }
 
-module.exports = { makeDb, install, signIn, expectedConsoleError, SUPA };
+module.exports = { makeDb, install, signIn, expectedConsoleError, SUPA, withCalendars, calendarRow, linkRow, googleEventRow, calendarRpc, md5uuid };

@@ -7,7 +7,8 @@
 //   • CLAUDE.md and tests/README.md name every suite tests/run.sh runs, and every public page;
 //   • day.html carries the same ?v= as index.html (CLAUDE.md says so);
 //   • docs/v2-design.md names every table, column, function and anon-callable function the
-//     migrations add, and every signature it writes out has the migration's parameter names;
+//     migrations add, and every signature it or docs/v1.1-google-calendar.md writes out has the
+//     migration's parameter names;
 //   • example phone numbers are in the fictional 555-0100 to 555-0199 range.
 // Reads files only: no database, no browser. Run alone with: node tests/docs/docs.test.js
 const fs = require('fs');
@@ -58,12 +59,13 @@ const fnDir = 'supabase/functions/hub-jobs';
 const fnSource = fs.readdirSync(path.join(ROOT, fnDir)).filter((f) => f.endsWith('.ts')).map((f) => read(`${fnDir}/${f}`)).join('\n');
 const envNames = new Set();
 for (const m of fnSource.matchAll(/(?:\benv\(|Deno\.env\.get\()\s*['"]([A-Z0-9_]+)['"]/g)) if (!/^SUPABASE_/.test(m[1])) envNames.add(m[1]);
-// The function works without these (no health ping; "Home Hub" as the sender's name). The rest
+// The function works without these (no health ping; "Home Hub" as the sender's name; without the
+// Google key the calendar job stops with not_set_up and the morning email is unchanged). The rest
 // stop every run (stop 'config', or 503) until they are set.
-const OPTIONAL = new Set(['HEALTHCHECK_URL', 'EMAIL_FROM_NAME']);
+const OPTIONAL = new Set(['HEALTHCHECK_URL', 'EMAIL_FROM_NAME', 'GOOGLE_SA_JSON']);
 const REQUIRED = [...envNames].filter((n) => !OPTIONAL.has(n)).sort();
 check('hub-jobs: the secrets it reads are the ones this test knows (add a new one to the docs and here)',
-  [...envNames].sort().join() === ['EMAIL_FROM', 'EMAIL_FROM_NAME', 'HEALTHCHECK_URL', 'HUB_CRON_SECRET', 'RESEND_API_KEY', 'SITE_URL'].join(), [...envNames].sort());
+  [...envNames].sort().join() === ['EMAIL_FROM', 'EMAIL_FROM_NAME', 'GOOGLE_SA_JSON', 'HEALTHCHECK_URL', 'HUB_CRON_SECRET', 'RESEND_API_KEY', 'SITE_URL'].join(), [...envNames].sort());
 
 for (const [doc, text] of Object.entries(DOCS)) {
   const step4 = steps(text)['4'] || '';
@@ -188,25 +190,28 @@ const publicFns = [...new Set(migFns.filter((f) => f.schema === 'public').map((f
 const missingFns = publicFns.filter((n) => !designWords.has(n));
 check(`docs/v2-design.md names every public function the migrations add (${publicFns.length})`, !missingFns.length, `missing ${missingFns.join(', ')}`);
 
-// Every signature written out in the design has the real parameter names, in order. A signature is
+// Every signature written out in the design (and in the v1.1 design, docs/v1.1-google-calendar.md)
+// has the real parameter names, in order. A signature is
 // "f()" or arguments that are parameters: "p" or "p_…" (the migrations' naming), or a name and a type
 // ("p_from date", "t public.tasks"), or any plain names after a schema ("private.series_after(t, p_after)").
 // A call ("monday(start)", "series_after(greatest(due_date,
 // done_on))") isn't one. "f()" for a function whose parameters all have defaults is a call too.
 const PARAM = /^(?:out\s+)?(?:p(?:_[a-z0-9_]*)?|[a-z_][a-z0-9_]*\s+[a-z_][a-z0-9_.]*(?:\[\])?)(?:\s+[a-z_][a-z0-9_.]*(?:\[\])?|\s+default\s+\S+)*$/i;
-const wrong = [];
-let signatures = 0;
-for (const m of design.matchAll(/(?<![\w.])(?:(public|private)\.)?([a-z_][a-z0-9_]*)\(([^()]*)\)/g)) {
-  const cands = (byName.get(m[2]) || []).filter((f) => !m[1] || f.schema === m[1]);
-  if (!cands.length) continue;
-  const args = splitArgs(m[3]);
-  // Written with its schema ("private.has_secrets(id)"), plain names count as parameters too.
-  if (!args.every((a) => PARAM.test(a) || (m[1] && /^[a-z_][a-z0-9_]*(?:\s+[a-z_][a-z0-9_.]*(?:\[\])?)*$/i.test(a)))) continue;
-  const names = args.filter((a) => !/^out\s/i.test(a)).map((a) => a.split(/\s+/)[0].toLowerCase());
-  signatures++;
-  if (!cands.some((f) => f.params.join() === names.join() || (!names.length && f.optional))) wrong.push(`${m[0]} → ${cands.map((f) => `${f.schema}.${f.name}(${f.params.join(', ')})`).join(' or ')}`);
+for (const [file, text] of [['docs/v2-design.md', design], ['docs/v1.1-google-calendar.md', read('docs/v1.1-google-calendar.md')]]) {
+  const wrong = [];
+  let signatures = 0;
+  for (const m of text.matchAll(/(?<![\w.])(?:(public|private)\.)?([a-z_][a-z0-9_]*)\(([^()]*)\)/g)) {
+    const cands = (byName.get(m[2]) || []).filter((f) => !m[1] || f.schema === m[1]);
+    if (!cands.length) continue;
+    const args = splitArgs(m[3]);
+    // Written with its schema ("private.has_secrets(id)"), plain names count as parameters too.
+    if (!args.every((a) => PARAM.test(a) || (m[1] && /^[a-z_][a-z0-9_]*(?:\s+[a-z_][a-z0-9_.]*(?:\[\])?)*$/i.test(a)))) continue;
+    const names = args.filter((a) => !/^out\s/i.test(a)).map((a) => a.split(/\s+/)[0].toLowerCase());
+    signatures++;
+    if (!cands.some((f) => f.params.join() === names.join() || (!names.length && f.optional))) wrong.push(`${m[0]} → ${cands.map((f) => `${f.schema}.${f.name}(${f.params.join(', ')})`).join(' or ')}`);
+  }
+  check(`${file}: every function signature it writes out has the migration's parameter names (${signatures} checked)`, signatures > 0 && !wrong.length, wrong.join(' | '));
 }
-check(`docs/v2-design.md: every function signature it writes out has the migration's parameter names (${signatures} checked)`, !wrong.length, wrong.join(' | '));
 
 // The functions anon can call (the My day page and the share page) are the ones the design lists.
 const anon = new Set();
@@ -236,7 +241,7 @@ check(`docs/v2-design.md names every column the migrations add (${columns.length
 // ---------------------------------------------------------------------
 // Example data in the docs is fictional (CLAUDE.md "Test data"): phone numbers in 555-0100 to 555-0199
 // ---------------------------------------------------------------------
-for (const f of ['CLAUDE.md', 'README.md', 'docs/v2-design.md', 'tests/README.md']) {
+for (const f of ['CLAUDE.md', 'README.md', 'docs/v2-design.md', 'docs/v1.1-google-calendar.md', 'tests/README.md']) {
   const bad = [...read(f).matchAll(/\b555-(\d{4})\b/g)].map((m) => m[0]).filter((n) => !/^555-01\d\d$/.test(n));
   check(`${f}: example phone numbers are fictional (555-0100 to 555-0199)`, !bad.length, bad);
 }

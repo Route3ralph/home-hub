@@ -72,3 +72,10 @@
   .day .irow-time { width: 64px; }
   .btn.day-big { width: 100%; }
 }
+
+/* ---------- An event from Google Calendar (kind 'google') ----------
+   An outlined dot before its title, as on the hub's pages; never a box to tick (day.js ticks tasks only). */
+.irow.k-google .irow-title::before {
+  content: ""; display: inline-block; box-sizing: border-box; width: 10px; height: 10px; margin-right: 7px;
+  border: 2px solid var(--text-3); border-radius: 50%;
+}

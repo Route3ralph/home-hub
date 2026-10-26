@@ -977,7 +977,7 @@
           <label class="field"><span>Directory contact</span><select name="contractor_id"><option value="">None</option>${contactOptions.map(([id, l]) => option(id, l, contactId)).join('')}</select>
             <small>${contacts ? 'Their phone number shows on the task, one tap to call.' : "Couldn't load the directory just now. Try again later to pick a contact."}</small></label>
           <label class="field"><span>Notes</span><textarea name="notes" rows="3">${esc(x.notes || '')}</textarea></label>
-          <label class="check tasks-check"><input type="checkbox" name="private"${x.private ? ' checked' : ''}> Private: kids and helpers see "Private item"</label>
+          <label class="check tasks-check"><input type="checkbox" name="private"${x.private ? ' checked' : ''}> Private: shows as 'Private item' on the wall, in Google and to kids and helpers</label>
         </div>
       </details>
       <p class="form-error" role="alert" hidden></p>

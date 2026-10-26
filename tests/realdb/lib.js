@@ -5,8 +5,10 @@
 //   h.check(name, ok, detail); … await h.finish();   // prints the PASS/FAIL lines, closes everything
 // Signing in goes through the server's real /auth/v1/otp and /auth/v1/verify (code 123456); the session
 // is then put where supabase-js keeps it. The browser's clock starts at the household's pinned "now".
+// hub-jobs' Google calls (the calendar job, Test) reach a fake Google (fakeGoogle below): h.google.
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { chromium } = require('playwright');
 const { connect, ident } = require('./pg');
 const { start } = require('./server');
@@ -18,6 +20,174 @@ const SUPA_JS = fs.readFileSync(path.join(__dirname, '../e2e/vendor/supabase.js'
 const CRON_SECRET = 'realdb-cron-secret-0123456789abcdef0123';
 const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
 const SERVICE_KEY = `${b64({ alg: 'HS256', typ: 'JWT' })}.${b64({ role: 'service_role', iss: 'supabase' })}.realdb`;
+// GOOGLE_SA_JSON: a service-account key file made here, with a key pair that exists only in this run
+// (the fake Google checks the signature with its public half). Fictional project and address.
+const SA_ACCOUNT = 'home-hub-sync@home-hub-example.iam.gserviceaccount.com';
+const SA_KEY_ID = 'realdb0000000000000000000000000000a1b2c3';
+const SA_PAIR = crypto.generateKeyPairSync('rsa', { modulusLength: 2048, publicKeyEncoding: { type: 'spki', format: 'pem' }, privateKeyEncoding: { type: 'pkcs8', format: 'pem' } });
+const SA_JSON = JSON.stringify({
+  type: 'service_account', project_id: 'home-hub-example', private_key_id: SA_KEY_ID, private_key: SA_PAIR.privateKey,
+  client_email: SA_ACCOUNT, client_id: '100000000000000000001', token_uri: 'https://oauth2.googleapis.com/token',
+});
+
+// ---------------------------------------------------------------------
+// A fake Google for hub-jobs (docs/v1.1-google-calendar.md §3.5, §5.1, §6.1): the token endpoint
+// (oauth2.googleapis.com) and the Calendar API's events (www.googleapis.com/calendar/v3), keeping what
+// was written, calendar by calendar. Like Google: a calendar the service account wasn't given answers
+// 404 notFound, one shared read-only 403 requiredAccessLevel on writes; deleting an event keeps its id
+// (status cancelled), so a POST with that id is 409 and a PUT brings it back; times come back in the
+// event's (or the list's) time zone, and default values are left out. Only the token it gave out opens
+// the API. Every call is in requests: { method, calendar, event, query, body, status }.
+//   g.add(id, { summary, role })     a calendar ('writer', 'reader' or 'owner'; null: not shared)
+//   g.typeIn(id, event)              an event typed into Google (by a person): → its id
+//   g.edit(id, eventId, change)      changed in Google (by a person); g.remove(id, eventId): deleted there
+//   g.share(id, role)                the calendar's sharing changed
+//   g.events(id)                     the events that are there (not deleted), as stored; g.all(id) with the deleted
+//   g.writes(since)                  the POST/PUT/DELETE calls since requests[since]; g.tokens(): tokens given out
+// ---------------------------------------------------------------------
+function zoneOffset(ms, tz) {   // minutes east of UTC
+  const name = (new Intl.DateTimeFormat('en-US', { timeZone: tz, timeZoneName: 'longOffset' }).formatToParts(new Date(ms))
+    .find((p) => p.type === 'timeZoneName') || {}).value || 'GMT';
+  const m = /GMT([+-])(\d{2}):(\d{2})/.exec(name);
+  return m ? (m[1] === '-' ? -1 : 1) * (Number(m[2]) * 60 + Number(m[3])) : 0;
+}
+function inZone(ms, tz) {      // 2026-10-27T16:00:00-04:00
+  const off = zoneOffset(ms, tz);
+  const a = Math.abs(off);
+  return `${new Date(ms + off * 60000).toISOString().slice(0, 19)}${off < 0 ? '-' : '+'}${String(Math.floor(a / 60)).padStart(2, '0')}:${String(a % 60).padStart(2, '0')}`;
+}
+const dayStart = (date, tz) => {
+  const guess = Date.parse(`${date}T00:00:00Z`);
+  return guess - zoneOffset(guess, tz) * 60000;
+};
+
+function fakeGoogle(nowIso) {
+  const calendars = new Map();
+  const requests = [];
+  const tokens = new Set();
+  let serial = 0;
+  const now = () => new Date(Date.parse(nowIso())).toISOString();
+  const reply = (status, body) => new Response(body === undefined ? null : JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+  const problem = (code, reason, message) => ({ error: { errors: [{ domain: 'global', reason, message }], code, message } });
+  const range = (ev, tz) => {
+    const at = (t) => (!t ? null : t.date ? dayStart(t.date, tz) : Date.parse(t.dateTime));
+    const s = at(ev.start);
+    return [s, at(ev.end) ?? s];
+  };
+  // An event as Google answers it: times in the event's zone (or the list's), defaults left out.
+  const show = (ev, tz) => {
+    const when = (t) => (!t ? t : t.date ? { date: t.date } : { dateTime: inZone(Date.parse(t.dateTime), t.timeZone || tz), timeZone: t.timeZone || tz });
+    const out = { kind: 'calendar#event', etag: `"${ev.etag}"`, id: ev.id, status: ev.status, created: ev.created, updated: ev.updated };
+    for (const k of ['summary', 'description', 'location', 'colorId', 'recurringEventId', 'attendees', 'extendedProperties']) if (ev[k] !== undefined) out[k] = ev[k];
+    out.organizer = ev.organizer || { self: true };
+    out.start = when(ev.start);
+    out.end = when(ev.end);
+    if (ev.transparency && ev.transparency !== 'opaque') out.transparency = ev.transparency;
+    if (ev.visibility && ev.visibility !== 'default') out.visibility = ev.visibility;
+    out.reminders = { useDefault: true };
+    out.eventType = 'default';
+    return out;
+  };
+  const store = (cal, body, extra) => {
+    const ev = Object.assign({}, JSON.parse(JSON.stringify(body)), extra, { updated: now(), etag: String(++serial) });
+    ev.status = body.status || 'confirmed';
+    cal.events.set(ev.id, ev);
+    return ev;
+  };
+  // Top-level fields only ("summary,accessRole,items(id,…)" keeps summary, accessRole and items).
+  const pick = (obj, fields) => {
+    if (!fields) return obj;
+    const keep = new Set(fields.replace(/\([^)]*\)/g, '').split(',').map((f) => f.split('/')[0].trim()));
+    return Object.fromEntries(Object.entries(obj).filter(([k]) => keep.has(k)));
+  };
+
+  async function token(init) {
+    const form = new URLSearchParams(String(init.body || ''));
+    const jwt = form.get('assertion') || '';
+    const [h, c, sig] = jwt.split('.');
+    let ok = form.get('grant_type') === 'urn:ietf:params:oauth:grant-type:jwt-bearer' && !!sig;
+    try {
+      const claims = JSON.parse(Buffer.from(c, 'base64url').toString());
+      ok = ok && JSON.parse(Buffer.from(h, 'base64url').toString()).alg === 'RS256' && claims.iss === SA_ACCOUNT
+        && claims.scope === 'https://www.googleapis.com/auth/calendar.events' && claims.aud === 'https://oauth2.googleapis.com/token'
+        && claims.exp - claims.iat <= 3600 && crypto.verify('RSA-SHA256', Buffer.from(`${h}.${c}`), SA_PAIR.publicKey, Buffer.from(sig, 'base64url'));
+    } catch (e) { ok = false; }
+    if (!ok) return reply(400, { error: 'invalid_grant', error_description: 'Invalid JWT Signature.' });
+    const t = `ya29.realdb-${++serial}`;
+    tokens.add(t);
+    return reply(200, { access_token: t, expires_in: 3599, token_type: 'Bearer' });
+  }
+
+  async function api(url, init) {
+    const m = /^\/calendar\/v3\/calendars\/([^/]+)\/events(?:\/([^/]+))?$/.exec(url.pathname);
+    const method = (init.method || 'GET').toUpperCase();
+    const entry = { method, calendar: m ? decodeURIComponent(m[1]) : null, event: m && m[2] ? decodeURIComponent(m[2]) : null,
+      query: Object.fromEntries(url.searchParams), body: init.body ? JSON.parse(init.body) : null, status: 0 };
+    requests.push(entry);
+    const done = (status, body) => { entry.status = status; return reply(status, body); };
+    const auth = String((init.headers || {}).Authorization || (init.headers || {}).authorization || '');
+    if (!tokens.has(auth.replace(/^Bearer\s+/, ''))) return done(401, { error: { code: 401, message: 'Request had invalid authentication credentials.', status: 'UNAUTHENTICATED' } });
+    if (!m) return done(404, problem(404, 'notFound', 'Not Found'));
+    const cal = calendars.get(entry.calendar);
+    if (!cal || !cal.role) return done(404, problem(404, 'notFound', 'Not Found'));
+    const tz = entry.query.timeZone || 'America/New_York';
+    if (method === 'GET' && !entry.event) {
+      const from = entry.query.timeMin ? Date.parse(entry.query.timeMin) : -Infinity;
+      const to = entry.query.timeMax ? Date.parse(entry.query.timeMax) : Infinity;
+      const all = [...cal.events.values()].filter((ev) => {
+        if (ev.status === 'cancelled' && entry.query.showDeleted !== 'true') return false;
+        const [s, e] = range(ev, tz);
+        return e > from && s < to;
+      }).sort((a, b) => range(a, tz)[0] - range(b, tz)[0] || (a.id < b.id ? -1 : 1));
+      const skip = Number(entry.query.pageToken || 0);
+      const max = Math.min(Number(entry.query.maxResults || 250), 2500);
+      const out = { kind: 'calendar#events', summary: cal.summary, accessRole: cal.role, timeZone: tz, items: all.slice(skip, skip + max).map((ev) => show(ev, tz)) };
+      if (skip + max < all.length) out.nextPageToken = String(skip + max);
+      return done(200, pick(out, entry.query.fields));
+    }
+    const ev = entry.event ? cal.events.get(entry.event) : null;
+    if (method === 'GET') return ev ? done(200, pick(show(ev, tz), entry.query.fields)) : done(404, problem(404, 'notFound', 'Not Found'));
+    if (cal.role === 'reader') return done(403, problem(403, 'requiredAccessLevel', 'You need to have writer access to this calendar.'));
+    if (method === 'POST') {
+      const id = entry.body && entry.body.id;
+      if (id && cal.events.has(id)) return done(409, problem(409, 'duplicate', 'The requested identifier already exists.'));
+      return done(200, show(store(cal, Object.assign({ id: id || `g${crypto.randomBytes(12).toString('hex')}` }, entry.body), { created: now() }), tz));
+    }
+    if (!ev) return done(404, problem(404, 'notFound', 'Not Found'));
+    if (method === 'PUT') return done(200, show(store(cal, Object.assign({}, entry.body, { id: ev.id }), { created: ev.created }), tz));
+    if (method === 'DELETE') {
+      if (ev.status === 'cancelled') return done(410, problem(410, 'deleted', 'Resource has been deleted'));
+      Object.assign(ev, { status: 'cancelled', updated: now(), etag: String(++serial) });
+      return done(204);
+    }
+    return done(400, problem(400, 'badRequest', 'Bad Request'));
+  }
+
+  return {
+    requests,
+    tokens: () => tokens.size,
+    handles: (url) => /^https:\/\/(oauth2\.googleapis\.com\/token|www\.googleapis\.com\/calendar\/v3\/)/.test(String(url)),
+    fetch: (url, init = {}) => {
+      const u = new URL(String(url));
+      return u.hostname === 'oauth2.googleapis.com' ? token(init) : api(u, init);
+    },
+    add(id, o = {}) { calendars.set(id, { summary: o.summary || id, role: o.role === undefined ? 'writer' : o.role, events: new Map() }); },
+    share(id, role) { calendars.get(id).role = role; },
+    typeIn(id, ev) {
+      const cal = calendars.get(id);
+      const e = store(cal, Object.assign({ id: `g${crypto.randomBytes(12).toString('hex')}`, organizer: { self: true } }, ev), { created: now() });
+      return e.id;
+    },
+    remove(id, eventId) {
+      const ev = calendars.get(id).events.get(eventId);
+      Object.assign(ev, { status: 'cancelled', updated: now(), etag: String(++serial) });
+    },
+    edit(id, eventId, change) { Object.assign(calendars.get(id).events.get(eventId), change, { updated: now(), etag: String(++serial) }); },
+    events: (id) => [...((calendars.get(id) || { events: new Map() }).events.values())].filter((ev) => ev.status !== 'cancelled'),
+    all: (id) => [...((calendars.get(id) || { events: new Map() }).events.values())],
+    writes: (since = 0) => requests.slice(since).filter((r) => r.method !== 'GET'),
+  };
+}
 // supabase-js 2.117.3 (the vendored browser build) in Node, for the Edge Function's clients.
 let supabaseLib = null;
 function supabaseJs() {
@@ -38,7 +208,8 @@ function env(name) {
 async function setup(name, opts = {}) {
   const socket = env('REALDB_SOCKET');
   const port = env('REALDB_PORT');
-  const template = opts.v1 ? env('REALDB_V1_TEMPLATE') : env('REALDB_TEMPLATE');
+  // The template: the full v2 + v1.1 database, the v1 one (opts.v1), or v2 without migration 0003 (opts.v2).
+  const template = opts.v1 ? env('REALDB_V1_TEMPLATE') : opts.v2 ? env('REALDB_V2_TEMPLATE') : env('REALDB_TEMPLATE');
   const dbName = `rt_${name}`;
   const admin = await connect({ socketDir: socket, port, database: 'postgres' });
   await admin.query(`drop database if exists ${ident(dbName)}`);
@@ -54,9 +225,11 @@ async function setup(name, opts = {}) {
   const fnEnv = {
     HUB_CRON_SECRET: CRON_SECRET, SITE_URL: 'https://family.example/hub/', RESEND_API_KEY: 're_test_realdb', EMAIL_FROM: 'home@family.example',
     SUPABASE_SECRET_KEYS: JSON.stringify({ default: SERVICE_KEY }), SUPABASE_PUBLISHABLE_KEYS: JSON.stringify({ default: 'sb_publishable_realdb' }),
+    GOOGLE_SA_JSON: SA_JSON,
   };
   let server;
   const functions = {};
+  const google = fakeGoogle(() => server.hubNow());
   if (opts.hubJobs !== false && !opts.v1) {
     const { handle } = await import(path.join(REPO, 'supabase/functions/hub-jobs/handler.ts'));
     const sb = supabaseJs();
@@ -68,6 +241,7 @@ async function setup(name, opts = {}) {
           sent.push(Object.assign(JSON.parse(init.body), { idempotencyKey: init.headers['Idempotency-Key'] }));
           return new Response(JSON.stringify({ id: `re_${sent.length}` }), { status: 200, headers: { 'content-type': 'application/json' } });
         }
+        if (google.handles(url)) return google.fetch(url, init);
         return new Response('ok', { status: 200 });
       },
       service: () => sb.createClient(server.base, SERVICE_KEY, { auth }),
@@ -187,7 +361,14 @@ async function setup(name, opts = {}) {
   fs.mkdirSync(SHOTS, { recursive: true });
   // Run the morning email now, as pg_cron would.
   const runDigest = () => api('/functions/v1/hub-jobs', { method: 'POST', headers: { 'x-hub-cron': CRON_SECRET, 'content-type': 'application/json' }, body: '{}' });
-  return { base, browser, server, sent, runDigest, api, sql, clockNow, setClock, requests, mark, failed, sessionFor, open, settle, go, tc, texts, lastToast, titles, until, shot, check, flow, finish, errors };
+  // Run the calendar job now, as pg_cron would (supabase/cron.sql's hub-calendar).
+  const runCalendar = () => api('/functions/v1/hub-jobs', { method: 'POST', headers: { 'x-hub-cron': CRON_SECRET, 'content-type': 'application/json' }, body: '{"action":"calendar"}' });
+  // hub-jobs with someone's sign-in (Sync now, Test, preview, status), as the Settings page asks it.
+  const hubJobsAs = async (email, body) => {
+    const token = (await sessionFor(email)).access_token;
+    return api('/functions/v1/hub-jobs', { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  };
+  return { base, browser, server, sent, google, runDigest, runCalendar, hubJobsAs, api, sql, clockNow, setClock, requests, mark, failed, sessionFor, open, settle, go, tc, texts, lastToast, titles, until, shot, check, flow, finish, errors };
 }
 
 module.exports = { setup };

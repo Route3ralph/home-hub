@@ -60,15 +60,78 @@
 .set-subject strong { overflow-wrap: anywhere; }
 dialog:has(> .set-preview) { width: min(680px, calc(100vw - 16px)); }
 
-/* ---------- Google Calendar & Hearth, the Home Screen, Signed in ---------- */
+/* ---------- The Home Screen, Signed in ---------- */
 .set-row { display: flex; align-items: center; min-height: 44px; color: var(--text-2); }
 .set-steps { margin: 0; padding-left: 20px; display: grid; gap: 8px; color: var(--text-2); }
 .set-ok { margin: 10px 0 0; padding: 8px 12px; border-radius: 9px; background: var(--accent-soft); color: var(--accent); font-size: 14px; }
 .set-account { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; }
 .set-who { margin: 0; min-width: 0; overflow-wrap: anywhere; color: var(--text-2); }
 
+/* ---------- Google Calendar & Hearth (schema 3) ---------- */
+.set-gstatus .set-gline { margin: 0 0 6px; font-size: 15px; overflow-wrap: anywhere; }
+.set-gacct .set-copy { margin: 0 2px; vertical-align: middle; }
+.set-gstop { margin: 0 0 8px; padding: 10px 12px; border-radius: 10px; background: var(--danger-soft); color: var(--danger); font-size: 14px; }
+.set-gwarn { margin: 6px 0 10px; }
+.set-gsync { margin: 8px 0 0; font-size: 14px; color: var(--text-2); }
+.set-gsync.is-ok { color: var(--accent); }
+.set-gsync.is-bad { color: var(--danger); }
+.set-gh { margin: 22px 0 6px; font-size: 15px; font-weight: 650; }
+.set-gopt { margin: 14px 0 0; }
+.set-gcals { list-style: none; margin: 0; padding: 0; }
+.set-gcal { display: grid; gap: 4px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+.set-gcal:last-child { border-bottom: 0; }
+.set-gcal-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; min-height: 32px; }
+.set-gcal-label { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; min-width: 0; overflow-wrap: anywhere; }
+.set-gcal-label small { color: var(--text-3); font-size: 13px; }
+.set-chip { flex: none; padding: 2px 10px; border-radius: 999px; background: var(--surface-2); color: var(--text-2); font-size: 12px; font-weight: 650; white-space: nowrap; }
+.set-chip.is-ok { background: var(--accent-soft); color: var(--accent); }
+.set-chip.is-wait { background: var(--warn-soft); color: var(--warn); }
+.set-chip.is-bad { background: var(--danger-soft); color: var(--danger); }
+.set-chip.is-none { background: transparent; box-shadow: inset 0 0 0 1px var(--border); color: var(--text-3); }
+.set-gname { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px; color: var(--text-2); font-size: 14px; overflow-wrap: anywhere; }
+.set-gmeta, .set-gdetail, .set-gq { margin: 0; font-size: 14px; overflow-wrap: anywhere; }
+.set-gmeta { color: var(--text-3); }
+.set-gdetail { color: var(--danger); }
+.set-gq { padding: 6px 10px; border-radius: 9px; background: var(--warn-soft); color: var(--warn); }
+.set-gkids { min-height: 44px; align-items: center; font-size: 14px; }
+.set-gkids input { width: 20px; height: 20px; margin: 0; flex: none; }
+.set-gtest { font-size: 14px; }
+.set-gtest p { margin: 0; overflow-wrap: anywhere; }
+.set-gtest.is-ok p { color: var(--accent); }
+.set-gtest.is-bad p { color: var(--danger); }
+.set-gtest.is-wait p { color: var(--text-2); }
+.set-gsteps summary { display: inline-flex; align-items: center; min-height: 44px; color: var(--text-3); cursor: pointer; }
+.set-gsteps summary::-webkit-details-marker { display: none; }
+.set-gsteps summary::before { content: "▸"; margin-right: 6px; }
+.set-gsteps[open] summary::before { content: "▾"; }
+.set-gsteps ul { margin: 0 0 4px; padding-left: 20px; color: var(--text-2); }
+.set-gsteps li.is-bad { color: var(--danger); }
+.set-gacts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+.set-glist { margin: 0; padding-left: 20px; display: grid; gap: 6px; color: var(--text-2); font-size: 14px; overflow-wrap: anywhere; }
+/* A block link keeps the list's bullet on its first line when it wraps (and the 44px tap target). */
+.set-glist a { display: block; padding: 12px 0; }
+.set-hearth { font-size: 14px; }
+/* Set, Add a calendar to read, and the Test-and-preview dialog. */
+dialog:has(> .set-gform), dialog:has(> .set-gcheck) { width: min(620px, calc(100vw - 16px)); }
+.set-gform .d-close, .set-gcheck .d-close { width: 44px; height: 44px; }
+.set-gform input[type="text"], .set-gform select { min-height: 44px; }
+.set-gid { margin: -6px 0 0; overflow-wrap: anywhere; }
+.set-gcheck h4 { margin: 4px 0 4px; font-size: 15px; }
+.set-pv { list-style: none; margin: 0; padding: 0; max-height: 48vh; overflow-y: auto; border: 1px solid var(--border); border-radius: 10px; }
+.set-pv-day { position: sticky; top: 0; padding: 6px 12px; background: var(--surface-2); color: var(--text-2); font-size: 12px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
+.set-pv-row { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px; min-height: 52px; padding: 4px 12px; border-bottom: 1px solid var(--line); }
+.set-pv-row:last-child { border-bottom: 0; }
+.set-pv-what { flex: 1 1 160px; min-width: 0; }
+.set-pv-title { display: block; overflow-wrap: anywhere; font-weight: 550; }
+.set-pv-meta, .set-pv-hint { display: block; font-size: 13px; font-weight: 400; color: var(--text-2); }
+.set-pv-hint { color: var(--text-3); }
+.set-pv-note { margin-top: -4px; }
+.set-pv-none { padding: 12px; color: var(--text-3); font-size: 14px; }
+
 @media (max-width: 640px) {
   .set-body { padding: 4px 16px 16px; }
+  .set-gform input[type="text"] { font-size: 16px; } /* iPhone zooms in on smaller text */
+  .set-gcheck { padding: 16px; }
   .set-form input[type="time"] { font-size: 16px; } /* iPhone zooms in on smaller text */
   .set-dayoff { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
   .set-dayoff .btn { justify-self: start; }

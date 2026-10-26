@@ -1,8 +1,10 @@
 -- =====================================================================
--- HOME HUB v2 — schedule the morning email (pg_cron + pg_net)
+-- HOME HUB v2 — schedule the morning email and the Google Calendar copy (pg_cron + pg_net)
 -- Run in the Supabase SQL editor after migration 0002 is applied and the
--- hub-jobs function is deployed (docs/v2-design.md §7, step 5). Safe to run
--- again: it replaces the three jobs. It changes nothing if a check fails.
+-- hub-jobs function is deployed (docs/v2-design.md §7, step 5), and again after
+-- a release that changes this file (v1.1 added hub-calendar: run it again after
+-- migration 0003). Safe to run again: it replaces the four jobs. It changes
+-- nothing if a check fails.
 --
 -- Before you run it, create two Vault secrets by hand (Dashboard → Project
 -- Settings → Vault, or in the SQL editor). Never write the real values in
@@ -28,8 +30,14 @@
 --                     and digest_due in migration 0002 decide how often and how far apart).
 --   hub-roll-missed   every hour: moves missed repeating tasks on, so the pages are right
 --                     even when nobody gets an email (hub-jobs also does it before each run).
+--   hub-calendar      every 5 minutes, at 2, 7, 12 … 57 (away from hub-digest's quarter hours):
+--                     POST {"action":"calendar"} to hub-jobs with the same header. Each run copies
+--                     hub items to the Google calendars and reads Google's events back
+--                     (docs/v1.1-google-calendar.md §3). Until migration 0003 is applied it
+--                     answers 503 no_schema, and without GOOGLE_SA_JSON it stops at once
+--                     (not_set_up): harmless either way.
 --   hub-cron-cleanup  every night: removes the hub jobs' run history (cron.job_run_details)
---                     older than 14 days. Without it the ~120 rows a day are kept forever.
+--                     older than 14 days. Without it the ~400 rows a day are kept forever.
 --
 -- hub-jobs must be deployed with JWT verification off (supabase/config.toml pins it). If it
 -- isn't, the gateway answers every run with 401 before the function starts, and pg_cron still
@@ -107,7 +115,26 @@ select cron.schedule(
 select cron.unschedule(j.jobname) from cron.job j where j.jobname = 'hub-roll-missed';
 select cron.schedule('hub-roll-missed', '7 * * * *', 'select public.roll_missed_tasks()');
 
--- 5. Housekeeping, every night at 3:17 (UTC): pg_cron keeps a row per run in
+-- 5. The Google Calendar copy, every 5 minutes, at minutes 2, 7, 12 … 57. A run stops calling
+--    Google after 30 seconds, so the same 60-second timeout covers it; what's left goes in the
+--    next run. Reads the same two Vault secrets as hub-digest when it runs.
+select cron.unschedule(j.jobname) from cron.job j where j.jobname = 'hub-calendar';
+select cron.schedule(
+  'hub-calendar',
+  '2,7,12,17,22,27,32,37,42,47,52,57 * * * *',
+  $job$
+  select net.http_post(
+    url := (select s.decrypted_secret from vault.decrypted_secrets s where s.name = 'hub_jobs_url'),
+    body := '{"action": "calendar"}'::jsonb,
+    headers := jsonb_build_object(
+      'Content-Type', 'application/json',
+      'x-hub-cron', (select s.decrypted_secret from vault.decrypted_secrets s where s.name = 'hub_cron_secret')),
+    timeout_milliseconds := 60000
+  );
+  $job$
+);
+
+-- 6. Housekeeping, every night at 3:17 (UTC): pg_cron keeps a row per run in
 --    cron.job_run_details and never removes them. This keeps the hub jobs' last 14 days
 --    (and drops rows of jobs that no longer exist, such as the ones this file replaced);
 --    other jobs' history is left alone.
@@ -125,8 +152,8 @@ select cron.schedule(
 
 commit;
 
--- 6. Check: the three jobs are listed and active.
-select jobid, jobname, schedule, active from cron.job where jobname in ('hub-digest', 'hub-roll-missed', 'hub-cron-cleanup') order by jobname;
+-- 7. Check: the four jobs are listed and active.
+select jobid, jobname, schedule, active from cron.job where jobname in ('hub-digest', 'hub-roll-missed', 'hub-calendar', 'hub-cron-cleanup') order by jobname;
 
 -- Afterwards, to see how it is going:
 --   select jobname, status, return_message, start_time from cron.job_run_details d
@@ -134,5 +161,6 @@ select jobid, jobname, schedule, active from cron.job where jobname in ('hub-dig
 --   select status_code, error_msg, created from net._http_response order by created desc limit 10;
 --   select started_at, ok, sent, detail from public.job_runs order by started_at desc limit 10;
 -- To stop the morning email:   select cron.unschedule('hub-digest');
+-- To stop the Google Calendar copy:   select cron.unschedule('hub-calendar');
 -- To remove everything this file scheduled:
---   select cron.unschedule(j.jobname) from cron.job j where j.jobname in ('hub-digest', 'hub-roll-missed', 'hub-cron-cleanup');
+--   select cron.unschedule(j.jobname) from cron.job j where j.jobname in ('hub-digest', 'hub-roll-missed', 'hub-calendar', 'hub-cron-cleanup');

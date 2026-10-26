@@ -10,6 +10,8 @@
 #   load_v2  creates a database with the Supabase stand-ins, schema.sql and migrations/*.sql:
 #            load_v2 <name>   (prints a FAIL line and returns non-zero if anything fails)
 # initdb refuses to run as root, so as root the server runs as the postgres user.
+# The databases are UTF8, as on Supabase (the C locale keeps sorting the same on any machine):
+# in a SQL_ASCII database the text cleaning in migration 0003 can't see the characters it removes.
 
 # Sessions run in UTC, as on Supabase, so timestamps print the same on any machine.
 export PGTZ=UTC
@@ -34,7 +36,7 @@ trap cleanup EXIT
 port=$((50000 + RANDOM % 10000))
 while (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null; do port=$((port + 1)); done
 
-as_owner "$PG_BIN/initdb" -D "$dir/data" -U postgres -A trust --no-sync >"$dir/initdb.log" 2>&1 \
+as_owner "$PG_BIN/initdb" -D "$dir/data" -U postgres -A trust --no-sync --encoding=UTF8 --locale=C >"$dir/initdb.log" 2>&1 \
   || { echo "FAIL  database tests: initdb failed"; cat "$dir/initdb.log"; exit 1; }
 as_owner "$PG_BIN/pg_ctl" -D "$dir/data" -l "$dir/server.log" -w \
   -o "-p $port -k $dir -c listen_addresses='' -c fsync=off" start >/dev/null \

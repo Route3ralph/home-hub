@@ -1,6 +1,7 @@
 -- Who can see and change what: seeding, whoami, the catalog-wide rules, and the
 -- role matrix (anon; signed-in stranger; removed member with a parent row; adult; admin;
--- service_role) for every new table and every new function.
+-- service_role) for every new table and every new function (migrations 0002 and 0003),
+-- and the table and column privileges of 0003's tables.
 \ir roles.sql
 \ir fixtures.sql
 
@@ -27,7 +28,9 @@ select test.is(whoami() - 'created_at' - 'person', '{"email": "alex@example.com"
 select test.is((whoami() -> 'person') - 'id', '{"name": "Alex", "role": "parent", "language": "en", "color": "#9333ea"}'::jsonb,
                'whoami adds the caller''s person');
 select test.is((whoami() -> 'person' ->> 'id')::uuid, test.person('Alex'), 'whoami person id');
-select test.is(hub_schema_version(), 2, 'hub_schema_version is 2');
+-- Migration 0003 (Google Calendar) changes the version on purpose: the v1.1 client shows its
+-- Google card, and asks for Google events, only on 3.
+select test.is(hub_schema_version(), 3, 'hub_schema_version is 3');
 :as_removed
 select test.is(whoami(), null, 'removed member: whoami is null even with a person row');
 :as_stranger
@@ -67,6 +70,39 @@ select test.is((select string_agg(r, ', ' order by r) from unnest(array['anon', 
                 where has_table_privilege(r, 'public.people_confirm', 'insert, update, delete, truncate, references, trigger')),
                null, 'nobody but the owner can write confirmation secrets');
 
+-- Migration 0003's tables: Supabase's default privileges would give anon and authenticated everything
+-- (truncate ignores row-level security). Anon gets nothing; signed-in users read, and on calendars
+-- admins (by the policies) write the setting columns only.
+select test.is((select string_agg(t, ', ' order by t) from unnest(array['calendars', 'calendar_links', 'google_events', 'calendar_sync']) t
+                where has_table_privilege('anon', 'public.' || t, 'select, insert, update, delete, truncate, references, trigger')
+                   or has_any_column_privilege('anon', 'public.' || t, 'select, insert, update, references')),
+               null, 'anon has no privilege on calendars, calendar_links, google_events or calendar_sync');
+select test.is((select string_agg(t, ', ' order by t) from unnest(array['calendars', 'calendar_links', 'google_events', 'calendar_sync']) t
+                where has_table_privilege('authenticated', 'public.' || t, 'truncate, references, trigger')),
+               null, 'signed-in users cannot truncate, reference or put triggers on the calendar tables');
+select test.is((select string_agg(t, ', ' order by t) from unnest(array['calendar_links', 'google_events', 'calendar_sync']) t
+                where has_table_privilege('authenticated', 'public.' || t, 'insert, update, delete')
+                   or has_any_column_privilege('authenticated', 'public.' || t, 'insert, update')),
+               null, 'signed-in users cannot write calendar_links, google_events or calendar_sync (only hub-jobs does)');
+select test.is((select string_agg(t, ', ' order by t) from unnest(array['calendars', 'calendar_links', 'google_events', 'calendar_sync']) t
+                where has_table_privilege('authenticated', 'public.' || t, 'select')),
+               'calendar_links, calendar_sync, calendars, google_events', 'signed-in users may select the calendar tables (row-level security decides)');
+select test.is(has_table_privilege('authenticated', 'public.calendars', 'insert') or has_table_privilege('authenticated', 'public.calendars', 'update'),
+               false, 'calendars: no table-wide insert or update for signed-in users');
+select test.is(has_table_privilege('authenticated', 'public.calendars', 'delete'), true, 'calendars: signed-in users may delete (Disconnect; admins only, by policy)');
+select test.is((select string_agg(a.attname, ', ' order by a.attname) from pg_attribute a
+                where a.attrelid = 'public.calendars'::regclass and a.attnum > 0 and not a.attisdropped
+                  and has_column_privilege('authenticated', 'public.calendars', a.attname, 'insert')),
+               'for_kids, google_id, kind, label, person_id, writes', 'calendars: the columns signed-in users may insert');
+select test.is((select string_agg(a.attname, ', ' order by a.attname) from pg_attribute a
+                where a.attrelid = 'public.calendars'::regclass and a.attnum > 0 and not a.attisdropped
+                  and has_column_privilege('authenticated', 'public.calendars', a.attname, 'update')),
+               'copy_approved_at, for_kids, google_id, kind, label, person_id, writes', 'calendars: the columns signed-in users may update');
+select test.is((select string_agg(p.oid::regprocedure::text, ', ' order by p.proname) from pg_proc p
+                where p.pronamespace = 'public'::regnamespace and p.proname like 'calendar\_%'
+                  and (has_function_privilege('authenticated', p.oid, 'execute') or has_function_privilege('anon', p.oid, 'execute'))),
+               'calendar_preview(uuid)', 'of the calendar_* functions, signed-in users may call only calendar_preview (the rest are hub-jobs'')');
+
 -- ---------------------------------------------------------------------
 -- Tables: what each role can do (rows seen or changed, or denied)
 -- ---------------------------------------------------------------------
@@ -80,6 +116,13 @@ insert into tasks (title, due_date) values ('Call plumber', '2026-11-03');
 insert into task_log (task_id, occurrence, status, done_on, prev_due) values (test.task('Trash'), '2026-10-26', 'done', '2026-10-26', '2026-10-26');
 insert into notification_log (person_id, local_date, kind, status) values (test.person('Alex'), '2026-11-02', 'digest', 'sent');
 insert into job_runs (action, ok, sent) values ('digest', true, 1);
+insert into calendars (google_id, kind, person_id, label, status, access_role, copy_approved_at)
+values ('hub-taylor@group.calendar.google.com', 'person', test.person('Taylor'), 'Taylor', 'ok', 'writer', '2026-10-27');
+insert into calendar_links (google_calendar, base_id, event_id, calendar_id, item_kind, day, end_day)
+values ('hub-taylor@group.calendar.google.com', 'hh' || repeat('0', 32), 'hh' || repeat('0', 32), (select id from calendars),
+        'event', '2026-11-02', '2026-11-02');
+insert into google_events (calendar_id, google_calendar, event_id, title, all_day, start_day, end_day, read_at)
+values ((select id from calendars), 'hub-taylor@group.calendar.google.com', 'g1', 'Dentist', true, '2026-11-02', '2026-11-02', now());
 
 insert into test.samples (tbl, ins, upd) values
   ('household',          $$insert into public.household (id) values (true)$$,
@@ -105,7 +148,17 @@ insert into test.samples (tbl, ins, upd) values
   ('notification_log',   $$insert into public.notification_log (person_id, local_date, kind) values (test.person('Taylor'), '2026-11-02', 'digest')$$,
                          $$update public.notification_log set detail = detail$$),
   ('job_runs',           $$insert into public.job_runs (action) values ('digest')$$,
-                         $$update public.job_runs set detail = detail$$);
+                         $$update public.job_runs set detail = detail$$),
+  ('calendars',          $$insert into public.calendars (google_id, kind, label, writes) values ('family@example.com', 'family', 'Family account', false)$$,
+                         $$update public.calendars set label = label$$),
+  ('calendar_links',     $$insert into public.calendar_links (google_calendar, base_id, event_id, day, end_day)
+                           values ('hub-taylor@group.calendar.google.com', 'hh' || repeat('1', 32), 'hh' || repeat('1', 32), '2026-11-03', '2026-11-03')$$,
+                         $$update public.calendar_links set title = title$$),
+  ('google_events',      $$insert into public.google_events (calendar_id, google_calendar, event_id, title, all_day, start_day, end_day, read_at)
+                           select id, google_id, 'g2', 'Swim meet', true, '2026-11-04', '2026-11-04', now() from public.calendars$$,
+                         $$update public.google_events set title = title$$),
+  ('calendar_sync',      $$insert into public.calendar_sync (id) values (true) on conflict (id) do nothing$$,
+                         $$update public.calendar_sync set last_error = last_error$$);
 
 --                         table                 select    insert    update    delete
 :as_anon
@@ -121,6 +174,10 @@ select test.matrix('anon', 'contractor_secrets', 'denied', 'denied', 'denied', '
 select test.matrix('anon', 'projects',           'rows:0', 'denied', 'rows:0', 'rows:0');
 select test.matrix('anon', 'notification_log',   'rows:0', 'denied', 'rows:0', 'rows:0');
 select test.matrix('anon', 'job_runs',           'rows:0', 'denied', 'rows:0', 'rows:0');
+select test.matrix('anon', 'calendars',          'denied', 'denied', 'denied', 'denied');
+select test.matrix('anon', 'calendar_links',     'denied', 'denied', 'denied', 'denied');
+select test.matrix('anon', 'google_events',      'denied', 'denied', 'denied', 'denied');
+select test.matrix('anon', 'calendar_sync',      'denied', 'denied', 'denied', 'denied');
 
 :as_stranger
 select test.matrix('stranger', 'household',          'rows:0', 'denied', 'rows:0', 'rows:0');
@@ -135,6 +192,10 @@ select test.matrix('stranger', 'contractor_secrets', 'rows:0', 'denied', 'rows:0
 select test.matrix('stranger', 'projects',           'rows:0', 'denied', 'rows:0', 'rows:0');
 select test.matrix('stranger', 'notification_log',   'rows:0', 'denied', 'rows:0', 'rows:0');
 select test.matrix('stranger', 'job_runs',           'rows:0', 'denied', 'rows:0', 'rows:0');
+select test.matrix('stranger', 'calendars',          'rows:0', 'denied', 'rows:0', 'rows:0');
+select test.matrix('stranger', 'calendar_links',     'rows:0', 'denied', 'denied', 'denied');
+select test.matrix('stranger', 'google_events',      'rows:0', 'denied', 'denied', 'denied');
+select test.matrix('stranger', 'calendar_sync',      'rows:0', 'denied', 'denied', 'denied');
 
 :as_removed
 select test.matrix('removed', 'household',          'rows:0', 'denied', 'rows:0', 'rows:0');
@@ -149,6 +210,10 @@ select test.matrix('removed', 'contractor_secrets', 'rows:0', 'denied', 'rows:0'
 select test.matrix('removed', 'projects',           'rows:0', 'denied', 'rows:0', 'rows:0');
 select test.matrix('removed', 'notification_log',   'rows:0', 'denied', 'rows:0', 'rows:0');
 select test.matrix('removed', 'job_runs',           'rows:0', 'denied', 'rows:0', 'rows:0');
+select test.matrix('removed', 'calendars',          'rows:0', 'denied', 'rows:0', 'rows:0');
+select test.matrix('removed', 'calendar_links',     'rows:0', 'denied', 'denied', 'denied');
+select test.matrix('removed', 'google_events',      'rows:0', 'denied', 'denied', 'denied');
+select test.matrix('removed', 'calendar_sync',      'rows:0', 'denied', 'denied', 'denied');
 
 -- City Water has an account number, so only an admin can change or remove it: a statement
 -- by anyone else that touches it is refused (with a reason), not quietly skipped.
@@ -165,6 +230,10 @@ select test.matrix('adult', 'contractor_secrets', 'rows:0', 'denied', 'rows:0', 
 select test.matrix('adult', 'projects',           'rows:1', 'rows:1', 'rows:1', 'rows:1');
 select test.matrix('adult', 'notification_log',   'rows:0', 'denied', 'rows:0', 'rows:0');
 select test.matrix('adult', 'job_runs',           'rows:0', 'denied', 'rows:0', 'rows:0');
+select test.matrix('adult', 'calendars',          'rows:1', 'denied', 'rows:0', 'rows:0');
+select test.matrix('adult', 'calendar_links',     'rows:0', 'denied', 'denied', 'denied');
+select test.matrix('adult', 'google_events',      'rows:1', 'denied', 'denied', 'denied');
+select test.matrix('adult', 'calendar_sync',      'rows:1', 'denied', 'denied', 'denied');
 
 :as_admin
 select test.matrix('admin', 'household',          'rows:1', 'denied', 'rows:1', 'rows:0');
@@ -179,6 +248,22 @@ select test.matrix('admin', 'contractor_secrets', 'rows:1', 'rows:1', 'rows:1', 
 select test.matrix('admin', 'projects',           'rows:1', 'rows:1', 'rows:1', 'rows:1');
 select test.matrix('admin', 'notification_log',   'rows:1', 'denied', 'rows:0', 'rows:0');
 select test.matrix('admin', 'job_runs',           'rows:1', 'denied', 'rows:0', 'rows:0');
+select test.matrix('admin', 'calendars',          'rows:1', 'rows:1', 'rows:1', 'rows:1');
+select test.matrix('admin', 'calendar_links',     'rows:1', 'denied', 'denied', 'denied');
+select test.matrix('admin', 'google_events',      'rows:1', 'denied', 'denied', 'denied');
+select test.matrix('admin', 'calendar_sync',      'rows:1', 'denied', 'denied', 'denied');
+-- Admins set a calendar's setting columns only; what Google said about it is hub-jobs' to write.
+select test.is(test.try($$update public.calendars set copy_approved_at = now(), label = 'Taylor', for_kids = false$$), 'rows:1',
+               'admin: can change a calendar''s setting columns (and Start copying)');
+select test.is(test.try($$update public.calendars set status = 'ok'$$), 'denied', 'admin: cannot set a calendar''s status');
+select test.is(test.try($$update public.calendars set access_role = 'writer', google_name = 'Hub – Taylor'$$), 'denied',
+               'admin: cannot set the access role or Google name');
+select test.is(test.try($$insert into public.calendars (google_id, kind, label, writes, status)
+                          values ('family@example.com', 'family', 'Family account', false, 'ok')$$), 'denied',
+               'admin: cannot insert a calendar that says it is ok');
+select test.is(test.try($$insert into public.calendars (google_id, kind, label, writes, copy_approved_at)
+                          values ('family@example.com', 'family', 'Family account', false, now())$$), 'denied',
+               'admin: cannot insert a calendar already approved (Start copying comes after the preview)');
 
 -- hub-jobs writes the email log and job runs, and reads confirmation secrets; account numbers are closed to it.
 :as_service
@@ -188,6 +273,10 @@ select test.is((select count(*) from people_confirm where token ~ '^[0-9a-f]{32}
                'service reads each unconfirmed person''s 32-hex confirmation secret (for the email link)');
 select test.matrix('service', 'notification_log',   'rows:1', 'rows:1', 'rows:1', 'rows:1');
 select test.matrix('service', 'job_runs',           'rows:1', 'rows:1', 'rows:1', 'rows:1');
+select test.matrix('service', 'calendars',          'rows:1', 'rows:1', 'rows:1', 'rows:1');
+select test.matrix('service', 'calendar_links',     'rows:1', 'rows:1', 'rows:1', 'rows:1');
+select test.matrix('service', 'google_events',      'rows:1', 'rows:1', 'rows:1', 'rows:1');
+select test.matrix('service', 'calendar_sync',      'rows:1', 'rows:0', 'rows:1', 'rows:1');
 select test.is(test.try('select * from public.people'), 'rows:5', 'service select people');
 select test.is(test.try('select * from public.tasks'), 'rows:2', 'service select tasks');
 
@@ -224,7 +313,21 @@ insert into rpc values
   ('digest_due',         'select * from digest_due(10)',                                                    'denied', 'denied', 'denied', 'denied', 'denied', 'ok'),
   ('claim_notification', $$select claim_notification(test.person('Taylor'), '2026-11-03', 'digest')$$,      'denied', 'denied', 'denied', 'denied', 'denied', 'ok'),
   ('finish_notification',$$select finish_notification((select id from notification_log limit 1), 'sent')$$, 'denied', 'denied', 'denied', 'denied', 'denied', 'ok'),
-  ('digest_for',         $$select digest_for(test.person('Alex'), '2026-11-02')$$,                          'denied', 'denied', 'denied', 'denied', 'denied', 'ok');
+  ('digest_for',         $$select digest_for(test.person('Alex'), '2026-11-02')$$,                          'denied', 'denied', 'denied', 'denied', 'denied', 'ok'),
+  -- Migration 0003: Google events for the pages; the preview for admins; the calendar job for hub-jobs.
+  ('google_items',       $$select * from google_items('2026-11-01', '2026-11-30')$$,                        'denied', 'ok',     'ok',     'ok',     'ok',     'ok'),
+  ('calendar_preview',   $$select * from calendar_preview((select id from calendars limit 1))$$,            'denied', 'denied', 'denied', 'denied', 'ok',     'denied'),
+  ('calendar_begin',     'select calendar_begin()',                                                         'denied', 'denied', 'denied', 'denied', 'denied', 'ok'),
+  ('calendar_signed_in', $$select calendar_signed_in(gen_random_uuid(), 'service_account', 'home-hub-sync@example.com', 'k1')$$,
+                                                                                                            'denied', 'denied', 'denied', 'denied', 'denied', 'ok'),
+  ('calendar_read_due',  'select * from calendar_read_due()',                                               'denied', 'denied', 'denied', 'denied', 'denied', 'ok'),
+  ('calendar_store_events', $$select calendar_store_events(gen_random_uuid(), 'hub-taylor@group.calendar.google.com', '2026-11-01',
+                                                            '2026-12-31', 'Hub – Taylor', 'writer', true, '[]', '[]')$$,
+                                                                                                            'denied', 'denied', 'denied', 'denied', 'denied', 'ok'),
+  ('calendar_mark',      $$select calendar_mark(gen_random_uuid(), 'hub-taylor@group.calendar.google.com', 'ok')$$, 'denied', 'denied', 'denied', 'denied', 'denied', 'ok'),
+  ('calendar_plan',      'select * from calendar_plan()',                                                   'denied', 'denied', 'denied', 'denied', 'denied', 'ok'),
+  ('calendar_record',    $$select calendar_record('[]')$$,                                                  'denied', 'denied', 'denied', 'denied', 'denied', 'ok'),
+  ('calendar_finish',    $$select calendar_finish(gen_random_uuid(), '{}')$$,                               'denied', 'denied', 'denied', 'denied', 'denied', 'ok');
 
 :as_anon
 select test.is(test.can(call), anon, 'anon → ' || fn) from rpc order by fn;

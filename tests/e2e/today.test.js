@@ -1,6 +1,9 @@
 // Browser tests for the v2 Today page (assets/modules/today.js): person chips, one person's day,
 // ticking tasks off with Undo, Late, Heads-up, "Nobody's on it", "Send <name> their day", the
-// project lines, the first-run checklist and "Which one is you?".
+// project lines, the first-run checklist and "Which one is you?". On schema 3 (migration 0003): events
+// read from Google Calendar (google_items) in each person's day and under Everyone, in time order, never
+// in Late, Heads-up or Nobody's on it; the line when they can't be loaded; the one-time notice after the
+// first Start copying (docs/v1.1-google-calendar.md §5.4).
 //
 // The fake RPCs answer with the shapes in supabase/migrations/0002_home_hub_v2.sql (agenda_item rows
 // with all 27 columns, day_text as text, complete_task / undo_task as uuids, save_person as a people
@@ -11,7 +14,7 @@
 // Run alone with: node tests/e2e/today.test.js
 const { chromium } = require('playwright');
 const { randomUUID, createHash } = require('crypto');
-const { makeDb, install, signIn, SUPA } = require('./mock');
+const { makeDb, install, signIn, SUPA, withCalendars, calendarRow, googleEventRow, calendarRpc } = require('./mock');
 const { serve } = require('./server');
 
 let BASE = '';
@@ -192,7 +195,7 @@ const stubModule = (name, s) => `;(function () {
     (window.__added = window.__added || []).push({ page: ${JSON.stringify(name)}, defaults: defaults });
   };` : ''}
   HomeHub.register({
-    name: ${JSON.stringify(name)}, schema: { min: 2, max: 2 }, nav: ${JSON.stringify(s.nav)},
+    name: ${JSON.stringify(name)}, schema: { min: 2, max: 99 }, nav: ${JSON.stringify(s.nav)},
     match: function (parts) { return parts[0] === ${JSON.stringify(name)} ? {} : null; },
     render: function (main) { main.innerHTML = '<h1 id="stub">${s.nav.label}</h1>'; },
     provides: provides,
@@ -298,6 +301,8 @@ const emailOf = (req) => {
   // 1. Registration, the head, the chips (desktop, Alex: a parent and admin)
   // =====================================================================
   let { page, db, log } = await open({ label: 'desktop' });
+  check('schema 2: no google_items call, no calendars read, no notice', !calls(db, 'google_items').length && !log.some((l) => /\/rest\/v1\/calendars/.test(l))
+    && !(await page.$('.today-gnotice, .today-gfail')));
   const reg = await page.evaluate(() => ({
     tabs: [...document.querySelectorAll('.tabs a')].map((a) => [a.textContent, a.getAttribute('href'), a.getAttribute('aria-current')]),
     bar: [...document.querySelectorAll('.bottombar a')].map((a) => a.textContent.trim()),
@@ -788,6 +793,115 @@ const emailOf = (req) => {
   await page.waitForTimeout(600);
   check('left open: after 5 minutes away, the household\'s clock and the new day are read', same(calls(db, 'agenda').slice(-1)[0].body, { p_from: '2026-10-26', p_to: '2026-10-26' })
     && (await tc(page, '.today-head .eyebrow')) === 'Monday, October 26' && same(await titles(page, 'day'), ['Grandma visiting', 'Bake sale']), await tc(page, '.today-head .eyebrow'));
+  await page.context().close();
+
+  // =====================================================================
+  // 9d. Schema 3: Google Calendar events in the day, and the one-time notice
+  // =====================================================================
+  const gRpc = Object.assign({ hub_schema_version: () => 3 }, calendarRpc);
+  // Jordan's and Alex's Hub calendars and the family account's main calendar (Family, read only).
+  // approved: when the first calendar's Start copying was pressed (null: never).
+  function googleTodayDb(approved) {
+    const g = withCalendars(todayDb(), { auth: 'service_account' });
+    const jc = calendarRow({ google_id: 'jordan0123@group.calendar.google.com', kind: 'person', person_id: ID.jordan, label: 'Jordan', status: 'ok', google_name: 'Hub – Jordan',
+      copy_approved_at: approved === undefined ? '2026-10-20T13:00:00+00:00' : approved });
+    const ac = calendarRow({ google_id: 'alex0456@group.calendar.google.com', kind: 'person', person_id: ID.alex, label: 'Alex', status: 'ok', google_name: 'Hub – Alex' });
+    const fc = calendarRow({ google_id: 'family@example.com', kind: 'family', label: 'Family account', writes: false, status: 'ok' });
+    g.calendars.push(jc, ac, fc);
+    const ge = (c, o) => googleEventRow(Object.assign({ calendar_id: c.id, google_calendar: c.google_id, start_day: TODAY, end_day: TODAY }, o));
+    const timed = (from, to) => ({ all_day: false, start_at: at(from), end_at: at(to) });
+    g.google_events.push(
+      ge(jc, Object.assign({ title: 'Swim meet', location: 'Maple Pool' }, timed('09:30', '10:30'))),
+      ge(jc, Object.assign({ title: '', private: true }, timed('12:00', '13:00'))),
+      ge(ac, Object.assign({ title: 'Alex dentist' }, timed('07:00', '07:30'))),
+      ge(fc, { title: 'Farmers market' }),
+      ge(fc, { title: 'Tomorrow\'s fair', start_day: addDays(TODAY, 1), end_day: addDays(TODAY, 1) }),
+    );
+    return g;
+  }
+  ({ page, db } = await open({ label: 'google', db: googleTodayDb(), rpc: gRpc }));
+  check('schema 3: google_items for today only', same(calls(db, 'google_items').map((c) => c.body), [{ p_from: TODAY, p_to: TODAY }]), JSON.stringify(calls(db, 'google_items')));
+  check('your day: your Google events and Family\'s, in time order with the rest (all-day first, then by time, then tasks)',
+    same(await titles(page, 'day'), ['Farmers market', 'Grandma visiting', 'Alex dentist', 'School run', 'Call the plumber', 'Heartworm pill']), (await titles(page, 'day')).join(','));
+  const gRow = (title) => page.$$eval('[data-list="day"] .irow', (rs, t) => {
+    const r = rs.find((x) => x.querySelector('.irow-title').firstChild.textContent === t);
+    return r ? { cls: r.className, box: !!r.querySelector('.irow-check'), who: r.querySelectorAll('.irow-who .pdot').length, sub: (r.querySelector('.irow-sub') || {}).textContent || '',
+      time: r.querySelector('.irow-time').innerText.replace(/\s+/g, ' '), pc: r.style.getPropertyValue('--pc') } : null;
+  }, title);
+  const dentist = await gRow('Alex dentist');
+  check('a Google row: k-google, no tick box, no who dots, "Google", its times, the person\'s colour', /k-google/.test(dentist.cls) && !dentist.box && !dentist.who
+    && dentist.sub === 'Google' && dentist.time === '7:00am 7:30am' && dentist.pc === '#2563eb', JSON.stringify(dentist));
+  await chip(page, 'Jordan').click();
+  await page.waitForTimeout(100);
+  check('Jordan\'s day (a kid): his Google events (a private one as "Private item"), not Alex\'s, nor a calendar to read without Show to kids (as on his My day)',
+    same(await titles(page, 'day'), ['School run', 'Swim meet', 'Private item', 'Piano', 'Take out recycling']), (await titles(page, 'day')).join(','));
+  await page.context().close();
+  // Kids and helpers see on Today what reaches their own My day and texts: a kid, Hub – Family's and
+  // a calendar to read marked Show to kids; a helper, no Family calendar at all.
+  const kidsDb = googleTodayDb();
+  const hf = calendarRow({ google_id: 'family0654@group.calendar.google.com', kind: 'family', label: 'Family', status: 'ok', google_name: 'Hub – Family' });
+  const sc = calendarRow({ google_id: 'school0111@group.calendar.google.com', kind: 'family', label: 'School', writes: false, for_kids: true, status: 'ok', google_name: 'Maple School' });
+  kidsDb.calendars.push(hf, sc);
+  kidsDb.google_events.push(
+    googleEventRow({ calendar_id: hf.id, google_calendar: hf.google_id, start_day: TODAY, end_day: TODAY, title: 'Picnic' }),
+    googleEventRow({ calendar_id: sc.id, google_calendar: sc.google_id, start_day: TODAY, end_day: TODAY, title: 'School holiday' }));
+  ({ page, db } = await open({ label: 'google-kids', db: kidsDb, rpc: gRpc }));
+  const familyRows = async () => (await titles(page, 'day')).filter((t) => ['Farmers market', 'Picnic', 'School holiday'].includes(t)).sort();
+  check('your day (a parent): every Family calendar\'s events', same(await familyRows(), ['Farmers market', 'Picnic', 'School holiday']), JSON.stringify(await familyRows()));
+  await chip(page, 'Jordan').click();
+  await page.waitForTimeout(100);
+  check('Jordan\'s day (a kid): Hub – Family\'s and Show to kids\' events, not the family account\'s main calendar', same(await familyRows(), ['Picnic', 'School holiday']),
+    JSON.stringify(await familyRows()));
+  await chip(page, 'Taylor').click();
+  await page.waitForTimeout(100);
+  check('Taylor\'s day (the helper): no Family calendar\'s events', same(await familyRows(), []), JSON.stringify(await familyRows()));
+  await page.context().close();
+  ({ page, db } = await open({ label: 'google', db: googleTodayDb(), rpc: gRpc }));
+  await chip(page, 'Everyone').click();
+  await page.waitForTimeout(100);
+  const everyone = await titles(page, 'day');
+  check('Everyone: every Google event of today (not tomorrow\'s)', ['Farmers market', 'Alex dentist', 'Swim meet', 'Private item'].every((t) => everyone.includes(t)) && !everyone.includes('Tomorrow\'s fair'), everyone.join(','));
+  check('never in Late, Heads-up or Nobody\'s on it', !(await page.$$eval('[data-list="late"] .irow, [data-list="heads"] .irow, [data-list="nobody"] .irow', (rs) => rs.some((r) => r.classList.contains('k-google')))));
+  check('the notice: once, after the first Start copying, with a close button', (await tc(page, '.today-gnotice p')) === 'Home Hub now copies the calendar to Google and the kitchen wall. Mark anything that shouldn\'t be seen there Private.'
+    && (await page.getAttribute('.today-gnotice-x', 'aria-label')) === 'Close this notice', await tc(page, '.today-gnotice'));
+  await page.screenshot({ path: SHOTS + 'today-google-desktop-light.png', fullPage: true });
+  await page.click('.today-gnotice-x');
+  await page.waitForTimeout(100);
+  check('the notice: closes, and this browser remembers', !(await page.$('.today-gnotice')) && (await page.evaluate(() => localStorage.getItem('homehub.today.googleNotice'))) === 'closed');
+  await chip(page, 'Jordan').click();
+  await page.waitForTimeout(100);
+  check('the notice: stays closed when the page redraws', !(await page.$('.today-gnotice')));
+  await page.reload();
+  await page.waitForTimeout(800);
+  check('the notice: stays closed after a reload (no calendars read for it)', !(await page.$('.today-gnotice')) && !!(await page.$('[data-list="day"]')));
+  await page.click('[data-list="day"] .irow.k-google .irow-main');
+  await page.waitForTimeout(300);
+  check('a tap on a Google event opens today on the Calendar', (await page.evaluate(() => location.hash)) === `#/calendar/${TODAY}`, await page.evaluate(() => location.hash));
+  await page.context().close();
+  for (const [what, approved] of [['more than 14 days after Start copying', '2026-10-05T13:00:00+00:00'], ['no calendar approved yet', null]]) {
+    ({ page } = await open({ label: `google-${approved ? 'old' : 'none'}`, db: googleTodayDb(approved), rpc: gRpc }));
+    check(`no notice ${what}`, !(await page.$('.today-gnotice')) && !!(await page.$('[data-list="day"] .irow.k-google')));
+    await page.context().close();
+  }
+  const failing = googleTodayDb();
+  failing.googleFail = true;
+  ({ page } = await open({ label: 'google-fail', db: failing, rpc: gRpc, allowConsole: /status of 500/ }));
+  check('google_items fails: the day still shows, with one line saying so', (await tc(page, '.today-gfail')) === 'Google events couldn\'t be loaded.'
+    && same(await titles(page, 'day'), ['Grandma visiting', 'School run', 'Call the plumber', 'Heartworm pill']), await tc(page, '.today-gfail'));
+  await page.context().close();
+  for (const scheme of ['light', 'dark']) {
+    ({ page } = await open({ label: `google-phone-${scheme}`, db: googleTodayDb(), rpc: gRpc, ctx: Object.assign({ colorScheme: scheme }, phone) }));
+    const x = await page.$eval('.today-gnotice-x', (e) => { const r = e.getBoundingClientRect(); return [Math.round(r.width), Math.round(r.height)]; });
+    check(`phone (${scheme}): the notice fits, its close button is 44px; no sideways scroll`, x[0] >= 44 && x[1] >= 44 && await noSideScroll(page)
+      && await page.$eval('.today-gnotice', (e) => e.getBoundingClientRect().right <= window.innerWidth), JSON.stringify(x));
+    const ring = await page.$eval('[data-list="day"] .irow.k-google .irow-title', (t) => getComputedStyle(t, '::before').borderTopStyle);
+    check(`phone (${scheme}): Google rows have the outlined dot`, ring === 'solid', ring);
+    await page.screenshot({ path: SHOTS + `today-google-phone-${scheme}.png`, fullPage: true });
+    await page.context().close();
+  }
+  ({ page } = await open({ label: 'google-desktop-dark', db: googleTodayDb(), rpc: gRpc, ctx: { colorScheme: 'dark', viewport: { width: 1280, height: 900 } } }));
+  check('1280px (dark): no sideways scroll', await noSideScroll(page));
+  await page.screenshot({ path: SHOTS + 'today-google-desktop-dark.png', fullPage: true });
   await page.context().close();
 
   // =====================================================================

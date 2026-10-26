@@ -5,7 +5,10 @@
    a task off (and Undo); what's late; heads-up for what's coming; what
    nobody is on (parents); "Send <name> their day" for kids and helpers; one
    line per project with work today; and a first-run checklist until the
-   household is set up. Dates and times are the household's (core.v2).
+   household is set up. With schema 3, events typed into Google Calendar
+   (google_items) are in each person's day too, read only, and a one-time
+   notice says the calendar now goes to Google and the kitchen wall.
+   Dates and times are the household's (core.v2).
    ===================================================================== */
 (function () {
   'use strict';
@@ -30,6 +33,15 @@
   function setSetupFlag(value) {
     try { localStorage.setItem(SETUP_KEY, value); } catch (e) { /* storage unavailable: shown again next time */ }
   }
+  // The one-time Google Calendar notice, closed on this device.
+  const NOTICE_KEY = 'homehub.today.googleNotice';
+  function noticeClosed() {
+    try { return !!localStorage.getItem(NOTICE_KEY); } catch (e) { return false; }
+  }
+  function closeNotice() {
+    try { localStorage.setItem(NOTICE_KEY, 'closed'); } catch (e) { /* storage unavailable: it shows again next time */ }
+  }
+  const NOTICE_DAYS = 14;
 
   // ============================================
   // WHO
@@ -39,6 +51,20 @@
   const involves = (it, id) => it.responsible_id === id || (it.participant_ids || []).includes(id);
   const unassigned = (it) => !activePerson(it.responsible_id) && !(it.participant_ids || []).some(activePerson);
   const sendable = (p) => p.active !== false && (p.role === 'kid' || p.role === 'helper') && !!p.phone;
+  // A Google Calendar event (schema 3): whose calendar it came from is its person. One without a
+  // person (a Family calendar's) is in a grown-up's day; a kid's or helper's day shows what reaches
+  // their own My day and texts (private.google_for): never Family's for a helper, and for a kid only
+  // Hub – Family's or a calendar to read marked Show to kids (kidSources: those calendars' names, as
+  // google_items gives them in notes; null when they couldn't be read).
+  const isGoogle = (it) => it.kind === 'google';
+  const googleSource = (it) => String(it.notes || '').replace(/^From Google Calendar · /, '');
+  const googleFor = (it, id, kidSources) => {
+    if (it.responsible_id) return it.responsible_id === id;
+    const p = v2.person(id);
+    if (!p || (p.role !== 'kid' && p.role !== 'helper')) return true;
+    if (p.role === 'helper' || it.category !== 'family') return false;
+    return !kidSources || kidSources.has(googleSource(it));
+  };
   const possessive = (name) => `${name}'s`;
 
   // The chip on screen, falling back to Me (or Everyone when the signed-in member isn't on the
@@ -85,6 +111,42 @@
     } catch (err) { return null; }
   }
 
+  // Today's Google Calendar events (schema 3), or failed: true. Never throws, so the rest of the page
+  // shows whatever happens to this one call. A private one is stored without its title.
+  // kidSources: the names of the Family calendars whose events reach kids (Hub – Family, or one to read
+  // with Show to kids), so a kid's day here matches his My day; null if calendars couldn't be read.
+  async function loadGoogle(today) {
+    if (!(core.schemaVersion >= 3)) return { items: [], failed: false, kidSources: null };
+    const sources = q(core.sb.from('calendars').select('kind,writes,for_kids,google_name,label').eq('kind', 'family'))
+      .then((rows) => new Set((rows || []).filter((c) => c.writes || c.for_kids).map((c) => (c.google_name || '').trim() || c.label)), () => null);
+    try {
+      const rows = (await call('google_items', { p_from: today, p_to: today })) || [];
+      return { items: rows.map((it) => Object.assign({}, it, { title: it.private ? 'Private item' : String(it.title || '').trim() || '(No title)' })), failed: false,
+        kidSources: await sources };
+    } catch (err) { return { items: [], failed: true, kidSources: null }; }
+  }
+
+  // The household date of an instant (the household's time zone, not the device's).
+  function householdDate(instant) {
+    const o = {};
+    try {
+      new Intl.DateTimeFormat('en-US', { timeZone: (v2.household && v2.household.tz) || 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' })
+        .formatToParts(new Date(instant)).forEach((p) => { o[p.type] = p.value; });
+    } catch (e) { return null; }
+    return o.year ? `${o.year}-${o.month}-${o.day}` : null;
+  }
+  // The one-time notice: for 14 days after the first calendar's Start copying, until closed on this
+  // device (schema 3). A failed read just leaves it out.
+  async function loadNotice(today) {
+    if (!(core.schemaVersion >= 3) || noticeClosed()) return false;
+    try {
+      const first = ((await q(core.sb.from('calendars').select('copy_approved_at').not('copy_approved_at', 'is', null)
+        .order('copy_approved_at').limit(1))) || [])[0];
+      const day = first && householdDate(first.copy_approved_at);
+      return !!day && day <= today && today < dates.addDays(day, NOTICE_DAYS);
+    } catch (err) { return false; }
+  }
+
   // day_text for every kid and helper with a phone, so the Send buttons are ready to tap (a link
   // has to have its message before the tap, or phones block the new window).
   function loadTexts(today) {
@@ -95,13 +157,15 @@
   async function load() {
     const today = dates.today();
     const projects = loadProjects();
-    const [agenda, late, heads, setup, texts] = await Promise.all([
+    const [agenda, late, heads, setup, texts, , google, notice] = await Promise.all([
       call('agenda', { p_from: today, p_to: today }),
       call('late_items'),
       call('heads_up', { p_day: today }),
       loadSetup(),
       loadTexts(today),
       projects,
+      loadGoogle(today),
+      loadNotice(today),
     ]);
     const p = await projects;
     return {
@@ -112,6 +176,10 @@
       projects: p.rows,
       setup,
       texts,
+      google: google.items,
+      googleFailed: google.failed,
+      kidSources: google.kidSources,
+      notice,
     };
   }
 
@@ -265,11 +333,31 @@
   // done opens its Done entry, with "Not done after all"), a project task on its project, a contract
   // in the Directory.
   function openItem(it) {
+    if (isGoogle(it)) { location.hash = `#/calendar/${dates.today()}`; return; }
     const id = encodeURIComponent(it.item_id || '');
     const task = it.status === 'done' ? `#/tasks/${id}/done` : `#/tasks/${id}`;
     const to = { event: `#/calendar/event/${id}/${encodeURIComponent(it.occurrence || '')}`, task,
       project: `#/projects/${encodeURIComponent(it.project_id || it.item_id || '')}`, contract: `#/directory/${id}` }[it.kind];
     if (to) location.hash = to;
+  }
+
+  // A Google event's row: no checkbox, no who dots; an outlined dot in its person's colour and "Google"
+  // on the second line (the look is in calendar.css). A tap opens today on the Calendar.
+  function googleRow(it) {
+    const row = ui.itemRow(it, { checkbox: false, showWho: false, onOpen: openItem });
+    const p = it.responsible_id && v2.person(it.responsible_id);
+    if (p && /^#[0-9a-fA-F]{6}$/.test(p.color || '')) row.style.setProperty('--pc', p.color);
+    let sub = row.querySelector('.irow-sub');
+    if (!sub) {
+      sub = document.createElement('span');
+      sub.className = 'irow-sub';
+      row.querySelector('.irow-main').appendChild(sub);
+    }
+    const tag = document.createElement('span');
+    tag.className = 'badge g-tag';
+    tag.textContent = 'Google';
+    sub.prepend(tag);
+    return row;
   }
 
   function greeting() {
@@ -321,7 +409,7 @@
 
   // Events first (all-day, then by time), then project jobs, then tasks (by time, then the rest; done ones last).
   function dayOrder(a, b) {
-    const rank = (it) => (it.kind === 'event' ? (it.local_start ? 1 : 0) : it.kind === 'project' ? 2 : it.status === 'open' ? 3 : 4);
+    const rank = (it) => (it.kind === 'event' || isGoogle(it) ? (it.local_start ? 1 : 0) : it.kind === 'project' ? 2 : it.status === 'open' ? 3 : 4);
     // 'HH:MM:SS' sorts as text; no time goes last.
     const time = (it) => it.local_start || '99';
     return rank(a) - rank(b) || (time(a) < time(b) ? -1 : time(a) > time(b) ? 1 : 0) || String(a.title).localeCompare(String(b.title));
@@ -422,7 +510,10 @@
     const jobStarting = (it) => it.kind === 'project' && it.status !== 'done' && it.day === d.today
       && !(projectById.has(it.project_id) && !liveProject(projectById.get(it.project_id).status));
 
-    const dayItems = d.agenda.filter((it) => (dayKinds(it) || (focus && jobStarting(it))) && shown(it)).sort(dayOrder);
+    // Google events are in the day of the person whose calendar they're on (Family's in grown-ups' days,
+    // and in a kid's as on his My day), and never in Late, Heads-up or Nobody's on it.
+    const google = d.google.filter((it) => !focus || googleFor(it, focus, d.kidSources));
+    const dayItems = d.agenda.filter((it) => (dayKinds(it) || (focus && jobStarting(it))) && shown(it)).concat(google).sort(dayOrder);
     const late = d.late.filter(shown);
     const heads = d.heads.filter((it) => (it.kind === 'contract' ? household : !focus || involves(it, focus)));
     const nobody = showNobody
@@ -456,11 +547,15 @@
       <div class="page-head today-head">
         <div><p class="eyebrow">${esc(fmt.dayLong(d.today))}</p><h1>${esc(greeting())}</h1></div>
       </div>
+      ${d.notice && !noticeClosed() ? `<div class="banner today-gnotice" role="note">
+        <p>Home Hub now copies the calendar to Google and the kitchen wall. Mark anything that shouldn't be seen there Private.</p>
+        <button type="button" class="today-gnotice-x" data-act="close-notice" aria-label="Close this notice">×</button></div>` : ''}
       ${whoHTML(st)}
       <div class="today-chips" role="group" aria-label="Whose day">${chipsHTML(v)}</div>
       <div class="today-grid${side ? ' has-side' : ''}">
         <div class="today-col">
           <section class="today-sec" aria-label="${esc(dayTitle)}">${ui.sectionHeading(dayTitle, dayItems.length)}
+            ${d.googleFailed ? '<p class="today-gfail" role="status">Google events couldn\'t be loaded.</p>' : ''}
             ${dayItems.length ? '<div class="today-card irows" data-list="day"></div>' : `<p class="today-card empty-line today-empty">${esc(nothing)} Use ＋ to add an event or a task.</p>`}
           </section>
           ${late.length ? `<section class="today-sec" aria-label="Late">${ui.sectionHeading('Late', late.length)}<div class="today-card irows" data-list="late"></div>
@@ -473,7 +568,7 @@
     const rowOpts = (extra) => Object.assign({ checkbox: true, showWho: true, onToggle: (it) => tick(st, it), onUntick: (it) => untick(st, it), onOpen: openItem }, extra);
     const fill = (name, items, extra) => {
       const list = main.querySelector(`[data-list="${name}"]`);
-      if (list) items.forEach((it) => list.appendChild(ui.itemRow(it, rowOpts(extra))));
+      if (list) items.forEach((it) => list.appendChild(isGoogle(it) ? googleRow(it) : ui.itemRow(it, rowOpts(extra))));
       return list;
     };
     fill('day', dayItems);
@@ -523,6 +618,11 @@
       if (!act) return;
       if (act.dataset.act === 'add-event') openAdd('event');
       else if (act.dataset.act === 'link-me') linkMe(st, act);
+      else if (act.dataset.act === 'close-notice') {
+        closeNotice();
+        const box = act.closest('.today-gnotice');
+        if (box) box.remove();
+      }
       else if (act.dataset.act === 'hide-setup') {
         setSetupFlag('hidden');
         draw(st);

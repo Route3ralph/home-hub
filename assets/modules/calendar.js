@@ -7,7 +7,9 @@
    starts and finishes, and one "N jobs in progress" line per project on the
    days between; in a phone's week strip, one bar per project). Also the event form, which the Add
    sheet and the Today page open with use('calendar').openEventForm(defaults).
-   Everything on screen comes from agenda(from, to). Dates and times are the
+   Everything on screen comes from agenda(from, to), plus (schema 3) events
+   typed into Google Calendar from google_items(from, to): read only, with an
+   outlined dot, no checkbox and no Edit. Dates and times are the
    household's (core.v2.dates / fmt), never the device's.
    ===================================================================== */
 (function () {
@@ -65,6 +67,12 @@
     return p && COLOR.test(p.color || '') ? p.color : null;
   }
   const itemColor = (it) => colorOf(it.responsible_id) || colorOf((it.participant_ids || [])[0]);
+
+  // Events read from Google Calendar (kind 'google', schema 3). One without a person (the Family
+  // calendar's) shows under every person filter. A private one is stored without its title.
+  const isGoogle = (it) => it.kind === 'google';
+  const sharedGoogle = (it) => isGoogle(it) && !it.responsible_id;
+  const asGoogle = (it) => Object.assign({}, it, { title: it.private ? 'Private item' : String(it.title || '').trim() || '(No title)' });
   const pcStyle = (c) => (c ? `--pc:${c};` : '');
   const others = (respId, ids) => (ids || []).filter((id) => id && id !== respId);
 
@@ -89,7 +97,7 @@
   const spans = (it) => it.kind === 'project' || (!!it.all_day && endOf(it) > it.day);
   const covers = (it, day) => it.day <= day && day <= endOf(it);
   // As private.item_order: timed items, then all-day events, project tasks, tasks without a time.
-  const rank = (it) => (it.local_start ? 0 : it.kind === 'event' ? 1 : it.kind === 'project' ? 2 : 3);
+  const rank = (it) => (it.local_start ? 0 : it.kind === 'event' || isGoogle(it) ? 1 : it.kind === 'project' ? 2 : 3);
   const byTime = (a, b) => rank(a) - rank(b) || String(a.local_start || '').localeCompare(String(b.local_start || ''))
     || String(a.title || '').localeCompare(String(b.title || ''));
   const barLabel = (it) => (it.kind === 'project' ? `${it.project_name || 'Project'}: ${it.title}` : it.title);
@@ -101,8 +109,9 @@
     return Object.assign({}, it, { status, end_day: it.all_day ? it.end_day : it.day });
   }
 
-  // The person filter: nobody chosen = everyone. An item matches when someone chosen is in charge or with.
-  const matches = (it, chosen) => !chosen.size || chosen.has(it.responsible_id) || (it.participant_ids || []).some((id) => chosen.has(id));
+  // The person filter: nobody chosen = everyone. An item matches when someone chosen is in charge or with;
+  // a Family Google event matches everyone.
+  const matches = (it, chosen) => !chosen.size || sharedGoogle(it) || chosen.has(it.responsible_id) || (it.participant_ids || []).some((id) => chosen.has(id));
 
   // Project work in a day's list. A job that lasts days shows in full on the day it starts
   // ('starts') and the day it finishes ('finishes'); a milestone or a one-day job on its day ('on').
@@ -276,6 +285,10 @@
       detailsOpen: false,                       // event details showing (the address names the event)
       detailsSeq: 0,
       openGroups: new Set(),                    // "<day>|<project id>": project lines opened to list their jobs
+      googleFailed: false,                      // google_items() failed: the agenda shows, with a line saying so
+      // The days the calendar job last covered ({ window_from, window_to }), read once per page (schema 3).
+      windowLoad: core.schemaVersion >= 3 ? loadWindow() : null,
+      window: null,
     };
     // A link to an event without a day: a one-off event shows on its own date.
     let linked = null;
@@ -306,12 +319,33 @@
     return { from: grid[0][0], to: grid[5][6], grid }; // 42 days, inside agenda()'s 62-day limit
   }
 
+  // Google events for the same days (schema 3). Never throws: a failure only adds a line, so the
+  // agenda still shows. The two calls are not tied together.
+  async function loadGoogle(range) {
+    if (!(core.schemaVersion >= 3)) return { items: [], failed: false };
+    try {
+      const rows = await v2.call('google_items', { p_from: range.from, p_to: range.to });
+      return { items: (Array.isArray(rows) ? rows : []).map(asGoogle), failed: false };
+    } catch (err) { return { items: [], failed: true }; }
+  }
+  // Which days Google events are read for (the job's window), or null before the job has signed in.
+  async function loadWindow() {
+    try {
+      const w = ((await q(core.sb.from('calendar_sync').select('auth,window_from,window_to').limit(1))) || [])[0];
+      return w && w.auth && isIso(w.window_from) && isIso(w.window_to) ? w : null;
+    } catch (err) { return null; }
+  }
+
   async function load(st) {
     const range = rangeOf(st);
+    const google = loadGoogle(range);
     const rows = await v2.call('agenda', { p_from: range.from, p_to: range.to });
+    const g = await google;
+    st.window = await st.windowLoad;
     if (st.ctx.stale()) return;
     st.range = range;
-    st.items = Array.isArray(rows) ? rows : [];
+    st.items = (Array.isArray(rows) ? rows : []).concat(g.items);
+    st.googleFailed = g.failed;
     if (!(st.selected >= range.from && st.selected <= range.to)) st.selected = st.anchor;
     draw(st);
   }
@@ -358,24 +392,52 @@
         <button type="button" class="pchip cal-all" data-all aria-pressed="${!st.chosen.size}">Everyone</button>
         ${people.map((p) => ui.personChip(p, { selected: st.chosen.has(p.id) })).join('')}
       </div>` : ''}
+      ${googleNotes(st)}
       <div data-ref="body"></div>`;
     const body = main.querySelector('[data-ref="body"]');
     if (week) drawWeek(st, body); else drawMonth(st, body);
     main.onclick = (e) => onClick(st, e);
   }
 
-  // One item row (core.v2.ui.itemRow) with a stripe in its person's colour.
+  // Lines above the calendar about Google events: they couldn't be loaded, or the days shown reach
+  // outside the days the calendar job reads ("Google Calendar events show from Oct 26 to Dec 26.").
+  function googleNotes(st) {
+    const w = st.window;
+    const day = (iso) => withYear(fmt.short(iso), iso);
+    return [
+      st.googleFailed ? '<p class="cal-gnote is-bad" role="status">Google events couldn\'t be loaded.</p>' : '',
+      w && (st.range.from < w.window_from || st.range.to > w.window_to)
+        ? `<p class="cal-gnote">Google Calendar events show from ${esc(day(w.window_from))} to ${esc(day(w.window_to))}.</p>` : '',
+    ].join('');
+  }
+
+  // One item row (core.v2.ui.itemRow) with a stripe in its person's colour. A Google event has no
+  // checkbox and no who dots: an outlined dot in its person's colour, and "Google" on its second line.
   function itemRowFor(st, it, shownAs) {
+    const google = isGoogle(it);
     const row = ui.itemRow(shownAs || shown(it, st.today), {
-      checkbox: true,
-      showWho: true,
+      checkbox: !google,
+      showWho: !google,
       onOpen: () => openItem(st, it),
       onToggle: () => tick(it),
       onUntick: () => untick(it),
     });
     const c = itemColor(it);
     if (c) row.style.setProperty('--pc', c);
+    if (google) markGoogle(row);
     return row;
+  }
+  function markGoogle(row) {
+    let sub = row.querySelector('.irow-sub');
+    if (!sub) {
+      sub = document.createElement('span');
+      sub.className = 'irow-sub';
+      row.querySelector('.irow-main').appendChild(sub);
+    }
+    const tag = document.createElement('span');
+    tag.className = 'badge g-tag';
+    tag.textContent = 'Google';
+    sub.prepend(tag);
   }
 
   // A day's list: item rows, then one line per project with jobs under way that day (underWay()).
@@ -644,6 +706,7 @@
     if (!it) return;
     if (it.kind === 'event') openEventDetails(st, it.item_id, it.occurrence, it);
     else if (it.kind === 'task') openTaskDetails(st, it);
+    else if (isGoogle(it)) openGoogleDetails(st, it);
     else if (it.kind === 'project') location.hash = `#/projects/${encodeURIComponent(it.project_id || it.item_id)}`;
   }
 
@@ -715,6 +778,31 @@
         }
       });
     }
+  }
+
+  // ============================================
+  // GOOGLE EVENTS (read only: changed in Google Calendar, never here)
+  // ============================================
+  function openGoogleDetails(st, it) {
+    st.detailsSeq++;
+    const p = it.responsible_id ? v2.person(it.responsible_id) : null;
+    const whose = p ? p.name : { pets: 'Pets', home: 'House' }[it.category] || 'Family';
+    const timed = !it.all_day && !!it.local_start;
+    const when = !timed
+      ? (it.end_day > it.day ? `${fmt.span(it.day, it.end_day)}, all day` : `${fmt.dayLong(it.day)}, all day`)
+      : `${fmt.dayLong(it.day)} · ${fmt.range(it)}${it.end_day > it.day ? ` (ends ${fmt.day(it.end_day)})` : ''}`;
+    G.showDialog(detailDialog, `<div class="cal-details cal-gdetails">
+      <div class="d-top"><span class="d-trade"><i class="dot cal-gdot" style="--c:${itemColor(it) || 'var(--text-3)'}"></i>Google Calendar event</span>
+        <button type="button" class="d-close" data-close aria-label="Close">×</button></div>
+      <h3 id="dTitle">${esc(it.title)}</h3>
+      <dl>
+        <dt>When</dt><dd>${esc(when)}</dd>
+        <dt>Calendar</dt><dd>${esc(whose)}</dd>
+        ${it.location ? `<dt>Place</dt><dd>${esc(it.location)}</dd>` : ''}
+        ${it.repeating ? '<dt>Repeats</dt><dd>In Google Calendar</dd>' : ''}
+      </dl>
+      <p class="d-note">${esc(it.notes || 'From Google Calendar')}. Change it in Google Calendar.</p>
+      <div class="d-actions"><button type="button" class="btn" data-close>Close</button></div></div>`);
   }
 
   function contactHTML(name, phone) {
@@ -1007,7 +1095,7 @@
           <label class="field"><span>Directory contact</span><select name="contractor_id"><option value="">None</option>${options.map(([id, label]) => `<option value="${esc(id)}"${id === x.contractor_id ? ' selected' : ''}>${esc(label)}</option>`).join('')}</select>
             <small>${contractors ? 'Their phone number shows on the event, one tap to call.' : "Couldn't load the directory just now. Try again later to pick a contact."}</small></label>
           <label class="field"><span>Notes</span><textarea name="notes" rows="3">${esc(x.notes || '')}</textarea></label>
-          <label class="check cal-check"><input type="checkbox" name="private"${x.private ? ' checked' : ''}> Private: kids and helpers see "Private item"</label>
+          <label class="check cal-check"><input type="checkbox" name="private"${x.private ? ' checked' : ''}> Private: shows as 'Private item' on the wall, in Google and to kids and helpers</label>
         </div>
       </details>
       <p class="form-error" role="alert" hidden></p>

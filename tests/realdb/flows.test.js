@@ -43,8 +43,8 @@ const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
     await page.click('#codeForm button[type="submit"]');
     await page.waitForSelector('.today-head', { timeout: 10000 });
     await settle(page, 600);
-    check('sign-in: the code signs Alex in and the v2 Today page shows (schema version 2 from the real database)',
-      (await page.evaluate(() => HomeHub.core.schemaVersion)) === 2 && /Good morning, Alex/.test(await tc(page, '#main h1')), await tc(page, '#main h1'));
+    check('sign-in: the code signs Alex in and the v2 Today page shows (schema version 3 from the real database: migration 0003)',
+      (await page.evaluate(() => HomeHub.core.schemaVersion)) === 3 && /Good morning, Alex/.test(await tc(page, '#main h1')), await tc(page, '#main h1'));
     check('sign-in: Today shows the household\'s date (Tuesday, October 27)', /Tuesday, October 27/.test(await tc(page, '.today-head .eyebrow')), await tc(page, '.today-head .eyebrow'));
     const alex = await one(`select email_verified_at is not null as ok, (select token from people_confirm c where c.person_id = p.id) as secret from people p where email = 'alex@example.com'`);
     const again = alex.secret ? await h.api('/rest/v1/rpc/confirm_digest', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ p_confirm: alex.secret }) }) : null;

@@ -1,6 +1,10 @@
 // Browser tests for the v2 Calendar page (assets/modules/calendar.js): the week agenda and month grid,
 // the person filter, event details with one-day changes (change, skip, restore), the event form (also
-// opened from the Add sheet), tasks ticked off on the calendar and project tasks as bars.
+// opened from the Add sheet), tasks ticked off on the calendar and project tasks as bars. On schema 3
+// (migration 0003), events read from Google Calendar (google_items, docs/v1.1-google-calendar.md §5.4):
+// timed, all-day, multi-day and Family ones merged in, their look, no checkbox, read-only details, a
+// hostile title and place shown as text, the person filter, the window notes, and a failing google_items
+// that still leaves the agenda; on schema 2 no google_items call.
 //
 // The fake agenda() works the calendar out from the mock's tables the way the migration does
 // (supabase/migrations/0002_home_hub_v2.sql) and answers with its agenda_item rows, column for column;
@@ -10,7 +14,7 @@
 // anything that used the device's time zone would show the wrong time or day.
 // Run alone with: node tests/e2e/calendar.test.js
 const { chromium } = require('playwright');
-const { makeDb, install, signIn, SUPA } = require('./mock');
+const { makeDb, install, signIn, SUPA, withCalendars, calendarRow, googleEventRow, calendarRpc } = require('./mock');
 const { serve } = require('./server');
 
 let BASE = '';
@@ -266,10 +270,11 @@ const emailOf = (req) => {
       if (opts.v1 && /status of 404/.test(m.text()) && /hub_schema_version$/.test(m.location().url || '')) return;
       // A task someone else already ticked off: the fake answers 400, as PostgREST does for a raised error.
       if (opts.allow400 && /status of 400/.test(m.text())) return;
+      if (opts.allow500 && /status of 500/.test(m.text())) return;
       errors.push(`${opts.label} console: ${m.text()}`);
     });
     page.on('dialog', (d) => { (db.confirms = db.confirms || []).push(d.message()); d.accept(); });
-    await install(page, db, log, { rpc: opts.v1 ? {} : calRpc() });
+    await install(page, db, log, { rpc: opts.v1 ? {} : Object.assign(calRpc(), opts.rpc) });
     // Record writes to events (and cascade a delete to its one-day changes, as the foreign key does).
     db.eventWrites = [];
     await page.route((url) => url.host === 'test.supabase.co' && url.pathname === '/rest/v1/events', async (route) => {
@@ -379,7 +384,10 @@ const emailOf = (req) => {
   // =====================================================================
   // 2. Desktop: the month grid by default
   // =====================================================================
-  ({ page, db } = await open({ label: 'month' }));
+  let log;
+  ({ page, db, log } = await open({ label: 'month' }));
+  check('schema 2: no google_items call and no calendar tables read', !(db.rpcCalls || []).some((c) => c.name === 'google_items')
+    && !log.some((l) => /\/rest\/v1\/(calendars|calendar_sync|google_events)/.test(l)) && !(await page.$('.cal-gnote')), log.filter((l) => /calendar/.test(l)).join(' | '));
   check('registered: Calendar tab second, after Today', same(await page.$$eval('.tabs a', (as) => as.map((a) => [a.textContent, a.getAttribute('href')]).slice(0, 3)),
     [['Today', '#/'], ['Calendar', '#/calendar'], ['Tasks', '#/tasks']]));
   check('registered: the tab is current, provides openEventForm', (await page.getAttribute('.tabs a[data-tab="calendar"]', 'aria-current')) === 'page'
@@ -1101,6 +1109,122 @@ const emailOf = (req) => {
   check('busy week (dark): no sideways scroll; the line uses the theme\'s muted text', await noSideScroll(page)
     && (await page.$eval('.cal-ongoing > summary', (s) => getComputedStyle(s).color)) === 'rgb(165, 156, 144)');
   await page.screenshot({ path: SHOTS + 'calendar-week-projects-phone-dark.png', fullPage: true });
+  await page.context().close();
+
+  // =====================================================================
+  // 7d. Schema 3: events read from Google Calendar
+  // =====================================================================
+  // Jordan's and Sam's Hub calendars and the family account's main calendar (Family, read only).
+  // Jordan's calendar was re-pointed, so a row read from its old Google ID never shows.
+  function googleDb(o) {
+    const g = withCalendars(calDb(), Object.assign({ auth: 'service_account', account: 'home-hub-sync@home-hub-example.iam.gserviceaccount.com',
+      window_from: '2026-10-26', window_to: '2026-12-26' }, o));
+    const jc = calendarRow({ google_id: 'jordan0123@group.calendar.google.com', kind: 'person', person_id: P.jordan, label: 'Jordan', status: 'ok', google_name: 'Hub – Jordan' });
+    const sc = calendarRow({ google_id: 'sam0789@group.calendar.google.com', kind: 'person', person_id: P.sam, label: 'Sam', status: 'ok', google_name: 'Hub – Sam' });
+    const fc = calendarRow({ google_id: 'family@example.com', kind: 'family', label: 'Family account', writes: false, status: 'ok' });
+    g.calendars.push(jc, sc, fc);
+    const ge = (c, o2) => googleEventRow(Object.assign({ calendar_id: c.id, google_calendar: c.google_id }, o2));
+    g.google_events.push(
+      ge(jc, { event_id: 'swim1', title: '<img src=x onerror="window.__xss=1">Swim meet', location: 'javascript:alert(1)', all_day: false,
+        start_day: '2026-10-28', end_day: '2026-10-28', start_at: instant('2026-10-28', '10:00'), end_at: instant('2026-10-28', '11:00') }),
+      ge(jc, { event_id: 'priv1', title: '', location: null, private: true, all_day: false,
+        start_day: TODAY, end_day: TODAY, start_at: instant(TODAY, '12:00'), end_at: instant(TODAY, '13:00') }),
+      ge(fc, { event_id: 'pumpkin', title: 'Pumpkin carving', start_day: TODAY, end_day: TODAY, repeating: true }),
+      ge(sc, { event_id: 'away', title: 'Sam away', start_day: '2026-10-29', end_day: '2026-11-01' }),
+      googleEventRow({ calendar_id: jc.id, google_calendar: 'jordanold@group.calendar.google.com', event_id: 'old1', title: 'From the old calendar', start_day: TODAY, end_day: TODAY }),
+    );
+    return g;
+  }
+  const gRpc = Object.assign({ hub_schema_version: () => 3 }, calendarRpc);
+  const C_JORDAN = 'rgb(22, 163, 74)';
+
+  ({ page, db, log } = await open({ label: 'google-month', db: googleDb(), rpc: gRpc }));
+  check('schema 3: google_items for the same days as agenda (the six weeks shown)', same((db.googleCalls || []).slice(-1)[0], lastAgenda(db)) && same(lastAgenda(db), ['2026-09-28', '2026-11-08']),
+    JSON.stringify(db.googleCalls));
+  const gLabels = await page.$$eval('.cal-items[data-for="2026-10-27"] .cal-lab', (ls) => ls.map((l) => [l.textContent, l.classList.contains('k-google'),
+    getComputedStyle(l.querySelector('.cal-dot')).backgroundColor, getComputedStyle(l.querySelector('.cal-dot')).boxShadow]));
+  check('month: Google events among the day\'s labels, in time order, with an outlined dot (the person\'s colour; neutral for Family)',
+    same(gLabels.map((l) => [l[0], l[1]]), [['12pm Private item', true], ['3pm School pickup', false], ['4pm Piano', false]])
+    && gLabels[0][2] === 'rgba(0, 0, 0, 0)' && gLabels[0][3].includes(C_JORDAN), JSON.stringify(gLabels));
+  check('month: the old calendar\'s row (another Google ID) never shows', !(await page.$$eval('.cal-lab, .cal-mbar', (ls) => ls.some((l) => /old calendar/.test(l.textContent)))));
+  check('month: a Google event over several days is a bar, outlined', await page.$$eval('.cal-mbar.k-google', (bs) => bs.some((b) => b.textContent === 'Sam away'
+    && getComputedStyle(b).boxShadow.includes('rgb(219, 39, 119)'))));
+  let gp = await rows(page, '.cal-panel');
+  check('day panel: Google events merged in time order (timed first, then all-day with the events), no checkbox, no who dots, "Google"',
+    same(gp.map((r) => [r.title, r.kind, r.check]), [['Private item', 'google', null], ['School pickup', 'event', null], ['Piano', 'event', null],
+      ['Pumpkin carving', 'google', null], ['Tile backsplash', 'project', null], ['Change furnace filter', 'task', 'false']])
+    && gp.filter((r) => r.kind === 'google').every((r) => !r.who.length && r.sub === 'Google')
+    && gp[0].time === '12:00pm 1:00pm' && gp[3].time === 'All day' && gp[3].repeats, JSON.stringify(gp.map((r) => [r.title, r.kind, r.check, r.who.length, r.sub, r.time])));
+  const ring = await page.$eval('.cal-panel .irow.k-google .irow-title', (t) => { const b = getComputedStyle(t, '::before'); return [b.borderTopColor, b.borderRadius, b.width]; });
+  check('day panel: a Google row\'s outlined dot is in its person\'s colour', ring[0] === C_JORDAN && ring[1] === '50%', JSON.stringify(ring));
+  check('window note: the month reaches before the days Google events are read for', (await text(page, '.cal-gnote')) === 'Google Calendar events show from Oct 26 to Dec 26.', await text(page, '.cal-gnote'));
+  await page.screenshot({ path: SHOTS + 'calendar-google-month-light.png', fullPage: true });
+  // The details: read only, the hostile title and place as text.
+  await page.click('.cal-cell[data-day="2026-10-28"]');
+  await settle(page);
+  await clickRow(page, '.cal-panel', 'Swim meet');
+  await settle(page);
+  const gd = await page.evaluate(() => {
+    const d = document.getElementById('detail');
+    return { open: d.open, title: d.querySelector('h3').textContent, dl: [...d.querySelectorAll('dt, dd')].map((e) => e.textContent.trim()), note: d.querySelector('.d-note').textContent,
+      buttons: [...d.querySelectorAll('.d-actions button, .d-actions a')].map((b) => b.textContent.trim()), links: d.querySelectorAll('a').length, img: !!d.querySelector('img') };
+  });
+  check('Google details: when, the calendar, the place; "From Google Calendar · Hub – Jordan. Change it in Google Calendar."; only Close (no Edit or Skip)', gd.open
+    && same(gd.dl, ['When', 'Wednesday, October 28 · 10:00–11:00am', 'Calendar', 'Jordan Example', 'Place', 'javascript:alert(1)'])
+    && gd.note === 'From Google Calendar · Hub – Jordan. Change it in Google Calendar.' && same(gd.buttons, ['Close']), JSON.stringify(gd));
+  check('Google details: the title and the place are text (no image, no link), nothing runs', gd.title === '<img src=x onerror="window.__xss=1">Swim meet' && !gd.img && gd.links === 0
+    && await page.evaluate(() => !window.__xss) && !/#\/calendar\/event/.test(await page.evaluate(() => location.hash)));
+  await page.click('#detail .d-actions [data-close]');
+  await settle(page);
+  // The person filter: Family's Google events show under everyone; Jordan's only under Jordan.
+  await page.click('.cal-cell[data-day="2026-10-27"]');
+  await page.click(`.cal-people [data-person="${P.sam}"]`);
+  await settle(page);
+  gp = await rows(page, '.cal-panel');
+  check('person filter (Sam): the Family Google event shows, Jordan\'s doesn\'t', gp.some((r) => r.title === 'Pumpkin carving') && !gp.some((r) => r.title === 'Private item'), JSON.stringify(gp.map((r) => r.title)));
+  await page.click(`.cal-people [data-person="${P.jordan}"]`);
+  await settle(page);
+  gp = await rows(page, '.cal-panel');
+  check('person filter (Sam and Jordan): Jordan\'s Google event shows too', gp.some((r) => r.title === 'Private item') && gp.some((r) => r.title === 'Pumpkin carving'), JSON.stringify(gp.map((r) => r.title)));
+  await page.click('.cal-people [data-all]');
+  await page.click('[data-act="next"]');
+  await page.waitForSelector('.cal-head h1:text("November 2026")');
+  await settle(page);
+  check('November: google_items follows the month (Oct 26 to Dec 6), inside the window: no note', same(db.googleCalls.slice(-1)[0], ['2026-10-26', '2026-12-06']) && !(await page.$('.cal-gnote')),
+    await text(page, '.cal-gnote'));
+  await page.context().close();
+
+  // Phone: the week, with the strip's Google bar, and dark.
+  for (const dark of [false, true]) {
+    ({ page, db } = await open({ label: `google-week-${dark ? 'dark' : 'light'}`, db: googleDb(), rpc: gRpc, phone: true, dark }));
+    const today = await rows(page, `[data-list="${TODAY}"]`);
+    check(`phone week (${dark ? 'dark' : 'light'}): today's list has the Google events in time order`, same(today.filter((r) => r.kind === 'google').map((r) => r.title), ['Private item', 'Pumpkin carving']), JSON.stringify(today.map((r) => r.title)));
+    check(`phone week (${dark ? 'dark' : 'light'}): "Sam away" is an outlined bar in the strip; no window note inside the window`, await page.$$eval('.cal-strip .cal-bar.k-google', (bs) => bs.some((b) => b.textContent === 'Sam away'))
+      && !(await page.$('.cal-gnote')));
+    check(`phone week (${dark ? 'dark' : 'light'}): no sideways scroll; rows and bars at least 44px`, await noSideScroll(page)
+      && !(await smallTargets(page, '.irow.k-google .irow-main, .cal-bar.k-google')).length, JSON.stringify(await smallTargets(page, '.irow.k-google .irow-main, .cal-bar.k-google')));
+    await page.screenshot({ path: SHOTS + `calendar-google-week-phone-${dark ? 'dark' : 'light'}.png`, fullPage: true });
+    await page.click('.cal-strip .cal-bar.k-google');
+    await settle(page);
+    check(`phone week (${dark ? 'dark' : 'light'}): the bar opens the read-only details`, (await text(page, '#detail h3')) === 'Sam away'
+      && /Thu Oct 29–Sun Nov 1, all day|Oct 29–Nov 1, all day/.test(await text(page, '#detail dl')), await text(page, '#detail dl'));
+    await page.context().close();
+  }
+  ({ page } = await open({ label: 'google-month-dark', db: googleDb(), rpc: gRpc, dark: true }));
+  check('month (dark): an outlined Google bar on the dark surface', await page.$$eval('.cal-mbar.k-google', (bs) => bs.some((b) => getComputedStyle(b).backgroundColor === 'rgb(27, 25, 23)')));
+  await page.screenshot({ path: SHOTS + 'calendar-google-month-dark.png', fullPage: true });
+  await page.context().close();
+
+  // google_items fails: the agenda still shows, with one line saying so.
+  const failing = googleDb();
+  failing.googleFail = true;
+  ({ page, db } = await open({ label: 'google-fail', db: failing, rpc: gRpc, allow500: true }));
+  check('google_items fails: the agenda still draws, and one line says Google events couldn\'t be loaded', (await text(page, '.cal-gnote.is-bad')) === 'Google events couldn\'t be loaded.'
+    && same((await rows(page, '.cal-panel')).map((r) => r.title), ['School pickup', 'Piano', 'Tile backsplash', 'Change furnace filter']), await text(page, '.cal-gnote.is-bad'));
+  await page.context().close();
+  // Before the calendar job has signed in to Google: no window note.
+  ({ page } = await open({ label: 'google-nosync', db: googleDb({ auth: null }), rpc: gRpc }));
+  check('no window note before the job has signed in to Google', !(await page.$('.cal-gnote')));
   await page.context().close();
 
   // =====================================================================

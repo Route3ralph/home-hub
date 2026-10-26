@@ -18,6 +18,7 @@ This is the build contract for Home Hub v2. It replaces the first draft after fo
 
 **v1.1 — Google Calendar and Hearth (after the owner passes two gates on a real calendar: service-account key downloads; insert/delete on a shared secondary calendar works)**
 - One-way sync of hub items to one Google calendar per Hearth column, reading external Google events into the calendar and digests. Not built in PR B; PR B's data model leaves room for it (`calendars` table is added in v1.1).
+- The build contract is `docs/v1.1-google-calendar.md`. Its database part is migration `0003_google_calendar.sql`, summarised in §8 below.
 
 Later: web push, Twilio SMS.
 
@@ -216,7 +217,7 @@ Tokens and secrets are 32 hex characters; `rotate_day_token(p_person uuid)` (adm
 - `digest_for(p_person uuid, p_local_date date) returns jsonb` — everything the email needs, computed in SQL (see §5): subject, today, late, heads_up, projects; for parents also people, nobody and, on Mondays, inbox_count; `empty` = a non-parent with nothing to say (send nothing). Null for an inactive person.
 
 ### Schema version, whoami and sign-in
-`hub_schema_version()` returns 2 (authenticated). `whoami()` gains `person` (id, name, role, language, color) when a person row matches the caller's email; existing keys unchanged. `mark_signed_in()` (authenticated; the core calls it after every sign-in): signing in with a code sent to an address proves it works, so the caller's own person row gets email_verified_at (the first time only). The confirmation secret stays, so the button in a confirmation email sent earlier says "confirmed" too. Does nothing for anyone who isn't a member.
+`hub_schema_version()` returns 2 (authenticated); migration 0003 makes it 3 (§8). `whoami()` gains `person` (id, name, role, language, color) when a person row matches the caller's email; existing keys unchanged. `mark_signed_in()` (authenticated; the core calls it after every sign-in): signing in with a code sent to an address proves it works, so the caller's own person row gets email_verified_at (the first time only). The confirmation secret stays, so the button in a confirmation email sent earlier says "confirmed" too. Does nothing for anyone who isn't a member.
 
 ## 4. Client
 
@@ -239,7 +240,7 @@ Tokens and secrets are 32 hex characters; `rotate_day_token(p_person uuid)` (adm
   - Task repeat wording: "On set dates (e.g. the 1st of every month)" vs "A while after it's done (e.g. 60 days after the last change)" with "When was it last done?" / "Next one is due".
 - **Directory**: kind filter (All · Contractors · Accounts & utilities · Services · Emergency), search, cards with tap-to-call/text/WhatsApp/email/website, contract end; account number masked with Show (admins only; loaded separately).
 - **Family**: one list of people; add/edit person (name, role, email, phone, colour, language, morning email on/off, time, today/tomorrow, everyone (parents), can sign in (parents/adults)); "unconfirmed" badge until the email is confirmed (by the confirmation email's button, or by signing in); My day link: Copy / Send by WhatsApp / Text / New link.
-- **Settings**: time zone, default morning-email time, days off, default owners for pets/house, digest status ("Last run 6:30 · 4 sent", failures), Google Calendar "not connected yet" (v1.1).
+- **Settings**: time zone, default morning-email time, days off, default owners for pets/house, digest status ("Last run 6:30 · 4 sent", failures), the Google Calendar & Hearth card (v1.1, §8).
 - **Projects**: unchanged plus: dates recomputed on every schedule write in one choke point (`api.updateProject`/`createProject`), which sends `task_dates` with a new `task_dates_at` (the device clock), and backfilled when stale; project owner; "Show in Home Hub calendar"; a Tasks card listing the project's tasks with "Put on the schedule" (turns a task into a 1-day Gantt task with a trade picker, then deletes the task).
 - **My day** (`day.html?t=<day_token>`): no sign-in; today and tomorrow for that person; check off own tasks (Undo for a few seconds, `undo_by_token`); in their language; stop the morning email with a button (`#stop`); "Add to Home Screen" hint. The confirmation email opens `day.html?c=<secret>#confirm` (no `t=`): that page shows only the confirm screen, whose button calls `confirm_digest(p_confirm)`. Opening a link never changes anything; only the buttons do (they're POSTs).
 - `day.html` is a second public page: it loads `config.js`, supabase-js and `assets/day.js` (not the hub), shares `assets/styles.css` (plus `assets/css/day.css`), and carries the same `?v=` as `index.html`.
@@ -276,7 +277,78 @@ One Edge Function, `hub-jobs` (verify_jwt off; each action authorizes itself; `s
 1. `preflight.sql` (read-only checks) and `list_migrations`.
 2. Merge PR A, then PR B (site stays in v1 mode until step 3).
 3. Apply migration 0002 (site switches to v2 on next load).
-4. Deploy `hub-jobs` from main with verify_jwt false (`supabase/config.toml` pins it for the CLI; the dashboard and the MCP's `deploy_edge_function` need it turned off by hand). Secrets: `HUB_CRON_SECRET` (≥ 32 chars), `SITE_URL` (required: the site's address, for the links in the emails; without it every run stops with `stop: 'config'` and Preview answers 503), `RESEND_API_KEY` and `EMAIL_FROM` (required) and `EMAIL_FROM_NAME`, shared with `send-email`; and `HEALTHCHECK_URL`, which is optional.
-5. Create the two Vault secrets by hand (`hub_cron_secret`, the same value as `HUB_CRON_SECRET`, and `hub_jobs_url`, the function's address), then run `cron.sql` (enables pg_cron/pg_net; refuses a missing or placeholder secret; idempotent).
+4. Deploy `hub-jobs` from main with verify_jwt false (`supabase/config.toml` pins it for the CLI; the dashboard and the MCP's `deploy_edge_function` need it turned off by hand). Secrets: `HUB_CRON_SECRET` (≥ 32 chars), `SITE_URL` (required: the site's address, for the links in the emails; without it every run stops with `stop: 'config'` and Preview answers 503), `RESEND_API_KEY` and `EMAIL_FROM` (required) and `EMAIL_FROM_NAME`, shared with `send-email`; and `HEALTHCHECK_URL`, which is optional. For v1.1, `GOOGLE_SA_JSON` (optional: the Google service-account key; without it the calendar job stops with `not_set_up` and the morning email is unchanged).
+5. Create the two Vault secrets by hand (`hub_cron_secret`, the same value as `HUB_CRON_SECRET`, and `hub_jobs_url`, the function's address), then run `cron.sql` (enables pg_cron/pg_net; refuses a missing or placeholder secret; idempotent). Run `cron.sql` again after a release that changes it: v1.1 adds the `hub-calendar` job.
 6. Smoke checks: no header → 401; preview → rendered JSON; Settings shows the last run; next morning `notification_log` has sent rows.
 7. Ops hardening: Auth email rate limit ≈ 6/hour; the signup hook stays on; Resend click/open tracking off.
+
+## 8. v1.1: Google Calendar
+
+The build contract is `docs/v1.1-google-calendar.md`; this section lists what its migration, `supabase/migrations/0003_google_calendar.sql`, adds to the database, so the docs check can hold the two together. Fresh install = `schema.sql`, then `0002`, then `0003`. It is one transaction and additive, and every rule in §3 applies. It opens with two guards: without `hub_schema_version()` it raises "Home Hub v2 (migration 0002) isn't installed"; unless that returns 2 it raises "Google Calendar (migration 0003) is already installed". It ends by making `hub_schema_version()` return 3. `preflight.sql` stays a 0002-only check. No new SECURITY DEFINER function, and nothing new for anon.
+
+### Tables
+```
+calendars (which Google calendar is whose; one writing calendar per Hearth column, plus calendars the hub only reads)
+  id uuid PK, google_id text not null unique (Google's Calendar ID; trimmed and lowercased by trigger;
+  check '^[a-z0-9._+#-]{1,200}@[a-z0-9.-]+\.[a-z]{2,}$'), kind text check in ('person','pets','house','family'),
+  person_id uuid → people (cascade; kind 'person' only), label text (trimmed, 1–40 characters),
+  writes boolean default true, for_kids boolean default false ("Show to kids"), copy_approved_at timestamptz ("Start copying")
+  -- written by hub-jobs: google_name, access_role, status ('new','ok','no_access','error'), status_detail (≤ 300),
+  -- checked_at, read_at (the last complete read)
+  created_at, updated_at, updated_by
+  checks: (kind = 'person') = (person_id is not null); a writing calendar is '…@group.calendar.google.com';
+          for_kids only on a read-only Family row. Unique index calendars_one_writer: one writing calendar per column.
+  Triggers calendars_stamp (private.stamp()) and calendars_tidy (private.calendars_tidy()).
+  RLS: members select; admins insert, update, delete. Column grants: authenticated inserts google_id, kind, person_id,
+  label, writes, for_kids, and updates those and copy_approved_at; nothing else.
+calendar_links (what hub-jobs wrote to Google: one row per Google event; kept after the event is past)
+  google_calendar text, base_id text ('^hh[0-9a-f]{32}$'), event_id text (base_id, or a new one after a clash), gen int,
+  calendar_id uuid → calendars (set null), item_kind ('event','task','project','late'), item_id uuid, job_id text,
+  occurrence date, part ('','start','finish'), day date, end_day date, title text, hash, tried_hash, google_hash,
+  google_updated, repairs int, repaired_at, repair_kind ('edited','deleted'), status ('pending','ok','error'),
+  attempts int, next_try_at, failing_since, error, synced_at, created_at
+  PK (google_calendar, base_id); unique (google_calendar, event_id). RLS: admins select; no write policies.
+google_events (events read from Google that the hub didn't write; a complete read replaces a calendar's rows)
+  calendar_id uuid → calendars (cascade), google_calendar text (the Google ID it was read from), event_id text,
+  title text ('' for a private one), location text, all_day boolean, start_day date, end_day date, start_at, end_at,
+  private boolean, repeating boolean, google_updated, read_at
+  PK (calendar_id, event_id). RLS: members select; no write policies.
+calendar_sync (one row: the calendar job's state)
+  id boolean PK, auth ('service_account','oauth'), account, key_id, running_since, run_id uuid (the lease),
+  last_run_at, last_ok_at, last_stop, last_error, last_result jsonb, window_from date, window_to date,
+  paused_until, pause_step int
+  RLS: members select; no write policies. The migration inserts the row.
+```
+Anon has no privilege on the four tables. Signed-in users have select on all four (row-level security decides), delete on `calendars` and the column grants above; no insert, update, delete, truncate, references or trigger on the other three. hub-jobs (service_role) writes them.
+
+### Functions
+Pages (`authenticated`, `service_role`):
+- `google_items(p_from date, p_to date)` returns `setof public.agenda_item`: Google events as agenda rows of kind `'google'` (a fifth kind beside 'event', 'task', 'project' and 'contract'), with `item_id = md5(calendar_id || '/' || event_id)`, the calendar's person (or the household's pets or house owner) as `responsible_id`, and the source in `notes`. Range 1 to 62 days, like `agenda(p_from, p_to)`.
+- `calendar_preview(p_calendar uuid)` returns table `(day, title, private, item_kind, item_id, place, details)`: everything Start copying puts on one calendar (the job's window, yesterday to 60 days ahead), as the wall will show it, with each event's place and the rest of its description on one line. Admins only.
+
+The calendar job (`service_role` only):
+- `calendar_begin()` returns jsonb `{go, stop, run_id}`: takes the lease (`stop` is 'busy' or 'paused' when `go` is false).
+- `calendar_signed_in(p_run uuid, p_auth text, p_account text, p_key_id text)`: how this run signed in to Google.
+- `calendar_read_due(p_force boolean default false, p_limit int default 10)` returns table `(calendar_id, google_id, writes, w_from, w_to, time_min, time_max, tz)`: the calendars to read now (never-read ones first, then the one Google answered about longest ago).
+- `calendar_store_events(p_calendar uuid, p_google_id text, p_from date, p_to date, p_name text, p_access text, p_complete boolean, p_events jsonb, p_seen jsonb)` returns jsonb `{kept, skipped, seen, repaired, adopted}`: stores one calendar's read, sets its status from its Google name and access role, puts back changes made in Google to the hub's events (on an approved calendar, for events the plan will write again), and adopts the hub's events that have no link.
+- `calendar_mark(p_calendar uuid, p_google_id text, p_status text, p_detail text default null, p_name text default null, p_access text default null)`: what a failed read, a write's 403 or Test found.
+- `calendar_plan(p_site text default null, p_limit int default 60)` returns table `(op, calendar_id, google_calendar, base_id, event_id, gen, item_kind, item_id, job_id, occurrence, part, day, end_day, title, body, hash, pending, hiding)`: the next Google writes, privacy first and the past's history last; read only. Hiding what the hub wrote (an item made private, a delete) goes ahead on a calendar in error the hub can still write to.
+- `calendar_record(p_results jsonb)`: what Google answered for a batch of plan rows.
+- `calendar_finish(p_run uuid, p_result jsonb, p_stop text default null, p_error text default null)`: ends a run, and cleans up: cached events no read has refreshed for 24 hours, and failed inserts and updates whose item has gone past (Google keeps its copy as history).
+
+Replaced, with the same signatures:
+- `hub_schema_version()` returns 3.
+- `private.item_order(a)` and `private.text_line(a, p_person, p_lang)`: a Google event sorts and reads like an event ("All day: …").
+- `private.digest_item(a, p_person, p_lang, p_hide, p_time, p_detail)`: the same, and a private Google event is "Private item" for everyone.
+- `private.person_items(p_person, p_day)`: adds the Google events `private.google_for` gives that person (so My day, `day_text` and the email's blocks for kids and helpers have them).
+- `digest_for(p_person, p_local_date)`: Google events in Today and in the heads-up's "tomorrow before 9am"; never in "Nobody's on it"; and a new key, `calendar` (parents only, when any calendar is set up, else null): `{warning, items_failed, put_back}`.
+
+New in private:
+- `private.calendar_desired(p_from, p_to, p_site)`: the events Google should have (routing, titles, bodies, ids, hashes). Granted to authenticated for the preview, and to service_role.
+- `private.calendar_key(p_kind, p_item, p_job, p_occurrence, p_google, p_part)` and `private.calendar_event_id(p_key)`: an event's key and its id, `'hh' || md5(key)`.
+- `private.calendar_word(p_key, p_lang)`: the calendar's fixed words in English and Spanish, falling back to `private.word(p_key, p_lang)` (which is unchanged).
+- `private.calendar_status(p_writes, p_name, p_access)`: a calendar's status from its Google name and access role (`out status, out detail`; `writerWithoutPrivateAccess` reads a read-only calendar, and is refused on one the hub writes).
+- `private.clean_text(p_text, p_max)`: text from Google on one line, without control, bidi or zero-width characters.
+- `private.google_item(g, c)`, `private.google_for(p_person, p_from, p_to, p_grown_up)`: one cached Google event as an agenda row; the ones that reach one person's day.
+- `private.calendars_tidy()`: the trigger above.
+- `private.active_person(p_id)` and `private.active_only(a)` are now granted to authenticated too (`calendar_desired` uses them).

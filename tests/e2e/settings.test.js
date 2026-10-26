@@ -2,8 +2,13 @@
 // the migration's list with friendly names, the usual morning-email time, who new pet and house tasks
 // go to), days off (single days and ranges, sorted and grouped, remove, past ones tucked away), the
 // morning email's status from hub-jobs ("Last run …, N sent", or "Not set up yet" on any failure),
-// "Preview my morning email" (subject and text), Google Calendar & Hearth, the Home Screen steps,
-// Sign out, members seeing it read-only, phones (390px), dark mode and v1 mode.
+// "Preview my morning email" (subject and text), the Home Screen steps, Sign out, members seeing it
+// read-only, phones (390px), dark mode and v1 mode. Google Calendar & Hearth: on schema 2 it waits for the
+// database update; on schema 3 (migration 0003) the whole card (docs/v1.1-google-calendar.md §6.5): the
+// status line, Sync now, each column's calendar with Set (the Calendar ID or its embed address), Test,
+// the preview with Make private and Start copying, the name question and Disconnect; Calendars to read
+// with Show to kids; problems, put back, stale projects, Not on Google and the inactive-person note; a
+// member's read-only view; hub-jobs from before v1.1 ("Waiting for the hub-jobs update").
 //
 // The database is mock.js plus fakes that follow supabase/migrations/0002_home_hub_v2.sql: household
 // changes only for admins (anyone else's update changes no rows, as RLS does), clock →
@@ -14,7 +19,7 @@
 // Run alone with: node tests/e2e/settings.test.js
 const { chromium } = require('playwright');
 const { createHash } = require('crypto');
-const { makeDb, install, signIn } = require('./mock');
+const { makeDb, install, signIn, withCalendars, calendarRow, linkRow, calendarRpc } = require('./mock');
 const { serve } = require('./server');
 
 let BASE = '';
@@ -97,6 +102,67 @@ const v2Rpc = {
   mark_signed_in: () => null,
 };
 
+// ---- Schema 3: Google Calendar (fictional calendar IDs and service account; mock.js has the tables,
+// google_items / calendar_preview and hub-jobs' calendar and calendar_test answers).
+const v3Rpc = Object.assign({ hub_schema_version: () => 3 }, calendarRpc);
+const ACCOUNT = 'home-hub-sync@home-hub-example.iam.gserviceaccount.com';
+const GID = (name) => `${name}@group.calendar.google.com`;
+// 'HH:MM' on a household day (New York is on daylight time until Nov 1) as an instant.
+const at = (hm, day = TODAY) => new Date(`${day}T${hm}:00-04:00`).toISOString();
+const NAME_RULE = "This calendar isn't named 'Hub …'. The hub writes only to calendars whose name starts with Hub. If it is the right one, rename it in Google.";
+function googleDb(sync) {
+  const db = withCalendars(settingsDb(), sync);
+  db.tasks = [{ id: 'tk-pill', title: 'Heartworm pill', private: false }];
+  // What calendar_desired would copy to Jordan's calendar from yesterday to 60 days ahead (calendar_preview).
+  db.previewRows = { [GID('jordan0123')]: [
+    { day: '2026-10-25', title: '☐ 2 late: Take out recycling, Private item', private: false, item_kind: 'late', item_id: null },
+    { day: '2026-10-27', title: 'Piano (with Jordan)', private: false, item_kind: 'event', item_id: 'ev-piano', place: 'Rivera Music, 12 Elm St', details: 'Rivera Music 555-0150' },
+    { day: '2026-10-27', title: '☐ Heartworm pill', private: false, item_kind: 'task', item_id: 'tk-pill' },
+    { day: '2026-10-29', title: 'Dentist', private: true, item_kind: 'event', item_id: 'ev-dentist' },
+    { day: '2026-11-02', title: 'Kitchen: Paint starts', private: false, item_kind: 'project', item_id: 'p-kitchen', details: 'Pat Lee (201) 555-0100' },
+    { day: '2026-12-18', title: 'Trip', private: false, item_kind: 'event', item_id: 'ev-trip' },
+  ] };
+  return db;
+}
+// A household that has been set up for a while: signed in, copying, some calendars in trouble.
+function richDb() {
+  const db = googleDb({ auth: 'service_account', account: ACCOUNT, key_id: '0123456789abcdefa1b2c3', last_run_at: at('08:57'), last_ok_at: at('08:57'),
+    last_result: { read: 3, stored: 12, inserted: 60, pending: 214, hiding: 3, stop: null }, window_from: '2026-10-24', window_to: '2026-12-24' });
+  const C = {
+    alex: calendarRow({ google_id: GID('alex0456'), kind: 'person', person_id: ID.alex, label: 'Alex', status: 'ok', google_name: 'Hub – Alex', access_role: 'writer' }),
+    sam: calendarRow({ google_id: GID('sam0789'), kind: 'person', person_id: ID.sam, label: 'Sam' }),
+    jordan: calendarRow({ google_id: GID('jordan0123'), kind: 'person', person_id: ID.jordan, label: 'Jordan', status: 'ok', google_name: 'Hub – Jordan', access_role: 'writer',
+      copy_approved_at: at('08:00', '2026-10-20') }),
+    family: calendarRow({ google_id: GID('family0654'), kind: 'family', label: 'Family', status: 'no_access', google_name: 'Hub – Family', access_role: 'reader',
+      status_detail: `Share it with ${ACCOUNT} and choose Make changes and see event details.` }),
+    morgan: calendarRow({ google_id: GID('morgan0321'), kind: 'person', person_id: ID.morgan, label: 'Morgan', status: 'ok', google_name: 'Hub – Morgan', access_role: 'writer',
+      copy_approved_at: at('08:00', '2026-10-20') }),
+    pets: calendarRow({ google_id: GID('pets0987'), kind: 'pets', label: 'Dogs', status: 'error', google_name: 'Dog walks', access_role: 'writer', status_detail: NAME_RULE }),
+    main: calendarRow({ google_id: 'family@example.com', kind: 'family', label: 'Family account', writes: false, status: 'ok', google_name: 'family@example.com', access_role: 'reader' }),
+    school: calendarRow({ google_id: GID('school0111'), kind: 'person', person_id: ID.jordan, label: 'School', writes: false, status: 'ok', google_name: 'Maple School', access_role: 'reader' }),
+  };
+  db.calendars.push(...Object.values(C));
+  const J = { google_calendar: C.jordan.google_id, calendar_id: C.jordan.id };
+  db.calendar_links.push(
+    linkRow(Object.assign({ title: 'Piano', day: '2026-11-03', end_day: '2026-11-03', status: 'error', error: 'Google said 400 badRequest: Bad Request', next_try_at: at('09:40'), failing_since: at('08:40') }, J)),
+    linkRow({ google_calendar: GID('gone0000'), calendar_id: null, title: 'Soccer', day: '2026-10-26', end_day: '2026-10-26', status: 'error',
+      error: `Home Hub can't change this calendar. In Google Calendar, share it with ${ACCOUNT} and choose Make changes and see event details.`,
+      next_try_at: at('08:00', '2026-10-26'), failing_since: at('07:00') }),
+    linkRow(Object.assign({ title: 'Dentist', day: '2026-11-04', end_day: '2026-11-04', status: 'error', error: 'Google keeps changing this event', next_try_at: at('06:00', '2026-10-27'),
+      failing_since: at('06:00'), repairs: 4, repair_kind: 'edited' }, J)),
+    linkRow(Object.assign({ title: 'Piano', day: '2026-11-05', end_day: '2026-11-05', synced_at: at('08:30'), repaired_at: at('08:12'), repair_kind: 'deleted', repairs: 1 }, J)),
+    linkRow(Object.assign({ title: 'Swim', day: '2026-10-28', end_day: '2026-10-28', synced_at: at('08:30'), repaired_at: at('07:05'), repair_kind: 'edited', repairs: 1 }, J)),
+    linkRow(Object.assign({ title: 'Piano', day: '2026-10-27', end_day: '2026-10-27', synced_at: at('08:30') }, J)),
+    linkRow(Object.assign({ title: 'Trip', day: '2026-10-22', end_day: '2026-10-30', synced_at: at('08:30') }, J)),
+    linkRow(Object.assign({ title: 'Old event', day: '2026-10-01', end_day: '2026-10-01', synced_at: at('08:30', '2026-10-01') }, J)),
+    linkRow(Object.assign({ title: 'New event', day: '2026-11-01', end_day: '2026-11-01', status: 'pending', synced_at: null }, J)),
+  );
+  // The kitchen is on the calendar with stale dates; the pool's are fine; the sprinkler job is only an idea.
+  db.projects.forEach((p) => Object.assign(p, { on_calendar: true, task_dates: p.id === 'p-pool' ? [] : null }));
+  db.cal = C;
+  return db;
+}
+
 // ---- Stub v2 pages (the other builders' pages): same register() contract as the real ones
 const STUBS = {
   today: { nav: { label: 'Today', order: 10, href: '#/', primary: true }, root: true },
@@ -106,7 +172,7 @@ const STUBS = {
 };
 const stubModule = (name, s) => `;(function () {
   HomeHub.register({
-    name: ${JSON.stringify(name)}, schema: { min: 2, max: 2 }, nav: ${JSON.stringify(s.nav)},
+    name: ${JSON.stringify(name)}, schema: { min: 2, max: 99 }, nav: ${JSON.stringify(s.nav)},
     match: function (parts) { return (${!!s.root} && !parts.length) || parts[0] === ${JSON.stringify(name)} ? {} : null; },
     render: function (main) { main.innerHTML = '<h1 id="stub">${s.nav.label}</h1>'; },
   });
@@ -142,7 +208,8 @@ const emailOf = (req) => {
       db.confirms.push([d.type(), d.message()]);
       return db.confirm === false ? d.dismiss() : d.accept();
     });
-    await install(page, db, log, { rpc: opts.v1 ? {} : v2Rpc });
+    if (opts.clipboard) await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+    await install(page, db, log, { rpc: opts.v1 ? {} : Object.assign({}, v2Rpc, opts.rpc) });
     if (!opts.v1) {
       // whoami in v2 also says which person row is the caller's.
       await page.route((url) => url.host === 'test.supabase.co' && url.pathname === '/rest/v1/rpc/whoami', (route) => {
@@ -164,6 +231,14 @@ const emailOf = (req) => {
         if ((db.members.find((m) => m.email === email) || {}).role !== 'admin') return route.fulfill({ status: 200, headers: JSONH, body: '[]' });
         return route.fallback();
       });
+      // Writes to calendars (Set, Start copying, Show to kids, Disconnect) and tasks (Make private).
+      await page.route((url) => url.host === 'test.supabase.co' && /^\/rest\/v1\/(calendars|tasks)$/.test(url.pathname), (route) => {
+        const req = route.request();
+        if (['POST', 'PATCH', 'DELETE'].includes(req.method())) {
+          (db.calWrites = db.calWrites || []).push({ table: new URL(req.url()).pathname.slice(9), method: req.method(), url: decodeURIComponent(new URL(req.url()).search), body: JSON.parse(req.postData() || 'null') });
+        }
+        return route.fallback();
+      });
       await page.route((url) => url.host === 'test.supabase.co' && url.pathname === '/rest/v1/events', (route) => {
         const req = route.request();
         if (req.method() === 'PATCH') (db.writesEvents = db.writesEvents || []).push({ url: decodeURIComponent(req.url()), body: JSON.parse(req.postData() || 'null') });
@@ -175,6 +250,8 @@ const emailOf = (req) => {
         if (req.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: CORS });
         const body = JSON.parse(req.postData() || '{}');
         db.fnCalls.push({ body, email: emailOf(req), auth: !!req.headers()['authorization'] });
+        // Google Calendar's actions: mock.js answers them (calendarJob), from the schema-3 tables.
+        if (body.action === 'calendar' || body.action === 'calendar_test') return route.fallback();
         const mode = db.fn[body.action];
         if (mode === 'offline') return route.abort('internetdisconnected');
         if (mode === '404') return route.fulfill({ status: 404, headers: JSONH, body: JSON.stringify({ code: 'NOT_FOUND', message: 'Requested function was not found' }) });
@@ -402,8 +479,12 @@ const emailOf = (req) => {
   // =====================================================================
   // 4. Google Calendar & Hearth, the Home Screen, Sign out
   // =====================================================================
-  check('Google Calendar & Hearth: one row, not connected yet, no fields', (await tc(page, '[data-ref="calendar"]')) === 'Not connected yet — coming next'
-    && (await page.$$('[data-ref="calendar"] input, [data-ref="calendar"] select, [data-ref="calendar"] button')).length === 0);
+  // Changed on purpose in v1.1: on schema 2 the card waits for the database update (migration 0003),
+  // where it said "Not connected yet — coming next" (docs/v1.1-google-calendar.md §6.5).
+  check('Google Calendar & Hearth (schema 2): one row, waiting for the database update, no fields', (await tc(page, '[data-ref="calendar"]')) === 'Waiting for the database update'
+    && (await page.$$('[data-ref="calendar"] input, [data-ref="calendar"] select, [data-ref="calendar"] button')).length === 0
+    && !(db.rpcCalls || []).some((c) => /^(google_items|calendar_)/.test(c.name)) && !log.some((l) => /\/rest\/v1\/(calendars|calendar_sync|calendar_links|google_events)/.test(l)),
+    await tc(page, '[data-ref="calendar"]'));
   const steps = await texts(page, '.set-steps li');
   check('Home Screen: the iPhone and Android steps', (await tc(page, '#setApp')) === 'Add Home Hub to your Home Screen'
     && steps[0] === 'iPhone: in Safari, tap Share (the square with an arrow), then Add to Home Screen. Open it from there and sign in again: the Home Screen app keeps its own sign-in.'
@@ -462,6 +543,432 @@ const emailOf = (req) => {
     });
     check(`phone (${scheme}): the preview fits the screen; its buttons are 44px`, dlgFit.fits && !dlgFit.small.length, JSON.stringify(dlgFit));
     await page.screenshot({ path: SHOTS + `settings-preview-phone-${scheme}.png` });
+    await page.context().close();
+  }
+
+  // =====================================================================
+  // 6b. Google Calendar & Hearth on schema 3 (migration 0003)
+  // =====================================================================
+  // The card's rows: label, chip, the name to make in Google, the lines under it, the last Test, the buttons.
+  const gRows = (page, list) => page.$$eval(`[data-ref="${list}"] > .set-gcal`, (lis) => lis.map((li) => ({
+    label: (() => { const l = li.querySelector('.set-gcal-label').cloneNode(true); l.querySelectorAll('.pdot').forEach((x) => x.remove()); return l.textContent.replace(/\s+/g, ' ').trim(); })(),
+    chip: li.querySelector('.set-chip').textContent,
+    name: (li.querySelector('.set-gname b') || {}).textContent || null,
+    lines: [...li.querySelectorAll('.set-gmeta, .set-gdetail, .set-gq')].map((e) => e.textContent.replace(/\s+/g, ' ').trim()),
+    test: li.querySelector('.set-gtest p') ? li.querySelector('.set-gtest p').textContent.replace(/\s+/g, ' ').trim() : null,
+    buttons: [...li.querySelectorAll('button')].map((b) => b.textContent.trim()),
+    kids: li.querySelector('[data-gkids]') ? li.querySelector('[data-gkids]').checked : null,
+  })));
+  const gStatus = (page) => texts(page, '[data-ref="gstatus"] > p');
+  const gList = (page, ref) => texts(page, `[data-ref="${ref}"] li`);
+  const writes = (db, table, method) => (db.calWrites || []).filter((w) => w.table === table && (!method || w.method === method));
+  const jobs = (db, action) => (db.jobCalls || []).filter((c) => c.body.action === action);
+  const dlgText = (page, sel) => page.$eval(`#formDialog ${sel}`, (e) => e.textContent.replace(/\s+/g, ' ').trim()).catch(() => '');
+  const submitDialog = async (page) => { await page.click('#formDialog [type="submit"]'); await page.waitForTimeout(600); };
+  // hub-jobs' 400, 404, 500 and 503 on purpose, and the unique Calendar ID's 409.
+  const allowed = /status of (400|404|409|500|503)/;
+
+  // ---------- A household just updated to schema 3: nothing set up yet (Alex, an admin)
+  ({ page, db, log } = await open({ label: 'google-new', db: googleDb(), rpc: v3Rpc, clipboard: true, allowConsole: allowed }));
+  check('schema 3: the card loads calendars and calendar_sync, and (admins) calendar_links', (await page.evaluate(() => HomeHub.core.schemaVersion)) === 3
+    && ['calendars', 'calendar_sync', 'calendar_links'].every((t) => log.some((l) => l.startsWith(`GET /rest/v1/${t}?`))), log.filter((l) => /calendar/.test(l)).join(' | '));
+  check('not set up: says to add the Google key, then press Sync now; hasn\'t synced', same(await gStatus(page),
+    ['Not set up: add the Google key to Supabase (README → Google Calendar and Hearth). Added it? Press Sync now.', 'Hasn\'t synced yet']), JSON.stringify(await gStatus(page)));
+  let cols = await gRows(page, 'gcolumns');
+  check('calendars: one row per active person, then Family (not Morgan, who is off the list), each not connected, with the name to make in Google',
+    same(cols.map((r) => [r.label, r.chip, r.name, r.buttons]), [['Alex', 'Not connected', 'Hub – Alex', ['Copy', 'Set']], ['Sam', 'Not connected', 'Hub – Sam', ['Copy', 'Set']],
+      ['Jordan', 'Not connected', 'Hub – Jordan', ['Copy', 'Set']], ['Family', 'Not connected', 'Hub – Family', ['Copy', 'Set']]]), JSON.stringify(cols));
+  const opt = await gRows(page, 'goptional');
+  check('calendars: Pets and House under "Optional: only if pet or house tasks are often left with nobody in charge"',
+    same(opt.map((r) => [r.label, r.chip, r.name]), [['Pets', 'Not connected', 'Hub – Pets'], ['House', 'Not connected', 'Hub – House']])
+    && (await tc(page, '.set-gopt')) === 'Optional: only if pet or house tasks are often left with nobody in charge', JSON.stringify(opt));
+  let reads = await gRows(page, 'greads');
+  check('calendars to read: first the family account\'s main calendar (Set), and the help on who sees them', same(reads.map((r) => [r.label, r.chip, r.buttons]),
+    [["Family account's main calendar", 'Not connected', ['Set']]]) && (await texts(page, '[data-ref="calendar"] .set-help')).includes(
+    'Their events show on the Calendar and Today pages and in grown-ups\' morning emails. A Family one\'s reach kids\' My day only with Show to kids, '
+    + 'and never a helper\'s. One you give to a person reaches that person\'s My day, texts and morning email, kids and helpers included.'), JSON.stringify(reads));
+  check('Not on Google: every active person without a Hub calendar', (await tc(page, '[data-ref="gmissing"]')) === 'No Hub calendar, so their items aren\'t copied to Google or the wall: Alex, Sam, Jordan.',
+    await tc(page, '[data-ref="gmissing"]'));
+  const hearth = await texts(page, '.set-hearth li');
+  check('Hearth: the short note (a profile that stays, Resync, view-only and no alerts, the wall is public, notifications off)', hearth.length === 5
+    && /profile that will stay/.test(hearth[0]) && /Resync/.test(hearth[1]) && /view-only/.test(hearth[2]) && /morning email does/.test(hearth[2])
+    && /helper and visitors/.test(hearth[3]) && /Private/.test(hearth[3]) && /notifications turned off/.test(hearth[4]), JSON.stringify(hearth));
+  check('Hearth: a change reaches the wall from yesterday onward; past days only come off with Private or Delete', /for yesterday onward/.test(hearth[1])
+    && /from yesterday onward the change reaches the wall within 5 minutes/.test(hearth[3]) && /only Private or Delete takes a past item off/.test(hearth[3]), JSON.stringify(hearth));
+  check('no problem, put-back or stale-project lists when there are none', !(await page.$('[data-ref="gproblems"], [data-ref="grepairs"], [data-ref="gstale"]')));
+  await page.click('[data-ref="gcolumns"] [data-copy="Hub – Jordan"]');
+  await page.waitForTimeout(300);
+  check('Copy: puts "Hub – Jordan" on the clipboard, and says so', (await lastToast(page)) === 'Copied: Hub – Jordan'
+    && (await page.evaluate(() => navigator.clipboard.readText())) === 'Hub – Jordan', await lastToast(page));
+
+  // Sync now, from a hub-jobs from before v1.1 (400 Unknown action), one not deployed (404), and a
+  // database without 0003 (503 no_schema): "Waiting for the hub-jobs update", never an error.
+  for (const [mode, what] of [['old', '400'], ['missing', '404'], ['no_schema', '503 no_schema']]) {
+    db.jobMode = { calendar: mode };
+    await page.click('[data-act="gsync"]');
+    await page.waitForTimeout(600);
+    const note = await page.$eval('[data-ref="gsync"]', (e) => [e.textContent, e.className]).catch(() => ['', '']);
+    check(`Sync now: hub-jobs answers ${what} → "Waiting for the hub-jobs update", not an error`, note[0] === 'Waiting for the hub-jobs update' && /is-wait/.test(note[1])
+      && (await page.isEnabled('[data-act="gsync"]')), JSON.stringify(note));
+  }
+  db.jobMode = {};
+  await page.click('[data-act="gsync"]');
+  await page.waitForTimeout(600);
+  const syncCall = db.fnCalls.filter((c) => c.body.action === 'calendar').slice(-1)[0];
+  check('Sync now: hub-jobs { action: "calendar" } with Alex\'s sign-in; says what it did', same(syncCall, { body: { action: 'calendar' }, email: 'alex@example.com', auth: true })
+    && (await tc(page, '[data-ref="gsync"]')) === 'Synced: 3 added, 1 changed in Google. 2 calendars read.', `${JSON.stringify(syncCall)} ${await tc(page, '[data-ref="gsync"]')}`);
+
+  // Set Jordan's calendar: a bad ID and a main calendar are refused, with the reason; then the real one.
+  await page.click(`[data-gset="person:${ID.jordan}"]`);
+  await page.waitForTimeout(300);
+  check('Set: a form for the Calendar ID, titled with the name to make in Google', (await dlgText(page, 'h3')) === 'Hub – Jordan' && !!(await page.$('#formDialog input[name="google_id"]'))
+    && !(await page.$('#formDialog input[name="label"]')) && /Integrate calendar/.test(await dlgText(page, '.meta')));
+  await page.fill('#formDialog input[name="google_id"]', 'hello there');
+  await submitDialog(page);
+  const bad1 = await errorOf(page, '#formDialog .form-error');
+  await page.fill('#formDialog input[name="google_id"]', 'jordan@example.com');
+  await submitDialog(page);
+  const bad2 = await errorOf(page, '#formDialog .form-error');
+  check('Set: not a Calendar ID → says where to find it; nothing saved', /isn't a Calendar ID/.test(bad1) && /Integrate calendar/.test(bad1) && !writes(db, 'calendars').length, bad1);
+  check('Set: someone\'s main calendar is refused for a calendar the hub writes, and says why', /someone's main calendar/.test(bad2) && /@group\.calendar\.google\.com/.test(bad2)
+    && /make "Hub – Jordan" in Google Calendar/.test(bad2) && !writes(db, 'calendars').length, bad2);
+  await page.fill('#formDialog input[name="google_id"]', '  JORDAN0123@Group.Calendar.Google.com ');
+  await submitDialog(page);
+  await page.waitForTimeout(400);
+  const jordanCal = db.calendars.find((c) => c.person_id === ID.jordan);
+  check('Set: saves the row (insert, only the columns admins may set; the ID lowercased, the label the first name)', same(writes(db, 'calendars', 'POST').map((w) => w.body),
+    [{ google_id: GID('jordan0123'), kind: 'person', person_id: ID.jordan, label: 'Jordan', writes: true, for_kids: false }]) && !!jordanCal, JSON.stringify(writes(db, 'calendars')));
+  check('Set: then Test (hub-jobs calendar_test with the new row\'s id, Alex\'s sign-in)', jordanCal && same(jobs(db, 'calendar_test').map((c) => [c.body, c.email]),
+    [[{ action: 'calendar_test', calendar_id: jordanCal.id }, 'alex@example.com']]), JSON.stringify(jobs(db, 'calendar_test')));
+  check('Set: Test\'s result, and what it did', (await dlgText(page, '[data-ref="test"] .set-gtest p')) === 'Test: Home Hub can write to this calendar.'
+    && same(await texts(page, '#formDialog .set-gsteps li'), ['Read the calendar: done', 'Add a test event: done', 'Delete it: done', 'Bring it back: done', 'Read it back: done',
+      'Same as what was written: done', 'Delete it again: done']), await dlgText(page, '[data-ref="test"]'));
+  const pvRows = () => page.$$eval('#formDialog [data-ref="pv"] > li', (lis) => lis.map((li) => [li.className, li.querySelector('.set-pv-title') ? li.querySelector('.set-pv-title').textContent : li.textContent,
+    !!li.querySelector('.badge'), !!li.querySelector('[data-gprivate]')]));
+  check('preview: calendar_preview(p_calendar): everything Start copying puts on the wall (to 60 days ahead), by day; Make private on events and tasks only', same(db.previewCalls.slice(-1), [{ p_calendar: jordanCal.id }])
+    && same(await pvRows(), [['set-pv-day', 'Sun Oct 25', false, false], ['set-pv-row', '☐ 2 late: Take out recycling, Private item', false, false],
+      ['set-pv-day', 'Tue Oct 27', false, false], ['set-pv-row', 'Piano (with Jordan)', false, true], ['set-pv-row', '☐ Heartworm pill', false, true],
+      ['set-pv-day', 'Thu Oct 29', false, false], ['set-pv-row', 'Private item', true, false], ['set-pv-day', 'Mon Nov 2', false, false], ['set-pv-row', 'Kitchen: Paint starts', false, false],
+      ['set-pv-day', 'Fri Dec 18', false, false], ['set-pv-row', 'Trip', false, true]]),
+    JSON.stringify(await pvRows()));
+  check('preview: says how far ahead it copies', (await dlgText(page, '#gpvTitle')) === 'What it copies: yesterday to 60 days ahead'
+    && /everything Start copying puts on it/.test(await dlgText(page, '.set-gpv .set-help')), await dlgText(page, '#gpvTitle'));
+  check('preview: the place and the directory entry\'s name and number, as they go on the wall', same(await texts(page, '#formDialog .set-pv-meta'),
+    ['Rivera Music, 12 Elm St · Rivera Music 555-0150', 'Pat Lee (201) 555-0100']), JSON.stringify(await texts(page, '#formDialog .set-pv-meta')));
+  check('preview: Make private says it changes the item itself, for kids and helpers too, and every repeat', /Make private changes the item itself, on every day it repeats: kids and helpers then see only "Private item" for it on My day, in texts and in emails, even when it is their own\./
+    .test(await dlgText(page, '.set-pv-note')), await dlgText(page, '.set-pv-note'));
+  check('preview: where a late line or a project job can be kept off instead', same(await texts(page, '#formDialog .set-pv-hint'),
+    ['To hide a task on this line, make the task private on the Tasks page.', 'To keep a project\'s jobs off the wall, untick "Show in Home Hub calendar" on the project.']),
+    JSON.stringify(await texts(page, '#formDialog .set-pv-hint')));
+  check('preview: Start copying (the main button: Test passed), and Not now', same(await texts(page, '#formDialog .form-actions button'), ['Not now', 'Start copying'])
+    && (await page.$eval('#formDialog [data-gstart]', (b) => b.classList.contains('btn-primary'))) && (await dlgText(page, '[data-ref="test"] .set-gmeta')) === 'In Google: Hub – Jordan'
+    && (await dlgText(page, '[data-ref="ask"]')) === '');
+  await page.screenshot({ path: SHOTS + 'settings-google-preview.png' });
+  await page.click('#formDialog [data-gprivate="event|ev-piano"]');
+  await page.waitForTimeout(500);
+  check('Make private: sets that event\'s private, and the preview shows it as "Private item"', same((db.writesEvents || []).slice(-1).map((w) => [/id=eq\.ev-piano/.test(w.url), w.body]), [[true, { private: true }]])
+    && same((await pvRows()).filter((r) => r[0] === 'set-pv-row').map((r) => r[1]), ['☐ 2 late: Take out recycling, Private item', 'Private item', '☐ Heartworm pill', 'Private item', 'Kitchen: Paint starts', 'Trip']),
+    JSON.stringify(await pvRows()));
+  await page.click('#formDialog [data-gprivate="task|tk-pill"]');
+  await page.waitForTimeout(500);
+  check('Make private: a task too', same(writes(db, 'tasks', 'PATCH').map((w) => [w.url, w.body]), [['?id=eq.tk-pill&select=id', { private: true }]]) && db.tasks[0].private === true);
+  await page.click('#formDialog [data-gstart]');
+  await page.waitForTimeout(600);
+  const approve = writes(db, 'calendars', 'PATCH').slice(-1)[0] || {};
+  check('Start copying: sets copy_approved_at on that row only; the dialog closes and says when copying starts', approve.url === `?id=eq.${jordanCal.id}&select=id`
+    && same(Object.keys(approve.body || {}), ['copy_approved_at']) && !isNaN(Date.parse(approve.body.copy_approved_at))
+    && !(await page.evaluate(() => document.getElementById('formDialog').open)) && (await lastToast(page)) === 'Copying to Hub – Jordan starts within 5 minutes', JSON.stringify(approve));
+  cols = await gRows(page, 'gcolumns');
+  check('Jordan\'s row: Connected, its Google name, the last Test, and Set, Test, Preview, Disconnect', same(cols[2], { label: 'Jordan', chip: 'Connected', name: 'Hub – Jordan',
+    lines: ['In Google: Hub – Jordan'], test: 'Test: Home Hub can write to this calendar.', buttons: ['Copy', 'Set', 'Test', 'Preview', 'Disconnect'], kids: null }), JSON.stringify(cols[2]));
+  check('Not on Google: Jordan has left the list', (await tc(page, '[data-ref="gmissing"]')) === 'No Hub calendar, so their items aren\'t copied to Google or the wall: Alex, Sam.');
+
+  // Alex's: the embed address Google gives (the whole <iframe>) is taken apart. It is the ID of a
+  // calendar Google calls "Hub – Jordan": the dialog says so, and asks.
+  db.testReplies = { [GID('alex0456')]: { name: 'Hub – Jordan' } };
+  await page.click(`[data-gset="person:${ID.alex}"]`);
+  await page.fill('#formDialog input[name="google_id"]', '<iframe src="https://calendar.google.com/calendar/embed?src=alex0456%40group.calendar.google.com&amp;ctz=America%2FNew_York" style="border: 0" width="800" height="600" frameborder="0" scrolling="no"></iframe>');
+  await submitDialog(page);
+  await page.waitForTimeout(400);
+  check('Set: a pasted embed address gives the Calendar ID', same(writes(db, 'calendars', 'POST').slice(-1)[0].body.google_id, GID('alex0456')));
+  check('Set: after Test the dialog shows the calendar\'s name in Google, and asks whose it is when it isn\'t Alex\'s (above the buttons)',
+    (await dlgText(page, '[data-ref="test"] .set-gmeta')) === 'In Google: Hub – Jordan'
+    && (await dlgText(page, '[data-ref="ask"] .set-gq')) === 'This calendar is called \'Hub – Jordan\'. Is that Alex\'s? If not, press Not now and Set the right Calendar ID.',
+    `${await dlgText(page, '[data-ref="test"]')} | ${await dlgText(page, '[data-ref="ask"]')}`);
+  check('... and Start copying is no longer the main button', !(await page.$eval('#formDialog [data-gstart]', (b) => b.classList.contains('btn-primary'))));
+  db.testReplies = {};
+  await page.click('#formDialog .form-actions [data-close]');
+  await page.waitForTimeout(300);
+  cols = await gRows(page, 'gcolumns');
+  check('Not now: Alex\'s calendar waits for Start copying; nothing approved', cols[0].chip === 'Waiting: press Preview, then Start copying' && !db.calendars.find((c) => c.person_id === ID.alex).copy_approved_at, JSON.stringify(cols[0]));
+
+  // Test: what Google said, on the row.
+  const alexCal = db.calendars.find((c) => c.person_id === ID.alex);
+  db.testReplies = { [GID('alex0456')]: { ok: false, status: 'no_access', message: `Home Hub can't change this calendar. In Google Calendar, share it with ${ACCOUNT} and choose Make changes and see event details.`,
+    name: 'Hub – Alex', role: 'reader', steps: [{ step: 'list', ok: true, http: 200 }] } };
+  await page.click(`[data-gtest="${alexCal.id}"]`);
+  await page.waitForTimeout(600);
+  cols = await gRows(page, 'gcolumns');
+  check('Test: shared read-only → "Can\'t reach it", with what to share', cols[0].chip === 'Can\'t reach it'
+    && same(cols[0].lines, ['In Google: Hub – Alex', `Home Hub can't change this calendar. In Google Calendar, share it with ${ACCOUNT} and choose Make changes and see event details.`])
+    && cols[0].test === `Test: Home Hub can't change this calendar. In Google Calendar, share it with ${ACCOUNT} and choose Make changes and see event details.`, JSON.stringify(cols[0]));
+  db.testReplies = { [GID('alex0456')]: { ok: false, status: 'error', message: NAME_RULE, name: 'Work', role: 'writer', steps: [{ step: 'list', ok: true, http: 200 }] } };
+  await page.click(`[data-gtest="${alexCal.id}"]`);
+  await page.waitForTimeout(600);
+  cols = await gRows(page, 'gcolumns');
+  check('Test: not named "Hub …" → "Problem", why, and the name question', cols[0].chip === 'Problem'
+    && same(cols[0].lines, ['In Google: Work', NAME_RULE, 'This calendar is called \'Work\'. Is that Alex\'s?']), JSON.stringify(cols[0]));
+  for (const [mode, what] of [['old', '400'], ['missing', '404'], ['no_schema', '503 no_schema']]) {
+    db.jobMode = { calendar_test: mode };
+    await page.click(`[data-gtest="${alexCal.id}"]`);
+    await page.waitForTimeout(600);
+    cols = await gRows(page, 'gcolumns');
+    check(`Test: hub-jobs answers ${what} → "Waiting for the hub-jobs update"`, cols[0].test === 'Test: Waiting for the hub-jobs update'
+      && (await page.$eval('[data-ref="gcolumns"] > .set-gcal .set-gtest', (e) => e.className)) === 'set-gtest is-wait', JSON.stringify(cols[0]));
+  }
+  db.jobMode = {};
+  db.testReplies = {};
+
+  // Disconnect asks first.
+  db.confirm = false;
+  await page.click(`[data-gdrop="${alexCal.id}"]`);
+  await page.waitForTimeout(300);
+  check('Disconnect: asks first ("…taken off that calendar within a few minutes"); No changes nothing', db.confirms.slice(-1)[0][1] === 'Disconnect Hub – Alex? The hub\'s events are taken off that calendar within a few minutes.'
+    && !writes(db, 'calendars', 'DELETE').length && db.calendars.some((c) => c.id === alexCal.id), JSON.stringify(db.confirms.slice(-1)));
+  db.confirm = true;
+  await page.click(`[data-gdrop="${alexCal.id}"]`);
+  await page.waitForTimeout(600);
+  cols = await gRows(page, 'gcolumns');
+  check('Disconnect: deletes the row; Alex is not connected again', same(writes(db, 'calendars', 'DELETE').map((w) => w.url), [`?id=eq.${alexCal.id}`])
+    && cols[0].chip === 'Not connected' && (await lastToast(page)) === 'Disconnected Hub – Alex', JSON.stringify(cols[0]));
+
+  // Pets, with its title prefix.
+  await page.click('[data-gset="pets"]');
+  check('Set (Pets): the title prefix, "Pets" to start with', (await page.inputValue('#formDialog input[name="label"]')) === 'Pets');
+  await page.fill('#formDialog input[name="google_id"]', GID('pets0987'));
+  await page.fill('#formDialog input[name="label"]', ' Dogs ');
+  await submitDialog(page);
+  await page.click('#formDialog .form-actions [data-close]');
+  await page.waitForTimeout(300);
+  check('Set (Pets): saved with its prefix; the row says what titles start with', same(writes(db, 'calendars', 'POST').slice(-1)[0].body,
+    { google_id: GID('pets0987'), kind: 'pets', person_id: null, label: 'Dogs', writes: true, for_kids: false })
+    && (await gRows(page, 'goptional'))[0].label === 'Pets titles start "Dogs:"', JSON.stringify(await gRows(page, 'goptional')));
+
+  // The family account's main calendar: read only, its own address; then Show to kids.
+  await page.click('[data-gset="main"]');
+  await page.fill('#formDialog input[name="google_id"]', GID('holidays0001'));
+  await submitDialog(page);
+  const bad3 = await errorOf(page, '#formDialog .form-error');
+  check('Set (main calendar): a calendar made in Google is refused here, and says where it goes', /family account's own address/.test(bad3) && /Add a calendar to read/.test(bad3), bad3);
+  await page.fill('#formDialog input[name="google_id"]', 'Family@Example.com');
+  await submitDialog(page);
+  await page.waitForTimeout(300);
+  check('Set (main calendar): a Family calendar the hub only reads, labelled "Family account"', same(writes(db, 'calendars', 'POST').slice(-1)[0].body,
+    { google_id: 'family@example.com', kind: 'family', person_id: null, label: 'Family account', writes: false, for_kids: false }));
+  check('Set (main calendar): Test reads it; no preview or Start copying for a calendar the hub only reads', (await dlgText(page, 'h3')) === "Family account's main calendar"
+    && (await dlgText(page, '[data-ref="test"] .set-gtest p')) === 'Test: Home Hub can read this calendar.' && !(await page.$('#formDialog [data-ref="pv"]'))
+    && same(await texts(page, '#formDialog .form-actions button'), ['Done']));
+  await page.click('#formDialog .form-actions [data-close]');
+  await page.waitForTimeout(300);
+  reads = await gRows(page, 'greads');
+  check('the main calendar: Connected, Show to kids off, Set, Test, Disconnect', reads[0].chip === 'Connected' && reads[0].kids === false
+    && same(reads[0].buttons, ['Set', 'Test', 'Disconnect']), JSON.stringify(reads[0]));
+  await page.click('[data-ref="greads"] [data-gkids]');
+  await page.waitForTimeout(500);
+  const mainCal = db.calendars.find((c) => c.google_id === 'family@example.com');
+  check('Show to kids: saves for_kids on that calendar', same(writes(db, 'calendars', 'PATCH').slice(-1).map((w) => [w.url, w.body]), [[`?id=eq.${mainCal.id}&select=id`, { for_kids: true }]])
+    && (await gRows(page, 'greads'))[0].kids === true && (await lastToast(page)) === 'Kids now see its events on My day', await lastToast(page));
+
+  // Add a calendar to read: Family with Show to kids; a person's (no Show to kids); one already set up.
+  await page.click('[data-act="gadd"]');
+  check('Add: for Family, the help says kids see it only with Show to kids, never a helper', (await dlgText(page, '[data-ref="whose-help"]'))
+    === 'They reach kids\' My day only with Show to kids, and never a helper\'s.', await dlgText(page, '[data-ref="whose-help"]'));
+  await page.selectOption('#formDialog select[name="whose"]', ID.jordan);
+  check('Add: for a person, it says it reaches that person\'s My day, texts and email', (await dlgText(page, '[data-ref="whose-help"]'))
+    === 'They also reach Jordan\'s My day, texts and morning email.', await dlgText(page, '[data-ref="whose-help"]'));
+  await page.selectOption('#formDialog select[name="whose"]', 'family');
+  check('Add a calendar to read: ID, a name, whose (Family or a person), Show to kids for Family', same(await page.$$eval('#formDialog select[name="whose"] option', (os) => os.map((o) => o.textContent)),
+    ['Family', 'Alex Example', 'Sam Example', 'Jordan Example']) && await page.isVisible('#formDialog [data-ref="kids"]'));
+  await page.fill('#formDialog input[name="google_id"]', 'en.usa#holiday@group.v.calendar.google.com');
+  await page.fill('#formDialog input[name="label"]', 'Holidays');
+  await page.check('#formDialog input[name="for_kids"]');
+  await submitDialog(page);
+  check('Add: a holiday calendar (with "#") for Family, shown to kids', same(writes(db, 'calendars', 'POST').slice(-1)[0].body,
+    { google_id: 'en.usa#holiday@group.v.calendar.google.com', kind: 'family', person_id: null, label: 'Holidays', writes: false, for_kids: true }));
+  await page.click('#formDialog .form-actions [data-close]');
+  await page.click('[data-act="gadd"]');
+  await page.selectOption('#formDialog select[name="whose"]', ID.sam);
+  check('Add: no Show to kids for a person\'s calendar', !(await page.isVisible('#formDialog [data-ref="kids"]')));
+  await page.fill('#formDialog input[name="google_id"]', 'sam.work@example.com');
+  await page.fill('#formDialog input[name="label"]', 'Sam work');
+  await submitDialog(page);
+  check('Add: Sam\'s own calendar to read', same(writes(db, 'calendars', 'POST').slice(-1)[0].body,
+    { google_id: 'sam.work@example.com', kind: 'person', person_id: ID.sam, label: 'Sam work', writes: false, for_kids: false }));
+  await page.click('#formDialog .form-actions [data-close]');
+  await page.click('[data-act="gadd"]');
+  await page.fill('#formDialog input[name="google_id"]', 'family@example.com');
+  await page.fill('#formDialog input[name="label"]', 'Again');
+  const posts = writes(db, 'calendars', 'POST').length;
+  await submitDialog(page);
+  check('Add: a calendar already set up says so (the unique Calendar ID)', (await errorOf(page, '#formDialog .form-error')) === 'That calendar is set up here already, on another row.'
+    && db.calendars.filter((c) => c.google_id === 'family@example.com').length === 1 && writes(db, 'calendars', 'POST').length === posts + 1, await errorOf(page, '#formDialog .form-error'));
+  await page.click('#formDialog .form-actions [data-close]');
+  reads = await gRows(page, 'greads');
+  check('calendars to read: the main one, then the others with whose they are', same(reads.map((r) => [r.label, r.chip]),
+    [["Family account's main calendar", 'Connected'], ['Holidays Family', 'Connected'], ['Sam work Sam Example', 'Connected']]), JSON.stringify(reads));
+  // Sam's: Test fails (not shared yet). Start copying is still offered, but not as the main button,
+  // and approving says copying waits until Home Hub can reach the calendar.
+  db.testReplies = { [GID('sam0789')]: { ok: false, status: 'no_access', name: 'Hub – Sam', role: 'reader', steps: [{ step: 'list', ok: true, http: 200 }],
+    message: `Home Hub can't change this calendar. In Google Calendar, share it with ${ACCOUNT} and choose Make changes and see event details.` } };
+  await page.click(`[data-gset="person:${ID.sam}"]`);
+  await page.fill('#formDialog input[name="google_id"]', GID('sam0789'));
+  await submitDialog(page);
+  await page.waitForTimeout(400);
+  check('Test failed: Start copying is not the main button', (await dlgText(page, '[data-ref="test"] .set-gtest p')).startsWith('Test: Home Hub can\'t change this calendar')
+    && !(await page.$eval('#formDialog [data-gstart]', (b) => b.classList.contains('btn-primary'))), await dlgText(page, '[data-ref="test"]'));
+  await page.click('#formDialog [data-gstart]');
+  await page.waitForTimeout(500);
+  check('... and approving says copying starts once Home Hub can reach it', (await lastToast(page)) === 'Approved: copying to Hub – Sam starts once Home Hub can reach it (see its row)',
+    await lastToast(page));
+  db.testReplies = {};
+  await page.screenshot({ path: SHOTS + 'settings-google-setup.png', fullPage: true });
+  check('no XSS', await page.evaluate(() => !window.__xss));
+  await page.context().close();
+
+  // ---------- Set up a while: signed in, copying, some calendars in trouble, problems and repairs
+  ({ page, db, log } = await open({ label: 'google-rich', db: richDb(), rpc: v3Rpc, allowConsole: allowed }));
+  check('signed in: the service account with Copy, the key\'s last 6 characters, what to share; last synced, events on Google; hiding and copying',
+    same(await gStatus(page), [`Signed in as ${ACCOUNT} Copy · key …a1b2c3: share each Hub calendar with this address (Make changes and see event details)`,
+      'Last synced 3 minutes ago · 4 events', 'Hiding 3 items in Google…', 'Copying 211 items to Google…']), JSON.stringify(await gStatus(page)));
+  cols = await gRows(page, 'gcolumns');
+  check('rows: Waiting for Start copying, Not checked yet, Connected, Can\'t reach it (with what to share); Morgan (off the list) after Family',
+    same(cols.map((r) => [r.label, r.chip, r.lines]), [['Alex', 'Waiting: press Preview, then Start copying', ['In Google: Hub – Alex']], ['Sam', 'Not checked yet', []],
+      ['Jordan', 'Connected', ['In Google: Hub – Jordan']], ['Family', 'Can\'t reach it', ['In Google: Hub – Family', `Share it with ${ACCOUNT} and choose Make changes and see event details.`]],
+      ['Morgan off the family list', 'Connected', ['In Google: Hub – Morgan']]]), JSON.stringify(cols));
+  check('Pets: a Problem (not named Hub…), with its prefix', same((await gRows(page, 'goptional')).map((r) => [r.label, r.chip, r.lines]),
+    [['Pets titles start "Dogs:"', 'Problem', ['In Google: Dog walks', NAME_RULE, ]], ['House', 'Not connected', []]]), JSON.stringify(await gRows(page, 'goptional')));
+  reads = await gRows(page, 'greads');
+  check('calendars to read: the main one and Jordan\'s school calendar (Test, Disconnect)', same(reads.map((r) => [r.label, r.chip, r.buttons]),
+    [["Family account's main calendar", 'Connected', ['Set', 'Test', 'Disconnect']], ['School Jordan Example', 'Connected', ['Test', 'Disconnect']]]), JSON.stringify(reads));
+  check('Problems: the 5 latest failures, newest first: what, which day, which calendar, what went wrong (as stored, said once), when it tries again', same(await gList(page, 'gproblems'), [
+    'Piano, Tue Nov 3, on Jordan\'s calendar: Google said 400 badRequest: Bad Request. Trying again at 9:40am.',
+    'Soccer, Mon Oct 26, on a calendar that was disconnected: Home Hub can\'t change this calendar. In Google Calendar, share it with ' + ACCOUNT + ' and choose Make changes and see event details. Trying again on Mon Oct 26 at 8:00am.',
+    'Dentist, Wed Nov 4, on Jordan\'s calendar: someone keeps changing it in Google; change it in the hub instead (to skip one day, use Skip this day). Trying again on Tue Oct 27 at 6:00am.']),
+    JSON.stringify(await gList(page, 'gproblems')));
+  check('Changed in Google and put back: newest first', same(await gList(page, 'grepairs'), [
+    'Piano, Thu Nov 5, Jordan\'s calendar: deleted in Google, put back 8:12am.', 'Swim, Wed Oct 28, Jordan\'s calendar: changed in Google, put back 7:05am.']), JSON.stringify(await gList(page, 'grepairs')));
+  check('Projects with stale dates: on the calendar and under way, with a link to the project', same(await gList(page, 'gstale'), ['Kitchen Renovation\'s dates are out of date: open it in Projects.'])
+    && (await page.getAttribute('[data-ref="gstale"] a', 'href')) === '#/projects/p-kitchen', JSON.stringify(await gList(page, 'gstale')));
+  check('Not on Google: nobody missing; the note for Morgan, who is off the list but still has a calendar', same(await texts(page, '[data-ref="gmissing"] p'),
+    ['Morgan is off the family list, so the hub copies nothing to \'Hub – Morgan\'. If Morgan has left: in Google, stop sharing \'Hub – Morgan\' with Morgan\'s own account, then Disconnect it here.']),
+    JSON.stringify(await texts(page, '[data-ref="gmissing"] p')));
+  check('the problem lists read calendar_links: errors (5 newest) and repairs (5 newest)', log.some((l) => /calendar_links\?select=.*status=eq\.error.*order=failing_since\.desc.*limit=5/.test(decodeURIComponent(l)))
+    && log.some((l) => /calendar_links\?select=.*repaired_at=not\.is\.null.*order=repaired_at\.desc.*limit=5/.test(decodeURIComponent(l))), log.filter((l) => /calendar_links/.test(l)).map(decodeURIComponent).join(' | '));
+  db.confirm = false;
+  await page.click(`[data-gdrop="${db.cal.family.id}"]`);
+  await page.waitForTimeout(300);
+  check('Disconnect a calendar Home Hub can\'t reach: says the events it put there stay, and how to take them off; No changes nothing',
+    (db.confirms.slice(-1)[0] || [])[1] === 'Disconnect Hub – Family? Home Hub can\'t reach that calendar now, so the events it put there stay on it, and on the wall. '
+      + 'To take them off, delete that calendar in Google Calendar (or share it with the hub again, wait for it to connect, and then Disconnect).'
+    && db.calendars.some((c) => c.id === db.cal.family.id), JSON.stringify(db.confirms.slice(-1)));
+  db.confirm = true;
+  await page.screenshot({ path: SHOTS + 'settings-google-desktop.png', fullPage: true });
+  // Preview from the row: what it would copy, with Start copying; no Test.
+  await page.click(`[data-gpreview="${db.cal.alex.id}"]`);
+  await page.waitForTimeout(400);
+  check('Preview: the dialog without a Test; nothing to copy yet; Start copying', (await dlgText(page, '[data-ref="test"]')) === '' && (await dlgText(page, '[data-ref="pv"]')) === 'Nothing to copy from yesterday to 60 days ahead.'
+    && same(await texts(page, '#formDialog .form-actions button'), ['Not now', 'Start copying']) && !jobs(db, 'calendar_test').length);
+  await page.click('#formDialog .form-actions [data-close]');
+  // Sync now when it can't run, and when it fails.
+  db.syncReply = { ok: false, stop: 'busy' };
+  await page.click('[data-act="gsync"]');
+  await page.waitForTimeout(500);
+  check('Sync now while a run is going: says to try again in a minute', (await tc(page, '[data-ref="gsync"]')) === 'A sync is running already. Try again in a minute.');
+  db.syncReply = { __status: 500, body: { ok: false, stop: 'auth', error: 'Google refused the key. Make a new key (README, step A.4) and replace GOOGLE_SA_JSON in Supabase.' } };
+  await page.click('[data-act="gsync"]');
+  await page.waitForTimeout(500);
+  check('Sync now that fails: hub-jobs\' reason, in red', (await tc(page, '[data-ref="gsync"]')) === 'Google refused the key. Make a new key (README, step A.4) and replace GOOGLE_SA_JSON in Supabase.'
+    && /is-bad/.test(await page.getAttribute('[data-ref="gsync"]', 'class')));
+  db.syncReply = { ok: true, read: 7, stored: 40, inserted: 0, updated: 0, deleted: 2, failed: 1, pending: 0, hiding: 0, stop: 'time' };
+  await page.click('[data-act="gsync"]');
+  await page.waitForTimeout(500);
+  check('Sync now: deletes, a failed item and a run cut short by time', (await tc(page, '[data-ref="gsync"]'))
+    === 'Synced: 2 taken off in Google. 7 calendars read. 1 item couldn\'t be copied (see Problems). The rest goes in the next run, within 5 minutes.', await tc(page, '[data-ref="gsync"]'));
+  db.syncReply = null;
+  await page.context().close();
+
+  // The red lines, paused, and a job that has stopped running.
+  const variants = [
+    ['auth', { auth: null, account: null, key_id: null, last_stop: 'auth', last_error: 'Google refused the key. Make a new key (README, step A.4) and replace GOOGLE_SA_JSON in Supabase.' },
+      'Google refused the key. Make a new key (README, step A.4) and replace GOOGLE_SA_JSON in Supabase.'],
+    ['config', { auth: null, account: null, key_id: null, last_stop: 'config', last_error: 'GOOGLE_SA_JSON isn\'t a service-account key: paste the whole downloaded file' },
+      'GOOGLE_SA_JSON isn\'t a service-account key: paste the whole downloaded file. Fix it, then press Sync now.'],
+  ];
+  for (const [what, sync, line] of variants) {
+    const vdb = richDb();
+    Object.assign(vdb.calendar_sync[0], sync);
+    ({ page } = await open({ label: `google-${what}`, db: vdb, rpc: v3Rpc }));
+    check(`the last run stopped (${what}): its message and the fix, in red, first`, (await tc(page, '[data-ref="gstatus"] .set-gstop')) === line
+      && (await gStatus(page))[0] === line && !(await gStatus(page)).some((l) => /^Signed in/.test(l)), JSON.stringify(await gStatus(page)));
+    await page.context().close();
+  }
+  let vdb = richDb();
+  Object.assign(vdb.calendar_sync[0], { paused_until: at('09:40') });
+  ({ page } = await open({ label: 'google-paused', db: vdb, rpc: v3Rpc }));
+  check('paused by Google: until when, instead of copying', same((await gStatus(page)).slice(2), ['Paused by Google until 9:40am']), JSON.stringify(await gStatus(page)));
+  await page.context().close();
+  vdb = richDb();
+  Object.assign(vdb.calendar_sync[0], { last_run_at: at('07:00'), last_ok_at: at('07:00'), last_result: {} });
+  ({ page } = await open({ label: 'google-stale', db: vdb, rpc: v3Rpc }));
+  check('the job hasn\'t run for over 30 minutes: says cron.sql may need running again', (await gStatus(page)).includes('Last synced today at 7:00am · 4 events')
+    && (await tc(page, '.set-gwarn')) === 'Last synced more than 30 minutes ago. The calendar job may not be scheduled: run supabase/cron.sql again (README).', JSON.stringify(await gStatus(page)));
+  await page.context().close();
+
+  // ---------- A member (Sam): the same card, read-only
+  ({ page, db, log } = await open({ label: 'google-member', email: 'sam@example.com', db: richDb(), rpc: v3Rpc }));
+  check('member: the status and the last sync, without Copy or the count', same(await gStatus(page), [`Signed in as ${ACCOUNT} · key …a1b2c3`, 'Last synced 3 minutes ago',
+    'Hiding 3 items in Google…', 'Copying 211 items to Google…']), JSON.stringify(await gStatus(page)));
+  cols = await gRows(page, 'gcolumns');
+  check('member: which calendars are connected, no buttons', same(cols.map((r) => [r.label, r.chip, r.buttons.length, r.name]), [['Alex', 'Waiting: press Preview, then Start copying', 0, null],
+    ['Sam', 'Not checked yet', 0, null], ['Jordan', 'Connected', 0, null], ['Family', 'Can\'t reach it', 0, null], ['Morgan off the family list', 'Connected', 0, null]]), JSON.stringify(cols));
+  check('member: no buttons, fields, problems, put back, stale projects or Not on Google; calendar_links never asked',
+    !(await page.$$('[data-ref="calendar"] button, [data-ref="calendar"] input, [data-ref="calendar"] select')).length
+    && !(await page.$('[data-ref="gproblems"], [data-ref="grepairs"], [data-ref="gstale"], [data-ref="gmissing"]')) && !log.some((l) => /calendar_links/.test(l))
+    && same(await texts(page, '.set-hearth li').then((x) => x.length), 5));
+  await page.context().close();
+
+  // ---------- Phones and desktops, light and dark
+  for (const scheme of ['light', 'dark']) {
+    ({ page, db } = await open({ label: `google-phone-${scheme}`, db: richDb(), rpc: v3Rpc, ctx: Object.assign({ colorScheme: scheme }, phone) }));
+    check(`google (phone, ${scheme}): no sideways scroll`, await noSideScroll(page));
+    const small = await page.$$eval('[data-ref="calendar"] .btn, [data-ref="calendar"] .set-gkids, [data-ref="calendar"] summary, [data-ref="calendar"] a',
+      (es) => es.filter((e) => e.offsetParent).map((e) => { const r = e.getBoundingClientRect(); return [e.textContent.trim().slice(0, 24), Math.round(r.width), Math.round(r.height)]; })
+        .filter(([, w, h]) => w < 44 || h < 44));
+    check(`google (phone, ${scheme}): every button, switch and link is at least 44px`, !small.length, JSON.stringify(small));
+    check(`google (phone, ${scheme}): the card fits the screen`, await page.$eval('section[aria-labelledby="setCalendar"]', (c) => c.getBoundingClientRect().right <= window.innerWidth));
+    const stale = await page.$eval('[data-ref="gstale"] a', (a) => ({ display: getComputedStyle(a).display, lines: Math.round(a.getBoundingClientRect().height / parseFloat(getComputedStyle(a).lineHeight || '20')),
+      top: Math.round(a.getBoundingClientRect().top - a.parentElement.getBoundingClientRect().top) }));
+    check(`google (phone, ${scheme}): a stale project's link is a block, so the bullet sits on its first line when it wraps`, stale.display === 'block' && stale.top === 0, JSON.stringify(stale));
+    await page.$eval('section[aria-labelledby="setCalendar"]', (c) => c.scrollIntoView());
+    await page.screenshot({ path: SHOTS + `settings-google-phone-${scheme}.png`, fullPage: true });
+    await page.click(`[data-gtest="${db.cal.jordan.id}"]`);
+    await page.waitForTimeout(500);
+    await page.click(`[data-gpreview="${db.cal.jordan.id}"]`);
+    await page.waitForTimeout(500);
+    const fit = await page.evaluate(() => {
+      const d = document.getElementById('formDialog');
+      const small = [...d.querySelectorAll('button')].filter((e) => e.offsetParent).map((e) => [e.textContent.trim().slice(0, 20), Math.round(e.getBoundingClientRect().width), Math.round(e.getBoundingClientRect().height)])
+        .filter(([, w, h]) => w < 44 || h < 44);
+      return { open: d.open, fits: d.scrollWidth <= d.clientWidth && d.getBoundingClientRect().right <= window.innerWidth, small };
+    });
+    check(`google (phone, ${scheme}): the preview fits, with 44px buttons`, fit.open && fit.fits && !fit.small.length, JSON.stringify(fit));
+    await page.screenshot({ path: SHOTS + `settings-google-preview-phone-${scheme}.png` });
+    await page.context().close();
+    ({ page } = await open({ label: `google-desktop-${scheme}`, db: richDb(), rpc: v3Rpc, ctx: { colorScheme: scheme, viewport: { width: 1280, height: 900 } } }));
+    check(`google (1280px, ${scheme}): no sideways scroll`, await noSideScroll(page));
+    const chip = await page.$eval('[data-ref="gcolumns"] .set-chip.is-ok', (e) => getComputedStyle(e).backgroundColor);
+    check(`google (1280px, ${scheme}): the Connected chip uses the theme's colour`, chip === (scheme === 'dark' ? 'rgb(29, 46, 40)' : 'rgb(226, 238, 233)'), chip);
+    await page.screenshot({ path: SHOTS + `settings-google-desktop-${scheme}.png`, fullPage: true });
     await page.context().close();
   }
 
