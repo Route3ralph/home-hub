@@ -1,0 +1,60 @@
+/* =====================================================================
+   Home Hub v2: styles for the Projects pages in v2 (assets/modules/projects.js).
+   Every rule hangs off a class only the v2 pages use (.proj2, .proj-form,
+   .proj-d, .ptasks), so the v1 pages look exactly as before. Shared pieces
+   (item rows, person dots, the Gantt view, dialogs, forms) are in styles.css.
+   Colours come from its variables, so light and dark both work. Every tap
+   target is at least 44px.
+   ===================================================================== */
+
+/* ---------- Heading, list and schedule: 44px targets ---------- */
+.proj2 .back { display: inline-flex; align-items: center; min-height: 44px; margin-bottom: 0; }
+.proj2 .page-actions .btn, .proj2 .empty-state .btn, .proj2 .team .btn { min-height: 44px; }
+.proj2 .chip { min-height: 44px; padding: 4px 14px; }
+.proj2 .toggle { min-height: 44px; }
+.proj2 .segmented button { min-height: 44px; padding: 4px 14px; }
+.proj2 .item { min-height: 44px; }
+.proj2 .share .btn { min-height: 44px; }
+.proj-stale { margin: 6px 0 0; color: var(--text-3); font-size: 13px; }
+@media (max-width: 640px) {
+  .proj2 .page-actions { width: 100%; }
+  .proj2 .page-actions .btn { flex: 1 1 auto; justify-content: center; }
+}
+
+/* ---------- Tasks card ---------- */
+.ptasks .card-head { align-items: center; row-gap: 6px; }
+.ptasks .card-head .sec-count { align-self: center; }
+.ptasks .card-sub { flex: 1 1 220px; }
+.ptasks-tools { display: flex; flex-wrap: wrap; gap: 8px; }
+.ptasks-tools .btn { min-height: 44px; }
+.ptasks-list { padding: 0 10px 6px 12px; }
+.ptasks-note { padding: 4px 18px 16px; }
+.ptasks-body { display: grid; justify-items: start; gap: 10px; padding: 4px 18px 16px; }
+.ptasks-retry { min-height: 44px; }
+/* Each task: the shared item row, then "Put on the schedule" (beside it; under the title on phones). */
+.ptask { display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--line); }
+.ptask:last-child { border-bottom: 0; }
+.ptask .irow { flex: 1; min-width: 0; border-bottom: 0; }
+/* Where the tick box would be on a paused task (the shared row's box is 44px with -4px margins). */
+.ptask-nobox { flex: none; width: 36px; }
+.ptask-acts { flex: none; }
+.ptask-sched { min-height: 44px; font-size: 13px; background: none; color: var(--accent); }
+.ptask-sched:hover, .ptask-sched:focus-visible { border-color: var(--accent); }
+@media (max-width: 640px) {
+  .ptasks .card-sub { flex-basis: 100%; }
+  .ptasks-tools { width: 100%; }
+  .ptasks-tools .btn { flex: 1 1 auto; justify-content: center; }
+  .ptasks-list { padding: 0 6px 6px 8px; }
+  .ptask { display: block; }
+  /* Lined up with the title: the time column (60px), the tick box (36px) and two 8px gaps. */
+  .ptask-acts { padding: 0 0 10px 112px; margin-top: -4px; }
+}
+
+/* ---------- Forms and the schedule task's details ---------- */
+.proj-form .d-close, #detail:has(.proj-d) .d-close { width: 44px; height: 44px; }
+.proj-form .form-actions .btn, .proj-form .btn, .proj-d .btn { min-height: 44px; }
+.proj-form .check { min-height: 44px; align-items: center; }
+.proj-form .check input { width: 20px; height: 20px; margin: 0; }
+.proj-form input[type="text"], .proj-form input[type="date"], .proj-form input[type="number"], .proj-form select { min-height: 44px; }
+.proj-form input[type="color"] { height: 44px; }
+.proj-form .sharebox input { min-height: 44px; }

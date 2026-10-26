@@ -1,0 +1,74 @@
+/* =====================================================================
+   MY DAY (day.html) — the public page for kids and helpers.
+   Uses the shared tokens, banners, buttons, item rows (.irow), section
+   headings and toasts from styles.css; only this page's own pieces are
+   here. Light and dark come from the colour tokens.
+   ===================================================================== */
+.day { max-width: 640px; padding-bottom: 120px; }   /* room under the lists for the Undo toast */
+.day-head h1 { overflow-wrap: anywhere; }
+.day-head .meta { margin: 0 0 6px; color: var(--text-2); font-size: 16px; }
+
+/* ---------- Today, Late, Tomorrow ---------- */
+.day-sec { margin-top: 20px; }
+.day .sec-head { margin: 0 0 6px; font-size: 14px; color: var(--text-2); }
+.day-date { color: var(--text-3); font-weight: 600; letter-spacing: 0; text-transform: none; }
+.day-list {
+  padding: 2px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+.day-sec.is-late .sec-head { color: var(--danger); }
+.day-sec.is-late .day-list { border-color: color-mix(in srgb, var(--danger) 35%, var(--border)); }
+.day-list .empty-line { padding: 16px 2px; }
+.day .irow { min-height: 60px; }
+.day .irow-time { width: 76px; }
+.day .irow-title { font-size: 16px; }
+/* A big box to tick: 52px to tap, 32px to see. */
+.day-check { width: 52px; height: 52px; margin: 0 -6px; }
+.day-check .irow-box { width: 32px; height: 32px; border-radius: 9px; }
+.day-check .irow-box svg { width: 22px; height: 22px; }
+
+/* ---------- "Add to Home Screen" hint ---------- */
+.day-hint {
+  display: flex; align-items: center; gap: 6px;
+  margin: 14px 0 0; padding: 4px 4px 4px 14px;
+  border-radius: 12px; background: var(--accent-soft); color: var(--text); font-size: 14px;
+}
+.day-hint p { flex: 1; min-width: 0; margin: 0; padding: 8px 0; }
+.day-hint-x {
+  flex: none; width: 44px; height: 44px;
+  border: 0; border-radius: 50%; background: none; color: var(--text-2);
+  font-size: 22px; line-height: 1; cursor: pointer;
+}
+.day-hint-x:hover, .day-hint-x:focus-visible { background: var(--surface); outline: none; }
+
+.day-notice { margin: 14px 0 0; }
+
+/* ---------- #confirm and #stop ---------- */
+.day-panel {
+  margin-top: 20px; padding: 18px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow);
+}
+.day-panel h2 { margin: 0 0 8px; font-size: 20px; line-height: 1.25; }
+.day-panel > p { margin: 0 0 14px; color: var(--text-2); }
+.day-panel .banner { margin: 0 0 14px; }
+.btn.day-big { min-height: 48px; padding: 10px 18px; font-size: 16px; justify-content: center; text-align: center; }
+.btn.day-link, .btn.day-lang { min-height: 44px; padding: 8px 16px; }
+.day-ok { margin: 0 0 14px; padding: 10px 12px; border-radius: 9px; background: var(--accent-soft); color: var(--accent); }
+.day-result { margin: 14px 0 0; }
+.day-panel .day-actions { margin: 12px 0 0; }
+.day-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+
+/* ---------- A link that doesn't work ---------- */
+.day-problem p { margin: 0; }
+.day-problem .day-alt { margin-top: 8px; opacity: 0.85; }
+
+/* ---------- The Undo toast's close button ---------- */
+.toast-btn.toast-x { padding: 0; font-size: 20px; text-decoration: none; }
+
+@media (max-width: 640px) {
+  .day .irow-time { width: 64px; }
+  .btn.day-big { width: 100%; }
+}

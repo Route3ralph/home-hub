@@ -2,25 +2,49 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <meta name="robots" content="noindex, nofollow">
   <title>Home Hub</title>
-  <link rel="stylesheet" href="assets/styles.css?v=20261025a">
+  <!-- Home-screen app: manifest for Android/Chrome, the apple-* tags for iPhone. -->
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" href="assets/icons/apple-touch-icon.png">
+  <meta name="theme-color" content="#f6f4f0" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#121110" media="(prefers-color-scheme: dark)">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Home Hub">
+  <link rel="stylesheet" href="assets/styles.css?v=20261026b">
+  <link rel="stylesheet" href="assets/css/today.css?v=20261026b">
+  <link rel="stylesheet" href="assets/css/calendar.css?v=20261026b">
+  <link rel="stylesheet" href="assets/css/tasks.css?v=20261026b">
+  <link rel="stylesheet" href="assets/css/directory.css?v=20261026b">
+  <link rel="stylesheet" href="assets/css/people.css?v=20261026b">
+  <link rel="stylesheet" href="assets/css/settings.css?v=20261026b">
+  <link rel="stylesheet" href="assets/css/projects.css?v=20261026b">
 </head>
 <body>
   <div id="app"><div class="loading">Loading…</div></div>
 
   <dialog id="detail" aria-labelledby="dTitle"></dialog>
   <dialog id="formDialog"></dialog>
+  <dialog id="sheet" class="sheet" aria-labelledby="sheetTitle"></dialog>
 
-  <!-- Load in this order, without async. Bump every ?v= together on each release so phones fetch fresh copies. -->
-  <script src="config.js?v=20261025a"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.3/dist/umd/supabase.js?v=20261025a"></script>
-  <script src="assets/gantt.js?v=20261025a"></script>
-  <script src="assets/hub.js?v=20261025a"></script>
-  <script src="assets/modules/home.js?v=20261025a"></script>
-  <script src="assets/modules/projects.js?v=20261025a"></script>
-  <script src="assets/modules/contractors.js?v=20261025a"></script>
-  <script src="assets/modules/family.js?v=20261025a"></script>
+  <!-- Load in this order, without async. Bump every ?v= together on each release so phones fetch fresh copies.
+       The v1 pages come first, then the v2 pages; each page shows only for its database schema version. -->
+  <script src="config.js?v=20261026b"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.3/dist/umd/supabase.js?v=20261026b"></script>
+  <script src="assets/gantt.js?v=20261026b"></script>
+  <script src="assets/hub.js?v=20261026b"></script>
+  <script src="assets/modules/home.js?v=20261026b"></script>
+  <script src="assets/modules/projects.js?v=20261026b"></script>
+  <script src="assets/modules/contractors.js?v=20261026b"></script>
+  <script src="assets/modules/family.js?v=20261026b"></script>
+  <script src="assets/modules/today.js?v=20261026b"></script>
+  <script src="assets/modules/calendar.js?v=20261026b"></script>
+  <script src="assets/modules/tasks.js?v=20261026b"></script>
+  <script src="assets/modules/directory.js?v=20261026b"></script>
+  <script src="assets/modules/people.js?v=20261026b"></script>
+  <script src="assets/modules/settings.js?v=20261026b"></script>
 </body>
 </html>

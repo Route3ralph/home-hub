@@ -1,0 +1,123 @@
+/* =====================================================================
+   Home Hub v2: styles for the Family page (assets/modules/people.js).
+   Shared pieces (cards, pills, badges, dialogs, forms, person dots) are in
+   styles.css. Colours come from its variables, so light and dark both
+   work. Every tap target is at least 44px, and nothing scrolls the page
+   sideways at 390px.
+   ===================================================================== */
+
+/* ---------- Head and the one-line explanation ---------- */
+.ppl-head { margin-bottom: 8px; }
+.ppl-add { min-height: 48px; padding: 10px 18px; border-radius: 12px; font-size: 16px; }
+.ppl-add svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; }
+.ppl-intro { margin: 0 0 16px; max-width: 70ch; color: var(--text-2); font-size: 15px; }
+@media (max-width: 640px) {
+  .ppl-head h1 { margin-bottom: 0; }
+  .ppl-add { min-height: 44px; padding: 8px 14px; font-size: 15px; }
+}
+
+/* ---------- One card per person ---------- */
+.ppl-grid { grid-template-columns: repeat(auto-fill, minmax(min(100%, 330px), 1fr)); min-width: 0; }
+.ppl-card { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.ppl-card.is-inactive { background: var(--surface-2); }
+.ppl-top { display: flex; align-items: flex-start; gap: 12px; }
+.ppl-avatar { flex: none; display: grid; place-items: center; width: 44px; height: 44px; }
+.ppl-avatar .pdot { width: 40px; height: 40px; font-size: 17px; }
+.ppl-title { flex: 1; min-width: 0; padding-top: 2px; }
+.ppl-title h3 { margin: 0; font-size: 17px; overflow-wrap: anywhere; }
+.ppl-you { color: var(--text-3); font-size: 14px; font-weight: 500; }
+.ppl-tags { display: flex; flex-wrap: wrap; gap: 4px 6px; margin-top: 4px; }
+.pill.ppl-signin { background: var(--accent-soft); color: var(--accent); }
+.pill.ppl-off { background: var(--warn-soft); color: var(--warn); }
+.pill.ppl-cant { background: var(--surface-2); color: var(--text-2); }
+.ppl-btn { min-height: 44px; min-width: 44px; justify-content: center; }
+.ppl-edit { flex: none; margin: -2px -6px 0 0; }
+
+/* How to reach them: each line is a 44px link. */
+.ppl-lines { display: grid; margin: 2px -6px 0; }
+.ppl-line { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; min-width: 0; }
+.ppl-link {
+  display: flex; align-items: center; gap: 10px;
+  min-height: 44px; min-width: 0; padding: 4px 6px;
+  border-radius: 8px; color: var(--accent); font-size: 15px; text-decoration: none;
+}
+.ppl-link span { min-width: 0; overflow-wrap: anywhere; }
+.ppl-link:hover, .ppl-link:focus-visible { background: var(--accent-soft); outline: none; }
+.ppl-link svg { flex: none; width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
+.badge.ppl-unconfirmed { background: var(--warn-soft); color: var(--warn); }
+.ppl-digest { margin: 2px 0 0; color: var(--text-3); font-size: 14px; }
+.ppl-digest.is-on { color: var(--text-2); }
+.ppl-warn { margin: 0; color: var(--warn); font-size: 13px; }
+
+/* My day link: Copy · WhatsApp · Text · New link. */
+.ppl-day { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin-top: 6px; padding-top: 10px; border-top: 1px solid var(--line); }
+.ppl-day-label { color: var(--text-2); font-size: 13px; font-weight: 650; }
+.ppl-day-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.ppl-day-hint { flex: 1 1 100%; color: var(--text-3); font-size: 12px; }
+
+.ppl-sec .sec-head { margin-top: 26px; }
+.ppl-note { margin: 14px 0 0; overflow-wrap: anywhere; }
+.ppl-empty .ppl-btn { min-height: 44px; }
+
+/* ---------- The add / edit form ---------- */
+dialog:has(> .ppl-form) { width: min(620px, calc(100vw - 16px)); }
+.ppl-form .d-close { width: 44px; height: 44px; }
+.ppl-form .ppl-form-note { margin: 0; }
+.ppl-form input[type="text"], .ppl-form input[type="email"], .ppl-form input[type="tel"], .ppl-form select { min-height: 44px; }
+.ppl-form input[type="time"] {
+  width: 100%; max-width: 220px; min-height: 44px; padding: 8px 10px;
+  border: 1px solid var(--border); border-radius: 9px; background: var(--surface); font-size: 15px;
+}
+.ppl-form .form-actions .btn { min-height: 44px; }
+.ppl-fs { display: grid; gap: 8px; min-width: 0; margin: 0; padding: 0; border: 0; }
+.ppl-fs legend { margin-bottom: 6px; padding: 0; color: var(--text-2); font-size: 13px; font-weight: 600; }
+
+/* Role: four choices, each with a line on what it means. */
+.ppl-roles { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.ppl-choice {
+  display: flex; align-items: flex-start; gap: 10px;
+  min-height: 44px; padding: 10px 12px;
+  border: 1.5px solid var(--border); border-radius: 12px; cursor: pointer;
+}
+.ppl-choice:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
+.ppl-choice:has(input:disabled) { opacity: 0.55; cursor: not-allowed; }
+.ppl-choice:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+.ppl-choice input { flex: none; width: 18px; height: 18px; margin: 2px 0 0; accent-color: var(--accent); }
+.ppl-choice b { display: block; font-size: 15px; }
+.ppl-choice small { display: block; color: var(--text-3); font-size: 13px; line-height: 1.35; }
+
+/* Colour: round swatches, 44px to tap. */
+.ppl-swatches { display: flex; flex-wrap: wrap; gap: 2px 4px; }
+.ppl-swatch { position: relative; display: grid; place-items: center; width: 44px; height: 44px; border-radius: 50%; cursor: pointer; }
+.ppl-swatch input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
+.ppl-sw { width: 30px; height: 30px; border-radius: 50%; background: var(--sw); box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.15); pointer-events: none; }
+.ppl-swatch input:checked + .ppl-sw { box-shadow: 0 0 0 3px var(--surface), 0 0 0 5px var(--sw); }
+.ppl-swatch input:focus-visible + .ppl-sw { outline: 2px solid var(--accent); outline-offset: 5px; }
+
+/* Morning email: Off · Morning · Evening, then the time and (parents) everyone's day. */
+.ppl-seg { display: flex; flex-wrap: wrap; gap: 6px; }
+.ppl-seg label { position: relative; display: inline-flex; }
+.ppl-seg input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
+.ppl-seg span {
+  display: inline-flex; align-items: center; min-height: 44px; padding: 0 14px;
+  border: 1.5px solid var(--border); border-radius: 999px; background: var(--surface);
+  font-size: 14px; font-weight: 550; pointer-events: none;
+}
+.ppl-seg input:checked + span { background: var(--text); border-color: var(--text); color: var(--surface); }
+.ppl-seg input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }
+.ppl-digest-more { display: grid; gap: 6px; }
+.ppl-help { color: var(--text-3); font-size: 12px; }
+
+/* Checkboxes: the whole row is the target. */
+.ppl-check { min-height: 44px; align-items: center; }
+.ppl-check input { flex: none; width: 20px; height: 20px; margin: 0; }
+.ppl-check small { display: block; color: var(--text-3); font-size: 12px; }
+.ppl-nosignin { margin: 0; padding: 10px 12px; border-radius: 10px; background: var(--surface-2); color: var(--text-2); font-size: 14px; }
+
+@media (max-width: 640px) {
+  .ppl-form { padding: 16px; }
+  .ppl-form input[type="time"] { font-size: 16px; } /* iPhone zooms in on smaller text */
+}
+@media (max-width: 520px) {
+  .ppl-roles { grid-template-columns: 1fr; }
+}

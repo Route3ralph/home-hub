@@ -25,8 +25,8 @@ Later: web push, Twilio SMS.
 
 | Kind | Plain-language test | Examples |
 |---|---|---|
-| **Event** | Happens at a time; nothing to tick off | Piano (every Tue 4pm, Lorena takes Max), school pickup, dentist, "Lara away Thu–Sun" |
-| **Task** | Needs doing; gets ticked off; may repeat | Heartworm pill on the 1st, furnace filter 60 days after last change, Max takes trash out Mondays, call plumber |
+| **Event** | Happens at a time; nothing to tick off | Piano (every Tue 4pm, Taylor takes Jordan), school pickup, dentist, "Morgan away Thu–Sun" |
+| **Task** | Needs doing; gets ticked off; may repeat | Heartworm pill on the 1st, furnace filter 60 days after last change, Jordan takes the trash out Mondays, call plumber |
 
 The Add sheet starts with an Event | Task switch and the help line *"Piano, pickups, appointments → Event. Pills, filters, chores, calls → Task."*
 
@@ -34,7 +34,8 @@ The Add sheet starts with an Event | Task switch and the help line *"Piano, pick
 
 - `people` is the single household list. Roles: **parent**, **adult**, **kid**, **helper**.
 - Sign-in is allowed only for parents and adults in v2. A parent who can sign in is an admin (`members.role = 'admin'`); an adult who can sign in is a member. Kids and helpers never get a login; they get a **My day link**.
-- The client never writes `members` directly. `save_person(p jsonb, p_can_sign_in boolean)` (admin only, SECURITY DEFINER) upserts the person and adds/updates/removes the matching `members` row in one transaction. It refuses to remove or rename the caller's own login and refuses sign-in for kids/helpers.
+- The client never writes `members` directly. `save_person(p jsonb, p_can_sign_in boolean)` (admin only, SECURITY DEFINER) upserts the person and adds/updates/removes the matching `members` row in one transaction. It refuses to remove or rename the caller's own login and refuses sign-in for kids/helpers. Taking someone's sign-in away also resets their `digest_scope` to `'mine'` and gives them a new My day link (they could copy the old one while signed in). `remove_person(p_person uuid)` takes someone off the list with their sign-in; their items stay, with nobody in charge.
+- An email address is confirmed before any morning email goes to it: by the button on the page the confirmation email opens (`confirm_digest`, §3), or by signing in with a code sent to it (the core calls `mark_signed_in()` after every sign-in).
 - The migration seeds one person per existing member (admin → parent; member → adult), one `household` row, and colours.
 - Account numbers (`contractor_secrets`) are **admins only**. Revoked from `anon` and `service_role` too.
 - Invariant: every policy is `private.is_member()`-gated (full members = everyone who can sign in in v2), except the anonymous token functions, which check the token.
@@ -52,7 +53,7 @@ Clock: `private.now()` = `coalesce(nullif(current_setting('hub.now', true), ''):
 household (one row; id boolean PK default true check (id))
   tz text not null default 'America/New_York' check (tz in US list: America/New_York, America/Chicago, America/Denver,
      America/Phoenix, America/Los_Angeles, America/Anchorage, Pacific/Honolulu)
-  digest_time time not null default '06:30'
+  digest_time time not null default '06:30' check (digest_time <= '23:45')
   days_off date[] not null default '{}'          -- school holidays etc.
   pets_owner_id uuid → people (set null), house_owner_id uuid → people (set null)
   updated_at, updated_by
@@ -63,12 +64,19 @@ people
   email text unique null (lowercase, '%_@_%'), email_verified_at timestamptz null (cleared by trigger when email changes),
   phone text null, color text not null default '#64748b' check (color ~ '^#[0-9a-fA-F]{6}$'),
   language text not null default 'en' check in ('en','es'),
-  day_token text not null unique default encode(extensions.gen_random_bytes(16),'hex'),
-  digest_enabled boolean not null default false, digest_time time null (null = household default),
+  day_token text not null unique default encode(extensions.gen_random_bytes(16),'hex') check (32 hex characters),
+  digest_enabled boolean not null default false,
+  digest_time time null check (digest_time <= '23:45')   -- null = household default ('tomorrow' people: 19:00)
   digest_day text not null default 'today' check in ('today','tomorrow'),   -- 'tomorrow' = evening preview
   digest_scope text not null default 'mine' check in ('mine','everyone'), check (digest_scope = 'mine' or role = 'parent'),
   sort_order int not null default 0, active boolean not null default true, created_at, updated_at
   RLS: members select (all columns incl. day_token); no direct writes (save_person / remove_person / rotate_day_token RPCs, admin).
+
+people_confirm (the confirmation email's secret; service_role select only, no policies, nothing for anon/authenticated)
+  person_id uuid PK → people on delete cascade, token text not null unique default 32 hex characters, created_at
+  Kept in step by an AFTER trigger on people (private.people_confirm_sync, definer): a new or changed email gets a new
+  token (the old link stops working) and forgets that person's earlier 'confirm' notification_log rows; turning the
+  morning email on makes sure there is one; no email, no row. Confirming keeps it (a second tap still says "confirmed").
 
 members (existing): unchanged columns; rows are managed by save_person.
 
@@ -88,9 +96,13 @@ events
           repeat_until is null or repeat_until >= start_date; repeat = 'weekly' or cardinality(repeat_weekdays) = 0;
           responsible_id is null or not (responsible_id = any(participant_ids))
   RLS: members all.
-event_changes (one-day changes to a repeating event)
+event_changes (one-day changes to a repeating event; a null column means "as usual")
   event_id uuid → events on delete cascade, on_date date, cancelled boolean not null default false,
-  start_time time, end_time time, responsible_id uuid → people (set null), participant_ids uuid[] null, note text,
+  start_time time, end_time time, responsible_id uuid → people (set null), participant_ids uuid[] null,
+  nobody_in_charge boolean not null default false,   -- remove_person sets it on the days the removed person covered;
+                                                     -- putting someone in responsible_id clears it (trigger)
+  note text,                                         -- the day's own note ("Pick up at the side door"): unlike the
+                                                     -- event's notes it reaches My day, day_text and the email
   PK (event_id, on_date). RLS: members all.
 
 tasks
@@ -102,7 +114,8 @@ tasks
   project_id uuid → projects on delete cascade, contractor_id uuid → contractors (set null), private boolean default false,
   repeat_mode text not null default 'none' check in ('none','schedule','after_done'),
   every_count int null check between 1 and 120, every_unit text null check in ('day','week','month','year'),
-  repeat_weekdays int[] not null default '{}' (only schedule + week), anchor_date date null,
+  repeat_weekdays int[] not null default '{}' (only schedule + week),
+  anchor_date date null (the series counts from it; defaults to due_date — see "Re-anchoring" below),
   last_done date null, active boolean not null default true,
   done_at timestamptz null, done_by text null,        -- non-repeating only
   created_by, updated_by, created_at, updated_at
@@ -110,24 +123,34 @@ tasks
           due_time null or due_date not null; done_at only when repeat_mode = 'none'
   RLS: members all.
 task_log
-  id uuid PK, task_id → tasks on delete cascade, occurrence date, status text check in ('done','skipped','missed'),
-  done_on date, done_by text, note text, prev_due date, prev_last_done date, prev_done_at timestamptz, created_at
+  id uuid PK, task_id → tasks on delete cascade,
+  occurrence date (the due date the entry is for; after_done: the day it was done),
+  status text check in ('done','skipped','missed'),
+  done_on date, done_by text, note text, prev_due date, prev_last_done date, prev_done_at timestamptz, created_at,
+  seq bigint generated always as identity            -- write order; "the task's latest entry" for undo
   RLS: members select; inserts only via functions (no insert policy).
 
 contractors (existing — becomes the Directory)
   + kind text not null default 'contractor' check in ('contractor','account','service','emergency')
   + category text, + address text, + contract_end date, + updated_by text
-  delete/update policy: members, except entries that have a secrets row — those need admin (private.has_secrets(id), definer).
+  policies: members select/insert/update/delete. Changing or deleting an entry that has a secrets row is admin-only,
+  enforced by a BEFORE UPDATE OR DELETE trigger, private.contractors_guard(), which raises 42501 with the reason in
+  plain words ("Only an admin can change Example Water Co, because it has account details saved…"); a policy would
+  quietly skip the row and the page (v1's too) would say "deleted" when nothing was. private.has_secrets(p_id) (definer)
+  answers "does it have a secrets row?" for callers who can't read contractor_secrets.
 contractor_secrets (admins only; revoked from anon and service_role)
   contractor_id uuid PK → contractors on delete cascade, account_number text, account_name text, secret_notes text,
   updated_at, updated_by
 
 projects (existing)
   + task_dates jsonb null      -- null = stale; [{id,name,trade,trade_name,start,end,days,status,milestone}]
+  + task_dates_at timestamptz null   -- when the client computed task_dates (the device clock); sent with every schedule write
   + on_calendar boolean not null default true
   + owner_id uuid → people (set null)
-  BEFORE UPDATE trigger: if new.schedule is distinct from old.schedule and new.task_dates is not distinct from old.task_dates
-  → new.task_dates := null (so writes from an old client mark dates stale).
+  BEFORE UPDATE trigger (private.projects_mark_dates_stale): if new.schedule is distinct from old.schedule and
+  new.task_dates_at is not distinct from old.task_dates_at → new.task_dates := null (so a write from an old client, or
+  one that forgot, marks the dates stale). The timestamp is the signal, not the dates: a schedule change that leaves
+  every date where it was sends the same task_dates, and those are fresh.
 
 notification_log
   id uuid PK, person_id uuid → people on delete cascade, local_date date, kind text check in ('digest','confirm'),
@@ -140,56 +163,65 @@ job_runs: id, action text, started_at, finished_at, ok boolean, sent int, detail
 ### Recurrence (one implementation, in SQL)
 - Weekly events and weekly-with-weekdays tasks: occurrences are the dates `d >= start` with `isodow(d) ∈ weekdays` and `((monday(d) - monday(start)) / 7) % every = 0` (ISO weeks, Monday start). Never `generate_series` over months.
 - Task series with unit day/week(no weekdays)/month/year: `anchor + make_interval(k * count units)` for integer k ≥ 0 — computed from the anchor, so Jan 31 monthly gives Feb 28, Mar 31, Apr 30; Feb 29 yearly gives Feb 28 in common years and Feb 29 in leap years.
-- `private.series_after(task, after date)` = first series date strictly after `after`.
+- `private.series_after(t, p_after)` = first series date strictly after `p_after`; `private.series_on_or_before(t, p_on)` = the last one on or before `p_on`.
+- **Re-anchoring.** A series counts from `anchor_date`. A person editing a repeating task's due date, mode, count, unit or weekdays restarts the series from the new due date (`anchor_date := due_date`, in the BEFORE trigger `private.tasks_defaults`), unless the same write sets `anchor_date` itself: "the 1st of every month" moved to the 5th means the 5th from now on. The hub's own moves (complete, skip, undo, the daily roll) keep the anchor — they set `hub.task_move = 'on'` around their update — so Jan 31 monthly still comes back to Mar 31 after Feb 28.
+- **Where a missed task shows.** `private.current_due(t)`: a schedule-mode task whose next date has come undone is shown (agenda, late_items, My day, the email) on its latest date that has come, not on the first date it was missed, whether or not the roll has run yet; the roll, or ticking it off, then writes that move down.
 - Event occurrences skip `household.days_off` when `skip_days_off`, and apply `event_changes` (cancelled days are returned with status `cancelled`; consumers hide them except the Calendar page, which shows them struck through).
 - Timed occurrence instants: `start_at = (d + start_time) at time zone tz`; `end_at = (d + coalesce(end_time, start_time + 1h) [+ 1 day if ends_next_day]) at time zone tz`. Edge Functions and the client never compute offsets themselves.
 
 ### Task completion
-- `complete_task(p_id uuid, p_occurrence date default null, p_done_on date default null, p_note text default null) returns uuid` (log id). Locks the row.
+- `complete_task(p_id uuid, p_occurrence date default null, p_done_on date default null, p_note text default null) returns uuid` (log id). Locks the row; refuses a paused task. A missed date the pages already show as moved on (`current_due`) is rolled for real first. Shares `private.complete_task(p_id, p_occurrence, p_done_on, p_note, p_who)` with `complete_by_token`; `done_by` is the signed-in email, or "<name> (My day)".
   - Non-repeating: raises `already done` if done_at is set; sets done_at/done_by; logs `done` with prev_done_at.
   - Repeating: raises `already completed` if `p_occurrence` is given and ≠ due_date (stale screen / double tap). `done_on` defaults to today_local(); must be ≤ today_local() and ≥ due_date − 1 year.
-    - schedule: new due = `series_after(greatest(due_date, done_on))`.
-    - after_done: new due = `done_on + count units`.
+    - schedule: new due = `series_after(greatest(due_date, done_on))`; the log entry's occurrence is the due date.
+    - after_done: new due = `done_on + count units`; the log entry's occurrence is `done_on` (done a day early, the next due date can be the very date it was due, and one day must not show it both done and to do).
     - last_done = done_on. Log `done` with prev_due, prev_last_done.
-- `skip_task(p_id, p_occurrence)`: repeating only. schedule: `series_after(greatest(due_date, today_local()))`; after_done: `today_local() + count units`. Logs `skipped`.
-- `undo_task(p_log_id)`: only the task's latest log row, created within 7 days; restores prev values; deletes the row.
-- `roll_missed_tasks()` (service_role + cron, also called at the start of each digest run): for active schedule-mode tasks whose next series date after due_date is ≤ today_local(), log `missed` and move due_date to the latest series date ≤ today_local(). after_done tasks never roll; they stay late until done.
+- `skip_task(p_id uuid, p_occurrence date default null)`: repeating only. schedule: `series_after(greatest(due_date, today_local()))`; after_done: `greatest(due_date, today_local()) + count units` (a skip never brings a task closer). Logs `skipped`.
+- `undo_task(p_log_id uuid) returns uuid` (task id): only the task's latest log entry (by `seq`), created within 7 days; restores the prev values; deletes the entry. Shares `private.undo_task(p_log_id, p_person, p_who)` with `undo_by_token`.
+- `roll_missed_tasks() returns int` (how many moved; service_role): hourly from cron.sql (`hub-roll-missed`) and at the start of each digest run. For active schedule-mode tasks whose next series date after due_date is ≤ today_local(), log `missed` and move due_date to the latest series date ≤ today_local() (`private.roll_task`). after_done tasks never roll; they stay late until done.
 
 ### Read model
-`agenda(p_from date, p_to date)` — SECURITY INVOKER, range ≤ 62 days, authenticated (and service_role). Returns rows:
+`agenda(p_from date, p_to date)` — SECURITY INVOKER, range ≤ 62 days, authenticated (and service_role). Returns `public.agenda_item` rows (a composite type; `late_items()` and `heads_up(p_day)` return it too):
 ```
-kind text ('event','task','project'), item_id uuid, occurrence date, title text, day date, end_day date,
+kind text ('event','task','project'; heads_up also 'contract'), item_id uuid, occurrence date, title text, day date, end_day date,
 all_day boolean, start_at timestamptz, end_at timestamptz, local_start time, local_end time,
 responsible_id uuid, participant_ids uuid[], status text ('open','done','cancelled','late','skipped'),
 category text, project_id uuid, project_name text, contractor_id uuid, contractor_name text, contractor_phone text,
-location text, notes text, private boolean, repeating boolean, changed boolean, lead_days int, milestone boolean
+location text, notes text, private boolean, repeating boolean, changed boolean, lead_days int, milestone boolean,
+day_note text   -- an event's note for this one day (event_changes.note), for whoever is on it
 ```
 - events: every occurrence in range (multi-day: one row with day/end_day).
-- tasks: open tasks whose due_date is in range (status open); non-repeating done tasks whose due_date is in range (done); task_log `done`/`skipped` rows whose occurrence is in range (done/skipped). No projections of future repeats.
-- project tasks: for projects with on_calendar and non-null task_dates, each task overlapping the range (day = start, end_day = end; status from raw task status; milestone flag); contractor from the trade's contractor_id.
-`late_items()` — same shape: open tasks with due_date < today_local() (status late). `heads_up(p_day)` — open tasks with `due_date - lead_days <= p_day < due_date`, plus directory `contract_end` within 30 days (kind 'contract').
-`day_text(p_person uuid, p_day date) returns text` — the message for one person's day in their language (used by the Today page "Send their day" buttons and the digest; covered by SQL tests). Lines: timed events in order, all-day events, tasks due, then up to 3 late tasks ("+N more"). Participant copies read "Piano · Lorena"; the responsible person's copy reads "Piano · with Max". Linked directory entries add their phone. Never notes, never account numbers.
+- tasks: open tasks whose due date (`current_due`) is in range (status open); non-repeating done tasks whose due_date is in range (done); task_log `done`/`skipped` rows whose occurrence is in range (done/skipped). No projections of future repeats.
+- project tasks: for projects with on_calendar and non-null task_dates that are under way (not an idea, on hold or done), each task overlapping the range (day = start, end_day = end; status from raw task status; milestone flag); contractor from the trade's contractor_id.
+`late_items()` — same shape: open tasks whose due date (`current_due`) is before today_local() (status late). `heads_up(p_day date)` — open tasks with `due_date - lead_days <= p_day < due_date`, plus directory `contract_end` within 30 days (kind 'contract').
+`day_text(p_person uuid, p_day date) returns text` — the message for one person's day in their language (used by the Today page "Send their day" buttons and the digest; covered by SQL tests). Lines: timed events in order, all-day events, tasks due, then up to 3 late tasks ("+N more"). People are named by first name (`private.short_name`: the whole name only when another active person has the same first name): the person in charge's copy reads "Piano · with Jordan"; the copy for someone along reads "Piano · Taylor". Linked directory entries add their phone; a changed day's own note comes last. Never the event's or task's notes, never account numbers; private items read "Private item".
 
 ### Anonymous token functions (My day page; `grant execute to anon, authenticated`)
-- `get_person_day(p_token text) returns jsonb` → `{person:{name,language}, today: date, days:[{day, items:[…]}], late:[…]}` for today and tomorrow; only that person's items (responsible or participant); fields: kind, item_id, occurrence, title, time range, all_day, location, contractor name+phone, status. No notes, no other people's items. Returns null for an unknown token or inactive person.
-- `complete_by_token(p_token, p_task_id uuid, p_occurrence date)` → only tasks where that person is responsible; same rules as complete_task.
-- `confirm_digest(p_token)` → sets email_verified_at. `stop_digest(p_token)` → digest_enabled = false.
-Tokens are 32 hex characters; `rotate_day_token(p_person)` (admin) replaces one.
+A secret is the only key: the person's My day token (`people.day_token`) for four of them, the confirmation secret (`people_confirm.token`) for `confirm_digest`. These five are the only new functions anon can call (v1's `get_shared_project` is the other one).
+- `get_person_day(p_token text) returns jsonb` → `{person:{name, language, digest_enabled, email_confirmed}, today: date, days:[{day, items:[…]}], late:[…]}` for today and tomorrow; only that person's items (responsible or participant); item fields: kind, item_id, occurrence, day, end_day, title, all_day, start_time, end_time, time_label, location, contractor_name, contractor_phone, note (a changed day's own note), status, mine (a task they're in charge of). No notes, no other people's details; private items read "Private item". Returns null for an unknown token or inactive person.
+- `complete_by_token(p_token text, p_task_id uuid, p_occurrence date) returns uuid` (log id, for Undo) → only tasks where that person is responsible; a repeating task needs `p_occurrence` (a page left open overnight can't tick off the next date); otherwise the same rules as complete_task. Logged as done by "<name> (My day)".
+- `undo_by_token(p_token text, p_log_id uuid) returns uuid` (task id) → the toast's Undo on My day: only a `done` entry that person made on My day, on a task they're in charge of, that is still the task's latest entry, within 15 minutes.
+- `confirm_digest(p_confirm text) returns boolean` → the button on the page the confirmation email opens (`day.html?c=<secret>#confirm`). The secret is the whole key: the link carries no My day token, so an email that goes to a mistyped address gives away nothing but the chance to confirm that address, and a My day link (which a kid, a helper or a WhatsApp group may have) confirms nothing. Sets email_verified_at. True also when the address was already confirmed (a second tap, or the email opened again later; the secret is kept); false for an unknown, malformed or replaced secret (the address changed since) or an inactive person.
+- `stop_digest(p_token text) returns boolean` → digest_enabled = false.
+Tokens and secrets are 32 hex characters; `rotate_day_token(p_person uuid)` (admin) replaces a My day token, and the old link stops working at once.
 
 ### Jobs support (service_role only)
-- `email_budget_left() returns int` = 60 − (email_log rows + notification_log rows with status in ('sending','sent')) since 00:00 UTC. (Resend free allows 100/day shared with sign-in codes; this leaves 40 for sign-in.)
-- `digest_due(p_limit int) returns setof (person_id, local_date, kind)` — people with digest_enabled, email, email_verified_at, active, whose due instant `(local_date + coalesce(digest_time, household.digest_time)) at time zone tz` is ≤ now() and within 3 hours, and who have no log row in a final state for that date; plus confirmation candidates (digest_enabled, email, not verified, no `confirm` row in the last 3 days).
-- `claim_notification(p_person, p_local_date, p_kind) returns uuid` — insert … on conflict do update (retry when failed or stale 'sending' > 10 min, attempts < 3) returning id, else null.
-- `finish_notification(p_id, p_status, p_detail)`.
-- `digest_for(p_person uuid, p_local_date date) returns jsonb` — everything the email needs, computed in SQL (see §5).
+- `email_budget_left() returns int` = 60 − (email_log rows + notification_log rows with status in ('sending','sent') claimed) since 00:00 UTC, never below 0. (Resend free allows 100/day shared with sign-in codes; this leaves 40 for sign-in.)
+- `digest_due(p_limit int default 50) returns table (person_id uuid, local_date date, kind text)` — who should get an email now, oldest first:
+  - `digest`: active people with digest_enabled, an email and email_verified_at. Their send time today is `today + coalesce(people.digest_time, '19:00' when digest_day = 'tomorrow', household.digest_time)` in the household's zone: an evening ("tomorrow") email without a time of its own goes at **19:00**, not at the household's morning time. local_date is the day the email is about (today, or tomorrow for 'tomorrow' people).
+  - `confirm`: active people with digest_enabled, an email that isn't confirmed, and a `people_confirm` secret. The first one goes at once; a reminder is offered 3 days after the last one, at their email time, until 3 have been sent (hub-jobs itself sends the email and one reminder, and marks any further one `skipped`). A new address starts afresh (people_confirm_sync forgets the old rows).
+  - Only rows whose send time is ≤ now and within the last 3 hours, and never after midnight (a late run must not send yesterday's "Today" email; email times are 23:45 at the latest, the day's last quarter-hour run). Rows already sent, skipped, in flight or out of attempts are left out.
+- `claim_notification(p_person uuid, p_local_date date, p_kind text) returns uuid` — insert … on conflict do update (retry when failed or stale 'sending' > 10 min, attempts < 3) returning id, else null.
+- `finish_notification(p_id uuid, p_status text, p_detail text default null)` — p_status sent, failed or skipped; only a row still 'sending' changes.
+- `digest_for(p_person uuid, p_local_date date) returns jsonb` — everything the email needs, computed in SQL (see §5): subject, today, late, heads_up, projects; for parents also people, nobody and, on Mondays, inbox_count; `empty` = a non-parent with nothing to say (send nothing). Null for an inactive person.
 
-### Schema version
-`hub_schema_version()` returns 2 (authenticated). `whoami()` gains `person` (id, name, role, language, color) when a person row matches the caller's email; existing keys unchanged.
+### Schema version, whoami and sign-in
+`hub_schema_version()` returns 2 (authenticated). `whoami()` gains `person` (id, name, role, language, color) when a person row matches the caller's email; existing keys unchanged. `mark_signed_in()` (authenticated; the core calls it after every sign-in): signing in with a code sent to an address proves it works, so the caller's own person row gets email_verified_at (the first time only). The confirmation secret stays, so the button in a confirmation email sent earlier says "confirmed" too. Does nothing for anyone who isn't a member.
 
 ## 4. Client
 
 ### Core and modules
-- `assets/hub.js` = core: sign-in, shell, router, forms, api helpers, message helpers (sms/wa.me/mailto), toasts (with an Undo action), caches (people, household, clock), schema version.
+- `assets/hub.js` = core: sign-in (then `mark_signed_in()`), shell, router, forms, api helpers, message helpers (sms/wa.me/mailto), toasts (with an Undo action; going to another page takes an Undo toast away, since its Undo was for the page left), caches (people, household, clock), schema version.
 - Module contract: `HomeHub.register({ name, schema: { min, max }, nav: { label, order, primary }, match(parts) → params | null, render(main, ctx) })`, where `ctx = { seq, params, signal, stale() }`. The core aborts `signal` on navigation; modules add listeners with `{ signal }`.
 - Script tags load in a fixed order without async; every `src` carries the same `?v=…`, bumped together on each release.
 - Formatting uses the household time zone (`Intl.DateTimeFormat(…, { timeZone })`); "today" comes from `clock()`.
@@ -206,32 +238,37 @@ Tokens are 32 hex characters; `rotate_day_token(p_person)` (admin) replaces one.
 - **Add / edit forms**: What · When (Today / Tomorrow / date; time or All day) · Who (people chips: first tap = in charge (ring), more taps = with) · Repeats (presets from the date: Every <weekday>, Every weekday, Every day, Custom…; tasks also "Monthly on the Nth", "Every N months/days after done"). "More" reveals end time / end date, place, directory contact, notes, private, until.
   - Task repeat wording: "On set dates (e.g. the 1st of every month)" vs "A while after it's done (e.g. 60 days after the last change)" with "When was it last done?" / "Next one is due".
 - **Directory**: kind filter (All · Contractors · Accounts & utilities · Services · Emergency), search, cards with tap-to-call/text/WhatsApp/email/website, contract end; account number masked with Show (admins only; loaded separately).
-- **Family**: one list of people; add/edit person (name, role, email, phone, colour, language, morning email on/off, time, today/tomorrow, everyone (parents), can sign in (parents/adults)); "unconfirmed" badge until the email is confirmed; My day link: Copy / Send by WhatsApp / Text / New link.
+- **Family**: one list of people; add/edit person (name, role, email, phone, colour, language, morning email on/off, time, today/tomorrow, everyone (parents), can sign in (parents/adults)); "unconfirmed" badge until the email is confirmed (by the confirmation email's button, or by signing in); My day link: Copy / Send by WhatsApp / Text / New link.
 - **Settings**: time zone, default morning-email time, days off, default owners for pets/house, digest status ("Last run 6:30 · 4 sent", failures), Google Calendar "not connected yet" (v1.1).
-- **Projects**: unchanged plus: dates recomputed on every schedule write in one choke point (`api.updateProject`/`createProject`) and backfilled when stale; project owner; "Show in Home Hub calendar"; a Tasks card listing the project's tasks with "Put on the schedule" (turns a task into a 1-day Gantt task with a trade picker, then deletes the task).
-- **My day** (`day.html?t=…`): no sign-in; today and tomorrow for that person; check off own tasks; in their language; confirm / stop morning email via POST buttons (`#confirm`, `#stop`); "Add to Home Screen" hint.
+- **Projects**: unchanged plus: dates recomputed on every schedule write in one choke point (`api.updateProject`/`createProject`), which sends `task_dates` with a new `task_dates_at` (the device clock), and backfilled when stale; project owner; "Show in Home Hub calendar"; a Tasks card listing the project's tasks with "Put on the schedule" (turns a task into a 1-day Gantt task with a trade picker, then deletes the task).
+- **My day** (`day.html?t=<day_token>`): no sign-in; today and tomorrow for that person; check off own tasks (Undo for a few seconds, `undo_by_token`); in their language; stop the morning email with a button (`#stop`); "Add to Home Screen" hint. The confirmation email opens `day.html?c=<secret>#confirm` (no `t=`): that page shows only the confirm screen, whose button calls `confirm_digest(p_confirm)`. Opening a link never changes anything; only the buttons do (they're POSTs).
+- `day.html` is a second public page: it loads `config.js`, supabase-js and `assets/day.js` (not the hub), shares `assets/styles.css` (plus `assets/css/day.css`), and carries the same `?v=` as `index.html`.
 
 ## 5. Morning email (`hub-jobs`)
 
 One Edge Function, `hub-jobs` (verify_jwt off; each action authorizes itself; `send-email` untouched):
-- `digest` — header `x-hub-cron: <HUB_CRON_SECRET>` (constant-time compare; missing/short secret → 503). Calls `roll_missed_tasks()`, then `digest_due()`; for each: budget check, `claim_notification`, `digest_for` (or the confirmation email), render, send with Resend (`Idempotency-Key: <kind>-<person>-<date>`), `finish_notification`. Writes a `job_runs` row; pings `HEALTHCHECK_URL` if set and the run had no unhandled error. Ignores the request body.
+- `digest` — header `x-hub-cron: <HUB_CRON_SECRET>` (constant-time compare; missing/short secret → 503). Writes a `job_runs` row first. Without `SITE_URL` (the links), or `RESEND_API_KEY` and `EMAIL_FROM`, the run stops with `stop: 'config'` (500, nothing sent). Otherwise calls `roll_missed_tasks()`, then `digest_due()`; for each: budget check, `claim_notification`, `digest_for` (or the confirmation email), render, send with Resend (`Idempotency-Key: <kind>-<person>-<date>`, plus a fingerprint of the confirmation secret for a confirmation email), `finish_notification`. Pings `HEALTHCHECK_URL` (if set) after a run that sent everything due, and `HEALTHCHECK_URL/fail` after one that didn't. Ignores the request body. pg_cron calls it every 15 minutes (cron.sql).
 - `preview` (admin via whoami with the caller's JWT) — returns rendered digests for a date without sending or logging.
 - `status` (admin) — last runs and today's notification rows (counts and fixed messages only).
 
 `digest_for` layout (JSON → HTML and plain text, every dynamic string escaped; no autolinking; only hub-generated links):
-- Subject carries content: "Tue Oct 27: 8:00 Drop off dogs · 3:00 Pick up Max · +2".
+- Subject carries content: "Tue Oct 27: 8:00 Drop off dogs · 3:00 Pick up Jordan · +2".
 - **Today**: timed items in order, then tasks due (late ones marked). **Late**: ≤ 3 + "and N more". **Heads-up**: lead-time tasks, contract ends ≤ 30 days, tomorrow before 9am.
-- Parents also get: a compact block per kid/helper with their day and WhatsApp/Text buttons (`day_text`), **Nobody's on it** (unassigned items), one line per project with items today ("Kitchen: tile starts (Gomez Tile 555-0200)"), and on Mondays "Inbox: N tasks with no date".
-- Non-parents with nothing today get no email. Links open the recipient's My day page (no sign-in), never change state.
-- `digest_day = 'tomorrow'` sends the next day's plan at the chosen evening time.
+- Parents also get: a compact block per kid/helper with their day and WhatsApp/Text buttons (`day_text`), **Nobody's on it** (unassigned items), one line per project with items today ("Kitchen: tile starts (Gomez Tile 555-0120)"), and on Mondays "Inbox: N tasks with no date".
+- Non-parents with nothing today get no email. Links never change state: someone who can sign in gets links to the hub (Today; Family or Settings to stop the emails); kids and helpers get their My day page (`day.html?t=…`, and `#stop` there to stop).
+- People are named by first name ("Piano · with Jordan"), as in `day_text`.
+- `digest_day = 'tomorrow'` sends the next day's plan in the evening: at the person's own time, else 19:00.
+- The **confirmation email** (`kind = 'confirm'`) goes when the morning email is turned on for an unconfirmed address, with one reminder 3 days later (`CONFIRM_MAX` in the handler). Its button opens `day.html?c=<secret>#confirm` — the `people_confirm` secret only, never the My day token — where a tap on "Yes" calls `confirm_digest`.
 - Spanish strings from a small dictionary for people with language 'es'.
 
 ## 6. Tests (committed under `tests/`, fictional data only)
 - `tests/run.sh`: starts a throwaway Postgres, loads Supabase stand-ins (anon, authenticated, service_role with BYPASSRLS, `auth.jwt()`, **Supabase's default grants to anon/authenticated/service_role**), `schema.sql`, then `migrations/*`, and runs:
   - `tests/db/*.sql` — RLS role matrix (anon; signed-in non-member; removed member with a parent person row; adult member; admin), every public table has RLS, no public function executable by anon except the token functions and `get_shared_project`, recurrence vectors, DST days (2026-11-01, 2027-03-14) via `hub.now`, task completion/undo/skip/roll, digest selection and claims, day_text, token functions.
-  - `tests/fn/*.test.ts` (Node, type stripping) — hub-jobs handler with injected deps and clocks.
-  - `tests/e2e/*.test.js` (Playwright, mocked Supabase) — v1 mode unchanged; each v2 page.
-  - `tests/contract` — every `.from('t')`/`.rpc('f', {args})` in the client exists in the migrated schema with those parameter names.
+  - `tests/contract/check.sh` — every `.from('t')`/`.rpc('f', {args})` in the client and the Edge Functions exists in the migrated schema with those parameter names, and the caller (anon, authenticated, service_role) may use it.
+  - `tests/fn/*.test.ts` (Node, type stripping) — hub-jobs and send-email handlers with injected deps and clocks; `cron.sql` against stand-ins for pg_cron, pg_net and Vault.
+  - `tests/e2e/*.test.js` (Playwright, mocked Supabase) — v1 mode unchanged; each v2 page; My day.
+  - `tests/realdb/run.sh` (Playwright against the real database through a PostgREST/Auth stand-in) — the family's key flows and the morning email on the real schema, RLS and functions; the v1 site (b980d4c) and PR A (bcf296a) on the v2 database; the new site on the v1 database.
+  - `tests/docs/*.test.js` — the docs against the code: deploy secrets, test suites, `?v=`, and this document's tables, columns and function signatures.
 - `CLAUDE.md`: run `tests/run.sh` before every PR; deploy order; never put real names, numbers or IDs in fixtures.
 
 ## 7. Deploy order (needs Supabase access)
@@ -239,7 +276,7 @@ One Edge Function, `hub-jobs` (verify_jwt off; each action authorizes itself; `s
 1. `preflight.sql` (read-only checks) and `list_migrations`.
 2. Merge PR A, then PR B (site stays in v1 mode until step 3).
 3. Apply migration 0002 (site switches to v2 on next load).
-4. Deploy `hub-jobs` from main (verify_jwt false). Secrets: `HUB_CRON_SECRET` (≥ 32 chars), optional `HEALTHCHECK_URL`.
-5. Create the Vault secret by hand, run `cron.sql` (enables pg_cron/pg_net; refuses a missing/placeholder secret; idempotent).
+4. Deploy `hub-jobs` from main with verify_jwt false (`supabase/config.toml` pins it for the CLI; the dashboard and the MCP's `deploy_edge_function` need it turned off by hand). Secrets: `HUB_CRON_SECRET` (≥ 32 chars), `SITE_URL` (required: the site's address, for the links in the emails; without it every run stops with `stop: 'config'` and Preview answers 503), `RESEND_API_KEY` and `EMAIL_FROM` (required) and `EMAIL_FROM_NAME`, shared with `send-email`; and `HEALTHCHECK_URL`, which is optional.
+5. Create the two Vault secrets by hand (`hub_cron_secret`, the same value as `HUB_CRON_SECRET`, and `hub_jobs_url`, the function's address), then run `cron.sql` (enables pg_cron/pg_net; refuses a missing or placeholder secret; idempotent).
 6. Smoke checks: no header → 401; preview → rendered JSON; Settings shows the last run; next morning `notification_log` has sent rows.
 7. Ops hardening: Auth email rate limit ≈ 6/hour; the signup hook stays on; Resend click/open tracking off.

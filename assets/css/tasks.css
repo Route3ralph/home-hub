@@ -1,0 +1,160 @@
+/* =====================================================================
+   Home Hub v2: styles for the tasks page (assets/modules/tasks.js).
+   Shared pieces (item rows, person chips, dialogs, forms) are in styles.css.
+   Colours come from its variables, so light and dark both work; a person's
+   colour arrives inline as --pc. Every tap target is at least 44px.
+   ===================================================================== */
+
+/* ---------- Head and filter chips: Me · Everyone · each person · Repeating · Project ---------- */
+.tasks-head { margin-bottom: 10px; }
+.tasks-add { min-height: 48px; padding: 10px 18px; border-radius: 12px; font-size: 16px; }
+.tasks-add svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; }
+.tasks-chips { display: flex; flex-wrap: wrap; gap: 8px; padding: 4px 2px 6px; }
+.tasks-fchip { --pc: var(--accent); }
+.tasks-fchip-icon {
+  display: grid; place-items: center; flex: none;
+  width: 30px; height: 30px; border-radius: 50%;
+  background: var(--surface-2); color: var(--text-2);
+}
+.tasks-fchip-icon svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.tasks-fchip[aria-pressed="true"] .tasks-fchip-icon { background: var(--accent); color: var(--surface); }
+/* Phones: one row that scrolls sideways inside itself (never the page), edge to edge. */
+@media (max-width: 640px) {
+  .tasks-head h1 { margin-bottom: 0; }
+  .tasks-add { min-height: 44px; padding: 8px 14px; font-size: 15px; }
+  .tasks-chips {
+    flex-wrap: nowrap; overflow-x: auto; overscroll-behavior-x: contain;
+    margin: 0 -16px; padding: 6px 16px 8px; scrollbar-width: none;
+  }
+  .tasks-chips::-webkit-scrollbar { display: none; }
+  .tasks-chips .pchip { flex: none; }
+}
+
+/* ---------- Groups: Late · Today · Coming up · No date · Paused · Done ---------- */
+.tasks-body { max-width: 860px; }
+.tasks-sec { min-width: 0; }
+.tasks-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 2px 12px;
+}
+.tasks-card.irows { padding: 0 4px 0 8px; }
+@media (max-width: 640px) { .tasks-card.irows { padding: 0 2px 0 4px; } }
+.tasks-empty { margin-top: 14px; padding: 14px 16px; }
+.tasks-note { margin: 0; color: var(--text-3); font-size: 14px; }
+.tasks-muted { color: var(--text-3); }
+.tasks-sub { min-width: 0; }
+.tasks-later { min-height: 44px; margin-top: 8px; }
+.tasks-link { display: inline-flex; align-items: center; min-height: 44px; font-size: 14px; font-weight: 600; }
+/* The ⋯ at the end of each row. */
+.tasks-menu {
+  flex: none; display: grid; place-items: center;
+  width: 44px; height: 44px; margin-left: -2px; padding: 0;
+  border: 0; border-radius: 50%; background: none; color: var(--text-3); cursor: pointer;
+}
+.tasks-menu:hover, .tasks-menu:focus-visible { background: var(--surface-2); color: var(--text); outline: none; }
+.tasks-menu svg { width: 20px; height: 20px; }
+.tasks-menu svg circle { fill: currentColor; }
+.irow-sub .badge + .tasks-sub { margin-left: 2px; }
+/* Where the tick box would be (the shared row's box is 44px with -4px margins). */
+.tasks-nobox { flex: none; width: 36px; }
+
+/* Repeating: the starter-list button; Project: each project's heading with its link. */
+.tasks-rep-top { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 16px; margin-top: 10px; }
+.tasks-starter-btn { min-height: 44px; }
+.tasks-proj-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.tasks-proj-head .sec-head { min-width: 0; }
+.tasks-proj-head .tasks-link { flex: none; margin-top: 16px; }
+
+/* ---------- Details (the row menu) ---------- */
+.tasks-details .d-close, .tasks-form .d-close { width: 44px; height: 44px; }
+.tasks-details .d-actions .btn { min-height: 44px; }
+.tasks-details .form-error { margin-top: 12px; }
+.tasks-flags { display: flex; flex-wrap: wrap; gap: 6px; margin: -4px 0 12px; }
+.tasks-who { display: inline-flex; align-items: center; gap: 8px; }
+.tasks-contact { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px; }
+.tasks-call { min-height: 44px; }
+.tasks-call svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linejoin: round; }
+.tasks-another { display: flex; align-items: flex-end; flex-wrap: wrap; gap: 8px 12px; margin-top: 14px; padding: 12px; border-radius: 12px; background: var(--surface-2); }
+.tasks-another .field { flex: 1 1 180px; }
+.tasks-another input, .tasks-another .btn { min-height: 44px; }
+
+/* ---------- The task form and the starter list ---------- */
+dialog:has(> .tasks-form) { width: min(620px, calc(100vw - 16px)); }
+.tasks-form .form-actions .btn { min-height: 44px; }
+.tasks-form input:not([type="checkbox"]), .tasks-form select { min-height: 44px; }
+.tasks-fs { display: grid; gap: 8px; min-width: 0; margin: 0; padding: 0; border: 0; }
+.tasks-fs legend { margin-bottom: 6px; padding: 0; color: var(--text-2); font-size: 13px; font-weight: 600; }
+.tasks-hint { margin: 0; color: var(--text-3); font-size: 13px; }
+.tasks-hint:empty { display: none; }
+.tasks-chiprow { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.tasks-chip {
+  min-height: 44px; padding: 0 14px;
+  border: 1.5px solid var(--border); border-radius: 999px; background: var(--surface);
+  color: var(--text); font-size: 15px; font-weight: 550; cursor: pointer;
+}
+.tasks-chip:hover { border-color: var(--text-3); }
+.tasks-chip[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); font-weight: 650; }
+.tasks-chip:focus-visible, .tasks-wd:focus-visible, .tasks-mode:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.tasks-chiprow input[type="date"] { flex: 1 1 150px; width: auto; min-width: 0; }
+.tasks-time { max-width: 220px; }
+.tasks-form input[type="time"] {
+  width: 100%; padding: 8px 10px;
+  border: 1px solid var(--border); border-radius: 9px; background: var(--surface); font-size: 15px;
+}
+.tasks-nobody { padding: 4px 16px; }
+.tasks-nobody[aria-pressed="true"] { border-color: var(--text-3); background: var(--surface-2); }
+.tasks-modes { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
+.tasks-mode {
+  display: grid; align-content: center; gap: 2px;
+  min-height: 56px; padding: 8px 12px;
+  border: 1.5px solid var(--border); border-radius: 12px; background: var(--surface);
+  color: var(--text); text-align: left; cursor: pointer;
+}
+.tasks-mode b { font-size: 15px; font-weight: 600; }
+.tasks-mode small { color: var(--text-3); font-size: 12px; }
+.tasks-mode:hover { border-color: var(--text-3); }
+.tasks-mode[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); }
+.tasks-mode[aria-pressed="true"] b { color: var(--accent); }
+.tasks-every { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.tasks-every > span { color: var(--text-2); font-weight: 600; }
+.tasks-every input[type="number"] { width: 88px; }
+.tasks-every select { width: auto; }
+/* Seven equal buttons share the row, so it fits a 360px phone; each stays 44px tall. */
+.tasks-wdays { display: flex; gap: 2px; }
+.tasks-wd {
+  flex: 1 1 0; min-width: 0; min-height: 44px; padding: 0;
+  border: 1.5px solid var(--border); border-radius: 12px; background: var(--surface);
+  color: var(--text); font-size: 14px; font-weight: 650; cursor: pointer;
+}
+.tasks-wd[aria-pressed="true"] { border-color: var(--accent); background: var(--accent); color: var(--surface); }
+.tasks-wd[aria-disabled="true"] { cursor: default; }
+.tasks-more { border-top: 1px solid var(--border); }
+.tasks-more summary { display: flex; align-items: center; min-height: 44px; color: var(--accent); font-weight: 600; cursor: pointer; }
+.tasks-more-body { display: grid; gap: 14px; padding-top: 6px; }
+.tasks-more-body input[type="number"] { max-width: 120px; }
+.tasks-check { min-height: 44px; align-items: center; }
+.tasks-check input { width: 20px; height: 20px; margin: 0; flex: none; }
+.tasks-intro { margin: 0; }
+.tasks-picks { display: grid; }
+.tasks-pick {
+  display: flex; align-items: center; gap: 12px;
+  min-height: 52px; padding: 6px 4px;
+  border-bottom: 1px solid var(--line); cursor: pointer;
+}
+.tasks-pick:last-child { border-bottom: 0; }
+.tasks-pick input { flex: none; width: 22px; height: 22px; margin: 0 11px; accent-color: var(--accent); }
+.tasks-pick > span:last-child { display: grid; min-width: 0; }
+.tasks-pick b { font-weight: 600; overflow-wrap: anywhere; }
+.tasks-pick small { color: var(--text-3); font-size: 13px; }
+.tasks-pick.is-have { cursor: default; color: var(--text-3); }
+.tasks-pick-mark { flex: none; display: grid; place-items: center; width: 44px; color: var(--accent); }
+.tasks-pick-mark svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2.6; stroke-linecap: round; stroke-linejoin: round; }
+@media (max-width: 640px) {
+  .tasks-form { padding: 16px; }
+  .tasks-form input[type="time"] { font-size: 16px; } /* iPhone zooms in on smaller text */
+  .tasks-modes { grid-template-columns: 1fr; }
+  .tasks-mode { min-height: 52px; }
+}

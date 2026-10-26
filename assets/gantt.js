@@ -278,7 +278,7 @@
         ${unblocks ? `<dt>Unblocks</dt><dd class="d-links">${unblocks}</dd>` : ''}
         ${timed}
       </dl>
-      ${M.crit.has(r.id) ? '<p class="d-crit">◆ On the critical path: any delay here pushes back the finish date.</p>' : ''}
+      ${M.crit.has(r.id) ? '<p class="d-crit">◆ Sets the finish date: any delay here pushes back the finish.</p>' : ''}
       ${r.task.notes ? `<p class="d-note">${esc(r.task.notes)}</p>` : ''}
       ${extra.showPrivate && r.task.private_notes ? `<p class="d-note d-private"><strong>Family only:</strong> ${esc(r.task.private_notes)}</p>` : ''}
       ${r.conflict ? `<p class="d-warn">⚠ ${esc(r.conflict)}</p>` : ''}
@@ -326,12 +326,12 @@
           <ul class="items" data-ref="upcoming"></ul>
         </section>
         <section class="card" data-ref="schedule">
-          <div class="card-head"><h2>Schedule</h2><span class="card-sub">Click any task for details</span></div>
+          <div class="card-head"><h2>Schedule</h2><span class="card-sub">Tap any task for details</span></div>
           <div class="toolbar">
             <div class="chips" data-ref="chips" role="group" aria-label="Filter by trade"></div>
             <div class="toolbar-right">
               <label class="toggle" title="Tasks where any delay pushes back the finish date">
-                <input type="checkbox" data-ref="crit"> Critical path
+                <input type="checkbox" data-ref="crit"> Tasks that set the finish date
               </label>
               <div class="segmented" role="tablist" aria-label="View">
                 <button type="button" role="tab" data-view="timeline">Timeline</button>

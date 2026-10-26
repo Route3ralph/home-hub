@@ -39,11 +39,14 @@ const check = (name, ok, detail) => { results.push(`${ok ? 'PASS' : 'FAIL'}  ${n
   let loginCtx = await open({ label: 'login' });
   page = loginCtx.page;
   check('signed-out visitor sees login', (await text(page, 'body')).includes('Email me a sign-in code'));
+  check('the sign-in page says what the hub is for now (not the v1 "projects, contractors and plans")', (await text(page, '.login .login-lead')) === "Your family's calendar, jobs and projects in one place.", await text(page, '.login .login-lead'));
   await page.screenshot({ path: SHOTS + 'login.png' });
   await page.fill('input[name=email]', 'stranger@example.com');
   await page.click('#loginForm button[type=submit]');
   await page.waitForTimeout(300);
-  check('unlisted email is refused', (await text(page, '#loginMsg')).includes("isn't on the family list"), await text(page, '#loginMsg'));
+  // Someone added on the Family page without "Can sign in" is refused the same way, so the message
+  // says what to do rather than that they aren't on the family list.
+  check('unlisted email is refused, with what to ask for', (await text(page, '#loginMsg')).trim() === "That email can't sign in yet. Ask whoever runs the Home Hub to tick 'Can sign in' for you on the Family page.", await text(page, '#loginMsg'));
   check('code box stays hidden after a refusal', await page.$eval('#codeForm', (f) => f.hidden));
   await page.fill('input[name=email]', 'Alex@Example.com');
   await page.click('#loginForm button[type=submit]');
@@ -98,6 +101,7 @@ const check = (name, ok, detail) => { results.push(`${ok ? 'PASS' : 'FAIL'}  ${n
   // 4. Signed in but not on the list
   ({ page } = await open({ label: 'notlisted', email: 'ex@example.com' }));
   check('signed-in non-member blocked', (await text(page, 'body')).includes('Not on the list yet'));
+  check('signed-in non-member: told what to ask for', (await text(page, 'body')).includes("can't use the Home Hub yet") && (await text(page, 'body')).includes("tick 'Can sign in' for you on the Family page"), await text(page, 'body'));
 
   // 5. Home dashboard
   let ctx = await open({ label: 'home', email: 'alex@example.com' });

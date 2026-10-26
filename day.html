@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <!-- The address carries the person's My day code: keep it out of search engines and out of
+       the Referer header of anything this page links to or loads. -->
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="referrer" content="no-referrer">
+  <title>My day</title>
+  <!-- No manifest on purpose: the hub's manifest would install the hub. Without one, "Add to Home
+       Screen" keeps this page's own address (with its code), which is what a helper or kid needs. -->
+  <link rel="apple-touch-icon" href="assets/icons/apple-touch-icon.png">
+  <meta name="apple-mobile-web-app-title" content="My day">
+  <meta name="theme-color" content="#f6f4f0" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#121110" media="(prefers-color-scheme: dark)">
+  <link rel="stylesheet" href="assets/styles.css?v=20261026b">
+  <link rel="stylesheet" href="assets/css/day.css?v=20261026b">
+</head>
+<body>
+  <main id="app" class="page day"><p class="loading">Loading…</p></main>
+
+  <!-- The public My day page: config.js and supabase-js only, never the hub. -->
+  <script src="config.js?v=20261026b"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.3/dist/umd/supabase.js?v=20261026b"></script>
+  <script src="assets/day.js?v=20261026b"></script>
+</body>
+</html>
