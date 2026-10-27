@@ -73,14 +73,18 @@
                           un-ticks a bought row (Just bought; Buy again, from the page's table read,
                           with seen: its bought_at, the string as PostgREST gave it). Undo from
                           a tick's toast: box.unbuy(id), and the outbox takes the seen from the tick's
-                          reply. A tick and its Undo cancel out while the tick has never left the
-                          phone; once it has, both are sent, in order. A tick of a line that a waiting
-                          add brings back waits for that add, and takes the line's new seen from its
-                          reply. Given a row with no seen (one a waiting change moved, below) or only
-                          an id, the outbox takes the seen from the change waiting for that item, or
-                          else from the list as it has it now; an un-tick then undoes only this phone's
-                          own purchase (mine), never one its tick found already bought by someone else.
-                          False when there is nothing to do (or that un-tick isn't this phone's).
+                          reply (kept while the page is open, so it works after a read past the
+                          household's midnight has taken the line out of bought). A tick and its Undo
+                          cancel out while the tick has never left the phone; once it has, both are
+                          sent, in order. A tick of a line that a waiting add brings back waits for
+                          that add, and takes the line's new seen from its reply. Given a row with no
+                          seen (one a waiting change moved, below) or only an id, the outbox takes the
+                          seen from the change waiting for that item; for an un-tick, else from the
+                          answer to this phone's own tick of it; else from the list as it has it now.
+                          An un-tick then undoes only this phone's own purchase (mine), never one its
+                          tick found already bought by someone else. False when there is nothing to do
+                          (or that un-tick isn't this phone's). A page sends a row it has ticked or
+                          unticked since it drew it by id: every un-tick gives the line a new seen.
      box.view()           the last list with the changes still waiting laid over it, or null before
                           any list. Rows changed by a waiting change carry pending: true, and
                           unsent: true while the outbox can't get an answer ("Not sent yet"); a row
@@ -321,6 +325,12 @@
     let stopped = false;
     const nextId = () => `${Date.now().toString(36)}-${(seq++).toString(36)}`;
     const wayKey = (op) => `${key} ${op.id}`;
+    // This phone's own purchases, from the answers to its ticks: item → { seen, show }, the bought row's
+    // seen (its bought_at) and how to draw it. An un-tick given no seen (the toast's Undo, a row ticked
+    // here a moment ago) goes with it (§6.1: "the seen of the reply's bought row"), so it still works
+    // after a read past the household's midnight has taken the line out of bought. Kept while the page
+    // is open; any other answered change of that item, or forget(), drops it.
+    const ownBuys = new Map();
 
     // ---- Saved on this device, for this owner only
     function read() {
@@ -400,8 +410,15 @@
         op.after = last.id;
       } else {
         const shown = row && typeof row === 'object' ? row.seen : null;
+        const own = kind === 'unbuy' && shown == null ? ownBuys.get(item) : null;
         if (shown != null) {
           op.seen = shown;   // the row as the phone showed it
+        } else if (own) {
+          // This phone's own tick, as its answer had it: sent even when the list no longer has the line
+          // (a read after midnight), and drawn to buy meanwhile. Changed since (someone bought it again),
+          // the answer is "changed": an Undo never reopens a purchase that isn't this phone's.
+          op.seen = own.seen;
+          if (!op.show) op.show = own.show;
         } else {
           // Given no seen (an Undo from a toast, a row ticked in place a moment ago, or a row a waiting
           // change had moved, answered since): the row as the list has it now. An un-tick then undoes
@@ -524,6 +541,7 @@
       let rest = list.filter((x) => x.id !== op.id);
       let outcome = reply.result;
       let from;           // from(next): the row a change waiting for this one takes its seen from, or null
+      let own = null;     // a tick of this phone's own: the bought row in the answer
       if (op.op === 'add') {
         // A tick of the line this add brought back: that line, if it is the one the add landed on.
         from = (next) => (reply.item_id != null && reply.item_id === next.item
@@ -540,6 +558,7 @@
           || (op.op === 'buy' && typeof o.mine === 'function' && !!o.mine(found)));
         outcome = done ? 'done' : found ? 'same' : 'changed';
         from = () => (ours ? found : null);
+        if (op.op === 'buy' && ours) own = found;
       }
       rest.filter((x) => x.after === op.id).forEach((next) => {
         if (!rest.includes(next)) return;   // dropped already, with a change it was waiting for
@@ -549,7 +568,7 @@
         // Undo (or a tick) that can no longer be done as asked: the list shows it as it is now.
         if (op.op !== 'add' && !rowsOf(s, next.op === 'buy' ? 'bought' : 'to_buy').some((r) => r.id === next.item)) outcome = 'changed';
       });
-      return { queue: rest, snap: s, outcome };
+      return { queue: rest, snap: s, outcome, own };
     }
 
     // A change was answered: take the list in the reply, give the changes waiting for this one their
@@ -558,6 +577,9 @@
       const done = settled(queue, op, reply);
       queue = done.queue;
       snap = done.snap;
+      const item = op.op === 'add' ? reply.item_id : op.item;
+      if (done.own) ownBuys.set(item, { seen: done.own.seen, show: showOf(done.own) });
+      else if (item != null) ownBuys.delete(item);
       fresh = true;
       writes++;
       changed();
@@ -708,6 +730,7 @@
     function forget() {
       queue = [];
       snap = null;
+      ownBuys.clear();
       failing = false;
       tries = 0;
       clearTimeout(timer);

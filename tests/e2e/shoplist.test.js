@@ -8,8 +8,10 @@
 // phone", changes older than 24 hours; a change answered after its page closed (taken off the saved
 // queue by id, never sent again, its answer taken by a page opened since); a resend's "no change" (an
 // un-tick's is this phone's own, a tick's only when the line is bought by this phone); an Undo by id
-// only of this phone's own purchase; rows a waiting change moved have no seen of their own; a tick of a
-// line a waiting add brings back waits for that add.
+// only of this phone's own purchase, with the seen from its tick's answer even after a read past the
+// household's midnight; rows a waiting change moved have no seen of their own; a tick of a line a
+// waiting add brings back waits for that add; a waiting add's note laid over the list as the database
+// joins it.
 // Part 1 runs in day.html (which loads shoplist.js before day.js; day.js and supabase-js are stubbed
 // out) with a fake send() in the page and the page's clock paused, so every timer runs when the test
 // says. Part 2 runs the outbox in the hub on a schema-4 database, through supabase-js and mock.js's
@@ -773,6 +775,45 @@ function pageFake() {
   });
   check('a waiting add\'s note shows as the database will join it: after " · ", unless already in the note (the whole note or a run of its " · " parts)',
     same(out, [['Eggs', '12 · 2'], ['Pan dulce', '2 · los grandes'], ['Tortillas', '1 paquete']]), JSON.stringify(out));
+
+  // ---- 21. Undo given only the item after a read past the household's midnight has taken this phone's
+  // purchase out of bought: it goes with the seen from the tick's reply (§6.1), drawn to buy at once
+  out = await ev(async () => {
+    localStorage.clear();
+    const f = window.fakeList([{ id: 'm', name: 'Milk', aisle: 'dairy', added_at: '2026-10-27T13:00:00.111111+00:00' }]);
+    const { box, replies } = window.makeBox(f);
+    box.take(f.snapshot(), box.ticket());
+    box.buy(box.view().to_buy.find((r) => r.id === 'm'));        // 23:59:57
+    await window.settle();
+    const boughtAt = f.rows[0].bought_at;
+    box.take(Object.assign(f.snapshot(), { as_of: '2026-10-28T00:00', bought: [] }), box.ticket());   // the poll at 00:00:02
+    const gone = box.view().bought.length + box.view().to_buy.length;
+    const open = f.hold();
+    const undo = box.unbuy('m');                                  // Undo on "Bought: Milk"
+    const shown = box.view().to_buy.map((r) => [r.name, r.aisle, r.pending]);
+    open();
+    await window.settle();
+    return { boughtAt, gone, undo, shown, sent: f.sent, replies: replies(), milk: f.rows[0].bought_at, after: box.view().to_buy.map((r) => r.name) };
+  });
+  check('Undo by id after a read past midnight left the line out of the list: sent with the seen from the tick\'s reply, shown to buy at once, and Milk is to buy again',
+    out.gone === 0 && out.undo === true && same(out.shown, [['Milk', 'dairy', true]]) && out.sent.length === 2 && same(out.sent[1], { op: 'unbuy', item: 'm', seen: out.boughtAt })
+    && same(out.replies, ['buy:done', 'unbuy:done']) && out.milk === null && same(out.after, ['Milk']), JSON.stringify(out));
+  out = await ev(async () => {
+    localStorage.clear();
+    const f = window.fakeList([{ id: 'm', name: 'Milk', added_at: 'A1' }]);
+    const { box, replies } = window.makeBox(f);
+    box.take(f.snapshot(), box.ticket());
+    box.buy(box.view().to_buy[0]);
+    await window.settle();
+    const mine = f.rows[0].bought_at;
+    Object.assign(f.rows[0], { bought_at: 'B-sam', bought_by: 'p-sam', added_at: 'A2' });   // Sam put it back and bought it again
+    box.take(Object.assign(f.snapshot(), { bought: [] }), box.ticket());
+    const undo = box.unbuy('m');
+    await window.settle();
+    return { undo, mine, sent: f.sent.map((x) => `${x.op}:${x.seen}`), replies: replies(), milk: [f.rows[0].bought_at, f.rows[0].bought_by] };
+  });
+  check('… a purchase since then by someone else stays: the Undo carries this phone\'s tick\'s seen, so it is answered "changed on another phone"',
+    out.undo === true && same(out.sent.slice(1), [`unbuy:${out.mine}`]) && same(out.replies, ['buy:done', 'unbuy:changed']) && same(out.milk, ['B-sam', 'p-sam']), JSON.stringify(out));
   await context.close();
 
   // =====================================================================

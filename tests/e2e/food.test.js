@@ -600,6 +600,39 @@ const emailOf = (req) => {
   check('Buy again stays open after a reload (remembered on this device)', (await page.getAttribute('.food-again-toggle', 'aria-expanded')) === 'true' && !(await page.$eval('#foodAgain', (e) => e.hidden)));
   await page.context().close();
 
+  // ---- Undo on the "Bought" toast after the household's midnight: a tick at 23:59:57, the 10-second
+  // poll at 00:00:01 (shopping_list's bought is since midnight, so the line is in neither part), Undo
+  // at 00:00:02. It goes with the seen from the tick's reply (§6.1), and the line is to buy again.
+  db = foodDb();
+  db.shopping_items.push(shopItem({ name: 'Milk', aisle: 'dairy', added_at: at(TODAY, '09:00'), added_by: ID.alex }));
+  db.foodNow = Date.parse('2026-10-28T03:59:51Z');   // 23:59:51 in New York
+  ({ page } = await open({ label: 'midnight undo', db }));
+  await pause(page);
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));   // read now: the poll is 10 seconds from here
+  await sleep(400);
+  await tick(page, 6000);
+  db.foodNow += 6000;                                  // 23:59:57: Milk ticked
+  await row(page, 'buy', 'Milk').locator('.food-tick').click();
+  await sleep(300);
+  const boughtLate = item(db, 'Milk').bought_at;
+  db.foodNow += 4000;                                  // 00:00:01: the poll
+  await tick(page, 4000);
+  check('the poll after midnight leaves a tick of 23:59:57 out of Just bought (and To buy); its toast is still up',
+    !!boughtLate && !(await names(page, 'bought')).includes('Milk') && !(await names(page, 'buy')).includes('Milk')
+    && (await page.$$eval('.toasts .toast-action span', (ts) => ts.map((t) => t.textContent))).includes('Bought: Milk'),
+    JSON.stringify([boughtLate, await names(page, 'buy'), await names(page, 'bought'), await toasts(page)]));
+  db.foodNow += 1000;                                  // 00:00:02: Undo
+  await tick(page, 1000);
+  await page.click('.toasts .toast-action button');
+  await sleep(300);
+  await tick(page, 3100);
+  const lateUndo = calls(db, 'buy_item').slice(-1)[0];
+  check('Undo at 00:00:02: buy_item(p_item, false, <bought_at from the tick\'s reply>); Milk is to buy again, with no "Changed on another phone"',
+    !!lateUndo && same(lateUndo.body, { p_item: item(db, 'Milk').id, p_bought: false, p_seen: boughtLate }) && item(db, 'Milk').bought_at === null
+    && (await names(page, 'buy')).includes('Milk') && !(await toasts(page)).includes('Changed on another phone'),
+    JSON.stringify([lateUndo && lateUndo.body, boughtLate, await names(page, 'buy'), await toasts(page)]));
+  await page.context().close();
+
   // =====================================================================
   // 5. Edit, Forget, a rename clash and Merge
   // =====================================================================
