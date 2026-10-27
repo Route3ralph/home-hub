@@ -270,16 +270,17 @@ const ANDROID = 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KH
   }));
   const indexCdn = (fs.readFileSync(`${ROOT}/index.html`, 'utf8').match(/https:\/\/cdn\.jsdelivr\.net\/[^"?]*supabase\.js/) || [])[0];
   const order = head.scripts.map((s) => s.src.replace(/\?.*$/, ''));
-  check('day.html: config.js, then supabase-js (the same pinned URL as index.html), then assets/day.js',
-    same(order, ['config.js', indexCdn, 'assets/day.js']) && /@2\.\d+\.\d+\//.test(indexCdn || ''), order.join(', '));
+  // shoplist.js (v1.2: the shopping list's aisles and outbox, no database calls of its own) comes before day.js.
+  check('day.html: config.js, then supabase-js (the same pinned URL as index.html), then assets/shoplist.js and assets/day.js',
+    same(order, ['config.js', indexCdn, 'assets/shoplist.js', 'assets/day.js']) && /@2\.\d+\.\d+\//.test(indexCdn || ''), order.join(', '));
   check('day.html: no async scripts, no inline script', head.scripts.every((s) => !s.async) && head.inline === 0);
   check('day.html: styles.css then css/day.css', same(head.styles.map((h) => h.replace(/\?.*$/, '')), ['assets/styles.css', 'assets/css/day.css']), head.styles.join(', '));
   check('day.html: robots noindex,nofollow and referrer no-referrer', /noindex/.test(head.robots || '') && /nofollow/.test(head.robots || '') && head.referrer === 'no-referrer', JSON.stringify(head));
   check('day.html: no manifest link (the hub\'s manifest would install the hub)', !head.manifest);
   check('day.html: the hub and the Gantt engine are not loaded', head.hub === 'undefined' && head.gantt === 'undefined'
     && !requests.some((u) => /hub\.js|gantt\.js|manifest\.webmanifest|assets\/modules\//.test(u)), requests.filter((u) => /assets/.test(u)).join(' | '));
-  const fetched = await page.evaluate(async (urls) => Promise.all(urls.map(async (u) => (await fetch(new URL(u, location.href))).status)), head.styles.concat(['assets/day.js']));
-  check('day.html: its stylesheets and script exist', fetched.every((s) => s === 200), fetched.join(','));
+  const fetched = await page.evaluate(async (urls) => Promise.all(urls.map(async (u) => (await fetch(new URL(u, location.href))).status)), head.styles.concat(['assets/shoplist.js', 'assets/day.js']));
+  check('day.html: its stylesheets and scripts exist', fetched.every((s) => s === 200), fetched.join(','));
   check('no sign-in: no Auth requests', !requests.some((u) => u.includes('/auth/v1/')), requests.filter((u) => u.includes('/auth/')).join(' | '));
   const gpd = calls(db, 'get_person_day');
   check('get_person_day is called once, with { p_token } only', gpd.length === 1 && same(gpd[0].body, { p_token: TAYLOR }), JSON.stringify(gpd.map((c) => c.body)));
