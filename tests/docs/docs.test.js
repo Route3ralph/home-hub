@@ -268,10 +268,10 @@ const counted = (/These (\w+) are the only new functions anon can call/.exec(tok
 check(`docs/v2-design.md "Anonymous token functions" counts them right ("These ${counted} are the only new functions anon can call": ${anon.size})`,
   NUMBER[String(counted).toLowerCase()] === anon.size, tokenSec.slice(0, 300));
 
-// Every table, column and agenda_item field the migrations add is in the design.
+// Every table, column and agenda_item field the migrations add is in the design (tables in private too).
 const tables = [];
 const columns = [];
-for (const m of mig.matchAll(/create\s+(table|type)\s+public\.(\w+)\s*(?:as\s*)?\(([\s\S]*?)\n\);/gi)) {
+for (const m of mig.matchAll(/create\s+(table|type)\s+(?:public|private)\.(\w+)\s*(?:as\s*)?\(([\s\S]*?)\n\);/gi)) {
   tables.push(m[2]);
   for (const l of m[3].split('\n')) {
     const c = /^\s+([a-z_][a-z0-9_]*)\s+(?!key\b)[a-z]/i.exec(l);
@@ -286,11 +286,11 @@ check(`docs/v2-design.md names every table and type the migrations add (${tables
 const missingCols = columns.filter((c) => !designWords.has(c.split('.')[1]));
 check(`docs/v2-design.md names every column the migrations add (${columns.length})`, columns.length > 0 && !missingCols.length, `missing ${missingCols.join(', ')}`);
 
-// From 0004 on, the design writes out each new table (create table), added column (alter table … add
-// column) and added or dropped constraint exactly as the migration has it, comments and spacing aside, in
-// its ```sql blocks: so a column, a default or a check that changes in one changes in the other.
+// From 0004 on, the design writes out each new table (create table, in public or private), added column
+// (alter table … add column) and added or dropped constraint exactly as the migration has it, comments and
+// spacing aside, in its ```sql blocks: so a column, a default or a check that changes in one changes in the other.
 const flat = (s) => s.replace(/\s+/g, ' ').replace(/\s*([(),;])\s*/g, '$1').trim().toLowerCase();
-const statements = [...migLater.matchAll(/create\s+table\s+public\.\w+\s*\([\s\S]*?\n\);|alter\s+table\s+public\.\w+\s+(?:add|drop)\s+(?:column|constraint)\b[^;]*;/gi)].map((m) => m[0]);
+const statements = [...migLater.matchAll(/create\s+table\s+(?:public|private)\.\w+\s*\([\s\S]*?\n\);|alter\s+table\s+public\.\w+\s+(?:add|drop)\s+(?:column|constraint)\b[^;]*;/gi)].map((m) => m[0]);
 const designFlat = flat(designSql);
 // A create table's body as {column or table constraint: its definition}, for saying what differs.
 function definitions(body) {
@@ -305,17 +305,17 @@ function definitions(body) {
   return out;
 }
 const notWritten = statements.filter((st) => !designFlat.includes(flat(st))).map((st) => {
-  const t = /^create\s+table\s+public\.(\w+)/i.exec(st);
+  const t = /^create\s+table\s+(public|private)\.(\w+)/i.exec(st);
   if (!t) return flat(st).slice(0, 80);
   // Which columns differ, when the design has a block for the table.
-  const block = new RegExp(`create\\s+table\\s+public\\.${t[1]}\\s*\\(([\\s\\S]*?)\\n\\);`, 'i').exec(designSql);
-  if (!block) return `create table public.${t[1]} (no block in the design)`;
+  const block = new RegExp(`create\\s+table\\s+${t[1]}\\.${t[2]}\\s*\\(([\\s\\S]*?)\\n\\);`, 'i').exec(designSql);
+  if (!block) return `create table ${t[1]}.${t[2]} (no block in the design)`;
   const want = definitions(/\(([\s\S]*)\n\);$/.exec(st)[1]);
   const have = definitions(block[1]);
   const diff = [...Object.keys(want).filter((c) => !(c in have)).map((c) => `missing ${c}`),
     ...Object.keys(have).filter((c) => !(c in want)).map((c) => `not in the migration: ${c}`),
     ...Object.keys(want).filter((c) => c in have && want[c] !== have[c]).map((c) => `${c} differs: "${want[c]}"`)];
-  return `create table public.${t[1]}: ${diff.join('; ') || 'the order differs'}`;
+  return `create table ${t[1]}.${t[2]}: ${diff.join('; ') || 'the order differs'}`;
 });
 check(`docs/v2-design.md writes out every table, added column and constraint of migration ${FULL_FROM} and later as the migration has it (${statements.length})`,
   statements.length > 0 && !notWritten.length, notWritten.join(' | '));

@@ -50,6 +50,19 @@ delete from members where email = 'casey@example.com';
 select test.is((select string_agg(c.relname, ', ') from pg_class c
                 where c.relnamespace = 'public'::regnamespace and c.relkind in ('r', 'p') and not c.relrowsecurity),
                null, 'every public table has row-level security');
+-- Tables in private (0004's food_pairs) are read only by definer functions: row-level security on,
+-- no policies, and no privilege at all for anon, signed-in users or service_role.
+select test.is((select string_agg(c.relname, ', ' order by c.relname) from pg_class c
+                where c.relnamespace = 'private'::regnamespace and c.relkind in ('r', 'p')
+                  and (not c.relrowsecurity
+                       or exists (select 1 from pg_policy y where y.polrelid = c.oid)
+                       or exists (select 1 from unnest(array['anon', 'authenticated', 'service_role']) r
+                                  where has_table_privilege(r, c.oid, 'select, insert, update, delete, truncate, references, trigger')
+                                     or has_any_column_privilege(r, c.oid, 'select, insert, update, references')))),
+               null, 'every private table has row-level security, no policies and no privilege for anon, authenticated or service_role');
+select test.is((select string_agg(c.relname, ', ' order by c.relname) from pg_class c
+                where c.relnamespace = 'private'::regnamespace and c.relkind in ('r', 'p')),
+               'food_pairs', '... (the private tables: food_pairs)');
 select test.is((select string_agg(p.proname, ', ' order by p.proname) from pg_proc p
                 where p.pronamespace = 'public'::regnamespace and has_function_privilege('anon', p.oid, 'execute')),
                'add_to_list_by_token, buy_item_by_token, complete_by_token, confirm_digest, get_list_by_token, get_person_day, '

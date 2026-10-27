@@ -40,6 +40,21 @@ $$;
 create function pg_temp.meal_rows(j jsonb) returns jsonb language sql immutable as $$
   select jsonb_agg(x - 'item_id' order by n) from jsonb_array_elements(j -> 'today') with ordinality t (x, n) where x ->> 'kind' = 'meal'
 $$;
+-- How long a statement takes, in milliseconds: the best of three, after one run to warm up.
+create function pg_temp.ms(p_sql text) returns numeric language plpgsql as $$
+declare
+  t    timestamptz;
+  best numeric;
+begin
+  execute p_sql;
+  for i in 1 .. 3 loop
+    t := clock_timestamp();
+    execute p_sql;
+    best := least(best, extract(epoch from clock_timestamp() - t) * 1000);
+  end loop;
+  return round(best, 1);
+end;
+$$;
 -- How many changes and ticks Morgan's link has made on a day.
 create function pg_temp.used(p_day date) returns text language sql stable security definer as $$
   select coalesce((select u.changes || ' ' || u.ticks from public.my_day_use u
@@ -302,6 +317,92 @@ from (values ('Leche', 'en', 'milk'), ('Milk', 'es', 'leche'), ('MILK', 'es', 'l
 :as_admin
 select test.is(private.food_other('Leche', 'en'), 'milk', 'members may call food_other (shopping_list runs as them)');
 select test.is(test.can($$select private.guess_aisle('milk')$$), 'denied', '... but not guess_aisle');
+select test.is(test.try($$select * from private.food_pairs$$), 'denied', '... nor read food_pairs (only food_other does)');
+
+-- food_other is a lookup in private.food_pairs, which the migration works out once from food_words.
+-- Before that, it worked every pair out on each call (about 3.5 ms, and it runs once per line in
+-- every poll of the list). That version is kept here, word for word, as the reference: the two give
+-- the same answer for every word of food_words read in English and in Spanish, as written, in
+-- capitals, with a plural or singular ending, without accents, with spacing and punctuation around it,
+-- and for names that aren't food words; and for empty, blank and unknown names, and in another
+-- language or none.
+:as_owner
+create function pg_temp.food_other_v0(p_name text, p_lang text)
+returns text
+language sql
+immutable
+set search_path = ''
+as $$
+  with n as (
+    select x.name,
+           array_remove(array[x.name, case when char_length(x.name) >= 4 and right(x.name, 1) = 's' then left(x.name, -1) end,
+                                      case when char_length(x.name) >= 5 and right(x.name, 2) = 'es' then left(x.name, -2) end], null) as forms
+    from (select btrim(regexp_replace(translate(lower(coalesce(p_name, '')),
+                                                'áàâäãéèêëíìîïóòôöõúùûüñçÁÀÂÄÃÉÈÊËÍÌÎÏÓÒÔÖÕÚÙÛÜÑÇ',
+                                                'aaaaaeeeeiiiiooooouuuuncaaaaaeeeeiiiiooooouuuunc'),
+                                      '[^a-z0-9]+', ' ', 'g')) as name) x
+  ),
+  -- Each pair as (the word to find, its forms, the word to give, its forms).
+  f as (
+    select w.en, z.side, z.word, z.give,
+           array_remove(array[z.word, case when char_length(z.word) >= 4 and right(z.word, 1) = 's' then left(z.word, -1) end,
+                                      case when char_length(z.word) >= 5 and right(z.word, 2) = 'es' then left(z.word, -2) end], null) as forms,
+           array_remove(array[z.give_n, case when char_length(z.give_n) >= 4 and right(z.give_n, 1) = 's' then left(z.give_n, -1) end,
+                                        case when char_length(z.give_n) >= 5 and right(z.give_n, 2) = 'es' then left(z.give_n, -2) end], null) as give_forms
+    from private.food_words() w
+    cross join lateral (
+      select x.side, x.give,
+             btrim(regexp_replace(translate(lower(x.word),
+                                            'áàâäãéèêëíìîïóòôöõúùûüñçÁÀÂÄÃÉÈÊËÍÌÎÏÓÒÔÖÕÚÙÛÜÑÇ',
+                                            'aaaaaeeeeiiiiooooouuuuncaaaaaeeeeiiiiooooouuuunc'),
+                                  '[^a-z0-9]+', ' ', 'g')) as word,
+             btrim(regexp_replace(translate(lower(x.give),
+                                            'áàâäãéèêëíìîïóòôöõúùûüñçÁÀÂÄÃÉÈÊËÍÌÎÏÓÒÔÖÕÚÙÛÜÑÇ',
+                                            'aaaaaeeeeiiiiooooouuuuncaaaaaeeeeiiiiooooouuuunc'),
+                                  '[^a-z0-9]+', ' ', 'g')) as give_n
+      from (values ('es', w.en, w.es), ('en', w.es, w.en)) x (side, word, give)   -- side: the language given
+      where x.word is not null and x.give is not null
+    ) z
+  )
+  select f.give
+  from n join f on f.side = p_lang and f.forms && n.forms and not (f.give_forms && n.forms)
+  where n.name <> ''
+  order by (f.word = n.name) desc, f.en
+  limit 1;
+$$;
+-- The probes and the old answers, worked out once (the old one takes its 3.5 ms a call here too):
+-- every word as written and in five other spellings, and some odd names, read in English and in
+-- Spanish; then empty, blank and a few other names read in English, Spanish, French and no language.
+create temp table food_was as
+select p.n, x.l, pg_temp.food_other_v0(p.n, x.l) as was
+from (select v.n
+      from (select f.en as w from private.food_words() f union select f.es from private.food_words() f
+            union select p.give from private.food_pairs p) w
+      cross join lateral (values (w.w), (upper(w.w) || 'S'), (initcap(w.w) || 'es'), (left(w.w, -1)), (upper(left(w.w, -2))),
+                                 (E' \t' || translate(w.w, 'áéíóúñü', 'aeiounu') || E' !\n')) v (n)
+      where w.w is not null
+      union
+      select e.n
+      from (values ('2 milk'), ('chicken broth'), ('green peppers'), ('papel higiénico'), ('Leche: 2'), ('ice-cream'),
+                   ('ICE   CREAM'), ('peanut butter'), ('crema de cacahuate'), ('Pasta de dientes'), ('té'), ('Te'), ('tes'),
+                   ('Cafés'), (E'café'), ('Reses'), ('Pimientos'), ('pimienta'), ('Melón'), ('melones'), ('kiwi'),
+                   ('JALAPEÑOS'), ('jalapenos'), ('Champu'), ('ñames'), ('tortilla'), ('Huevo'), ('egg'), ('Manzana'),
+                   (E'le​che'), (E' leche '), ('pan'), ('red'), ('tuna'), ('gas'), ('yes'), ('es'), ('s'), ('ss'),
+                   ('eses'), ('7up'), ('12345'), (repeat('milk', 15)), ('zorblax'), ('Zorblaxes')) e (n)) p
+cross join (values ('en'), ('es')) x (l)
+union all
+select e.n, x.l, pg_temp.food_other_v0(e.n, x.l)
+from (values (''), ('   '), (E'\t\n'), (null), ('zorblax'), ('Leche'), ('MILK'), ('Tortillas'), ('Melon'), ('papeles')) e (n)
+cross join (values ('en'), ('es'), ('fr'), (null)) x (l);
+select test.is((select string_agg(format('%s in %s: %s, was %s', coalesce(c.n, 'null'), coalesce(c.l, 'null'),
+                                         coalesce(c.got, 'null'), coalesce(c.was, 'null')), '; ')
+                from (select w.n, w.l, w.was, private.food_other(w.n, w.l) as got from food_was w) c
+                where c.got is distinct from c.was),
+               null, 'food_other, a lookup in food_pairs, answers exactly as the old food_other did');
+select test.ok((select count(distinct n) from food_was) > 1500 and (select count(was) from food_was) > 1000,
+               '... on more than 1500 names, more than 1000 times with an answer');
+select test.is((select count(*) from private.food_pairs), (select 2 * count(es) from private.food_words()),
+               'food_pairs: each pair in food_words, both ways (a migration that changes food_words fills it again)');
 
 -- ---------------------------------------------------------------------
 -- The list, signed in (§4)
@@ -476,6 +577,24 @@ select test.throws($$select add_to_list('One more')$$, 'The list is full.', 'the
 select test.is(test.try($$select add_to_list('One more')$$), 'error: The list is full.', '... an error, not a refusal');
 select test.throws($$select add_to_list('Milk')$$, 'The list is full.', '... a bought line can''t come back either');
 select test.is(add_to_list('Leche: 2') ->> 'result', 'already', '... but a note for a line to buy still joins');
+-- The polls stay quick at the cap: food_other is a lookup (§3.4), so with 200 lines to buy and 60 to
+-- suggest, shopping_list() and My day's list take tens of milliseconds, where they took about a second
+-- while food_other worked the word list out on every call. The bound is loose, for slow machines.
+:as_owner
+insert into shopping_items (name, bought_at, bought_by)
+select 'Bought ' || g, private.now() - g * interval '1 hour', test.person('Sam') from generate_series(1, 60) g;
+update household set helper_list = 'add';
+select count(*) as unlocked from shopping_items where bought_at is null and not private \gset
+:as_admin
+select test.is(case when x.ms < 250 then 'under 250 ms' else x.ms || ' ms' end, 'under 250 ms', 'at the cap, shopping_list() answers in under 250 ms')
+from (select pg_temp.ms('select public.shopping_list()') as ms) x;
+:as_anon
+select test.is(case when x.ms < 250 then 'under 250 ms' else x.ms || ' ms' end, 'under 250 ms',
+               '... and My day''s list, with 60 to suggest too')
+from (select pg_temp.ms(format('select public.get_list_by_token(%L)', test.token('Morgan'))) as ms) x;
+select test.is((select jsonb_array_length(r -> 'items') || ' ' || jsonb_array_length(r -> 'suggest')
+                from (select get_list_by_token(test.token('Morgan')) as r) x), :'unlocked' || ' 60',
+               '... (every unlocked line to buy, and 60 to suggest)');
 rollback;
 
 -- shopping_list(): to buy A–Z; bought since the household's midnight, the latest first.

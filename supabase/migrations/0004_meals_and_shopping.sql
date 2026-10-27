@@ -8,7 +8,8 @@
 --     shopping_items (the shopping list: one row per thing the household buys,
 --     kept after it is bought) and my_day_use (what each My day link did to the
 --     list today). household gains meals_on_wall and helper_list.
---     calendar_links accepts item_kind 'meal'.
+--     calendar_links accepts item_kind 'meal'. private.food_pairs: the word list's pairs,
+--     worked out once here, so that private.food_other is a lookup.
 --   • Pages: shopping_list(); signed-in actions add_to_list and buy_item.
 --   • My day: get_list_by_token, add_to_list_by_token and buy_item_by_token.
 --   • Replaced, with the same signatures: get_person_day and day_text (meals),
@@ -22,7 +23,7 @@
 --   • One transaction. It refuses to run without 0003, twice, or on a database
 --     that isn't as 0003 left it.
 --   • Additive: the v2 pages work the same on 3 and 4.
---   • Every table has row-level security. No rows are seeded: with no meals and no
+--   • Every table has row-level security. No rows are seeded in public: with no meals and no
 --     list, the email, the texts, My day and the wall come out byte for byte as on 3.
 --   • Three new functions for anon (the token functions); a locked line never
 --     appears in, is matched by, or is changed by any of them.
@@ -250,6 +251,8 @@ $$;
 -- "tuna", "pastel"); where the only Spanish word is one of those, the English word keeps its
 -- aisle with no Spanish twin (es null). Plurals as they are usually written; a trailing "s" or
 -- "es" is tried on both sides when matching (private.guess_aisle, private.food_other).
+-- food_other reads it through private.food_pairs, worked out from it below: a later migration
+-- that changes this list fills food_pairs again, in the same transaction.
 create function private.food_words()
 returns table (en text, es text, aisle text)
 language sql
@@ -377,19 +380,63 @@ as $$
                   'other');
 $$;
 
+-- food_other's half of the word list, worked out once, here, rather than on every call:
+-- food_other runs once per line in every poll of the list (shopping_list(), My day's list), so
+-- it is a lookup. One row per pair (both words set) and direction: the word to find, in the
+-- language that isn't side, and the word to give, in side; each normalized as in guess_aisle,
+-- with its forms (itself, and less a trailing "s" or "es"). A later migration that changes
+-- food_words fills this again in the same transaction (food.test.sql checks that the two agree).
+-- Row-level security on, no policies and no privileges: only food_other, a definer function,
+-- reads it.
+create table private.food_pairs (
+  side       text not null check (side in ('en', 'es')),   -- the language of give
+  en         text not null,                                -- the pair's English word, as food_words has it (the tiebreak)
+  word       text not null,                                -- the word to find, normalized
+  forms      text[] not null,                              -- word, and word less a trailing "s" or "es"
+  give       text not null,                                -- the word in side, as food_words has it
+  give_forms text[] not null,                              -- give normalized, and less a trailing "s" or "es"
+  primary key (side, en)
+);
+alter table private.food_pairs enable row level security;
+revoke all on private.food_pairs from public, anon, authenticated, service_role;
+
+insert into private.food_pairs (side, en, word, forms, give, give_forms)
+select z.side, w.en, z.word,
+       array_remove(array[z.word, case when char_length(z.word) >= 4 and right(z.word, 1) = 's' then left(z.word, -1) end,
+                                  case when char_length(z.word) >= 5 and right(z.word, 2) = 'es' then left(z.word, -2) end], null),
+       z.give,
+       array_remove(array[z.give_n, case when char_length(z.give_n) >= 4 and right(z.give_n, 1) = 's' then left(z.give_n, -1) end,
+                                    case when char_length(z.give_n) >= 5 and right(z.give_n, 2) = 'es' then left(z.give_n, -2) end], null)
+from private.food_words() w
+cross join lateral (
+  select x.side, x.give,
+         btrim(regexp_replace(translate(lower(x.word),
+                                        'áàâäãéèêëíìîïóòôöõúùûüñçÁÀÂÄÃÉÈÊËÍÌÎÏÓÒÔÖÕÚÙÛÜÑÇ',
+                                        'aaaaaeeeeiiiiooooouuuuncaaaaaeeeeiiiiooooouuuunc'),
+                              '[^a-z0-9]+', ' ', 'g')) as word,
+         btrim(regexp_replace(translate(lower(x.give),
+                                        'áàâäãéèêëíìîïóòôöõúùûüñçÁÀÂÄÃÉÈÊËÍÌÎÏÓÒÔÖÕÚÙÛÜÑÇ',
+                                        'aaaaaeeeeiiiiooooouuuuncaaaaaeeeeiiiiooooouuuunc'),
+                              '[^a-z0-9]+', ' ', 'g')) as give_n
+  from (values ('es', w.en, w.es), ('en', w.es, w.en)) x (side, word, give)   -- side: the language given
+  where x.word is not null and x.give is not null
+) z;
+
 -- The same thing in p_lang ('en' or 'es') when the whole name, normalized as in guess_aisle,
 -- is a food_words entry in the other language: "Leche" read in English is 'milk', "Milk" in
 -- Spanish 'leche'. Null otherwise, and when the word in p_lang is the name itself
--- ("Tortillas", "Melon"). A definer function, so a member's shopping_list() can read the word
--- list (food_words is granted to nobody).
+-- ("Tortillas", "Melon"). A lookup in food_pairs: a definer function, so a member's
+-- shopping_list() can read it (food_pairs and food_words are granted to nobody); STABLE, as it
+-- reads a table.
 create function private.food_other(p_name text, p_lang text)
 returns text
 language sql
-immutable
+stable
 security definer
 set search_path = ''
 as $$
-  with n as (
+  -- materialized: the name is normalized once, not again for each row of food_pairs.
+  with n as materialized (
     select x.name,
            array_remove(array[x.name, case when char_length(x.name) >= 4 and right(x.name, 1) = 's' then left(x.name, -1) end,
                                       case when char_length(x.name) >= 5 and right(x.name, 2) = 'es' then left(x.name, -2) end], null) as forms
@@ -397,31 +444,9 @@ as $$
                                                 'áàâäãéèêëíìîïóòôöõúùûüñçÁÀÂÄÃÉÈÊËÍÌÎÏÓÒÔÖÕÚÙÛÜÑÇ',
                                                 'aaaaaeeeeiiiiooooouuuuncaaaaaeeeeiiiiooooouuuunc'),
                                       '[^a-z0-9]+', ' ', 'g')) as name) x
-  ),
-  -- Each pair as (the word to find, its forms, the word to give, its forms).
-  f as (
-    select w.en, z.side, z.word, z.give,
-           array_remove(array[z.word, case when char_length(z.word) >= 4 and right(z.word, 1) = 's' then left(z.word, -1) end,
-                                      case when char_length(z.word) >= 5 and right(z.word, 2) = 'es' then left(z.word, -2) end], null) as forms,
-           array_remove(array[z.give_n, case when char_length(z.give_n) >= 4 and right(z.give_n, 1) = 's' then left(z.give_n, -1) end,
-                                        case when char_length(z.give_n) >= 5 and right(z.give_n, 2) = 'es' then left(z.give_n, -2) end], null) as give_forms
-    from private.food_words() w
-    cross join lateral (
-      select x.side, x.give,
-             btrim(regexp_replace(translate(lower(x.word),
-                                            'áàâäãéèêëíìîïóòôöõúùûüñçÁÀÂÄÃÉÈÊËÍÌÎÏÓÒÔÖÕÚÙÛÜÑÇ',
-                                            'aaaaaeeeeiiiiooooouuuuncaaaaaeeeeiiiiooooouuuunc'),
-                                  '[^a-z0-9]+', ' ', 'g')) as word,
-             btrim(regexp_replace(translate(lower(x.give),
-                                            'áàâäãéèêëíìîïóòôöõúùûüñçÁÀÂÄÃÉÈÊËÍÌÎÏÓÒÔÖÕÚÙÛÜÑÇ',
-                                            'aaaaaeeeeiiiiooooouuuuncaaaaaeeeeiiiiooooouuuunc'),
-                                  '[^a-z0-9]+', ' ', 'g')) as give_n
-      from (values ('es', w.en, w.es), ('en', w.es, w.en)) x (side, word, give)   -- side: the language given
-      where x.word is not null and x.give is not null
-    ) z
   )
   select f.give
-  from n join f on f.side = p_lang and f.forms && n.forms and not (f.give_forms && n.forms)
+  from n join private.food_pairs f on f.side = p_lang and f.forms && n.forms and not (f.give_forms && n.forms)
   where n.name <> ''
   order by (f.word = n.name) desc, f.en
   limit 1;
