@@ -9,8 +9,8 @@ A private family web app (static site on GitHub Pages + Supabase). See `README.m
   - the contract check (`tests/contract/check.sh`): every `.rpc()` / `.from()` in the site and the Edge Functions names a function or table that exists in the migrated schema, with argument names it takes, and that the caller (signed out, signed in, Edge Function) may use. Rename a function or a parameter and this fails until every caller is updated;
   - the Edge Function tests (`tests/fn/*.test.ts`);
   - the browser tests (`tests/e2e/*.test.js`), against a JavaScript fake of Supabase (`tests/e2e/mock.js`);
-  - the real-database tests (`tests/realdb/run.sh`): the same pages in Chromium against the real schema, migrations, RLS and functions, so the fakes can't drift unnoticed (about 1.5 minutes);
-  - the docs check (`tests/docs/*.test.js`): this file, `README.md` and `docs/v2-design.md` against the code (deploy secrets, test suites, function signatures, tables and columns), and the function signatures in `docs/v1.1-google-calendar.md`.
+  - the real-database tests (`tests/realdb/run.sh`): the same pages in Chromium against the real schema, migrations, RLS and functions, so the fakes can't drift unnoticed (about 2.5 minutes);
+  - the docs check (`tests/docs/*.test.js`): this file, `README.md` and `docs/v2-design.md` against the code (deploy secrets, test suites, function signatures, tables and columns), and the function signatures in `docs/v1.1-google-calendar.md` and `docs/v1.2-kitchen.md`.
   `tests/run.sh fn e2e` runs only the suites named. See `tests/README.md`.
 - New behaviour gets new tests. Never weaken or delete an existing check to make a change pass; fix the code, or explain in the PR why the old expectation was wrong.
 

@@ -5,7 +5,7 @@
 #   tests/fn/*.test.ts       Edge Function handlers (Node, type stripping)
 #   tests/e2e/*.test.js      the site in Chromium against a mocked Supabase (Playwright)
 #   tests/realdb/run.sh      the site in Chromium against the real schema, migrations and functions
-#                            in a throwaway Postgres (about 1.5 minutes)
+#                            in a throwaway Postgres (about 2.5 minutes)
 #   tests/docs/*.test.js     the docs (CLAUDE.md, README.md, docs/v2-design.md) say what the code does
 # Each suite prints one "PASS  name" or "FAIL  name" line per check and exits non-zero on failure.
 # Usage: tests/run.sh                 all suites

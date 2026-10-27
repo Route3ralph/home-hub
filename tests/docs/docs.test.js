@@ -216,8 +216,8 @@ check(`docs/v2-design.md names every function a migration renames, old and new n
 check('docs/v2-design.md says a later change to a wrapped function replaces the wrapper and its _v3 body together',
   !renamed.some(([, to]) => /_v\d+$/.test(to)) || /replaces the wrapper and its `?_v3`? body together/.test(design));
 
-// Every signature written out in the design (and in the v1.1 design, docs/v1.1-google-calendar.md)
-// has the real parameter names, in order. A signature is
+// Every signature written out in the design (and in the v1.1 and v1.2 designs,
+// docs/v1.1-google-calendar.md and docs/v1.2-kitchen.md) has the real parameter names, in order. A signature is
 // "f()" or arguments that are parameters: "p" or "p_…" (the migrations' naming), or a name and a type
 // ("p_from date", "t public.tasks"), or any plain names after a schema ("private.series_after(t, p_after)").
 // A call ("monday(start)", "series_after(greatest(due_date,
