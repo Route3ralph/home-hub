@@ -2,7 +2,7 @@
 
 A private family web app for running the house: today's plan for everyone, a shared calendar, tasks that come round again, projects with Gantt schedules, a directory of contractors and accounts, and the family list. Kids and helpers get their own **My day** page, with no sign-in.
 
-- **Hub (family only):** https://route3ralph.github.io/home-hub/
+- **Hub (family only):** https://hub.webshek.com/ (the old address, https://route3ralph.github.io/home-hub/, forwards there)
 - **Share links (for contractors):** each project can have its own read-only link, made from the project's **Share** button.
 - **My day links (for kids and helpers):** each person on the Family page has one. It shows their today and tomorrow.
 
@@ -79,11 +79,12 @@ The rules are in [`supabase/schema.sql`](supabase/schema.sql) and [`supabase/mig
    (On a v2 database, run this before the migration, or add yourself on the Family page afterwards: the migration makes a person for every member it finds.)
 3. **Connect the site.** Put the project URL and publishable key in [`config.js`](config.js).
 4. **Set the sign-in redirect.** In Supabase, open **Authentication → URL Configuration**:
-   - Set **Site URL** to `https://route3ralph.github.io/home-hub/`.
-   - Add the same address under **Redirect URLs**.
+   - Set **Site URL** to the site's address, here `https://hub.webshek.com/`.
+   - Add the same address followed by `**` (`https://hub.webshek.com/**`) under **Redirect URLs**.
 5. **Recommended: block strangers from creating logins.** Go to **Authentication → Hooks → Before User Created → Postgres function** and choose `hook_family_only_signup`.
 6. **Set up email.** This step is required: see [Email through Resend](#email-through-resend) below.
 7. **Publish.** In GitHub, open **Settings → Pages** and deploy from branch `main`, folder `/ (root)`.
+   - **Your own address (optional).** At your domain's DNS host, add a CNAME record from a subdomain (here `hub`) to `<your GitHub user>.github.io`. Then in **Settings → Pages**, enter it under **Custom domain**, and tick **Enforce HTTPS** once GitHub offers it. Afterwards change the **Site URL** and **Redirect URLs** (step 4) and the `SITE_URL` secret to the new address. The `github.io` address keeps working and forwards to it.
 8. **For the morning email (v2):** steps 4–7 of [Upgrading to v2](#upgrading-to-v2).
 
 The kitchen renovation's starting schedule is in [`supabase/kitchen-renovation.json`](supabase/kitchen-renovation.json).
@@ -98,7 +99,7 @@ The order matters, and it's written out in [`CLAUDE.md`](CLAUDE.md) under **Depl
 3. Apply [`supabase/migrations/0002_home_hub_v2.sql`](supabase/migrations/0002_home_hub_v2.sql). The site switches to v2 the next time each phone loads it. **Never apply a migration before the site that understands it is live.**
 4. Deploy [`supabase/functions/hub-jobs`](supabase/functions/hub-jobs) with JWT verification turned off (`supabase functions deploy hub-jobs --no-verify-jwt`; it checks who is asking itself). In **Edge Functions → Secrets**, add:
    - `HUB_CRON_SECRET`: at least 32 random characters, for example from `openssl rand -hex 32`. Without it every run is refused.
-   - `SITE_URL`: the site's address, such as `https://route3ralph.github.io/home-hub/`, for the My day and confirmation links in the emails.
+   - `SITE_URL`: the site's address, such as `https://hub.webshek.com/`, for the My day and confirmation links in the emails.
    - `HEALTHCHECK_URL` (optional): a ping address, such as one from healthchecks.io, called after every good run, so you hear about it if the email stops.
    - `RESEND_API_KEY`, `EMAIL_FROM` and `EMAIL_FROM_NAME` are the same as for `send-email`.
    - `GOOGLE_SA_JSON` (optional, for [Google Calendar and Hearth](#google-calendar-and-hearth)): the whole service-account key file (step B there). Without it the calendar job stops at once and the morning email is unchanged.
