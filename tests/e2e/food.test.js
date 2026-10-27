@@ -325,8 +325,8 @@ const emailOf = (req) => {
   await page.click('#formDialog [data-act="prep"]');
   await sleep(150);
   let prep = await page.evaluate(() => (window.__added || []).map((a) => Object.assign({ page: a.page }, a.defaults, { onSaved: typeof a.defaults.onSaved })));
-  check('prep reminder for tonight\'s dinner: the task form with "Prep: Tacos", due today (not yesterday), the cook in charge, family',
-    same(prep, [{ page: 'tasks', title: 'Prep: Tacos', date: TODAY, responsible_id: ID.sam, category: 'family', onSaved: 'function' }]), JSON.stringify(prep));
+  check('prep reminder for tonight\'s dinner: the task form with "Prep: Tacos", due today (not yesterday), the cook in charge, family, not private (the dinner isn\'t locked)',
+    same(prep, [{ page: 'tasks', title: 'Prep: Tacos', date: TODAY, responsible_id: ID.sam, category: 'family', private: false, onSaved: 'function' }]), JSON.stringify(prep));
   await page.evaluate(() => { location.hash = '#/food/2026-10-27'; });
   await sleep(300);
   await page.evaluate(() => window.__added[0].defaults.onSaved({ id: 'task-1' }));
@@ -338,9 +338,33 @@ const emailOf = (req) => {
   await page.click('#formDialog [data-act="prep"]');
   await sleep(100);
   prep = await page.evaluate(() => window.__added.slice(-1)[0].defaults);
-  check('prep reminder for Friday\'s dinner: due Thursday; a locked dinner\'s title still in the task (it is the grown-ups\'), nobody in charge', prep.date === '2026-10-29'
-    && prep.title === 'Prep: <img src=x onerror="window.__pwned=1">' && prep.responsible_id === null, JSON.stringify(prep));
+  // A task that isn't private goes to the wall as "☐ <title>", to the person in charge's My day and into
+  // email subjects, so a locked dinner's prep reminder is a private task: the grown-ups who sign in
+  // still see "Prep: <title>" in the form and on Tasks; everywhere else it reads "Private item".
+  check('prep reminder for Friday\'s locked dinner: due Thursday, nobody in charge, and a private task (the title stays the grown-ups\')', prep.date === '2026-10-29'
+    && prep.title === 'Prep: <img src=x onerror="window.__pwned=1">' && prep.responsible_id === null && prep.private === true, JSON.stringify(prep));
   await page.evaluate(() => document.getElementById('formDialog').close());
+  // The lock ticked in the dialog but not saved yet: the prep reminder is private too (the saved
+  // dinner isn't locked yet, but that is what was asked for). Unticked, it isn't.
+  await page.click('.food-day[data-day="2026-10-28"]');
+  await sleep(100);
+  await page.click('#formDialog [data-act="prep"]');
+  await sleep(100);
+  prep = await page.evaluate(() => window.__added.slice(-1)[0].defaults);
+  check('prep reminder for Wednesday\'s Leftovers (not locked): "Prep: Leftovers", Taylor in charge, not private', prep.title === 'Prep: Leftovers'
+    && prep.responsible_id === ID.taylor && prep.private === false, JSON.stringify(prep));
+  await page.evaluate(() => document.getElementById('formDialog').close());
+  await page.click('.food-day[data-day="2026-10-28"]');
+  await sleep(100);
+  check('Wednesday\'s dialog: More closed, the lock off', !(await page.$eval('#formDialog .food-more', (d) => d.open)) && !(await page.isChecked('#formDialog input[name="private"]')));
+  await page.click('#formDialog .food-more summary');
+  await page.check('#formDialog input[name="private"]');
+  await page.click('#formDialog [data-act="prep"]');
+  await sleep(100);
+  prep = await page.evaluate(() => window.__added.slice(-1)[0].defaults);
+  check('prep reminder with the lock ticked but not saved: a private task', prep.title === 'Prep: Leftovers' && prep.private === true, JSON.stringify(prep));
+  await page.evaluate(() => document.getElementById('formDialog').close());
+  check('... and the dinner itself is unchanged until Save (no write)', !db.meals.find((m) => m.day === '2026-10-28').private, JSON.stringify(db.meals.find((m) => m.day === '2026-10-28')));
   // Clear this day.
   await page.click('.food-day[data-day="2026-10-29"]');
   await sleep(100);

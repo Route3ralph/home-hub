@@ -894,10 +894,41 @@ const emailOf = (req) => {
   await page.waitForTimeout(400);
   check('add sheet: defaults fill the form (date, title, who)', (await page.inputValue('.tasks-form [name="when_date"]')) === '2026-10-27'
     && (await page.inputValue('.tasks-form [name="title"]')) === 'Pick up Jordan\'s cleats' && same(await texts(page, '.tasks-form .pchip.ring .pchip-name'), ['Sam']));
+  check('add sheet: no private default: More closed, Private not ticked', !(await page.$eval('.tasks-form .tasks-more', (d) => d.open)) && !(await page.isChecked('.tasks-form [name="private"]')));
   await page.click('.tasks-form [type="submit"]');
   await page.waitForTimeout(600);
   check('add sheet: saved from another page, which is drawn again', db.tasks.some((x) => x.title === 'Pick up Jordan\'s cleats' && x.due_date === '2026-10-27')
     && (await lastToast(page)) === 'Added Pick up Jordan\'s cleats · due Tue Oct 27' && (await text(page, '#stub')) === 'Today');
+  check('add sheet: ... and saved not private', db.tasks.find((x) => x.title === 'Pick up Jordan\'s cleats').private === false);
+  // A private default (Food's prep reminder for a locked dinner): Private ticked, with More open so it
+  // shows; saved private, and handed to onSaved instead of drawing the page again.
+  await page.evaluate((sam) => HomeHub.core.use('tasks').openTaskForm({ title: 'Prep: Surprise cake', date: '2026-10-27', responsible_id: sam, category: 'family',
+    private: true, onSaved(row) { window.__prepSaved = row; } }), ID.sam);
+  await page.waitForTimeout(400);
+  check('openTaskForm({ private: true }): a new task with More open and Private ticked', await formOpen(page) && (await text(page, '.tasks-form h3')) === 'New task'
+    && await page.$eval('.tasks-form .tasks-more', (d) => d.open) && await page.isChecked('.tasks-form [name="private"]')
+    && (await page.inputValue('.tasks-form [name="title"]')) === 'Prep: Surprise cake' && (await page.inputValue('.tasks-form [name="category"]')) === 'family');
+  await page.click('.tasks-form [type="submit"]');
+  await page.waitForTimeout(600);
+  const privRow = lastWrite(db, 'POST').body;
+  check('openTaskForm({ private: true }): the row sent is private, Sam in charge, family; onSaved gets the saved row',
+    privRow && privRow.title === 'Prep: Surprise cake' && privRow.private === true && privRow.responsible_id === ID.sam && privRow.category === 'family' && privRow.due_date === '2026-10-27'
+    && (await page.evaluate(() => window.__prepSaved && window.__prepSaved.private)) === true && !(await formOpen(page)), JSON.stringify(privRow));
+  // Unticked before saving, it isn't private: the default is only where the form starts.
+  await page.evaluate(() => HomeHub.core.use('tasks').openTaskForm({ title: 'Prep: Pizza night', private: true }));
+  await page.waitForTimeout(400);
+  await page.uncheck('.tasks-form [name="private"]');
+  await page.click('.tasks-form [type="submit"]');
+  await page.waitForTimeout(600);
+  check('openTaskForm({ private: true }), unticked before saving: saved not private', lastWrite(db, 'POST').body.title === 'Prep: Pizza night' && lastWrite(db, 'POST').body.private === false,
+    JSON.stringify(lastWrite(db, 'POST').body));
+  // Editing a task follows the task's own flag, never the defaults.
+  const cleats = db.tasks.find((x) => x.title === 'Pick up Jordan\'s cleats');
+  await page.evaluate((id) => HomeHub.core.use('tasks').openTaskForm({ id, private: true }), cleats.id);
+  await page.waitForTimeout(400);
+  check('openTaskForm({ id, private: true }) edits the task as it is: Private not ticked', (await text(page, '.tasks-form h3')) === 'Edit task'
+    && !(await page.isChecked('.tasks-form [name="private"]')));
+  await page.click('.tasks-form [data-close]');
   await page.context().close();
 
   // =====================================================================

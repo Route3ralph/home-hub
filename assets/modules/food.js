@@ -255,7 +255,7 @@
       }
       const act = e.target.closest('[data-act]');
       if (act && act.dataset.act === 'clear') clearDay(st, day, act, fail);
-      else if (act && act.dataset.act === 'prep') prepReminder(st, m, fail);
+      else if (act && act.dataset.act === 'prep') prepReminder(st, m, fail, !!m.private || el.private.checked);
     });
 
     form.addEventListener('submit', async (e) => {
@@ -312,7 +312,10 @@
 
   // A prep reminder is an ordinary task (§5): "Prep: Tacos", due the day before or, for tonight's,
   // today (never born Late), the cook in charge, family; saving it comes back to Food.
-  function prepReminder(st, m, fail) {
+  // A locked dinner's is a private task (Private ticked under More), so "Prep: <title>" stays off the
+  // wall, other people's My day and every email subject as the dinner's title does. `locked` is the
+  // saved lock or the box ticked in the dialog now: either one keeps the title private.
+  function prepReminder(st, m, fail, locked) {
     let open;
     try { open = core.use('tasks').openTaskForm; } catch (err) { fail(friendly(err)); return; }
     if (typeof open !== 'function') { fail('Adding tasks isn\'t available yet. Reload the page to get the latest version.'); return; }
@@ -323,6 +326,7 @@
       date: before > dates.today() ? before : dates.today(),
       responsible_id: cook ? cook.id : null,
       category: 'family',
+      private: !!locked,
       onSaved() {
         toast('Prep reminder added');
         if (location.hash !== '#/food') location.hash = '#/food';
