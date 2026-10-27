@@ -541,8 +541,9 @@ function listForHelper(db, me) {
       .map((r) => ({ id: r.id, name: r.name, note: r.note, aisle: r.aisle, seen: r.bought_at, undo: mineNow(r) })),
   };
   if (canAdd) {
+    // With the aisle, as the migration has it, so Comprar otra vez can group them.
     out.suggest = open.filter((r) => r.bought_at != null && within(db, r.bought_at, 30 * 864e5)).sort(byBought).slice(0, 60)
-      .map((r) => withOtherWord({ name: r.name }, r.name, lang));
+      .map((r) => withOtherWord({ name: r.name, aisle: r.aisle }, r.name, lang));
   }
   return out;
 }

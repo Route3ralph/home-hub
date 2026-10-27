@@ -79,3 +79,72 @@
   content: ""; display: inline-block; box-sizing: border-box; width: 10px; height: 10px; margin-right: 7px;
   border: 2px solid var(--text-3); border-radius: 50%;
 }
+
+/* ---------- Meals (v1.2): each day's last rows, muted, never a box ----------
+   The slot's word where the time goes ("Cena"), the title, who's on it; for the person on it, the note
+   and the recipe link (its host name shown). */
+.day .irow.k-meal .irow-time span { color: var(--text-3); font-weight: 600; }
+.day .irow.k-meal .irow-title { font-weight: 550; color: var(--text-2); }
+.day .irow.k-meal.is-mine .irow-title { color: var(--text); }
+.meal-note { display: block; margin-top: 2px; color: var(--text-2); font-size: 14px; overflow-wrap: anywhere; }
+.meal-recipe { align-self: flex-start; display: inline-flex; align-items: center; min-height: 44px; font-size: 15px; font-weight: 600; overflow-wrap: anywhere; }
+
+/* ---------- The list's button (a helper's My day) ---------- */
+.day-shop { margin: 14px 0 0; }
+.btn.day-list-btn { min-height: 48px; padding: 10px 18px; font-size: 16px; font-weight: 650; }
+
+/* ---------- The shopping list (#list) ----------
+   Big rows for one hand in a shop: at least 56px, the whole row is the checkbox, 18px text. */
+.list-head h1 { margin: 2px 0 4px; }
+.list-back {
+  display: inline-flex; align-items: center; min-height: 44px; margin-left: -2px; padding: 0 2px;
+  font-size: 16px; font-weight: 600; text-decoration: none;
+}
+.list-banners .banner { margin: 12px 0 0; }
+.list-offline { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; }
+.list-offline p { flex: 1 1 200px; margin: 0; }
+.list-offline .btn { min-height: 44px; }
+.list-add { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0 0; }
+.day .list-add input[type="text"] { flex: 1 1 160px; min-width: 0; width: auto; min-height: 48px; font-size: 16px; }   /* 16px: phones don't zoom */
+.list-add .btn { min-height: 48px; padding: 0 18px; font-size: 16px; justify-content: center; }
+.list-suggest { flex: 1 1 100%; display: flex; flex-wrap: wrap; gap: 8px; }
+.list-sug, .list-chip {
+  min-height: 44px; padding: 0 14px;
+  border: 1px solid var(--border); border-radius: 999px; background: var(--surface); color: var(--text);
+  font-size: 16px; cursor: pointer; overflow-wrap: anywhere; text-align: left;
+}
+.list-sug:hover, .list-chip:hover { border-color: var(--text-3); }
+.list-chip:disabled { opacity: 0.5; cursor: default; }
+.list-again { margin: 14px 0 0; }
+.list-again summary {
+  display: flex; align-items: center; min-height: 44px; width: max-content; max-width: 100%;
+  color: var(--accent); font-size: 16px; font-weight: 650; cursor: pointer; list-style: none;
+}
+.list-again summary::-webkit-details-marker { display: none; }
+.list-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.list-aisle { margin: 18px 0 6px; font-size: 13px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-3); }
+.list-rows {
+  padding: 0 12px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow);
+}
+.lrow {
+  display: flex; align-items: center; gap: 12px; width: 100%; min-height: 56px; padding: 8px 2px;
+  border: 0; border-bottom: 1px solid var(--line); background: none; color: var(--text);
+  font-size: 18px; line-height: 1.3; text-align: left; cursor: pointer;
+}
+.lrow:last-child { border-bottom: 0; }
+.lrow:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 8px; }
+.lrow[aria-disabled="true"] { cursor: default; }
+.lrow-box.irow-box { flex: none; width: 32px; height: 32px; border-radius: 9px; }
+.lrow-box.irow-box svg { width: 22px; height: 22px; }
+.lrow[aria-checked="true"] .irow-box { background: var(--accent); border-color: var(--accent); }
+.lrow[aria-checked="true"] .irow-box svg { opacity: 1; }
+.lrow[aria-checked="true"] .lrow-name { text-decoration: line-through; color: var(--text-3); }
+.lrow-main { flex: 1; min-width: 0; }
+.lrow-name { font-weight: 600; overflow-wrap: anywhere; }
+.lrow-note { color: var(--text-3); font-size: 15px; overflow-wrap: anywhere; }
+.lrow-unsent { flex: none; color: var(--warn); font-size: 13px; font-weight: 650; white-space: nowrap; }
+.lrow.is-new { cursor: default; padding-left: 46px; }   /* not sent yet: no box until it has an id */
+.list-bought .sec-head { margin: 22px 0 6px; }
+.list-bought .lrow { color: var(--text-3); }
+.list-empty { padding: 16px 2px; font-size: 16px; }
