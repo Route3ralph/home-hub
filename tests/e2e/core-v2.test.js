@@ -1,7 +1,9 @@
 // Browser tests for the v2 core: what HomeHub.core gives pages when the database is v2 (people,
 // household and clock caches, core.v2.fmt / dates / ui / call, toasts with Undo, the Add and More
 // sheets, the phone bottom bar) and the projects' task_dates (sent with every schedule save in v2,
-// never in v1, and filled back in when the database marked them stale).
+// never in v1, and filled back in when the database marked them stale). Schema 4 (v1.2): the Food tab
+// in a six-cell bottom bar, Shopping in the Add sheet (through use('food').openListAdd), and signing
+// out forgetting the Food page's saved list (homehub.shop.hub).
 //
 // The fake RPCs answer with the shapes in supabase/migrations/0002_home_hub_v2.sql. The v2 pages are
 // replaced by small stub modules (served in place of assets/modules/<page>.js), so this file tests the
@@ -18,7 +20,7 @@ const results = [];
 const check = (name, ok, detail) => results.push(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? `  (${String(detail).slice(0, 200)})` : ''}`);
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const CORS = { 'access-control-allow-origin': '*', 'access-control-allow-headers': '*', 'access-control-allow-methods': 'GET,POST,PATCH,DELETE,OPTIONS', 'access-control-expose-headers': '*' };
-const V = '20261026d';
+const V = '20261028a';
 
 // ---- Fixtures (fictional people only)
 const T = '2026-10-24T16:00:00.000000+00:00';
@@ -66,17 +68,19 @@ const STUBS = {
   directory: { nav: { label: 'Directory', order: 50 } },
   people: { nav: { label: 'Family', order: 60 } },
   settings: { nav: { label: 'Settings', order: 70 } },
+  // Food comes with schema 4 (assets/modules/food.js); its openListAdd is the Add sheet's Shopping.
+  food: { nav: { label: 'Food', order: 35, primary: true }, provides: 'openListAdd', min: 4 },
 };
 const stubModule = (name, s) => `;(function () {
   var core = HomeHub.core;
   var provides = {};
   ${s.provides ? `provides[${JSON.stringify(s.provides)}] = function (defaults) {
-    (window.__added = window.__added || []).push({ page: ${JSON.stringify(name)}, fn: ${JSON.stringify(s.provides)}, defaults: defaults });
-    if (defaults && defaults.fail) throw new Error('That form is broken');
+    (window.__added = window.__added || []).push({ page: ${JSON.stringify(name)}, fn: ${JSON.stringify(s.provides)}, defaults: defaults, n: arguments.length });
+    if ((defaults && defaults.fail) || window.__failAdd) throw new Error('That form is broken');
   };` : ''}
   HomeHub.register({
     name: ${JSON.stringify(name)},
-    schema: { min: 2, max: 2 },
+    schema: { min: ${s.min || 2}, max: 99 },
     nav: ${JSON.stringify(s.nav)},
     match: function (parts) {
       if (${!!s.root} && !parts.length) return {};
@@ -151,6 +155,8 @@ const emailOf = (req) => {
       await page.route(`**/assets/modules/${name}.js*`, (route) => route.fulfill({ contentType: 'application/javascript', body: opts.v1 ? '// not under test' : stubModule(name, STUBS[name]) }));
     }
     if (!opts.v1) await page.route('**/assets/modules/projects.js*', (route) => route.fulfill({ contentType: 'application/javascript', body: stubModule('projects', STUBS.projects) }));
+    // Food (schema 4 only), with openListAdd unless opts.food says otherwise.
+    await page.route('**/assets/modules/food.js*', (route) => route.fulfill({ contentType: 'application/javascript', body: opts.v1 ? '// not under test' : stubModule('food', opts.food || STUBS.food) }));
     await page.goto(BASE + (opts.path || '/'));
     await page.waitForTimeout(opts.wait || 600);
     return { page, db, log, context };
@@ -179,12 +185,13 @@ const emailOf = (req) => {
   const order = head.scripts.map((s) => s.src.replace(/\?.*$/, '').replace(/^https:\/\/cdn\.jsdelivr\.net\/.*\/supabase\.js$/, 'supabase-js'));
   const v1Mods = ['home', 'projects', 'contractors', 'family'].map((m) => `assets/modules/${m}.js`);
   const v2Mods = V2_PAGES.map((m) => `assets/modules/${m}.js`);
-  check('index.html: core first, then the v1 modules, then the v2 modules, in order',
-    same(order, ['config.js', 'supabase-js', 'assets/gantt.js', 'assets/hub.js', ...v1Mods, ...v2Mods]), order.join(', '));
+  check('index.html: core first, then shoplist.js, the v1 modules, the v2 modules and Food, in order',
+    same(order, ['config.js', 'supabase-js', 'assets/gantt.js', 'assets/hub.js', 'assets/shoplist.js', ...v1Mods, ...v2Mods, 'assets/modules/food.js']), order.join(', '));
   check('index.html: no script is async or deferred', head.scripts.every((s) => !s.async));
   // Then projects.css: the Projects page is a v1 page and a v2 page; its styles apply to the v2 one only.
+  // Then food.css (schema 4).
   check('index.html: page styles load after styles.css, in order',
-    same(head.styles.map((h) => h.replace(/\?.*$/, '')), ['assets/styles.css', ...V2_PAGES.map((m) => `assets/css/${m}.css`), 'assets/css/projects.css']), head.styles.join(', '));
+    same(head.styles.map((h) => h.replace(/\?.*$/, '')), ['assets/styles.css', ...V2_PAGES.map((m) => `assets/css/${m}.css`), 'assets/css/projects.css', 'assets/css/food.css']), head.styles.join(', '));
   const vers = new Set([...head.scripts.map((s) => s.src), ...head.styles].map((u) => (u.match(/[?&]v=([^&]+)/) || [])[1]));
   check(`index.html: every script and stylesheet carries ?v=${V}`, vers.size === 1 && vers.has(V), [...vers].join(', '));
   check('index.html: manifest, apple-touch-icon, theme-color and iPhone web-app tags',
@@ -370,8 +377,11 @@ const emailOf = (req) => {
   check('More: no longer current on a bottom bar page', !(await page.$eval('.bb-more', (b) => b.classList.contains('is-current'))));
   await page.click('.bb-more');
   await page.waitForTimeout(150);
+  await page.evaluate(() => ['homehub.shop.hub', 'homehub.shop.day', 'homehub.directory.kind'].forEach((k) => localStorage.setItem(k, '{"v":1,"owner":"p-alex"}')));
   await page.click('#sheet [data-act="sign-out"]');
   await page.waitForTimeout(600);
+  const kept = await page.evaluate(() => ['homehub.shop.hub', 'homehub.shop.day', 'homehub.directory.kind'].map((k) => localStorage.getItem(k) !== null));
+  check('Sign out forgets the Food page\'s saved shopping list (homehub.shop.hub), and nothing else', same(kept, [false, true, true]), JSON.stringify(kept));
   check('More: Sign out returns to the sign-in screen without the bar', (await text(page, 'body')).includes('Email me a sign-in code')
     && !(await page.$('.bottombar')) && !(await page.evaluate(() => document.body.classList.contains('has-bottombar'))) && !(await page.$eval('#sheet', (d) => d.open)));
   check('Sign out clears the v2 caches', await page.evaluate(() => HomeHub.core.v2.people().length === 0 && HomeHub.core.v2.mePerson === null && HomeHub.core.v2.clock === null));
@@ -411,6 +421,132 @@ const emailOf = (req) => {
   await page.evaluate(() => HomeHub.core.openAdd('task', { fail: true }));
   await page.waitForTimeout(150);
   check('openAdd: a form that fails shows the error in a toast', (await text(page, '.toasts .toast-error')) === 'That form is broken', await text(page, '.toasts'));
+  await page.context().close();
+
+  // =====================================================================
+  // 8b. Schema 4 (v1.2): Food in a six-cell bottom bar, Shopping in the Add sheet; 2 and 3 as pinned
+  // =====================================================================
+  const barOf = (p) => p.$$eval('.bottombar > *', (els) => els.map((e) => {
+    const r = e.getBoundingClientRect();
+    const label = e.querySelector('span');
+    return { text: e.innerText.trim(), label: e.getAttribute('aria-label'), tab: e.dataset.tab || null, w: r.width, h: r.height,
+      fits: !label || label.scrollWidth <= Math.ceil(label.getBoundingClientRect().width) + 1 };
+  }));
+  const v4 = { hub_schema_version: () => 4 };
+  ({ page, db } = await open({ label: 'v4-phone', ctx: phone, rpc: v4 }));
+  let bar4 = await barOf(page);
+  check('schema 4 phone: the bottom bar is Today · Calendar · ＋ · Tasks · Food · More (six cells)',
+    same(bar4.map((b) => b.tab || b.label || b.text), ['today', 'calendar', 'Add an event, a task or shopping', 'tasks', 'food', 'More'])
+    && same(bar4.map((b) => b.text).filter(Boolean), ['Today', 'Calendar', 'Tasks', 'Food', 'More']), JSON.stringify(bar4.map((b) => b.tab || b.label || b.text)));
+  check('schema 4 phone (390px): every cell at least 44px, every label fits, no sideways scroll',
+    bar4.every((b) => b.w >= 44 && b.h >= 44 && b.fits) && await noSideScroll(page), JSON.stringify(bar4.map((b) => [Math.round(b.w), Math.round(b.h), b.fits])));
+  check('schema 4 phone: Food has its own icon (ICON.food, a fork and knife), not the plain page icon', await page.evaluate(() => {
+    const path = (html) => { const d = document.createElement('div'); d.innerHTML = html || ''; return (d.querySelector('path') || { getAttribute: () => null }).getAttribute('d'); };
+    const drawn = document.querySelector('.bottombar a[data-tab="food"] svg path').getAttribute('d');
+    return !!drawn && drawn === path(HomeHub.core.v2.ui.icon.food) && drawn !== path(HomeHub.core.v2.ui.icon.page);
+  }));
+  await page.screenshot({ path: SHOTS + 'v4-phone.png' });
+  await page.click('.bottombar a[data-tab="food"]');
+  await page.waitForTimeout(300);
+  check('schema 4 phone: tapping Food opens it and marks it current', (await text(page, '#probe')).startsWith('food') && (await page.getAttribute('.bottombar a[data-tab="food"]', 'aria-current')) === 'page'
+    && !(await page.$eval('.bb-more', (b) => b.classList.contains('is-current'))));
+  await page.setViewportSize({ width: 360, height: 740 });
+  await page.waitForTimeout(150);
+  bar4 = await barOf(page);
+  check('schema 4 phone (360px): six cells, each at least 44px, every label fits, no sideways scroll',
+    bar4.length === 6 && bar4.every((b) => b.w >= 44 && b.h >= 44 && b.fits) && await noSideScroll(page), JSON.stringify(bar4.map((b) => [Math.round(b.w), Math.round(b.h), b.fits])));
+  await page.screenshot({ path: SHOTS + 'v4-phone-360.png' });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.click('.bb-add');
+  await page.waitForTimeout(200);
+  const add4 = await page.evaluate(() => ({
+    open: document.querySelector('#sheet').open,
+    group: document.querySelector('#sheet .add-switch').getAttribute('aria-label'),
+    choices: [...document.querySelectorAll('#sheet [data-add]')].map((b) => [b.dataset.add, b.querySelector('b').textContent, b.querySelector('small').textContent, b.getBoundingClientRect().height, b.getBoundingClientRect().width]),
+    oneRow: new Set([...document.querySelectorAll('#sheet [data-add]')].map((b) => Math.round(b.getBoundingClientRect().top))).size === 1,
+    help: document.querySelector('#sheet .add-help').textContent,
+  }));
+  check('schema 4 Add: Event | Task | Shopping ("Something to buy") in one row, each at least 44px',
+    add4.open && add4.group === 'Event, task or shopping' && same(add4.choices.map((c) => c.slice(0, 3)), [['event', 'Event', 'Happens at a time'], ['task', 'Task', 'Gets ticked off'], ['shopping', 'Shopping', 'Something to buy']])
+    && add4.choices.every((c) => c[3] >= 44 && c[4] >= 44) && add4.oneRow, JSON.stringify(add4));
+  check('schema 4 Add: the help line names Shopping too', add4.help === 'Piano, pickups, appointments → Event. Pills, filters, chores, calls → Task. Milk, batteries → Shopping.', add4.help);
+  check('schema 4 Add: fits a phone without sideways scroll', await noSideScroll(page));
+  await page.screenshot({ path: SHOTS + 'v4-phone-add.png' });
+  await page.click('#sheet [data-add="shopping"]');
+  await page.waitForTimeout(150);
+  added = await page.evaluate(() => window.__added || []);
+  check('Add → Shopping calls food.openListAdd() with nothing, and closes the sheet', added.length === 1 && added[0].page === 'food' && added[0].fn === 'openListAdd' && added[0].n === 0
+    && !(await page.$eval('#sheet', (d) => d.open)), JSON.stringify(added));
+  await page.click('.bb-add');
+  await page.waitForTimeout(150);
+  await page.click('#sheet [data-add="shopping"]');
+  await page.waitForTimeout(150);
+  added = await page.evaluate(() => window.__added);
+  check('Add → Shopping again: two adds in a row, each through openListAdd', added.length === 2 && added.every((a) => a.fn === 'openListAdd'), JSON.stringify(added));
+  await page.evaluate(() => HomeHub.core.openAdd('shopping'));
+  await page.waitForTimeout(100);
+  added = await page.evaluate(() => window.__added);
+  check('openAdd(\'shopping\') skips the sheet', added.length === 3 && added[2].fn === 'openListAdd' && !(await page.$eval('#sheet', (d) => d.open)), JSON.stringify(added[2]));
+  await page.evaluate(() => { window.__failAdd = true; HomeHub.core.openAdd('shopping'); });
+  await page.waitForTimeout(150);
+  check('openAdd(\'shopping\'): an add box that fails shows the error in a toast', (await text(page, '.toasts .toast-error')) === 'That form is broken', await text(page, '.toasts'));
+  await page.context().close();
+
+  // a schema-4 tablet: eight top tabs on their own row, all on screen
+  ({ page } = await open({ label: 'v4-tablet', rpc: v4, ctx: { viewport: { width: 700, height: 1000 }, hasTouch: true } }));
+  const tablet4 = await page.evaluate(() => ({
+    tabs: [...document.querySelectorAll('.tabs a')].map((a) => [a.textContent, a.getBoundingClientRect().height]),
+    tabsFit: [...document.querySelectorAll('.tabs a')].every((a) => a.getBoundingClientRect().right <= document.querySelector('.tabs').getBoundingClientRect().right + 1),
+  }));
+  check('schema 4 tablet: the eight top tabs (Food after Tasks) are on screen, each at least 44px',
+    same(tablet4.tabs.map((t) => t[0]), ['Today', 'Calendar', 'Tasks', 'Food', 'Projects', 'Directory', 'Family', 'Settings']) && tablet4.tabs.every((t) => t[1] >= 44) && tablet4.tabsFit
+    && await noSideScroll(page), JSON.stringify(tablet4));
+  await page.screenshot({ path: SHOTS + 'v4-tablet.png' });
+  await page.context().close();
+
+  // schema 4, but a Food page without openListAdd (an older food.js): Event | Task only
+  ({ page } = await open({ label: 'v4-no-list-add', ctx: phone, rpc: v4, food: { nav: { label: 'Food', order: 35, primary: true }, min: 4 } }));
+  await page.click('.bb-add');
+  await page.waitForTimeout(150);
+  check('schema 4 without openListAdd: the Add sheet is Event | Task', same(await page.$$eval('#sheet [data-add]', (b) => b.map((x) => x.dataset.add)), ['event', 'task'])
+    && (await page.getAttribute('.bb-add', 'aria-label')) === 'Add an event or task');
+  await page.context().close();
+
+  // schema 3: the five-cell bar and Event | Task, as on 2; the Food page (made for 4) isn't there
+  ({ page } = await open({ label: 'v3-phone', ctx: phone, rpc: { hub_schema_version: () => 3 } }));
+  const bar3 = await barOf(page);
+  check('schema 3 phone: the bottom bar stays Today · Calendar · ＋ · Tasks · More', same(bar3.map((b) => b.tab || b.label || b.text), ['today', 'calendar', 'Add an event or task', 'tasks', 'More']),
+    JSON.stringify(bar3.map((b) => b.tab || b.label || b.text)));
+  await page.click('.bb-add');
+  await page.waitForTimeout(150);
+  const add3 = await page.evaluate(() => ({ choices: [...document.querySelectorAll('#sheet [data-add]')].map((b) => b.dataset.add),
+    help: document.querySelector('#sheet .add-help').textContent, three: !!document.querySelector('#sheet .add-three') }));
+  check('schema 3 Add: Event | Task and the help line, as pinned', same(add3.choices, ['event', 'task']) && !add3.three
+    && add3.help === 'Piano, pickups, appointments → Event. Pills, filters, chores, calls → Task.', JSON.stringify(add3));
+  await page.keyboard.press('Escape');
+  await page.evaluate(() => HomeHub.core.openAdd('shopping'));
+  await page.waitForTimeout(150);
+  check('schema 3: openAdd(\'shopping\') says the page isn\'t there instead of failing quietly', /isn't available/.test(await text(page, '.toasts .toast-error'))
+    && !(await page.evaluate(() => (window.__added || []).length)), await text(page, '.toasts'));
+  await page.context().close();
+
+  // Signing out forgets the Food page's saved list (homehub.shop.hub): the desktop Sign out, and a
+  // sign-out that comes from elsewhere (another tab, an expired sign-in), once the page has closed.
+  ({ page } = await open({ label: 'v4-sign-out', rpc: v4 }));
+  const keys = ['homehub.shop.hub', 'homehub.shop.day', 'homehub.directory.kind'];
+  await page.evaluate((ks) => ks.forEach((k) => localStorage.setItem(k, '{"v":1,"owner":"p-alex"}')), keys);
+  await page.click('.topbar [data-shell="sign-out"]');
+  await page.waitForTimeout(600);
+  let left = await page.evaluate((ks) => ks.map((k) => localStorage.getItem(k) !== null), keys);
+  check('Sign out (desktop): homehub.shop.hub is removed; My day\'s list and other settings stay', same(left, [false, true, true])
+    && (await text(page, 'body')).includes('Email me a sign-in code'), JSON.stringify(left));
+  await page.context().close();
+  ({ page } = await open({ label: 'v4-signed-out-elsewhere', rpc: v4 }));
+  await page.evaluate(() => localStorage.setItem('homehub.shop.hub', '{"v":1,"owner":"p-alex"}'));
+  await page.evaluate(() => HomeHub.core.sb.auth.signOut());
+  await page.waitForTimeout(600);
+  check('a sign-out from elsewhere also removes homehub.shop.hub once the page has closed', (await page.evaluate(() => localStorage.getItem('homehub.shop.hub'))) === null
+    && (await text(page, 'body')).includes('Email me a sign-in code'));
   await page.context().close();
 
   // =====================================================================

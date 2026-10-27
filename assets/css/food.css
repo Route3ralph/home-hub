@@ -1,0 +1,10 @@
+/* =====================================================================
+   Home Hub v1.2: styles for the Food page (assets/modules/food.js):
+   this week's dinners and the shopping list. Shared pieces (cards, pills,
+   badges, dialogs, forms, item rows) are in styles.css. Colours come from
+   its variables, so light and dark both work. Every tap target is at
+   least 44px, and nothing scrolls the page sideways at 390px.
+   ===================================================================== */
+
+/* ---------- Head ---------- */
+.food-head { margin-bottom: 10px; }

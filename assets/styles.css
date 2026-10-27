@@ -665,6 +665,9 @@ dialog.sheet { width: min(440px, calc(100vw - 32px)); }
 .add-choice svg { width: 30px; height: 30px; margin-bottom: 4px; fill: none; stroke: var(--accent); stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 .add-choice b { font-size: 17px; }
 .add-choice small { color: var(--text-3); font-size: 13px; }
+/* Schema 4: Event · Task · Shopping in one row. */
+.add-switch.add-three { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.add-three .add-choice { align-content: start; padding: 14px 6px; text-align: center; }
 .add-help { margin: 12px 0 0; }
 
 /* ---------- People: dots and chips ---------- */

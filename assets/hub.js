@@ -672,6 +672,8 @@
     page: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="3.5" width="14" height="17" rx="2.5"/><path d="M9 9h6M9 13h6"/></svg>',
     more: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg>',
     plus: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>',
+    // A fork and knife: the Food page (schema 4) in the bottom bar, and Shopping in the Add sheet.
+    food: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5.5 3v5a2.5 2.5 0 0 0 5 0V3M8 3v18M17.5 21V3c-2 1.2-3.5 3.8-3.5 7.5V14h3.5"/></svg>',
   });
 
   // A cancelled day of an event is one someone skipped (Skip this day), so it says so.
@@ -808,8 +810,18 @@
   }
   const closeSheet = () => { if (sheetDialog.open) sheetDialog.close(); };
 
+  // The Food page keeps the shopping list it last saw, and its changes not sent yet, on this device for
+  // whoever is signed in (assets/shoplist.js, homehub.shop.hub). It holds locked lines, so it goes when
+  // they sign out, before anything else; and again once the page on screen has been closed, in case a
+  // change that was still on its way saved it once more.
+  const SHOP_KEY = 'homehub.shop.hub';
+  function forgetShopping() {
+    try { localStorage.removeItem(SHOP_KEY); } catch (err) { /* storage unavailable: nothing was kept */ }
+  }
+
   const signOut = async () => {
     closeSheet();
+    forgetShopping();
     try { await sb.auth.signOut(); } catch (err) { toast(friendly(err), { error: true }); }
   };
 
@@ -824,26 +836,40 @@
     s.querySelector('[data-act="sign-out"]').addEventListener('click', signOut);
   }
 
-  // The Add sheet: Event or Task, then that page's form. openAdd('event' | 'task', defaults) skips the
-  // choice. The forms come from the Calendar and Tasks pages: use('calendar').openEventForm(defaults),
-  // use('tasks').openTaskForm(defaults).
+  // The Food page's one-field "add to the shopping list" dialog, use('food').openListAdd(), or null.
+  // Only a database at schema 4 shows the Food page, so only there does the Add sheet offer Shopping.
+  function listAdder() {
+    try {
+      const open = use('food').openListAdd;
+      return typeof open === 'function' ? open : null;
+    } catch (err) { return null; }
+  }
+
+  // The Add sheet: Event or Task (and, on schema 4, Shopping), then that page's form. openAdd('event' |
+  // 'task', defaults) and openAdd('shopping') skip the choice. The forms come from the Calendar, Tasks
+  // and Food pages: use('calendar').openEventForm(defaults), use('tasks').openTaskForm(defaults),
+  // use('food').openListAdd().
   function openAdd(kind, defaults) {
     const start = (k) => {
       closeSheet();
-      const [page, fn] = k === 'task' ? ['tasks', 'openTaskForm'] : ['calendar', 'openEventForm'];
+      const [page, fn] = { task: ['tasks', 'openTaskForm'], shopping: ['food', 'openListAdd'] }[k] || ['calendar', 'openEventForm'];
       try {
         const open = use(page)[fn];
-        if (typeof open !== 'function') throw new Error(`Adding ${k}s isn't available yet. Reload the page to get the latest version.`);
-        Promise.resolve(open(Object.assign({}, defaults))).catch((err) => toast(friendly(err), { error: true }));
+        if (typeof open !== 'function') {
+          throw new Error(`${k === 'shopping' ? 'Adding to the shopping list' : `Adding ${k}s`} isn't available yet. Reload the page to get the latest version.`);
+        }
+        Promise.resolve(k === 'shopping' ? open() : open(Object.assign({}, defaults))).catch((err) => toast(friendly(err), { error: true }));
       } catch (err) { toast(friendly(err), { error: true }); }
     };
-    if (kind === 'event' || kind === 'task') { start(kind); return; }
+    if (kind === 'event' || kind === 'task' || kind === 'shopping') { start(kind); return; }
+    const shopping = !!listAdder();
     const s = openSheet('Add', `
-      <div class="add-switch" role="group" aria-label="Event or task">
+      <div class="add-switch${shopping ? ' add-three' : ''}" role="group" aria-label="${shopping ? 'Event, task or shopping' : 'Event or task'}">
         <button type="button" class="add-choice" data-add="event">${ICON.calendar}<b>Event</b><small>Happens at a time</small></button>
         <button type="button" class="add-choice" data-add="task">${ICON.tasks}<b>Task</b><small>Gets ticked off</small></button>
+        ${shopping ? `<button type="button" class="add-choice" data-add="shopping">${ICON.food}<b>Shopping</b><small>Something to buy</small></button>` : ''}
       </div>
-      <p class="meta add-help">Piano, pickups, appointments → Event. Pills, filters, chores, calls → Task.</p>`);
+      <p class="meta add-help">Piano, pickups, appointments → Event. Pills, filters, chores, calls → Task.${shopping ? ' Milk, batteries → Shopping.' : ''}</p>`);
     s.querySelectorAll('[data-add]').forEach((b) => b.addEventListener('click', () => start(b.dataset.add)));
   }
 
@@ -1025,7 +1051,8 @@
       me = null;
       sessionEmail = null;
       clearV2();
-      renderLogin(linkError);
+      renderLogin(linkError);   // closes the page on screen (its ctx.signal aborts)
+      forgetShopping();
       return;
     }
     setPendingSignIn(null);
@@ -1131,6 +1158,8 @@
 
   // v2: top tabs on bigger screens; under 640px a bottom bar with the primary pages, ＋ (the Add
   // sheet) in the middle, and More (the other pages and Sign out). CSS picks which one shows.
+  // Schema 2 and 3: Today · Calendar · ＋ · Tasks · More; schema 4 adds Food: Today · Calendar · ＋ ·
+  // Tasks · Food · More.
   function renderShellV2() {
     const navs = active.filter((m) => m.nav);
     const href = (m) => esc(m.nav.href || `#/${m.name}`);
@@ -1151,7 +1180,7 @@
       <main class="page" id="main"></main>
       <nav class="bottombar" aria-label="Main">
         ${primary.slice(0, half).map(barLink).join('')}
-        <button type="button" class="bb-add" data-shell="add" aria-label="Add an event or task">${ICON.plus}</button>
+        <button type="button" class="bb-add" data-shell="add" aria-label="${listAdder() ? 'Add an event, a task or shopping' : 'Add an event or task'}">${ICON.plus}</button>
         ${primary.slice(half).map(barLink).join('')}
         <button type="button" class="bb-more" data-shell="more" aria-haspopup="dialog">${ICON.more}<span>More</span></button>
       </nav>`;
