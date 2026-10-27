@@ -435,6 +435,16 @@ const emailOf = (req) => {
   await addItem(page, 'Milk: 2 gallons');
   await sleep(250);
   check('"Milk: 2 gallons": the note joins the line after " · "', item(db, 'Milk').note === '2 · 2 gallons' && (await row(page, 'buy', 'Milk').locator('.food-note').textContent()) === '2 · 2 gallons');
+  await addItem(page, 'Tortillas: 2');
+  await sleep(250);
+  check('"Tortillas: 2" while its note is "2 packs": "2" is in it but isn\'t one of its " · " parts, so it joins ("2 packs · 2"), as the database does',
+    item(db, 'Tortillas').note === '2 packs · 2' && (await row(page, 'buy', 'Tortillas').locator('.food-note').textContent()) === '2 packs · 2', JSON.stringify(item(db, 'Tortillas')));
+  const tortillaAdds = calls(db, 'add_to_list').length;
+  await addItem(page, 'Tortillas: 2 packs · 2');
+  await sleep(250);
+  check('… a note with " · " in it that is already its note (typed again, or sent again) changes nothing: "Already on the list"',
+    item(db, 'Tortillas').note === '2 packs · 2' && calls(db, 'add_to_list').length === tortillaAdds + 1 && (await lastToast(page)) === 'Already on the list',
+    JSON.stringify([item(db, 'Tortillas').note, await lastToast(page)]));
   await addItem(page, 'Leche');
   await sleep(250);
   check('"Leche" while Milk is to buy → "Already on the list as Milk"', (await lastToast(page)) === 'Already on the list as Milk' && !item(db, 'Leche'), await lastToast(page));

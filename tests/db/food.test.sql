@@ -60,6 +60,15 @@ create function pg_temp.used(p_day date) returns text language sql stable securi
   select coalesce((select u.changes || ' ' || u.ticks from public.my_day_use u
                    where u.person_id = (select id from public.people where name = 'Morgan') and u.day = p_day), 'none')
 $$;
+-- What an add from Morgan's link answers: its result, or the error it raised. Unlike test.try, an add
+-- that works is kept.
+create function pg_temp.her_add(p_text text) returns text language plpgsql as $$
+begin
+  return public.add_to_list_by_token(test.token('Morgan'), p_text) ->> 'result';
+exception when others then
+  return 'error: ' || sqlerrm;
+end;
+$$;
 
 -- The household's own items, so the email and day_text have something besides meals.
 insert into events (title, start_date, start_time, responsible_id, participant_ids) values
@@ -764,6 +773,26 @@ select test.is(add_to_list_by_token(test.token('Morgan'), 'Leche') - 'items' - '
                jsonb_build_object('result', 'already', 'item_id', (pg_temp.line('Milk')).id, 'name', 'Milk'),
                '"Leche" while "Milk" is to buy: "Ya está en la lista como Milk"');
 select test.is(pg_temp.used('2026-10-28'), '1 0', '... nothing changed, nothing counted');
+-- A note with " · " in it (what the list puts between joined notes), sent again after a lost reply:
+-- it is already in the line's note (as a run of its parts), so the note isn't joined again, nothing
+-- is counted, and the resend is never refused at the cap (§4.1 step 3).
+begin;
+select test.is(pg_temp.her_add('Pan dulce: 2 · los grandes'), 'added', 'a note with " · " in it (the list''s own separator): added');
+select test.is(pg_temp.her_add('Pan dulce: 2 · los grandes'), 'already', '... sent again after a lost reply: already');
+select test.is((pg_temp.line('Pan dulce')).note, '2 · los grandes', '... the note once');
+select test.is(pg_temp.used('2026-10-28'), '2 0', '... and one change counted');
+select test.is(pg_temp.her_add('Pan dulce: los grandes'), 'already', '... one of its parts alone: already');
+select test.is(pg_temp.used('2026-10-28') || ' / ' || (pg_temp.line('Pan dulce')).note, '2 0 / 2 · los grandes', '... nothing joined, nothing counted');
+select test.is(pg_temp.her_add('Eggs: 12 · grandes'), 'already', 'a " · " note for a line that has a note: already');
+select test.is((pg_temp.line('Eggs')).note || ' / ' || pg_temp.used('2026-10-28'), '12 · 12 · grandes / 3 0', '... joined after " · ", and counted');
+:as_owner
+update my_day_use set changes = 30 where person_id = test.person('Morgan') and day = '2026-10-28';
+:as_anon
+select test.is(pg_temp.her_add('Eggs: 12 · grandes'), 'already', '... sent again at the cap: already, not refused');
+select test.is((pg_temp.line('Eggs')).note || ' / ' || pg_temp.used('2026-10-28'), '12 · 12 · grandes / 30 0', '... nothing joined, nothing counted');
+select test.is(pg_temp.her_add('Eggs: 2'), 'error: Too many changes from My day today.', '... while a new note at the cap is still refused');
+rollback;
+:as_anon
 
 -- The lock: nothing typed on her link finds, changes or names a locked line.
 select test.is((select (r ->> 'result') || ' ' || ((r ->> 'item_id')::uuid in (select id from locked)) || ' ' || (r ->> 'name')

@@ -505,8 +505,9 @@ $$;
 --      one is ever looked at; signed in, the line with the lock asked for, else the other one
 --      (a re-add never unlocks; lock on makes an unlocked line locked). If no line has the name,
 --      a line to buy with its twin in the other language counts ("Leche" while "Milk" is to buy).
---   3. Nothing to change (to buy, the lock stays, no new note): 'already', not counted, so a
---      resend after a lost reply is never refused.
+--   3. Nothing to change (to buy, the lock stays, no note or one already in its note, as the whole
+--      note or a run of its " · " parts, so a typed "2 · big" counts too): 'already', not counted,
+--      so a resend after a lost reply is never refused.
 --   4. Anything else from My day is counted first (private.count_my_day).
 --   5-7. A new line (at most 200 to buy; 150 from My day, so the family can always add), the note
 --      joining a line to buy, or a bought line back on the list with its aisle kept.
@@ -605,8 +606,11 @@ begin
     -- line, so this call's note isn't lost.
   end loop;
 
+  -- The note it will have. One already in its note (the whole note, or a run of its " · " parts:
+  -- "2 · big" typed again finds "2 · big" and "12 · 2 · big") isn't joined again. A null note
+  -- gives null here, so the new note is the note.
   v_new := case when line.bought_at is not null then v_note
-                when v_note is null or v_note = any (string_to_array(line.note, ' · ')) then line.note
+                when v_note is null or strpos(' · ' || line.note || ' · ', ' · ' || v_note || ' · ') > 0 then line.note
                 else private.clean_text(concat_ws(' · ', line.note, v_note), 80) end;
 
   -- 3. Nothing to change.

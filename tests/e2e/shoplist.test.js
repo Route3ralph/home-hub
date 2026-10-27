@@ -751,6 +751,27 @@ function pageFake() {
   check('… a line ticked, added again and ticked again: the second tick waits for the add, and the line ends bought',
     out.again === true && same(out.replies.slice(1), ['buy:done', 'add:back', 'buy:done']) && !!out.bread[0] && out.bread[1] === 'p-alex'
     && same(out.sent.slice(-3), ['buy:b', 'add:bread', 'buy:b']), JSON.stringify(out));
+
+  // ---- 20. A waiting add's note is laid over the list as the database will join it (§4.1): after
+  // " · ", unless it is in the line's note already (the whole note, or a run of its " · " parts)
+  out = await ev(async () => {
+    localStorage.clear();
+    const f = window.fakeList([{ id: 'e', name: 'Eggs', note: '12', added_at: 'A1' }, { id: 'p', name: 'Pan dulce', note: '2 · los grandes', added_at: 'A2' },
+      { id: 't', name: 'Tortillas', added_at: 'A3' }]);
+    const { box } = window.makeBox(f);
+    box.take(f.snapshot(), box.ticket());
+    f.mode = 'down';                            // nothing is answered: the view is the overlay
+    box.add('Eggs: 2');                         // "2" is in "12" but isn't one of its parts: joined
+    box.add('Pan dulce: 2 · los grandes');      // its whole note: unchanged
+    box.add('Pan dulce: los grandes');          // one of its parts: unchanged
+    box.add('Tortillas: 1 paquete');            // no note yet: the note
+    await window.settle();
+    const rows = box.view().to_buy.map((r) => [r.name, r.note]);
+    box.stop();
+    return rows;
+  });
+  check('a waiting add\'s note shows as the database will join it: after " · ", unless already in the note (the whole note or a run of its " · " parts)',
+    same(out, [['Eggs', '12 · 2'], ['Pan dulce', '2 · los grandes'], ['Tortillas', '1 paquete']]), JSON.stringify(out));
   await context.close();
 
   // =====================================================================

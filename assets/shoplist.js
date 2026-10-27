@@ -645,7 +645,9 @@
           if (!r) back = pick(bought, exact);
           if (!r && !back) r = pick(toBuy, twin);
           if (r) {
-            if (p.note && !String(r.note || '').includes(p.note)) r.note = clean(r.note ? `${r.note} · ${p.note}` : p.note, 80);
+            // Its note joins after " · ", unless the line's note has it already: the whole note, or a
+            // run of its " · " parts (§4.1, as the database reads it).
+            if (p.note && !` · ${r.note || ''} · `.includes(` · ${p.note} · `)) r.note = clean(r.note ? `${r.note} · ${p.note}` : p.note, 80);
           } else if (back) {
             r = back;
             bought = bought.filter((x) => x !== r);

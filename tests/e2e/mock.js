@@ -586,8 +586,11 @@ function listAdd(db, pName, pPrivate, by, myDay, stamp) {
     if (twin) line = look(twin.toLowerCase(), true);
   }
   const lockChange = !!line && priv && !line.private;
-  const hasNote = !note || (line && line.note != null && line.note.includes(note));
-  if (line && line.bought_at == null && !lockChange && hasNote) return { result: 'already', item_id: line.id, name: line.name };
+  // The note a line to buy will have: one already in its note (the whole note, or a run of its " · "
+  // parts) isn't joined again; otherwise it joins after " · ", at most 80 characters.
+  const hasNote = !note || (line && line.note != null && ` · ${line.note} · `.includes(` · ${note} · `));
+  const newNote = !line || line.bought_at != null ? note : hasNote ? line.note : cleanText(line.note ? `${line.note} · ${note}` : note, 80);
+  if (line && line.bought_at == null && !lockChange && newNote === line.note) return { result: 'already', item_id: line.id, name: line.name };
   if (myDay) countMyDay(db, by, 'changes');
   const toBuy = items.filter((r) => r.bought_at == null).length;
   const full = () => { if (toBuy >= (myDay ? 150 : 200)) throw new Raise('54000', 'The list is full.'); };
@@ -598,7 +601,7 @@ function listAdd(db, pName, pPrivate, by, myDay, stamp) {
     items.push(line);
     result = 'added';
   } else if (line.bought_at == null) {
-    if (note && !hasNote) line.note = cleanText(line.note ? `${line.note} · ${note}` : note, 80);
+    line.note = newNote;
     result = 'already';
   } else {
     full();
