@@ -509,8 +509,8 @@ select (x ->> 'seen') as milk_bought3 from pg_temp.el(shopping_list(), 'bought',
 set hub.now = '2026-10-27 09:50 America/New_York';
 :as_admin
 select test.is(buy_item(:'milk', false, :'milk_bought3') ->> 'changed', 'true', 'Undo 5 minutes after the buy');
-select test.is((select concat_ws(' ', bought_at, added_at = :'milk_seen2'::timestamptz, added_by = test.person('Sam')) from shopping_items where name = 'Milk'),
-               't t', '... within 15 minutes it''s an Undo: added_at and added_by stay');
+select test.is((select concat_ws(' ', bought_at, added_at = private.now(), added_by = test.person('Sam')) from shopping_items where name = 'Milk'),
+               't t', '... within 15 minutes it''s an Undo: added_by stays, and added_at is now (a new seen, so a tick sent from before it gets false)');
 select test.is(buy_item(gen_random_uuid(), true, now()) ->> 'changed', 'false', 'an unknown id: false');
 select test.throws(format('select buy_item(%L, true, null)', :'milk'), 'Reload the list to see it as it is now.', 'no seen → 22023');
 select test.throws(format('select buy_item(%L, null, now())', :'milk'), 'Choose bought or not.', 'neither bought nor not → 22023');
@@ -837,8 +837,8 @@ select test.is(pg_temp.used('2026-10-28'), '3 1', '... one tick counted');
 set hub.now = '2026-10-28 10:10 America/New_York';
 :as_anon
 select test.is(buy_item_by_token(test.token('Morgan'), :'eggs', false, '2026-10-28 14:00+00') ->> 'changed', 'true', 'her Undo 10 minutes later');
-select test.is((select concat_ws(' ', l.bought_at, l.added_at = '2026-10-28 08:01 America/New_York', l.added_by = test.person('Alex')) from pg_temp.line('Eggs') l),
-               't t', '... back to buy, as it was (added_at and added_by stay)');
+select test.is((select concat_ws(' ', l.bought_at, l.added_at = '2026-10-28 10:10 America/New_York', l.added_by = test.person('Alex')) from pg_temp.line('Eggs') l),
+               't t', '... back to buy: added_by stays (Alex), and added_at is now (a new seen)');
 select test.is(pg_temp.used('2026-10-28'), '3 2', '... an Undo counts as a tick');
 select test.throws(format('select buy_item_by_token(%L, %L, false, %L)', test.token('Morgan'), (pg_temp.line('Butter')).id, (pg_temp.line('Butter')).bought_at),
                    'Only your own tick can be undone, for 15 minutes.', 'she can''t undo Alex''s tick (42501)');
@@ -880,6 +880,51 @@ select test.is((select pg_temp.names(r, 'bought') || ' | ' || (pg_temp.el(r, 'bo
 select test.is(get_list_by_token(test.token('Morgan')) ->> 'as_of', '2026-11-04T00:05', '... as_of is the local date and time');
 select test.is(buy_item_by_token(test.token('Morgan'), (pg_temp.line('Late milk')).id, false, (pg_temp.line('Late milk')).bought_at) ->> 'changed', 'true',
                '... and she can still undo it');
+rollback;
+
+-- A tick whose reply was lost, someone else's Undo within 15 minutes, then the same tick sent again by
+-- the outbox: false, and the Undo stands. Every un-tick gives the line a new seen (added_at is now), so
+-- the line is never back in the state the tick was sent against (§4.2). Signed in, then from My day.
+begin;
+:as_owner
+set hub.now = '2026-11-05 10:00 America/New_York';
+insert into shopping_items (name, added_at, added_by) values ('Crackers', '2026-11-05 09:00 America/New_York', test.person('Alex')),
+                                                         ('Raisins', '2026-11-05 09:00 America/New_York', test.person('Alex'));
+:as_adult
+select (x ->> 'seen') as crackers_seen from pg_temp.el(shopping_list(), 'to_buy', 'Crackers') x \gset
+:as_owner
+set hub.now = '2026-11-05 10:01 America/New_York';
+:as_adult
+select test.is(buy_item((pg_temp.line('Crackers')).id, true, :'crackers_seen') ->> 'changed', 'true', 'Sam ticks Crackers (his phone never gets the reply)');
+select (x ->> 'seen') as crackers_bought from pg_temp.el(shopping_list(), 'bought', 'Crackers') x \gset
+:as_owner
+set hub.now = '2026-11-05 10:05 America/New_York';
+:as_admin
+select test.is(buy_item((pg_temp.line('Crackers')).id, false, :'crackers_bought') ->> 'changed', 'true', 'Alex undoes it 4 minutes later');
+select test.is((select concat_ws(' ', l.bought_at, l.added_by = test.person('Alex'), l.added_at = private.now()) from pg_temp.line('Crackers') l), 't t',
+               '... an Undo: to buy, added_by stays, added_at is now (a new seen)');
+select test.ok((pg_temp.el(shopping_list(), 'to_buy', 'Crackers') ->> 'seen') <> :'crackers_seen', '... so the list''s seen for it isn''t the one Sam''s tick carried');
+:as_owner
+set hub.now = '2026-11-05 10:07 America/New_York';
+:as_adult
+select test.is(buy_item((pg_temp.line('Crackers')).id, true, :'crackers_seen') ->> 'changed', 'false', 'Sam''s phone sends the same tick again: false');
+select test.is((pg_temp.line('Crackers')).bought_at, null, '... Crackers stays to buy: Alex''s Undo stands');
+select test.is(buy_item((pg_temp.line('Crackers')).id, true, (pg_temp.el(shopping_list(), 'to_buy', 'Crackers') ->> 'seen')::timestamptz) ->> 'changed', 'true',
+               '... while a tick with the seen the list has now works');
+:as_anon
+select (x ->> 'seen') as raisins_seen from pg_temp.el(get_list_by_token(test.token('Morgan')), 'items', 'Raisins') x \gset
+select test.is(buy_item_by_token(test.token('Morgan'), (pg_temp.line('Raisins')).id, true, :'raisins_seen') ->> 'changed', 'true', 'Morgan ticks Raisins on My day (no reply)');
+select (x ->> 'seen') as raisins_bought from pg_temp.el(get_list_by_token(test.token('Morgan')), 'bought', 'Raisins') x \gset
+:as_owner
+set hub.now = '2026-11-05 10:10 America/New_York';
+:as_admin
+select test.is(buy_item((pg_temp.line('Raisins')).id, false, :'raisins_bought') ->> 'changed', 'true', 'Alex undoes her tick 3 minutes later');
+:as_owner
+set hub.now = '2026-11-05 10:12 America/New_York';
+:as_anon
+select test.is(buy_item_by_token(test.token('Morgan'), (pg_temp.line('Raisins')).id, true, :'raisins_seen') ->> 'changed', 'false', 'her phone sends the same tick again: false');
+select test.is((pg_temp.line('Raisins')).bought_at, null, '... Raisins stays to buy');
+select test.is(pg_temp.used('2026-11-05'), '0 1', '... and the resend isn''t counted');
 rollback;
 
 -- The caps: 30 changes and 100 ticks a day, counted per call.

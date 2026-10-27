@@ -992,28 +992,32 @@
   // A tap on a row. To buy: ticked where it is, with the 15-minute Undo toast (a second tap before it
   // moves takes it back). Bought today: her own tick of the last 15 minutes is taken back at once;
   // an older one offers "Add it again?" when she can add, and does nothing otherwise.
+  // A row not tapped since it was drawn goes with the seen it was shown with. One already changed here
+  // (entry.tapped) goes by id, even when it is back as drawn: the outbox takes its seen from that
+  // change's reply or the list as it is now. Every un-tick gives the line a new seen (§4.2), so the
+  // one it was drawn with would be refused.
   function tapRow(el) {
     const entry = listRows[Number(el.dataset.i)];
     if (!entry || !outbox) return;
     hold.touch();
     const r = entry.row;
+    const as = entry.tapped ? r.id : r;
     const on = el.getAttribute('aria-checked') === 'true';
     if (!on) {
-      // Not ticked: a row to buy (with the seen it was shown with), or a bought one taken back a
-      // moment ago that hasn't moved yet (by id: the outbox finds its seen).
-      if (!outbox.buy(entry.where === 'buy' ? r : r.id)) return;
+      // Not ticked: a row to buy, or a bought one taken back a moment ago that hasn't moved yet (by id).
+      if (!outbox.buy(entry.where === 'buy' ? as : r.id)) return;
+      entry.tapped = true;
       markRow(el, true);
       tickToast = { id: r.id, el: toast(t('bought_toast', { title: r.name }), { ms: UNDO_MS, action: { label: t('undo'), onClick: () => undoTick(r.id) } }) };
       return;
     }
     if (entry.where === 'buy') {   // ticked a moment ago and still here: take it back
       if (tickToast && tickToast.id === r.id) tickToast.el.closeToast();
-      if (outbox.unbuy(r.id)) markRow(el, false);
-      else notTakenBack(r.id);
+      if (outbox.unbuy(r.id)) { entry.tapped = true; markRow(el, false); } else notTakenBack(r.id);
       return;
     }
     if (r.undo) {
-      if (outbox.unbuy(r)) { markRow(el, false); toast(t('undone')); } else notTakenBack(r.id);
+      if (outbox.unbuy(as)) { entry.tapped = true; markRow(el, false); toast(t('undone')); } else notTakenBack(r.id);
       return;
     }
     const v = outbox.view();
@@ -1041,7 +1045,11 @@
     if (v && (v.items || []).some((x) => x.id === id)) {
       toast(t('undone'));
       const el = rowEl(`buy|${id}`);
-      if (el) markRow(el, false);
+      if (el) {
+        const entry = listRows[Number(el.dataset.i)];
+        if (entry) entry.tapped = true;   // changed here: a tap on it now goes by id
+        markRow(el, false);
+      }
     } else {
       toast(t('changed_elsewhere'));
     }

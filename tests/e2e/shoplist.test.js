@@ -64,7 +64,8 @@ function pageFake() {
       const r = f.rows.find((x) => x.id === op.item);
       let changed = false;
       if (r && op.op === 'buy' && !r.bought_at && r.added_at === op.seen) { Object.assign(r, { bought_at: stamp(), bought_by: f.me }); changed = true; }
-      if (r && op.op === 'unbuy' && r.bought_at && r.bought_at === op.seen) { Object.assign(r, { bought_at: null, bought_by: null }); changed = true; }
+      // Every un-tick gives the line a new seen (added_at), as the database does (§4.2).
+      if (r && op.op === 'unbuy' && r.bought_at && r.bought_at === op.seen) { Object.assign(r, { bought_at: null, bought_by: null, added_at: stamp() }); changed = true; }
       return Object.assign({ changed }, f.snapshot());
     };
     f.send = async (op) => {
@@ -617,10 +618,10 @@ function pageFake() {
   });
   await tick(2000);                     // the un-tick goes again: "no change", Milk is to buy
   out = await ev(() => ({ r: window.r16, sent: window.f16.sent.map((x) => `${x.op}:${x.seen}`), replies: window.b16.replies(),
-    milk: [window.f16.rows[0].bought_at, window.f16.rows[0].bought_by], st: window.b16.box.state() }));
-  check('an un-tick sent again after a lost answer finds the line to buy (its own change): the tick behind it goes with the line\'s seen, and Milk is bought, with nothing to say',
-    out.r === true && same(out.sent, ['unbuy:B1', 'unbuy:B1', 'buy:A1']) && same(out.replies, ['unbuy:same', 'buy:done']) && !!out.milk[0] && out.milk[1] === 'p-alex' && out.st.waiting === 0,
-    JSON.stringify(out));
+    milk: [window.f16.rows[0].bought_at, window.f16.rows[0].bought_by, window.f16.rows[0].added_at], st: window.b16.box.state() }));
+  check('an un-tick sent again after a lost answer finds the line to buy (its own change): the tick behind it goes with the line\'s new seen, and Milk is bought, with nothing to say',
+    out.r === true && same(out.sent, ['unbuy:B1', 'unbuy:B1', `buy:${out.milk[2]}`]) && out.milk[2] !== 'A1' && same(out.replies, ['unbuy:same', 'buy:done'])
+    && !!out.milk[0] && out.milk[1] === 'p-alex' && out.st.waiting === 0, JSON.stringify(out));
   await ev(() => {
     localStorage.clear();
     const f = window.fakeList([{ id: 'r', name: 'Rice', added_at: 'A2' }]);
@@ -691,12 +692,12 @@ function pageFake() {
     const r2 = box.buy(ham);
     await window.settle();
     return { seen: [eggs.seen, ham.seen, eggs.pending, ham.pending], r1, r2, sent: f.sent.map((x) => `${x.op}:${x.item}:${x.seen}`), replies: replies(),
-      eggs: f.rows[0].bought_at, ham: f.rows[1].bought_by, bought1: f.sent[2] && f.sent[2].seen };
+      eggs: f.rows[0].bought_at, ham: f.rows[1].bought_by, hamSeen: f.rows[1].added_at, bought1: f.sent[2] && f.sent[2].seen };
   });
   check('a row a waiting tick or un-tick moved has no seen of its own (pending)', same(out.seen, [null, null, true, true]), JSON.stringify(out.seen));
   check('… tapped after that change was answered (before the redraw), it goes with the seen in the answer, not the one from before: both done',
     out.r1 === true && out.r2 === true && same(out.replies, ['buy:done', 'unbuy:done', 'unbuy:done', 'buy:done']) && out.sent[2].startsWith('unbuy:e:2026-')
-    && out.sent[3] === 'buy:h:A0' && out.eggs === null && out.ham === 'p-alex', JSON.stringify(out));
+    && out.sent[3] === `buy:h:${out.hamSeen}` && out.hamSeen !== 'A0' && out.eggs === null && out.ham === 'p-alex', JSON.stringify(out));
 
   // ---- 19. A tick of a line that a waiting add brings back waits for that add
   out = await ev(async () => {
@@ -823,6 +824,7 @@ function pageFake() {
   check('through the fakes: "2 milk" is added as milk (note 2) by Alex; "Leche" joins it ("already", as milk); a locked line',
     same(p2.log, [['add', 'added', 'milk'], ['add', 'already', 'milk'], ['add', 'added', 'Pregnancy test']]) && milkRow && milkRow.note === '2' && milkRow.added_by === 'p-alex'
     && same(p2.view.to_buy.map((r) => [r.name, r.aisle, r.private]), [['milk', 'dairy', false], ['Pregnancy test', 'other', true]]), JSON.stringify(p2));
+  const milkSeen0 = milkRow.added_at;
   await page.evaluate(() => {
     const milk = window.box2.view().to_buy.find((r) => r.name === 'milk');
     window.box2.buy(milk);
@@ -831,9 +833,10 @@ function pageFake() {
   await until(() => window.box2.state().waiting === 0);
   p2 = await page.evaluate(() => ({ log: window.log2.slice(3), view: window.box2.view() }));
   const buys = (db.rpcCalls || []).filter((c) => c.name === 'buy_item');
-  check('a tick and its Undo through buy_item: seen goes back exactly as the database wrote it (microseconds), and the line is to buy again',
-    same(p2.log, [['buy', 'done', null], ['unbuy', 'done', null]]) && buys.length === 2 && buys[0].body.p_seen === milkRow.added_at && /\.\d{6}\+00:00$/.test(buys[1].body.p_seen)
-    && same(buys[1].body, { p_item: milkRow.id, p_bought: false, p_seen: buys[1].body.p_seen }) && milkRow.bought_at === null, JSON.stringify([p2.log, buys.map((b) => b.body)]));
+  check('a tick and its Undo through buy_item: seen goes back exactly as the database wrote it (microseconds), and the line is to buy again, with a new seen',
+    same(p2.log, [['buy', 'done', null], ['unbuy', 'done', null]]) && buys.length === 2 && buys[0].body.p_seen === milkSeen0 && /\.\d{6}\+00:00$/.test(buys[1].body.p_seen)
+    && same(buys[1].body, { p_item: milkRow.id, p_bought: false, p_seen: buys[1].body.p_seen }) && milkRow.bought_at === null && milkRow.added_at !== milkSeen0
+    && (p2.view.to_buy.find((r) => r.name === 'milk') || {}).seen === milkRow.added_at, JSON.stringify([p2.log, buys.map((b) => b.body), milkRow.added_at]));
   // No connection for buy_item: the tick waits, "not sent yet"; it goes once when the connection is back.
   await page.route('**/rest/v1/rpc/buy_item', (route) => route.abort('internetdisconnected'));
   await page.evaluate(() => window.box2.buy(window.box2.view().to_buy.find((r) => r.name === 'milk')));

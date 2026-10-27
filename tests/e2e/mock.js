@@ -628,8 +628,9 @@ function listBuy(db, item, bought, seen, by, myDay, stamp) {
   const recent = within(db, row.bought_at, UNDO_US);
   if (myDay && !(row.bought_by === by && recent)) throw new Raise('42501', 'Only your own tick can be undone, for 15 minutes.');
   if (myDay) countMyDay(db, by, 'ticks');
-  Object.assign(row, { bought_at: null, bought_by: null });
-  if (!recent) Object.assign(row, { added_at: stamp, added_by: by });
+  // Every un-tick gives the line a new seen (added_at); an Undo (within 15 minutes) keeps added_by.
+  Object.assign(row, { bought_at: null, bought_by: null, added_at: stamp });
+  if (!recent) row.added_by = by;
   return true;
 }
 

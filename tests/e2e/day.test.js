@@ -976,6 +976,42 @@ const ANDROID = 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KH
   await page.clock.runFor(3000);
   check('... and it is back to buy once the finger is off the list', same(names((await listView(page)).toBuy), ['Cebollas', 'Cilantro', 'Tortillas', 'Milk · leche']));
   await toasts(page);
+  // ---- One row tapped three times before it moves, each tap answered before the next. Every un-tick
+  // gives the line a new seen (§4.2), so a tap on a row already changed here goes by id, with the seen
+  // the list has now: no "Cambiado en otro teléfono", and the row ends as tapped.
+  const tapAnswered = async (name) => {
+    const n = calls(db, 'buy_item_by_token').length;
+    await lrow(page, name).click();
+    await until(() => calls(db, 'buy_item_by_token').length > n);
+    await page.waitForTimeout(250);   // its answer taken
+  };
+  const tortSeen0 = itemOf(db, 'Tortillas').added_at;
+  let taps0 = calls(db, 'buy_item_by_token').length;
+  await tapAnswered('Tortillas');   // tick
+  const tortBought = itemOf(db, 'Tortillas').bought_at;
+  await tapAnswered('Tortillas');   // take it back (an Undo: a new seen)
+  const tortSeen1 = itemOf(db, 'Tortillas').added_at;
+  await tapAnswered('Tortillas');   // tick again
+  let tortCalls = calls(db, 'buy_item_by_token').slice(taps0).map((c) => [c.body.p_bought, c.body.p_seen]);
+  check('to buy: tick, take back, tick on one row before it moves: each with the row\'s seen at that moment (the last the new seen of her Undo); bought, nothing else said',
+    same(tortCalls, [[true, tortSeen0], [false, tortBought], [true, tortSeen1]]) && tortSeen1 !== tortSeen0 && itemOf(db, 'Tortillas').bought_by === P.taylor
+    && (await lrow(page, 'Tortillas').getAttribute('aria-checked')) === 'true' && !(await texts(page, '.toast')).some((x) => x.includes('Cambiado')),
+    JSON.stringify([tortCalls, tortSeen0, tortSeen1, await texts(page, '.toast')]));
+  await page.clock.runFor(3000);
+  await toasts(page);
+  taps0 = calls(db, 'buy_item_by_token').length;
+  await tapAnswered('Tortillas');   // her tick under Comprado hoy: taken back
+  await tapAnswered('Tortillas');   // ticked again
+  const tortBought2 = itemOf(db, 'Tortillas').bought_at;
+  await tapAnswered('Tortillas');   // taken back again
+  tortCalls = calls(db, 'buy_item_by_token').slice(taps0).map((c) => [c.body.p_bought, c.body.p_seen]);
+  check('Comprado hoy: take back, tick, take back on her own tick before it moves: the last with the new tick\'s seen; to buy, nothing else said',
+    tortCalls.length === 3 && same(tortCalls.map((c) => c[0]), [false, true, false]) && tortCalls[2][1] === tortBought2 && itemOf(db, 'Tortillas').bought_at === null
+    && (await lrow(page, 'Tortillas').getAttribute('aria-checked')) === 'false' && !(await texts(page, '.toast')).some((x) => x.includes('Cambiado')),
+    JSON.stringify([tortCalls, tortBought2, await texts(page, '.toast')]));
+  await page.clock.runFor(3000);
+  check('... and 3 seconds later Tortillas is to buy', same(names((await listView(page)).toBuy), ['Cebollas', 'Cilantro', 'Tortillas', 'Milk · leche']), JSON.stringify(await listView(page)));
+  await toasts(page);
   const before = db.calls.length;
   await lrow(page, 'Huevos').click();
   check('a bought line she can\'t undo (Alex\'s): "¿Añadir otra vez?", nothing sent yet',

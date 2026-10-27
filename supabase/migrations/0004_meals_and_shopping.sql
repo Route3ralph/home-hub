@@ -105,7 +105,7 @@ create table public.shopping_items (
              check (aisle in ('produce', 'bakery', 'pantry', 'drinks', 'household', 'personal', 'meat', 'dairy', 'frozen', 'other')),
   private    boolean not null default false,
              -- locked: never read, matched or changed through a My day link; every member still sees it
-  added_at   timestamptz not null default now(),   -- the last time it was put on the list
+  added_at   timestamptz not null default now(),   -- the last time it was put on the list (an Undo too)
   added_by   uuid references public.people (id) on delete set null,   -- who put it on the list last
   bought_at  timestamptz,                          -- null: to buy
   bought_by  uuid references public.people (id) on delete set null,
@@ -650,8 +650,10 @@ $$;
 --   Bought:     only a line to buy whose added_at is p_seen.
 --   Not bought: only a line whose bought_at is p_seen. From My day only her own tick of the last
 --               15 minutes (any other matching line: 42501); signed in, any. Bought less than 15
---               minutes ago it's an Undo (added_at and added_by stay); older, it goes back on the
---               list (added now, by p_by).
+--               minutes ago it's an Undo (added_by stays); older, it goes back on the list (added
+--               by p_by). Either way added_at is now: it is the line's seen, so the line is never
+--               back in the state a tick was sent against, and that tick sent again after someone's
+--               Undo (a lost reply) gets false instead of buying the line again.
 -- From My day a locked line counts as no line, and a call about to change a row is counted.
 create function private.list_buy(p_item uuid, p_bought boolean, p_seen timestamptz, p_by uuid, p_my_day boolean)
 returns boolean
@@ -702,7 +704,7 @@ begin
   end if;
   update public.shopping_items
   set bought_at = null, bought_by = null,
-      added_at = case when line.bought_at >= v_now - interval '15 minutes' then line.added_at else v_now end,
+      added_at = v_now,   -- a new seen every time, never the one from before the tick (see above)
       added_by = case when line.bought_at >= v_now - interval '15 minutes' then line.added_by else p_by end,
       updated_by = coalesce(v_who, updated_by)
   where id = line.id;

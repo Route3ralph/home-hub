@@ -558,6 +558,42 @@ const emailOf = (req) => {
     && item(db, 'Ice cream').bought_at === at(TODAY, '09:40', '000555'), JSON.stringify([calls(db, 'buy_item').slice(iceBefore).map((c) => c.body), await toasts(page)]));
   await tick(page, 3100);
   check('…and the list shows it as it is: under Just bought, with Sam\'s dot', (await names(page, 'bought')).includes('Ice cream') && !(await names(page, 'buy')).includes('Ice cream'));
+  // One row tapped three times inside the hold, each tap answered before the next. Every un-tick gives
+  // the line a new seen (§4.2), so a tap on a row already changed here goes by id, with the seen the
+  // list has now, never the one it was drawn with: no "Changed on another phone", and it ends as tapped.
+  await page.evaluate(() => document.querySelectorAll('.toasts .toast').forEach((t) => t.remove()));
+  const coffee0 = calls(db, 'buy_item').length;
+  const coffeeSeen0 = item(db, 'Coffee').added_at;
+  const tapAnswered = async (part, name) => {
+    const n = calls(db, 'buy_item').length;
+    await row(page, part, name).locator('.food-tick').click();
+    for (let i = 0; i < 50 && calls(db, 'buy_item').length === n; i++) await sleep(40);   // sent and answered
+    await sleep(250);
+  };
+  await tapAnswered('buy', 'Coffee');      // tick
+  const coffeeBought = item(db, 'Coffee').bought_at;
+  await tapAnswered('buy', 'Coffee');      // untick (an Undo: a new seen)
+  const coffeeSeen1 = item(db, 'Coffee').added_at;
+  await tapAnswered('buy', 'Coffee');      // tick again
+  const coffeeCalls = calls(db, 'buy_item').slice(coffee0).map((c) => c.body);
+  check('To buy: tick, untick, tick on one row before it moves: each sent with the row\'s seen at that moment (the last one the Undo\'s new seen); bought, nothing else said',
+    coffeeCalls.length === 3 && same(coffeeCalls.map((b) => [b.p_bought, b.p_seen]), [[true, coffeeSeen0], [false, coffeeBought], [true, coffeeSeen1]]) && coffeeSeen1 !== coffeeSeen0
+    && item(db, 'Coffee').bought_by === ID.alex && !(await toasts(page)).includes('Changed on another phone')
+    && (await row(page, 'buy', 'Coffee').locator('.food-tick').getAttribute('aria-checked')) === 'true', JSON.stringify([coffeeCalls, coffeeSeen0, coffeeSeen1, await toasts(page)]));
+  await page.evaluate(() => document.querySelectorAll('.toasts .toast').forEach((t) => t.remove()));
+  const applesTaps0 = calls(db, 'buy_item').length;
+  await tapAnswered('bought', 'Apples');   // back on the list
+  await tapAnswered('bought', 'Apples');   // bought again
+  const applesRebought = item(db, 'Apples').bought_at;
+  await tapAnswered('bought', 'Apples');   // back on the list again
+  const applesTaps = calls(db, 'buy_item').slice(applesTaps0).map((c) => c.body);
+  check('Just bought: untick, tick, untick on one row before it moves: the last goes with the new purchase\'s seen; to buy, nothing else said',
+    applesTaps.length === 3 && same(applesTaps.map((b) => b.p_bought), [false, true, false]) && applesTaps[2].p_seen === applesRebought
+    && item(db, 'Apples').bought_at === null && !(await toasts(page)).includes('Changed on another phone')
+    && (await row(page, 'bought', 'Apples').locator('.food-tick').getAttribute('aria-checked')) === 'false', JSON.stringify([applesTaps, applesRebought, await toasts(page)]));
+  await tick(page, 3100);
+  check('…3 seconds later: Coffee under Just bought, Apples to buy', (await names(page, 'bought')).includes('Coffee') && (await names(page, 'buy')).includes('Apples')
+    && !(await names(page, 'buy')).includes('Coffee') && !(await names(page, 'bought')).includes('Apples'));
   await page.clock.resume();
   await page.reload();
   await until(page, () => !!document.querySelector('[data-part="buy"]'), 6000);

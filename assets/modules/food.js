@@ -441,6 +441,7 @@
 
   function listHTML(st) {
     st.rowData = new Map();
+    st.tapped = new Set();   // rows ticked or unticked here since this draw ("where:id")
     const v = st.box.view();
     const s = st.box.state();
     if (!v) {
@@ -505,12 +506,16 @@
     if (!id || !btn) return;
     const checked = btn.getAttribute('aria-checked') === 'true';
     const drawnChecked = where === 'bought';
-    const data = st.rowData.get(`${where}:${id}`);
-    // A row still as drawn goes with the state it was shown in (its seen); one already changed here
-    // goes by id, so the outbox reverses that change (or takes seen from its reply).
-    const arg = checked === drawnChecked && data ? data : id;
+    const key = `${where}:${id}`;
+    const data = st.rowData.get(key);
+    // A row not tapped since it was drawn goes with the state it was shown in (its seen). One already
+    // changed here goes by id, even when it is back as drawn (ticked and unticked): the outbox reverses
+    // that change, or takes the seen from its reply or the list as it is now. Every un-tick gives the
+    // line a new seen (§4.2), so the one it was drawn with would be refused.
+    const arg = checked === drawnChecked && data && !st.tapped.has(key) ? data : id;
     const ok = checked ? st.box.unbuy(arg) : st.box.buy(arg);
     if (!ok) { notQueued(st, id, checked); return; }
+    st.tapped.add(key);
     btn.setAttribute('aria-checked', String(!checked));
     st.dirty = true;
     const name = data ? data.name : rowEl.querySelector('.food-name').textContent;
@@ -538,6 +543,7 @@
     if (!st.box.unbuy(id)) { notQueued(st, id, true); return; }
     const btn = st.main.querySelector(`.food-row[data-where="buy"][data-id="${CSS.escape(id)}"] .food-tick`);
     if (btn) btn.setAttribute('aria-checked', 'false');
+    st.tapped.add(`buy:${id}`);   // changed here: a tap on it now goes by id
     st.dirty = true;
     requestDraw(st);
   }
@@ -879,7 +885,7 @@
     const st = {
       main, ctx, today: dates.today(), meals: { rows: [], loaded: false, failed: false }, suggest: [], unfold: false,
       items: null, listFailed: false, reading: false, readAgain: false, pollTimer: null, drawn: null, dirty: false, draws: 0,
-      rowData: new Map(), aislePick: null, againOpen: againOpen(), familyCalendar: null, me: me ? me.id : null,
+      rowData: new Map(), tapped: new Set(), aislePick: null, againOpen: againOpen(), familyCalendar: null, me: me ? me.id : null,
     };
     st.hold = S.hold(S.HOLD_MS, () => drawList(st));
     st.box = S.outbox({
