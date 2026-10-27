@@ -20,6 +20,10 @@ This is the build contract for Home Hub v2. It replaces the first draft after fo
 - One-way sync of hub items to one Google calendar per Hearth column, reading external Google events into the calendar and digests. Not built in PR B; PR B's data model leaves room for it (`calendars` table is added in v1.1).
 - The build contract is `docs/v1.1-google-calendar.md`. Its database part is migration `0003_google_calendar.sql`, summarised in §8 below.
 
+**v1.2 — Food: dinners and the shopping list (the site goes live first; then the migration)**
+- A new Food page (`#/food`): this week's dinners, and one shared shopping list, which the helper can also use from her My day link (in Spanish, with no sign-in). Dinner also shows on Today, My day, the morning email, texts and the wall's Family column. No Edge Function change and no `cron.sql` change.
+- The build contract is `docs/v1.2-kitchen.md`. Its database part is migration `0004_meals_and_shopping.sql`, summarised in §9 below.
+
 Later: web push, Twilio SMS.
 
 ## 1. Item model — two kinds
@@ -39,7 +43,7 @@ The Add sheet starts with an Event | Task switch and the help line *"Piano, pick
 - An email address is confirmed before any morning email goes to it: by the button on the page the confirmation email opens (`confirm_digest`, §3), or by signing in with a code sent to it (the core calls `mark_signed_in()` after every sign-in).
 - The migration seeds one person per existing member (admin → parent; member → adult), one `household` row, and colours.
 - Account numbers (`contractor_secrets`) are **admins only**. Revoked from `anon` and `service_role` too.
-- Invariant: every policy is `private.is_member()`-gated (full members = everyone who can sign in in v2), except the anonymous token functions, which check the token.
+- Invariant: every policy is `private.is_member()`-gated (full members = everyone who can sign in in v2), except the anonymous token functions, which check the token: My day's `get_person_day`, `complete_by_token`, `undo_by_token` and `stop_digest`, the confirmation email's `confirm_digest`, and (v1.2, §9) the helper's shopping list, `get_list_by_token`, `add_to_list_by_token` and `buy_item_by_token`.
 
 ## 3. Database (migration 0002; schema.sql stays the v1 baseline)
 
@@ -195,15 +199,18 @@ day_note text   -- an event's note for this one day (event_changes.note), for wh
 - tasks: open tasks whose due date (`current_due`) is in range (status open); non-repeating done tasks whose due_date is in range (done); task_log `done`/`skipped` rows whose occurrence is in range (done/skipped). No projections of future repeats.
 - project tasks: for projects with on_calendar and non-null task_dates that are under way (not an idea, on hold or done), each task overlapping the range (day = start, end_day = end; status from raw task status; milestone flag); contractor from the trade's contractor_id.
 `late_items()` — same shape: open tasks whose due date (`current_due`) is before today_local() (status late). `heads_up(p_day date)` — open tasks with `due_date - lead_days <= p_day < due_date`, plus directory `contract_end` within 30 days (kind 'contract').
-`day_text(p_person uuid, p_day date) returns text` — the message for one person's day in their language (used by the Today page "Send their day" buttons and the digest; covered by SQL tests). Lines: timed events in order, all-day events, tasks due, then up to 3 late tasks ("+N more"). People are named by first name (`private.short_name`: the whole name only when another active person has the same first name): the person in charge's copy reads "Piano · with Jordan"; the copy for someone along reads "Piano · Taylor". Linked directory entries add their phone; a changed day's own note comes last. Never the event's or task's notes, never account numbers; private items read "Private item".
+`day_text(p_person uuid, p_day date) returns text` — the message for one person's day in their language (used by the Today page "Send their day" buttons and the digest; covered by SQL tests). Lines: timed events in order, all-day events, tasks due, then up to 3 late tasks ("+N more"). People are named by first name (`private.short_name`: the whole name only when another active person has the same first name): the person in charge's copy reads "Piano · with Jordan"; the copy for someone along reads "Piano · Taylor". Linked directory entries add their phone; a changed day's own note comes last. Never the event's or task's notes, never account numbers; private items read "Private item". (v1.2 adds the line of a meal the person is on, before the late tasks: §9.)
 
 ### Anonymous token functions (My day page; `grant execute to anon, authenticated`)
-A secret is the only key: the person's My day token (`people.day_token`) for four of them, the confirmation secret (`people_confirm.token`) for `confirm_digest`. These five are the only new functions anon can call (v1's `get_shared_project` is the other one).
-- `get_person_day(p_token text) returns jsonb` → `{person:{name, language, digest_enabled, email_confirmed}, today: date, days:[{day, items:[…]}], late:[…]}` for today and tomorrow; only that person's items (responsible or participant); item fields: kind, item_id, occurrence, day, end_day, title, all_day, start_time, end_time, time_label, location, contractor_name, contractor_phone, note (a changed day's own note), status, mine (a task they're in charge of). No notes, no other people's details; private items read "Private item". Returns null for an unknown token or inactive person.
+A secret is the only key: the person's My day token (`people.day_token`) for seven of them, the confirmation secret (`people_confirm.token`) for `confirm_digest`. These eight are the only new functions anon can call (v1's `get_shared_project` is the other one): 0002 adds the first five, and migration 0004 (v1.2, §9) the last three, for the helper's shopping list.
+- `get_person_day(p_token text) returns jsonb` → `{person:{name, language, digest_enabled, email_confirmed}, today: date, days:[{day, items:[…]}], late:[…]}` for today and tomorrow; only that person's items (responsible or participant); item fields: kind, item_id, occurrence, day, end_day, title, all_day, start_time, end_time, time_label, location, contractor_name, contractor_phone, note (a changed day's own note), status, mine (a task they're in charge of). No notes, no other people's details; private items read "Private item". Returns null for an unknown token or inactive person. (v1.2 adds `meals` to a day that has any, and `list` for a helper; both are left out when empty: §9.)
 - `complete_by_token(p_token text, p_task_id uuid, p_occurrence date) returns uuid` (log id, for Undo) → only tasks where that person is responsible; a repeating task needs `p_occurrence` (a page left open overnight can't tick off the next date); otherwise the same rules as complete_task. Logged as done by "<name> (My day)".
 - `undo_by_token(p_token text, p_log_id uuid) returns uuid` (task id) → the toast's Undo on My day: only a `done` entry that person made on My day, on a task they're in charge of, that is still the task's latest entry, within 15 minutes.
 - `confirm_digest(p_confirm text) returns boolean` → the button on the page the confirmation email opens (`day.html?c=<secret>#confirm`). The secret is the whole key: the link carries no My day token, so an email that goes to a mistyped address gives away nothing but the chance to confirm that address, and a My day link (which a kid, a helper or a WhatsApp group may have) confirms nothing. Sets email_verified_at. True also when the address was already confirmed (a second tap, or the email opened again later; the secret is kept); false for an unknown, malformed or replaced secret (the address changed since) or an inactive person.
 - `stop_digest(p_token text) returns boolean` → digest_enabled = false.
+- `get_list_by_token(p_token text) returns jsonb` (v1.2) → the shopping list on a helper's My day: `{language, as_of, can_add, items, bought, suggest}`, unlocked lines only, with no person's name or id. Null for anyone but a helper, and while `household.helper_list` is `'off'`.
+- `add_to_list_by_token(p_token text, p_name text) returns jsonb` (v1.2) → her add, while `helper_list` is `'add'`: `{result, item_id, name}` and her list. Only ever finds or makes an unlocked line; anything over 200 characters is refused before any work; counted (30 changes a day) and capped (150 things to buy).
+- `buy_item_by_token(p_token text, p_item uuid, p_bought boolean, p_seen timestamptz) returns jsonb` (v1.2) → her tick, or the Undo of her own tick within 15 minutes: `{changed}` and her list. `p_seen` is the row's state as her phone saw it, so a tick that waited offline never buys a line put back since; a locked line's id answers as an unknown id (`false`); counted (100 ticks a day).
 Tokens and secrets are 32 hex characters; `rotate_day_token(p_person uuid)` (admin) replaces a My day token, and the old link stops working at once.
 
 ### Jobs support (service_role only)
@@ -214,10 +221,10 @@ Tokens and secrets are 32 hex characters; `rotate_day_token(p_person uuid)` (adm
   - Only rows whose send time is ≤ now and within the last 3 hours, and never after midnight (a late run must not send yesterday's "Today" email; email times are 23:45 at the latest, the day's last quarter-hour run). Rows already sent, skipped, in flight or out of attempts are left out.
 - `claim_notification(p_person uuid, p_local_date date, p_kind text) returns uuid` — insert … on conflict do update (retry when failed or stale 'sending' > 10 min, attempts < 3) returning id, else null.
 - `finish_notification(p_id uuid, p_status text, p_detail text default null)` — p_status sent, failed or skipped; only a row still 'sending' changes.
-- `digest_for(p_person uuid, p_local_date date) returns jsonb` — everything the email needs, computed in SQL (see §5): subject, today, late, heads_up, projects; for parents also people, nobody and, on Mondays, inbox_count; `empty` = a non-parent with nothing to say (send nothing). Null for an inactive person.
+- `digest_for(p_person uuid, p_local_date date) returns jsonb` — everything the email needs, computed in SQL (see §5): subject, today, late, heads_up, projects; for parents also people, nobody and, on Mondays, inbox_count; `empty` = a non-parent with nothing to say (send nothing). Null for an inactive person. (v1.2 wraps it to add the day's meals: §9.)
 
 ### Schema version, whoami and sign-in
-`hub_schema_version()` returns 2 (authenticated); migration 0003 makes it 3 (§8). `whoami()` gains `person` (id, name, role, language, color) when a person row matches the caller's email; existing keys unchanged. `mark_signed_in()` (authenticated; the core calls it after every sign-in): signing in with a code sent to an address proves it works, so the caller's own person row gets email_verified_at (the first time only). The confirmation secret stays, so the button in a confirmation email sent earlier says "confirmed" too. Does nothing for anyone who isn't a member.
+`hub_schema_version()` returns 2 (authenticated); migration 0003 makes it 3 (§8), and migration 0004 makes it 4 (§9). `whoami()` gains `person` (id, name, role, language, color) when a person row matches the caller's email; existing keys unchanged. `mark_signed_in()` (authenticated; the core calls it after every sign-in): signing in with a code sent to an address proves it works, so the caller's own person row gets email_verified_at (the first time only). The confirmation secret stays, so the button in a confirmation email sent earlier says "confirmed" too. Does nothing for anyone who isn't a member.
 
 ## 4. Client
 
@@ -228,8 +235,8 @@ Tokens and secrets are 32 hex characters; `rotate_day_token(p_person uuid)` (adm
 - Formatting uses the household time zone (`Intl.DateTimeFormat(…, { timeZone })`); "today" comes from `clock()`.
 
 ### Navigation
-- Desktop: top tabs — Today · Calendar · Tasks · Projects · Directory · Family · Settings.
-- Phones (< 640px): bottom bar — Today · Calendar · ＋ · Tasks · More (More: Projects, Directory, Family, Settings, Sign out). ＋ opens the Add sheet.
+- Desktop: top tabs — Today · Calendar · Tasks · Projects · Directory · Family · Settings; on schema 4 (v1.2) Food comes after Tasks: Today · Calendar · Tasks · Food · Projects · Directory · Family · Settings.
+- Phones (< 640px): bottom bar — Today · Calendar · ＋ · Tasks · More (More: Projects, Directory, Family, Settings, Sign out); on schema 4 Food gets a button of its own: Today · Calendar · ＋ · Tasks · Food · More. ＋ opens the Add sheet: Event | Task, and on schema 4 also Shopping ("Something to buy", the Food page's one-field add, `use('food').openListAdd`).
 - v1 mode (no migration yet): exactly today's tabs and pages.
 
 ### Pages
@@ -240,10 +247,16 @@ Tokens and secrets are 32 hex characters; `rotate_day_token(p_person uuid)` (adm
   - Task repeat wording: "On set dates (e.g. the 1st of every month)" vs "A while after it's done (e.g. 60 days after the last change)" with "When was it last done?" / "Next one is due".
 - **Directory**: kind filter (All · Contractors · Accounts & utilities · Services · Emergency), search, cards with tap-to-call/text/WhatsApp/email/website, contract end; account number masked with Show (admins only; loaded separately).
 - **Family**: one list of people; add/edit person (name, role, email, phone, colour, language, morning email on/off, time, today/tomorrow, everyone (parents), can sign in (parents/adults)); "unconfirmed" badge until the email is confirmed (by the confirmation email's button, or by signing in); My day link: Copy / Send by WhatsApp / Text / New link.
-- **Settings**: time zone, default morning-email time, days off, default owners for pets/house, digest status ("Last run 6:30 · 4 sent", failures), the Google Calendar & Hearth card (v1.1, §8).
+- **Settings**: time zone, default morning-email time, days off, default owners for pets/house, digest status ("Last run 6:30 · 4 sent", failures), the Google Calendar & Hearth card (v1.1, §8). On schema 4 a dinner in the card's preview has no **Make private**, and a hint says to lock it on the Food page instead.
+- **Food** (v1.2, schema 4; `#/food`, and `#/food/<YYYY-MM-DD>` for that day's dinner; heading "Food", "Dinners and the shopping list"): §9 has the database, `docs/v1.2-kitchen.md` §6.1 every rule.
+  - **This week's dinners**: one row of 7 cards, today first ("Today · Tacos · Sam", "Wed · —"). A card opens the dinner dialog: a name, with the family's 8 most frequent dinners of the last 180 days as suggestions, or one tap on Leftovers · Eating out · Takeout · Fend for yourself; **Who cooks?** (for Leftovers and Takeout **Who's on dinner?**; optional); under More a note and a recipe link (both only for the cook) and **Keep the title private**; Save, **Clear this day**, and on a saved dinner **Add a prep reminder…** (the task form, due the day before, never before today). A family that planned no dinner in the last 14 days and none for the next 7 sees one line instead, "Plan dinners ›".
+  - **The shopping list**: an add box (Enter adds and keeps the focus; "2 milk" or "Milk: 2 gallons" put the amount in the note; a lock makes the next add private; suggestions from the household's own items); **To buy**, grouped in ten aisles in store order, cold things last (a guess from a built-in English and Spanish word list; the **Aisle?** chip or Edit corrects it, and the item keeps it); a tap marks a line bought, struck through where it is, with "Bought · Undo", and it moves to **Just bought** (everything bought since midnight) 3 seconds after the last tap; **Buy again** (folded: bought in the last 60 days, one tap puts it back); **⋯** Edit (aisle, name, note, lock) and **Forget**; **Send Taylor the list** (her My day link with `#list`); and the parents' two switches, the list on helpers' My day (Off · See and tick · See, tick and add) and dinners on the kitchen wall.
+  - The list is read again every 10 seconds while it is on screen (`shopping_list()`), with nothing redrawn when nothing changed and no row moving under a finger. Every change goes through the outbox in `assets/shoplist.js` (shared with My day): it shows at once, is saved on the phone for whoever is signed in (`homehub.shop.hub`, removed at sign-out), and waits, marked "Not sent yet", until there is signal.
+- **Today** (v1.2, schema 4): one line under the person chips, "Dinner: Tacos · Sam cooks ›" (to the Food page); with no dinner today, a quiet "What's for dinner? ›" only when one was planned in the last 14 days. On schema 3 it asks for nothing.
 - **Projects**: unchanged plus: dates recomputed on every schedule write in one choke point (`api.updateProject`/`createProject`), which sends `task_dates` with a new `task_dates_at` (the device clock), and backfilled when stale; project owner; "Show in Home Hub calendar"; a Tasks card listing the project's tasks with "Put on the schedule" (turns a task into a 1-day Gantt task with a trade picker, then deletes the task).
 - **My day** (`day.html?t=<day_token>`): no sign-in; today and tomorrow for that person; check off own tasks (Undo for a few seconds, `undo_by_token`); in their language; stop the morning email with a button (`#stop`); "Add to Home Screen" hint. The confirmation email opens `day.html?c=<secret>#confirm` (no `t=`): that page shows only the confirm screen, whose button calls `confirm_digest(p_confirm)`. Opening a link never changes anything; only the buttons do (they're POSTs).
-- `day.html` is a second public page: it loads `config.js`, supabase-js and `assets/day.js` (not the hub), shares `assets/styles.css` (plus `assets/css/day.css`), and carries the same `?v=` as `index.html`.
+  - v1.2: each day ends with its meals ("Cena · Tacos · Cocina Sam"; the note and a **Receta** link only for the person on it). A helper, while the parents allow it, gets a **Lista de compras · 7 ›** button that opens `#list`: the unlocked lines in big rows by aisle (headings in her language), tick, the 15-minute Undo of her own tick, and (with See, tick and add) an add box and **Comprar otra vez**. It is read every 10 seconds while on screen, saved on the phone (under a hash of the link, never the link), shown from there when there is no connection, and her changes wait in the same outbox as the Food page's. Kids get the meals and no list.
+- `day.html` is a second public page: it loads `config.js`, supabase-js, `assets/shoplist.js` (v1.2) and `assets/day.js` (not the hub), shares `assets/styles.css` (plus `assets/css/day.css`), and carries the same `?v=` as `index.html`.
 
 ## 5. Morning email (`hub-jobs`)
 
@@ -303,7 +316,7 @@ calendars (which Google calendar is whose; one writing calendar per Hearth colum
   label, writes, for_kids, and updates those and copy_approved_at; nothing else.
 calendar_links (what hub-jobs wrote to Google: one row per Google event; kept after the event is past)
   google_calendar text, base_id text ('^hh[0-9a-f]{32}$'), event_id text (base_id, or a new one after a clash), gen int,
-  calendar_id uuid → calendars (set null), item_kind ('event','task','project','late'), item_id uuid, job_id text,
+  calendar_id uuid → calendars (set null), item_kind ('event','task','project','late'; 0004 adds 'meal', §9), item_id uuid, job_id text,
   occurrence date, part ('','start','finish'), day date, end_day date, title text, hash, tried_hash, google_hash,
   google_updated, repairs int, repaired_at, repair_kind ('edited','deleted'), status ('pending','ok','error'),
   attempts int, next_try_at, failing_since, error, synced_at, created_at
@@ -332,7 +345,7 @@ The calendar job (`service_role` only):
 - `calendar_read_due(p_force boolean default false, p_limit int default 10)` returns table `(calendar_id, google_id, writes, w_from, w_to, time_min, time_max, tz)`: the calendars to read now (never-read ones first, then the one Google answered about longest ago).
 - `calendar_store_events(p_calendar uuid, p_google_id text, p_from date, p_to date, p_name text, p_access text, p_complete boolean, p_events jsonb, p_seen jsonb)` returns jsonb `{kept, skipped, seen, repaired, adopted}`: stores one calendar's read, sets its status from its Google name and access role, puts back changes made in Google to the hub's events (on an approved calendar, for events the plan will write again), and adopts the hub's events that have no link.
 - `calendar_mark(p_calendar uuid, p_google_id text, p_status text, p_detail text default null, p_name text default null, p_access text default null)`: what a failed read, a write's 403 or Test found.
-- `calendar_plan(p_site text default null, p_limit int default 60)` returns table `(op, calendar_id, google_calendar, base_id, event_id, gen, item_kind, item_id, job_id, occurrence, part, day, end_day, title, body, hash, pending, hiding)`: the next Google writes, privacy first and the past's history last; read only. Hiding what the hub wrote (an item made private, a delete) goes ahead on a calendar in error the hub can still write to.
+- `calendar_plan(p_site text default null, p_limit int default 60)` returns table `(op, calendar_id, google_calendar, base_id, event_id, gen, item_kind, item_id, job_id, occurrence, part, day, end_day, title, body, hash, pending, hiding)`: the next Google writes, privacy first and the past's history last; read only. Hiding what the hub wrote (an item made private, a delete) goes ahead on a calendar in error the hub can still write to. (Migration 0004 replaces it so a past dinner stays on Google: §9.)
 - `calendar_record(p_results jsonb)`: what Google answered for a batch of plan rows.
 - `calendar_finish(p_run uuid, p_result jsonb, p_stop text default null, p_error text default null)`: ends a run, and cleans up: cached events no read has refreshed for 24 hours, and failed inserts and updates whose item has gone past (Google keeps its copy as history).
 
@@ -341,14 +354,133 @@ Replaced, with the same signatures:
 - `private.item_order(a)` and `private.text_line(a, p_person, p_lang)`: a Google event sorts and reads like an event ("All day: …").
 - `private.digest_item(a, p_person, p_lang, p_hide, p_time, p_detail)`: the same, and a private Google event is "Private item" for everyone.
 - `private.person_items(p_person, p_day)`: adds the Google events `private.google_for` gives that person (so My day, `day_text` and the email's blocks for kids and helpers have them).
-- `digest_for(p_person, p_local_date)`: Google events in Today and in the heads-up's "tomorrow before 9am"; never in "Nobody's on it"; and a new key, `calendar` (parents only, when any calendar is set up, else null): `{warning, items_failed, put_back}`.
+- `digest_for(p_person, p_local_date)`: Google events in Today and in the heads-up's "tomorrow before 9am"; never in "Nobody's on it"; and a new key, `calendar` (parents only, when any calendar is set up, else null): `{warning, items_failed, put_back}`. (Migration 0004 keeps this body as `private.digest_for_v3` and wraps it: §9.)
 
 New in private:
-- `private.calendar_desired(p_from, p_to, p_site)`: the events Google should have (routing, titles, bodies, ids, hashes). Granted to authenticated for the preview, and to service_role.
+- `private.calendar_desired(p_from, p_to, p_site)`: the events Google should have (routing, titles, bodies, ids, hashes). Granted to authenticated for the preview, and to service_role. (Migration 0004 keeps this body as `private.calendar_desired_v3` and wraps it: §9.)
 - `private.calendar_key(p_kind, p_item, p_job, p_occurrence, p_google, p_part)` and `private.calendar_event_id(p_key)`: an event's key and its id, `'hh' || md5(key)`.
 - `private.calendar_word(p_key, p_lang)`: the calendar's fixed words in English and Spanish, falling back to `private.word(p_key, p_lang)` (which is unchanged).
 - `private.calendar_status(p_writes, p_name, p_access)`: a calendar's status from its Google name and access role (`out status, out detail`; `writerWithoutPrivateAccess` reads a read-only calendar, and is refused on one the hub writes).
-- `private.clean_text(p_text, p_max)`: text from Google on one line, without control, bidi or zero-width characters.
+- `private.clean_text(p_text, p_max)`: text from Google on one line, without control, bidi or zero-width characters. Granted to service_role (and, from 0004, to authenticated: §9).
 - `private.google_item(g, c)`, `private.google_for(p_person, p_from, p_to, p_grown_up)`: one cached Google event as an agenda row; the ones that reach one person's day.
 - `private.calendars_tidy()`: the trigger above.
 - `private.active_person(p_id)` and `private.active_only(a)` are now granted to authenticated too (`calendar_desired` uses them).
+
+## 9. v1.2: Meals and shopping
+
+The build contract is `docs/v1.2-kitchen.md`; this section lists what its migration, `supabase/migrations/0004_meals_and_shopping.sql`, adds to the database, so the docs check can hold the two together. Fresh install = `schema.sql`, then `0002`, `0003` and `0004`. It is one transaction and additive (the v2 pages work the same on 3 and 4), every rule in §3 applies, and it seeds no rows: with no meals and no list, the email, the texts, My day and every event on the wall come out byte for byte as on 3 (checks 5b and 5c in `tests/db/run.sh`). It opens with guards, each of which changes nothing: without `hub_schema_version()` it raises "Home Hub v2 (migration 0002) isn't installed"; below 3, "Google Calendar (migration 0003) isn't installed"; at 4 or more, "Meals and shopping (migration 0004) is already installed"; with `meals` there but the version set back to 3 (`docs/v1.2-kitchen.md` §15), "… set back to 3"; and unless `digest_for`, `private.calendar_desired` and `calendar_links_item_kind_check` are as 0003 left them, "This database isn't as migration 0003 left it". It ends by making `hub_schema_version()` return 4. No Edge Function change and no `cron.sql` change, so the site goes live first, then the owner applies 0004 (`docs/v1.2-kitchen.md` §15). Three new functions for anon, the helper's shopping list (§3 "Anonymous token functions"); a locked line never appears in, is matched by, or is changed by any of them.
+
+### Tables
+```sql
+-- One row per planned meal. v1.2's pages plan dinner only; everything in SQL handles any slot, ordered
+-- breakfast, lunch, dinner with array_position (never order by slot, which is alphabetical).
+create table public.meals (
+  id         uuid primary key default gen_random_uuid(),
+  day        date not null,                     -- the household's day
+  slot       text not null default 'dinner' check (slot in ('breakfast', 'lunch', 'dinner')),
+  kind       text not null default 'cook' check (kind in ('cook', 'leftovers', 'out', 'takeout', 'fend')),
+  title      text check (title is null or char_length(title) between 1 and 80),   -- "Tacos", as typed; null for the quick kinds
+  cook_id    uuid references public.people (id) on delete set null,
+             -- who cooks (who's on dinner, for leftovers and takeout); optional; an inactive person counts as nobody
+  note       text check (note is null or char_length(note) between 1 and 300),   -- for the cook
+  link       text check (link is null or (link ~ '^https://[!#-;=?-~]{4,}$' and char_length(link) <= 508)),
+             -- a recipe page: https only, printable ASCII only (no spaces, quotes, < >, control, bidi or zero-width
+             -- characters), 4 to 500 characters after "https://"; the page saves new URL(typed).href
+  private    boolean not null default false,
+             -- locked: the title stays off the wall, other people's My day and every email subject
+  created_at timestamptz not null default now(),
+  created_by text,
+  updated_at timestamptz not null default now(),
+  updated_by text,
+  unique (day, slot),                           -- the page upserts on (day, slot)
+  check ((kind = 'cook') = (title is not null)),
+  check (kind = 'cook' or link is null),
+  check (kind not in ('out', 'fend') or cook_id is null)
+);
+
+-- The shopping list: one row per thing the household buys (and per lock), kept after it is bought. That
+-- row is the item's history, the suggestions as you type, and the guard against duplicates.
+create table public.shopping_items (
+  id         uuid primary key default gen_random_uuid(),
+  name       text not null check (char_length(name) between 1 and 60),       -- as first typed, cleaned
+  name_key   text generated always as (lower(name)) stored,                   -- "Milk" and "milk " are one item
+  note       text check (note is null or char_length(note) between 1 and 80),  -- "2", "big pack", "2 gallons", "2 lb"
+  aisle      text not null default 'other'
+             check (aisle in ('produce', 'bakery', 'pantry', 'drinks', 'household', 'personal', 'meat', 'dairy', 'frozen', 'other')),
+  private    boolean not null default false,
+             -- locked: never read, matched or changed through a My day link; every member still sees it
+  added_at   timestamptz not null default now(),   -- the last time it was put on the list
+  added_by   uuid references public.people (id) on delete set null,   -- who put it on the list last
+  bought_at  timestamptz,                          -- null: to buy
+  bought_by  uuid references public.people (id) on delete set null,
+  updated_at timestamptz not null default now(),
+  updated_by text,                                 -- "<name> (My day)" for My day's writes
+  check (bought_at is not null or bought_by is null)
+);
+
+-- What each My day link did to the list today: one row per helper per day she uses the list.
+create table public.my_day_use (
+  person_id uuid not null references public.people (id) on delete cascade,
+  day       date not null,                        -- the household's day (public.today_local())
+  changes   int not null default 0,               -- add calls that changed the list
+  ticks     int not null default 0,               -- tick and Undo calls that changed a row
+  primary key (person_id, day)
+);
+
+-- Two switches for parents.
+alter table public.household
+  add column meals_on_wall boolean not null default true,   -- meals on Hub – Family
+  add column helper_list   text not null default 'add'
+                           check (helper_list in ('off', 'see', 'add'));
+                           -- the list on helpers' My day: off, see and tick, or also add
+
+-- The wall's links can be meals': dropped and added again, by the same name, with 'meal' among the kinds.
+alter table public.calendar_links drop constraint calendar_links_item_kind_check;
+alter table public.calendar_links add constraint calendar_links_item_kind_check
+  check (item_kind in ('event', 'task', 'project', 'late', 'meal'));
+```
+- `meals`: index `meals_cook` on `(cook_id)` where it is set. Triggers `meals_stamp` (`private.stamp()`) and `meals_tidy` (`private.meals_tidy()`: the title and note through `private.clean_text`, one line, no control, bidi or zero-width characters, at most 80 and 300 characters, `''` becomes null); same-event triggers fire in name order, so the stamp runs first. RLS: members all (`private.is_member()`), as events.
+- `shopping_items`: the unique index `shopping_items_name_key` on `(name_key, private)`, so a locked and an unlocked line with the same name are two lines and nothing a My day link types can land on the locked one (a plain index, so `on conflict (name_key, private)` needs no predicate; `name_key` is computed after the BEFORE triggers, from the cleaned name), and `shopping_items_bought` on `(bought_at desc)` where it is set. Triggers `shopping_items_stamp` (`private.stamp()`) and `shopping_items_tidy` (`private.shopping_items_tidy()`: the name and note the same way, at most 60 and 80 characters, `''` note becomes null). RLS: members select, update and delete; no insert policy: adds go through `add_to_list` and `add_to_list_by_token`.
+- `my_day_use`: RLS on, no policies and no grants (not even to service_role): only `private.count_my_day` (a definer function) writes it, and nothing else reads it. A table rather than a count of rows, because a call can change a row without changing who added or bought it (a note appended, a tick undone), and two parallel calls would each see the old count.
+- `household`'s two columns follow its policies: members read, admins update.
+- Grants: Supabase's default privileges would give anon and authenticated everything on a new table, so all three start from `revoke all … from public, anon, authenticated` (and `my_day_use` from service_role). Signed-in users then get select and delete on `meals` and insert and update of its own columns (`day, slot, kind, title, cook_id, note, link, private`, never the audit columns), and select, delete and update of `name, note, aisle, private` on `shopping_items` (never `added_*` or `bought_*`). Anon has no privilege on the three. service_role keeps the defaults on `meals` and `shopping_items`: `digest_for` and the calendar job read them as it.
+
+### Functions
+Pages (`authenticated`, `service_role`; SECURITY INVOKER, so row-level security decides and a non-member gets empty lists):
+- `shopping_list()` returns jsonb `{as_of, to_buy: [{id, name, note, aisle, private, added_by, seen, other}], bought: [{id, name, note, aisle, private, bought_by, seen}]}`: what is to buy (A–Z by `name_key`, then id) and everything bought since the household's midnight (`bought_at desc, name_key, id`). `as_of` is the household's local date and time; `added_by` and `bought_by` are person ids; `seen` is the row's state as the phone saw it (`added_at` to buy, `bought_at` bought, as `to_jsonb` writes a `timestamptz`), which the page sends back as `p_seen`; `other` is the name in the reader's language when the word list knows it in the other one ("Leche" carries `other: 'milk'` for Alex), left out when there is none. The Food page reads it every 10 seconds while the list is on screen; Buy again comes from the page's own read of the table, so this answer stays small.
+
+Signed-in actions (`authenticated` only; SECURITY DEFINER, in `public` because the page calls them; each raises 42501 "Only the family can change the shopping list." unless `private.is_member()`, and reads its snapshot in a statement after the write):
+- `add_to_list(p_name text, p_private boolean default false)` returns jsonb `{result, item_id, name}` and the list: `private.list_add`'s rule, for the caller. `result` is `'added'` (a new line), `'already'` (it was to buy: still one line, and a new note joins the old with " · ") or `'back'` (it was bought: back on the list, its aisle kept); `name` is the line's own name ("Milk" when "Leche" joined it).
+- `buy_item(p_item uuid, p_bought boolean, p_seen timestamptz)` returns jsonb `{changed}` and the list: `private.list_buy`'s rule, for the caller. `p_seen` is required: a buy changes only a line to buy whose `added_at` is `p_seen`, and a put-back only a bought line whose `bought_at` is `p_seen`, so a resend changes nothing and a change that waited offline never undoes a newer one.
+
+My day (`anon`, `authenticated`; SECURITY DEFINER): `get_list_by_token(p_token text)`, `add_to_list_by_token(p_token text, p_name text)` and `buy_item_by_token(p_token text, p_item uuid, p_bought boolean, p_seen timestamptz)`, in §3 "Anonymous token functions". An unknown token, an inactive person or no token gets null; a kid, a grown-up's link or the switch Off gets 42501 from the two writers ("The shopping list isn't on your My day."), and See and tick gets 42501 from the add ("You can't add to the list from My day.").
+
+Replaced, with the same signatures (`create or replace`, so they keep their grants):
+- `hub_schema_version()` returns 4.
+- `get_person_day(p_token text)`: 0002's body plus two keys, each left out when empty, so with no meals and no list it is exactly 0002's answer. Each day gains `meals: [{slot, label, title, cook, cook_word, mine}]` when it has any, in breakfast, lunch, dinner order: `label` is the slot's word in their language ("Cena"); `title` is `private.meal_title`, or "Private item" for a locked meal they aren't on; `cook` is the first name of the person on it (`private.short_name`; null for nobody, or someone no longer active); `cook_word` is "Cocina Sam" / "Sam cooks" or "Sam se encarga de la cena" / "Sam's on dinner" ("Cocinas tú" / "You cook", "Te encargas tú" / "You're on dinner" when `mine`); the `note` and `link` only when `mine`. The top level gains `list: {to_buy}` (the number of unlocked lines to buy) for a helper while `household.helper_list` isn't `'off'`, once `shopping_items` has a row.
+- `day_text(p_person uuid, p_day date)`: 0002's body, plus one line per meal the person is on that day, in slot order, after the day's items and before Late: "Dinner: Tacos · You cook" / "Cena: Sobras · Te encargas tú". A locked meal's title too (the text goes to the person on it); never its note or link. A day with only that line no longer says "Nothing planned".
+- `calendar_plan(p_site text default null, p_limit int default 60)`: 0003's body with two changes marked "v1.2", both doing for meals what it does for events: a link to a past meal is no longer wanted only when that meal was deleted, moved or locked (so a past dinner stays on Google as history, instead of being deleted the day it leaves the window); and the past copy of a dinner locked later comes off with the deletes that hide something (first in the order).
+
+Wrapped: the two longest functions keep their 0003 bodies, byte for byte, under a `_v3` name, and a thin new function under the old name adds the meals on top.
+- `digest_for(p_person uuid, p_local_date date)`: 0003's function is renamed `digest_for_v3` and moved to `private` (`alter function … rename to`, then `… set schema private`): `private.digest_for_v3(p_person, p_local_date)`, with its body and its grant (service_role only). The new `public.digest_for` (plpgsql, STABLE, SECURITY INVOKER; service_role only, as before) returns `_v3`'s email unchanged when it is null or no meal is planned that day. Otherwise it appends one row per meal to `today` (`private.meal_digest_item`, slot order; "Private item" for a kid or helper who isn't on a locked meal); on a day `_v3` calls "Nothing planned" (nothing in Today or Late) the subject names the first meal instead ("Tue Oct 27: Dinner: Tacos · Sam cooks", "… · You cook" for the cook; a locked one is "Dinner: Private item" for everyone, as the subject shows on lock screens); and an `empty` email (nothing to say) is sent after all only to the person on a meal that day, so dinner alone emails only the cook. `_v3` calls `public.day_text` by name, so the parents' blocks for each kid and helper get the cook's line too.
+- `private.calendar_desired(p_from date, p_to date, p_site text)`: 0003's function is renamed `calendar_desired_v3`: `private.calendar_desired_v3(p_from, p_to, p_site)`, with its body and its grants (authenticated, service_role). The new one (SQL, STABLE, the same 14 columns and grants) is `_v3`'s rows `union all` `private.meal_events(p_from, p_to, p_site)`. `calendar_plan`, `calendar_preview`, `calendar_store_events` and `calendar_finish` call it by name, so they get the meal rows with no change of their own.
+- **A later migration that changes `digest_for` or `calendar_desired` replaces the wrapper and its `_v3` body together**, and says so here. Checks 5b ("same output": `digest_for`, `day_text` and `get_person_day`) and 5c ("same wall": `calendar_desired`, `calendar_plan` and `calendar_preview`) in `tests/db/run.sh` show what such a change does to the email and the wall.
+
+New in private:
+- `private.shop_who()` returns `public.people`: the signed-in caller's active person (`people.email = public.current_email()`), or a null row. It acts for nobody but the caller; `shopping_list()` needs it for the reader's language. Authenticated, service_role.
+- `private.food_words()` returns table `(en text, es text, aisle text)`: the one built-in word list, everyday things as English/Spanish pairs with their aisle ("milk", "leche", dairy); words that mean something else in the other language ("pan", "red") are left out. A pair both guesses an aisle and makes "Leche" the same line as "Milk" (whole names only). Nobody.
+- `private.guess_aisle(p_name text)`: an aisle from `food_words` for the parsed name (lowercased, accents dropped, the whole name first, then each word from the last, with a trailing "s" or "es" also tried), else `'other'`. Used once, when a line is first added. Nobody.
+- `private.food_other(p_name text, p_lang text)`: the name in `p_lang` when the whole name is a `food_words` entry in the other language ("Leche" read in English is "milk"), else null. SECURITY DEFINER, so a member's `shopping_list()` can read the word list. Authenticated, service_role.
+- `private.list_add(p_name text, p_private boolean, p_by uuid, p_my_day boolean)` returns jsonb `{result, item_id, name}`: the one add rule, shared by `add_to_list` and `add_to_list_by_token` (`docs/v1.2-kitchen.md` §4.1). The text is cut to 200 characters, cleaned, and split into a name and a note ("2 lb ground beef" is ground beef, note "2 lb"; "Milk: 2 gallons" is Milk, note "2 gallons"). From My day only the unlocked line is ever looked at; signed in, the line with the lock asked for, else the other one (a re-add never unlocks). A resend that changes nothing is `'already'` and isn't counted; anything else from My day is counted first. At most 200 lines to buy (150 from My day, so the family can always add): 54000 "The list is full." Nobody.
+- `private.list_buy(p_item uuid, p_bought boolean, p_seen timestamptz, p_by uuid, p_my_day boolean)` returns boolean (true when something changed): the one tick rule (§4.2 there). From My day a locked line counts as no line, a call about to change a row is counted, and only her own tick of the last 15 minutes can be undone (else 42501). Bought less than 15 minutes ago, not bought is an Undo (`added_at` and `added_by` stay); older, the line goes back on the list. Nobody.
+- `private.count_my_day(p_person uuid, p_what text)`: SECURITY DEFINER. One more `'changes'` or `'ticks'` for her today in `my_day_use` (an upsert, whose row lock queues her parallel calls, so the count is exact); past 30 changes or 100 ticks a day, P0001 "Too many changes from My day today." / "Too many ticks from My day today." Nobody.
+- `private.list_for_helper(p_person uuid)` returns jsonb: My day's list, `{language, as_of, can_add, items: [{id, name, note, aisle, seen, other}], bought: [{id, name, note, aisle, seen, undo}], suggest: [{name, aisle, other}]}`: unlocked lines only; `bought` is what was bought since the household's midnight plus her own ticks of the last 15 minutes (`undo` true for those); `suggest` (only when she can add) is up to 60 unlocked names bought in the last 30 days and not to buy now. No names of family members, no ids of people. Nobody.
+- `private.food_word(p_key text, p_lang text)`: v1.2's fixed words in English and Spanish (the slots, the quick kinds, "{name} cooks" / "Cocina {name}", "You cook" / "Cocinas tú", "{name}'s on dinner" / "{name} se encarga de la cena", "You're on dinner" / "Te encargas tú"), falling back to `private.calendar_word(p_key, p_lang)`, and so to `private.word(p_key, p_lang)`, both unchanged. Authenticated, service_role.
+- `private.meal_title(m public.meals, p_lang text)`: a cooked meal's title, else the quick kind's word ("Leftovers" / "Sobras"). Authenticated, service_role.
+- `private.meal_digest_item(m public.meals, p_person uuid, p_lang text, p_hide boolean)` returns jsonb: one meal as a row of the email's Today, in the shape `render.ts` already draws, `{kind: 'meal', item_id, occurrence, time: 'Dinner', title, detail, contractor_phone: null, status: 'open'}`, so `hub-jobs` needed no change: "Dinner | Tacos · Sam cooks"; for the person on it "You cook" and then the note. Service_role.
+- `private.meal_events(p_from date, p_to date, p_site text)` returns the same 14 columns as `private.calendar_desired`: one all-day, transparent event per meal on the writing Family calendar (Hub – Family), while `household.meals_on_wall` is on: "Dinner: Tacos (Sam)", with the first name of the person on it while they are on the family list; a locked meal is "Dinner: Private item", `visibility: private`, with no name. The description is "Made by Home Hub…", who's on it unless locked, and with a site the link to `#/food`; never the note, the link or anything from the list. Its id is `private.calendar_event_id(p_key)` of `private.calendar_key(p_kind, p_item, p_job, p_occurrence, p_google, p_part)` with kind `'meal'`. Authenticated (the preview), service_role.
+- `private.meals_tidy()` and `private.shopping_items_tidy()`: the triggers above.
+
+"Nobody" means revoked from public, anon and authenticated: only the definer functions above call them. day_text runs as a member (Today's "Send their day") and as service_role (inside the email), the wall as an admin (the preview) and as service_role, and `shopping_list()` as the member who calls it, so what those reach is granted to both.
+
+One grant changes: `private.clean_text(p_text, p_max)` is also granted to authenticated (before, service_role only). It is a pure function, and the two tidy triggers run as the member who saves a meal or renames an item.
