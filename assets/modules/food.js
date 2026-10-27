@@ -719,7 +719,7 @@
       toast(`Saved ${patch.name}`);
       afterChange(st);
     });
-    formDialog.showModal();
+    if (!formDialog.open) formDialog.showModal();
   }
 
   // After an edit, forget or merge: read the list and the lines again.
@@ -1045,7 +1045,7 @@
         requestDraw(live);
       }
     });
-    formDialog.showModal();
+    if (!formDialog.open) formDialog.showModal();
     input.focus();
   }
 

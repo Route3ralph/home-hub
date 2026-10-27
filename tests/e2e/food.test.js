@@ -399,12 +399,17 @@ const emailOf = (req) => {
   await sleep(250);
   check('several items one after another, each a row (an added one: no toast)', !!item(db, 'Cereal bars') && (await names(page, 'buy')).includes('ground beef')
     && (await names(page, 'buy')).includes('Cereal bars') && !(await toasts(page)).some((t) => /Already|Back/.test(t)), JSON.stringify(await names(page, 'buy')));
+  await addItem(page, '2 milk');
+  await sleep(250);
+  check('"2 milk" while Milk is to buy: "Already on the list", one line, the amount in its note', (await lastToast(page)) === 'Already on the list'
+    && db.shopping_items.filter((r) => r.name_key === 'milk').length === 1 && item(db, 'Milk').note === '2'
+    && (await row(page, 'buy', 'Milk').locator('.food-note').textContent()) === '2', JSON.stringify([await lastToast(page), item(db, 'Milk').note]));
   await addItem(page, ' MILK ');
   await sleep(250);
-  check('" MILK " → "Already on the list"', (await lastToast(page)) === 'Already on the list' && db.shopping_items.filter((r) => r.name_key === 'milk').length === 1, await lastToast(page));
+  check('" MILK " → "Already on the list", nothing changes', (await lastToast(page)) === 'Already on the list' && item(db, 'Milk').note === '2', await lastToast(page));
   await addItem(page, 'Milk: 2 gallons');
   await sleep(250);
-  check('"Milk: 2 gallons": the note joins the line', item(db, 'Milk').note === '2 gallons' && (await row(page, 'buy', 'Milk').locator('.food-note').textContent()) === '2 gallons');
+  check('"Milk: 2 gallons": the note joins the line after " · "', item(db, 'Milk').note === '2 · 2 gallons' && (await row(page, 'buy', 'Milk').locator('.food-note').textContent()) === '2 · 2 gallons');
   await addItem(page, 'Leche');
   await sleep(250);
   check('"Leche" while Milk is to buy → "Already on the list as Milk"', (await lastToast(page)) === 'Already on the list as Milk' && !item(db, 'Leche'), await lastToast(page));
