@@ -3,6 +3,7 @@
 //   const { page } = await h.open({ email: 'alex@example.com', phone: true, path: '/#/' });
 //   await h.sql("select due_date from tasks where title = 'Heartworm pill'")  → [{ due_date: '2026-10-27' }]
 //   h.check(name, ok, detail); … await h.finish();   // prints the PASS/FAIL lines, closes everything
+//   await h.migrate('supabase/migrations/0004_meals_and_shopping.sql')   // as the owner applies it (setup(name, { v3: true }))
 // Signing in goes through the server's real /auth/v1/otp and /auth/v1/verify (code 123456); the session
 // is then put where supabase-js keeps it. The browser's clock starts at the household's pinned "now".
 // hub-jobs' Google calls (the calendar job, Test) reach a fake Google (fakeGoogle below): h.google.
@@ -208,8 +209,9 @@ function env(name) {
 async function setup(name, opts = {}) {
   const socket = env('REALDB_SOCKET');
   const port = env('REALDB_PORT');
-  // The template: the full v2 + v1.1 database, the v1 one (opts.v1), or v2 without migration 0003 (opts.v2).
-  const template = opts.v1 ? env('REALDB_V1_TEMPLATE') : opts.v2 ? env('REALDB_V2_TEMPLATE') : env('REALDB_TEMPLATE');
+  // The template: the full database (every migration), the v1 one (opts.v1), v2 without migration 0003
+  // (opts.v2), or v1.1 without migration 0004 (opts.v3).
+  const template = opts.v1 ? env('REALDB_V1_TEMPLATE') : opts.v2 ? env('REALDB_V2_TEMPLATE') : opts.v3 ? env('REALDB_V3_TEMPLATE') : env('REALDB_TEMPLATE');
   const dbName = `rt_${name}`;
   const admin = await connect({ socketDir: socket, port, database: 'postgres' });
   await admin.query(`drop database if exists ${ident(dbName)}`);
@@ -266,6 +268,9 @@ async function setup(name, opts = {}) {
     if (r.body.error) throw new Error(`sql: ${r.body.error.message} in ${query}`);
     return r.body.rows;
   };
+  // A migration file run the way the owner runs it (its own session, as the SQL editor's), after which
+  // the server reads the schema again, as Supabase's PostgREST does after DDL: → { error, notices }.
+  const migrate = async (file) => (await api('/__test/migrate', { method: 'POST', body: JSON.stringify({ sql: fs.readFileSync(path.join(REPO, file), 'utf8') }) })).body;
   const clockNow = async () => (await api('/__test/clock')).body.now;
   const setClock = async (now) => (await api('/__test/clock', { method: 'POST', body: JSON.stringify({ now }) })).body.now;
   let seen = 0;
@@ -356,7 +361,8 @@ async function setup(name, opts = {}) {
     await server.close();
     const failedN = results.filter((r) => r.startsWith('FAIL')).length;
     console.log(`== ${name}: ${results.length - failedN} passed, ${failedN} failed`);
-    process.exitCode = failedN ? 1 : 0;
+    // A file with two setups (jobs.test.js) fails if either did.
+    process.exitCode = failedN || process.exitCode ? 1 : 0;
   }
   fs.mkdirSync(SHOTS, { recursive: true });
   // Run the morning email now, as pg_cron would.
@@ -368,7 +374,7 @@ async function setup(name, opts = {}) {
     const token = (await sessionFor(email)).access_token;
     return api('/functions/v1/hub-jobs', { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify(body) });
   };
-  return { base, browser, server, sent, google, runDigest, runCalendar, hubJobsAs, api, sql, clockNow, setClock, requests, mark, failed, sessionFor, open, settle, go, tc, texts, lastToast, titles, until, shot, check, flow, finish, errors };
+  return { base, browser, server, sent, google, runDigest, runCalendar, hubJobsAs, api, sql, migrate, clockNow, setClock, requests, mark, failed, sessionFor, open, settle, go, tc, texts, lastToast, titles, until, shot, check, flow, finish, errors };
 }
 
 module.exports = { setup };

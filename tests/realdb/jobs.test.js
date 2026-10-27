@@ -7,6 +7,9 @@
 // now; what Google then holds; a second run that writes nothing; an edit in the hub that is one
 // update; events typed into Google that reach the Calendar page, day_text, the email and My day;
 // and events changed or deleted in Google that are put back, and listed in Settings.
+// Then v1.2 (docs/v1.2-kitchen.md, migration 0004): a dinner set on Food on the wall, in the email,
+// locked, and kept once its day is history; and, on a second copy of the database as it is live
+// (schema 3), 0004 applied after hub-jobs has run there.
 // Same household as flows.test.js; its own copy of the database. The clock starts on Tue Oct 27 at
 // 09:00 in New York, inside the 6:30 morning email's 3-hour window.
 const { setup } = require('./lib');
@@ -15,6 +18,7 @@ const TODAY = '2026-10-27';
 const SA = 'home-hub-sync@home-hub-example.iam.gserviceaccount.com';   // lib.js's service account
 const GID = (s) => `${s}@group.calendar.google.com`;
 const CAL = { taylor: GID('taylor0123'), jordan: GID('jordan0123'), family: GID('family0123'), main: 'family@example.com' };
+const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
 (async () => {
   const h = await setup('jobs');
@@ -452,5 +456,175 @@ const CAL = { taylor: GID('taylor0123'), jordan: GID('jordan0123'), family: GID(
     check('google put back: no API request failed', !f.length, f);
   });
 
+  // ===================================================================
+  // v1.2 (migration 0004): tonight's dinner, set on Food, on the wall as one all-day event on Hub –
+  // Family; locked, "Dinner: Private item"; in the email; and still there once its day is history
+  // (docs/v1.2-kitchen.md §9, §10)
+  // ===================================================================
+  await flow('dinner on the wall', async () => {
+    await h.mark();
+    const { page, context } = await open({ email: 'alex@example.com', path: `/#/food/${TODAY}`, label: 'wall-dinner' });
+    const dinner = async (fill) => {
+      await page.waitForSelector('#formDialog .food-dinner', { timeout: 10000 });
+      await fill();
+      await page.click('#formDialog [type="submit"]');
+      await until(async () => !(await page.evaluate(() => document.getElementById('formDialog').open)));
+    };
+    await dinner(async () => {
+      await page.fill('#formDialog input[name="title"]', 'Tacos');
+      await page.click(`#formDialog [data-ref="cooks"] .pchip[data-person="${P.sam.id}"]`);
+      await page.click('#formDialog .food-more summary');
+      await page.fill('#formDialog textarea[name="note"]', 'Chicken is in the freezer');
+      await page.fill('#formDialog input[name="link"]', 'https://cooking.example.com/tacos');
+    });
+    const meal = await one(`select id, title, cook_id, private from meals where day = '${TODAY}' and slot = 'dinner'`);
+    check('dinner on the wall: tonight\'s Tacos, Sam cooking, saved from Food', !!meal && meal.title === 'Tacos' && meal.cook_id === P.sam.id && meal.private === 'f', meal);
+    const n = G.requests.length;
+    const r = await h.runCalendar();
+    const w = G.writes(n);
+    const ev = findEv(CAL.family, meal.id, TODAY);
+    check('dinner on the wall: the next run is one insert, on Hub – Family: "Dinner: Tacos (Sam)", all day (to the next day), not busy, visibility default',
+      r.status === 200 && r.body.inserted === 1 && r.body.updated === 0 && r.body.deleted === 0 && w.length === 1 && w[0].method === 'POST' && w[0].calendar === CAL.family
+      && !!ev && ev.summary === 'Dinner: Tacos (Sam)' && ev.start.date === TODAY && ev.end.date === '2026-10-28' && ev.transparency === 'transparent' && ev.visibility === 'default'
+      && props(ev).homehub_kind === 'meal' && props(ev).homehub_occurrence === TODAY && /^hh[0-9a-f]{32}$/.test(ev.id), { body: r.body, w: w.map((x) => [x.method, x.calendar]), ev });
+    check('dinner on the wall: its description: made by Home Hub, "Sam cooks", the link to Food; never the note or the recipe link',
+      !!ev && /^Made by Home Hub/.test(ev.description) && ev.description.split('\n').includes('Sam cooks') && ev.description.includes('https://family.example/hub/#/food')
+      && !/freezer|cooking\.example/.test(ev.description), ev && ev.description);
+    check('dinner on the wall: on nobody else\'s calendar, and calendar_links keeps it as a \'meal\'', !findEv(CAL.taylor, meal.id) && !findEv(CAL.jordan, meal.id)
+      && same(await sql(`select item_kind, occurrence, status from calendar_links where item_id = '${meal.id}'`), [{ item_kind: 'meal', occurrence: TODAY, status: 'ok' }]));
+
+    // The email preview: the dinner ends Today; on Sam's quiet day it is the subject.
+    const preview = async (who, date) => {
+      const pv = await h.hubJobsAs('alex@example.com', Object.assign({ action: 'preview', person_id: P[who].id }, date ? { date } : {}));
+      return pv.status === 200 && pv.body.emails ? pv.body.emails[0] : { error: pv.body };
+    };
+    // The text part: the heading (and a parent's Google Calendar lines), a blank line, then Today's rows.
+    const lastTodayLine = (mail) => ((mail.text || '').split('\n\n')[1] || '').split('\n').slice(-1)[0];
+    let alexMail = await preview('alex');
+    let samMail = await preview('sam', TODAY);
+    let taylorMail = await preview('taylor');
+    check('dinner on the wall: Alex\'s email preview ends Today with "Dinner  Tacos · Sam cooks"', lastTodayLine(alexMail) === 'Dinner  Tacos · Sam cooks', alexMail.text || alexMail);
+    check('dinner on the wall: Sam\'s (he cooks, nothing else today): the subject is the dinner, and his row has the note',
+      samMail.subject === 'Tue Oct 27: Dinner: Tacos · You cook' && lastTodayLine(samMail) === 'Dinner  Tacos · You cook · Chicken is in the freezer' && samMail.would_send === true,
+      [samMail.subject, samMail.text, samMail.would_send]);
+    check('dinner on the wall: Taylor\'s, in Spanish: "Cena  Tacos · Cocina Sam" at the end of Hoy', lastTodayLine(taylorMail) === 'Cena  Tacos · Cocina Sam', taylorMail.text || taylorMail);
+
+    // Locked on Food: one update, and the email subject and the helper's row say "Private item".
+    await h.go(page, `#/food/${TODAY}`);
+    await dinner(async () => { await page.check('#formDialog input[name="private"]'); });
+    const n2 = G.requests.length;
+    const r2 = await h.runCalendar();
+    const w2 = G.writes(n2);
+    const ev2 = findEv(CAL.family, meal.id, TODAY);
+    check('dinner on the wall: locked on Food, the next run is one update of the same event: "Dinner: Private item", visibility private, no name, no "Sam cooks"',
+      r2.status === 200 && r2.body.updated === 1 && r2.body.inserted === 0 && r2.body.deleted === 0 && w2.length === 1 && w2[0].method === 'PUT' && w2[0].event === ev.id
+      && !!ev2 && ev2.summary === 'Dinner: Private item' && ev2.visibility === 'private' && !/Sam/.test(`${ev2.summary}\n${ev2.description}`), { body: r2.body, ev2 });
+    alexMail = await preview('alex');
+    samMail = await preview('sam', TODAY);
+    taylorMail = await preview('taylor');
+    check('dinner on the wall: locked, the email subject says "Dinner: Private item" even for the cook; Alex (a parent) and Sam still see the title in the row',
+      samMail.subject === 'Tue Oct 27: Dinner: Private item' && lastTodayLine(samMail) === 'Dinner  Tacos · You cook · Chicken is in the freezer'
+      && lastTodayLine(alexMail) === 'Dinner  Tacos · Sam cooks', [samMail.subject, lastTodayLine(samMail), lastTodayLine(alexMail)]);
+    check('dinner on the wall: ... and Taylor (a helper, not on it) gets "Cena  Asunto privado · Cocina Sam"', lastTodayLine(taylorMail) === 'Cena  Asunto privado · Cocina Sam', taylorMail.text);
+
+    // Unlocked again (one update back), then three days on: its day is before the window (from
+    // yesterday), and the dinner stays on Google as history.
+    await h.go(page, `#/food/${TODAY}`);
+    await dinner(async () => { await page.uncheck('#formDialog input[name="private"]'); });
+    const n3 = G.requests.length;
+    const r3 = await h.runCalendar();
+    check('dinner on the wall: unlocked, one update back to "Dinner: Tacos (Sam)"', r3.body.updated === 1 && G.writes(n3).length === 1
+      && findEv(CAL.family, meal.id, TODAY).summary === 'Dinner: Tacos (Sam)', r3.body);
+    await context.close();
+    await h.setClock('2026-10-30T14:00:00Z');   // Fri Oct 30, 10am in New York: the window starts Thu Oct 29
+    const n4 = G.requests.length;
+    for (let i = 0; i < 10; i++) {
+      const ri = await h.runCalendar();
+      if (ri.status !== 200 || !((await lastRun()).pending > 0)) break;
+    }
+    const gone = G.writes(n4).filter((x) => x.event === ev.id);
+    check('dinner on the wall: three days later the runs leave it alone: still on Hub – Family, its link kept',
+      !gone.length && !!findEv(CAL.family, meal.id, TODAY) && !!(await one(`select 1 as kept from calendar_links where item_id = '${meal.id}'`)), { gone, run: await lastRun() });
+    const f = await failures();
+    check('dinner on the wall: no API request failed', !f.length, f);
+  });
+
   await h.finish();
+
+  // ===================================================================
+  // Migration 0004 on a hub that is running (docs/v1.2-kitchen.md §15 step 3, §16.2): its own copy
+  // of the database as it is live, on schema 3, with Hub – Family copying; the calendar job and the
+  // email have run in the API's session; then the owner pastes 0004 in a session of its own. The
+  // next calendar run and the next email go through the wrappers (renaming a function drops the plans
+  // cached for it), the wall stays exactly as it was, and a dinner saved afterwards reaches it.
+  // ===================================================================
+  const h3 = await setup('jobs3', { v3: true });
+  {
+    const { check, flow, sql } = h3;
+    const one = async (q) => (await sql(q))[0] || null;
+    const G3 = h3.google;
+    const P3 = {};
+    for (const r of await sql('select id, name from people')) P3[r.name.split(' ')[0].toLowerCase()] = r.id;
+    const alexToken = (await h3.sessionFor('alex@example.com')).access_token;
+    const asAlex = (p, method, body, prefer) => h3.api(p, { method,
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${alexToken}`, prefer: prefer || 'return=representation' }, body: JSON.stringify(body) });
+    const failures = async () => (await h3.failed()).map((r) => `${r.method} ${r.path}${r.query} → ${r.status} ${r.error ? `${r.error.code || ''} ${r.error.message || r.error.msg || r.error.error || ''}` : ''}`);
+    const lastRun = async () => JSON.parse((await one('select last_result::text as r from calendar_sync')).r || '{}');
+    const wall = () => G3.all(CAL.family).map((e) => [e.id, e.etag, e.status]);
+
+    await flow('0004 on a running hub', async () => {
+      await h3.mark();
+      check('0004 on a running hub: the database is on schema 3 (0002 and 0003, no 0004)', (await one('select public.hub_schema_version() as v')).v === '3'
+        && !(await one("select to_regclass('public.meals') as t")).t);
+      // Hub – Family, set up as Settings does it: saved, Tested, Start copying.
+      G3.add(CAL.family, { summary: 'Hub – Family' });
+      const made = await asAlex('/rest/v1/calendars', 'POST', { google_id: CAL.family, kind: 'family', label: 'Family' });
+      const calId = made.body && made.body[0] && made.body[0].id;
+      const test = await h3.hubJobsAs('alex@example.com', { action: 'calendar_test', calendar_id: calId });
+      const approve = await asAlex(`/rest/v1/calendars?id=eq.${calId}`, 'PATCH', { copy_approved_at: await h3.clockNow() });
+      await sql(`insert into tasks (title, due_date) values ('Buy birthday card', '${TODAY}'), ('Book the plumber', '2026-10-29')`);
+      for (let i = 0; i < 10; i++) {
+        const r = await h3.runCalendar();
+        if (r.status !== 200 || !((await lastRun()).pending > 0)) break;
+      }
+      check('0004 on a running hub: on schema 3, Hub – Family is set up and the calendar job copies to it (the tasks nobody is on)',
+        made.status === 201 && test.status === 200 && approve.status === 200 && ['☐ Buy birthday card', '☐ Book the plumber'].every((t) => G3.events(CAL.family).some((e) => e.summary === t)),
+        { made: made.status, test: test.body, approve: approve.status, events: G3.events(CAL.family).map((e) => e.summary) });
+      const pv1 = await h3.hubJobsAs('alex@example.com', { action: 'preview', person_id: P3.alex });
+      check('0004 on a running hub: ... and the email preview works on schema 3 (digest_for has run in the API\'s session)', pv1.status === 200 && pv1.body.emails.length === 1, pv1.body);
+      const before = wall();
+
+      // The owner pastes 0004.
+      const m = await h3.migrate('supabase/migrations/0004_meals_and_shopping.sql');
+      const v = await one('select public.hub_schema_version() as v');
+      check('0004 on a running hub: the migration applies in one go, in its own session, and the schema version is 4', !m.error && v.v === '4', m.error || v);
+
+      // The next run, a quarter of an hour on so it reads Hub – Family too: through the new calendar_desired.
+      await h3.setClock(new Date(Date.parse(await h3.clockNow()) + 15 * 60000).toISOString());
+      const n = G3.requests.length;
+      const r = await h3.runCalendar();
+      check('0004 on a running hub: the next calendar run reads Hub – Family and writes nothing: every event on the wall is as 0003 left it',
+        r.status === 200 && r.body.ok === true && r.body.read === 1 && r.body.inserted === 0 && r.body.updated === 0 && r.body.deleted === 0 && r.body.repaired === 0
+        && !G3.writes(n).length && same(wall(), before), r.body);
+
+      // A dinner, saved as the Food page saves it (an upsert on day and slot): the next run puts it on the wall.
+      const saved = await asAlex('/rest/v1/meals?on_conflict=day,slot&select=id', 'POST',
+        { day: TODAY, slot: 'dinner', kind: 'cook', title: 'Tacos', cook_id: P3.sam, note: null, link: null, private: false }, 'resolution=merge-duplicates,return=representation');
+      const n2 = G3.requests.length;
+      const r2 = await h3.runCalendar();
+      const w2 = G3.writes(n2);
+      check('0004 on a running hub: a dinner saved afterwards is one insert in the next run, "Dinner: Tacos (Sam)" on Hub – Family',
+        saved.status === 201 && r2.status === 200 && r2.body.inserted === 1 && w2.length === 1 && w2[0].method === 'POST' && w2[0].calendar === CAL.family
+        && w2[0].body.summary === 'Dinner: Tacos (Sam)' && w2[0].body.extendedProperties.private.homehub_kind === 'meal', { saved: saved.status, body: r2.body, w2: w2.map((x) => x.body && x.body.summary) });
+      const pv2 = await h3.hubJobsAs('alex@example.com', { action: 'preview', person_id: P3.alex });
+      const mail = pv2.body && pv2.body.emails && pv2.body.emails[0];
+      check('0004 on a running hub: and the next email (through the digest_for wrapper) ends Today with it', pv2.status === 200 && !!mail
+        && /\nDinner {2}Tacos · Sam cooks\n/.test(mail.text), mail ? mail.text.slice(0, 400) : pv2.body);
+      const d = await h3.runDigest();
+      check('0004 on a running hub: the morning email run answers 200 ok', d.status === 200 && d.body.ok === true, d.body);
+      const f = await failures();
+      check('0004 on a running hub: no API request failed', !f.length, f);
+    });
+    await h3.finish();
+  }
 })().catch((e) => { console.log(`FAIL  jobs stopped: ${e && e.stack}`); process.exit(1); });
