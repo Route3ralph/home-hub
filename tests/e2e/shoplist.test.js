@@ -5,7 +5,11 @@
 // and go one at a time, a tick and its Undo cancel only while the tick never left the phone, no answer
 // keeps everything ("not sent yet", retries at 2, 5, 10 and 30 seconds, the banner after 15), the queue
 // and the list saved for their owner only, refusals, a link that no longer works, "changed on another
-// phone", changes older than 24 hours.
+// phone", changes older than 24 hours; a change answered after its page closed (taken off the saved
+// queue by id, never sent again, its answer taken by a page opened since); a resend's "no change" (an
+// un-tick's is this phone's own, a tick's only when the line is bought by this phone); an Undo by id
+// only of this phone's own purchase; rows a waiting change moved have no seen of their own; a tick of a
+// line a waiting add brings back waits for that add.
 // Part 1 runs in day.html (which loads shoplist.js before day.js; day.js and supabase-js are stubbed
 // out) with a fake send() in the page and the page's clock paused, so every timer runs when the test
 // says. Part 2 runs the outbox in the hub on a schema-4 database, through supabase-js and mock.js's
@@ -495,6 +499,258 @@ function pageFake() {
     return { r, sent: window.f14.sent.length - sentBefore };
   });
   check('stop(): nothing more is queued or sent', same(out.r, [false, false]) && out.sent === 0, JSON.stringify(out));
+
+  // ---- 15. A change still on its way when the page closes, answered anyway: never sent again
+  out = await ev(async () => {
+    localStorage.clear();
+    const f = window.fakeList([{ id: 'e', name: 'Eggs', aisle: 'dairy', added_at: 'A1' }]);
+    const a = window.makeBox(f);
+    a.box.take(f.snapshot(), a.box.ticket());
+    const open = f.hold();
+    a.box.add('Milk');
+    a.box.stop();                       // Alex taps Today while the add is on its way
+    open();
+    await window.settle();              // its answer comes anyway: Milk is on the list
+    const stored = JSON.parse(localStorage.getItem('homehub.shop.hub')).queue;
+    Object.assign(f.rows.find((r) => r.name === 'Milk'), { bought_at: 'B-sam', bought_by: 'p-sam' });   // Sam buys it
+    const b = window.makeBox(f);        // Food again, later
+    b.box.kick();
+    await window.settle();
+    const milk = f.rows.find((r) => r.name === 'Milk');
+    return { stored, sent: f.sent.map((x) => x.name), replies: a.replies().concat(b.replies()), milk: [milk.bought_at, milk.bought_by], st: b.box.state() };
+  });
+  check('a change answered after its page closed comes off the saved queue, and the next visit doesn\'t send it again (a bought line stays bought)',
+    same(out.stored, []) && same(out.sent, ['Milk']) && same(out.replies, []) && same(out.milk, ['B-sam', 'p-sam']) && out.st.waiting === 0, JSON.stringify(out));
+  out = await ev(async () => {
+    localStorage.clear();
+    const f = window.fakeList([{ id: 'e', name: 'Eggs', aisle: 'dairy', added_at: 'A1' }]);
+    const a = window.makeBox(f);
+    a.box.take(f.snapshot(), a.box.ticket());
+    const open = f.hold();
+    a.box.buy(a.box.view().to_buy[0]);
+    a.box.unbuy('e');                   // Undo, queued behind the tick
+    a.box.stop();
+    open();
+    await window.settle();
+    const stored = JSON.parse(localStorage.getItem('homehub.shop.hub')).queue;
+    const bought = f.rows[0].bought_at;
+    const b = window.makeBox(f);
+    b.box.kick();
+    await window.settle();
+    return { stored: stored.map((x) => [x.op, x.item, x.seen, 'after' in x]), bought, sent: f.sent.map((x) => `${x.op}:${x.seen}`), replies: b.replies(), eggs: f.rows[0].bought_at };
+  });
+  check('… a change waiting for it is saved with its seen from that answer, and goes next time (the tick isn\'t sent twice)',
+    same(out.stored, [['unbuy', 'e', out.bought, false]]) && !!out.bought && same(out.sent, ['buy:A1', `unbuy:${out.bought}`]) && same(out.replies, ['unbuy:done']) && out.eggs === null,
+    JSON.stringify(out));
+  out = await ev(async () => {
+    localStorage.clear();
+    const f = window.fakeList([{ id: 'e', name: 'Eggs', aisle: 'dairy', added_at: 'A1' }]);
+    const a = window.makeBox(f);
+    a.box.take(f.snapshot(), a.box.ticket());
+    const open = f.hold();
+    a.box.add('Juice');
+    a.box.stop();
+    const b = window.makeBox(f);        // Food again before the answer: the add is in its saved queue
+    b.box.add('Rice');                  // waits its turn (a saved queue waits for kick())
+    open();
+    await window.settle();              // the add's answer comes to the closed page
+    const stored = JSON.parse(localStorage.getItem('homehub.shop.hub')).queue.map((x) => x.name);
+    b.box.kick();
+    await window.settle();
+    return { stored, sent: f.sent.map((x) => x.name), replies: b.replies(), st: b.box.state(), names: b.box.view().to_buy.map((r) => [r.name, r.id]), after: JSON.parse(localStorage.getItem('homehub.shop.hub')).queue };
+  });
+  check('… with a page opened since: only that change comes off the saved queue (the new page\'s own change stays), and the new page takes its answer instead of sending it again',
+    same(out.stored, ['Rice']) && same(out.sent, ['Juice', 'Rice']) && same(out.replies, ['add:added', 'add:added']) && out.st.waiting === 0
+    && same(out.names, [['Eggs', 'e'], ['Juice', 'i-2'], ['Rice', 'i-3']]) && same(out.after, []), JSON.stringify(out));
+  out = await ev(async () => {
+    localStorage.clear();
+    const f = window.fakeList([{ id: 'e', name: 'Eggs', aisle: 'dairy', added_at: 'A1' }]);
+    const a = window.makeBox(f);
+    a.box.take(f.snapshot(), a.box.ticket());
+    const open = f.hold();
+    a.box.add('Juice');
+    a.box.stop();
+    const b = window.makeBox(f);
+    b.box.kick();                        // the new page is ready while the answer is still on its way
+    await window.settle();
+    const busy = b.box.state().busy;
+    open();
+    await window.settle();
+    return { busy, sent: f.sent.map((x) => x.name), replies: b.replies(), st: b.box.state() };
+  });
+  check('… and if it is ready before the answer comes, it waits for that answer rather than sending the change a second time',
+    out.busy === true && same(out.sent, ['Juice']) && same(out.replies, ['add:added']) && out.st.waiting === 0, JSON.stringify(out));
+  out = await ev(async () => {
+    localStorage.clear();
+    const f = window.fakeList([{ id: 'e', name: 'Eggs', aisle: 'dairy', added_at: 'A1' }]);
+    const a = window.makeBox(f);
+    a.box.take(f.snapshot(), a.box.ticket());
+    f.mode = 'down';
+    const open = f.hold();
+    a.box.buy(a.box.view().to_buy[0]);
+    a.box.stop();
+    open();
+    await window.settle();              // no answer after all
+    const stored = JSON.parse(localStorage.getItem('homehub.shop.hub')).queue.map((x) => [x.op, x.sent]);
+    f.mode = 'ok';
+    const b = window.makeBox(f);
+    b.box.kick();
+    await window.settle();
+    return { stored, sent: f.sent.length, replies: b.replies(), eggs: f.rows[0].bought_by };
+  });
+  check('… with no answer it stays saved, and the next visit sends it', same(out.stored, [['buy', true]]) && out.sent === 2 && same(out.replies, ['buy:done']) && out.eggs === 'p-alex',
+    JSON.stringify(out));
+
+  // ---- 16. An un-tick whose answer was lost, and the tick tapped again behind it
+  await ev(() => {
+    localStorage.clear();
+    const f = window.fakeList([{ id: 'm', name: 'Milk', added_at: 'A1', bought_at: 'B1', bought_by: 'p-alex' }]);
+    window.f16 = f;
+    window.b16 = window.makeBox(f);
+    const { box } = window.b16;
+    box.take(f.snapshot(), box.ticket());
+    f.mode = 'lost';                    // the un-tick is done, and its answer lost
+    const open = f.hold();
+    box.unbuy(box.view().bought[0]);    // Just bought → back on the list
+    window.r16 = box.buy('m');          // tapped again before the answer: it waits behind the un-tick
+    open();
+  });
+  await tick(2000);                     // the un-tick goes again: "no change", Milk is to buy
+  out = await ev(() => ({ r: window.r16, sent: window.f16.sent.map((x) => `${x.op}:${x.seen}`), replies: window.b16.replies(),
+    milk: [window.f16.rows[0].bought_at, window.f16.rows[0].bought_by], st: window.b16.box.state() }));
+  check('an un-tick sent again after a lost answer finds the line to buy (its own change): the tick behind it goes with the line\'s seen, and Milk is bought, with nothing to say',
+    out.r === true && same(out.sent, ['unbuy:B1', 'unbuy:B1', 'buy:A1']) && same(out.replies, ['unbuy:same', 'buy:done']) && !!out.milk[0] && out.milk[1] === 'p-alex' && out.st.waiting === 0,
+    JSON.stringify(out));
+  await ev(() => {
+    localStorage.clear();
+    const f = window.fakeList([{ id: 'r', name: 'Rice', added_at: 'A2' }]);
+    window.f16 = f;
+    window.b16 = window.makeBox(f);
+    const { box } = window.b16;
+    box.take(f.snapshot(), box.ticket());
+    f.mode = 'down';                    // the tick gets no answer and isn't done
+    box.buy(box.view().to_buy[0]);
+  });
+  await tick(0);
+  await ev(() => {
+    window.b16.box.unbuy('r');          // Undo, behind the tick that left the phone
+    Object.assign(window.f16.rows[0], { bought_at: 'B-sam', bought_by: 'p-sam' });   // Sam buys it meanwhile
+    window.f16.mode = 'ok';
+  });
+  await tick(2000);
+  out = await ev(() => ({ sent: window.f16.sent.map((x) => x.op), replies: window.b16.replies(), rice: [window.f16.rows[0].bought_at, window.f16.rows[0].bought_by] }));
+  check('a tick sent again that finds the line bought by someone else is never this phone\'s: the Undo behind it is dropped, "changed on another phone"',
+    same(out.sent, ['buy', 'buy']) && same(out.replies, ['buy:changed']) && same(out.rice, ['B-sam', 'p-sam']), JSON.stringify(out));
+
+  // ---- 17. An Undo by id after the tick was answered undoes only this phone's own purchase
+  out = await ev(async () => {
+    localStorage.clear();
+    const f = window.fakeList([{ id: 'e', name: 'Eggs', added_at: 'A1' }, { id: 'j', name: 'Juice', added_at: 'A2' }]);
+    const { box, replies } = window.makeBox(f);
+    box.take(f.snapshot(), box.ticket());
+    const shown = box.view().to_buy;
+    Object.assign(f.rows[0], { bought_at: 'B-sam', bought_by: 'p-sam' });   // Sam bought Eggs; this phone hasn't read the list since
+    const open = f.hold();
+    box.buy(shown.find((r) => r.id === 'e'));
+    box.buy(shown.find((r) => r.id === 'j'));
+    const moved = box.view().bought.find((r) => r.id === 'e');   // drawn while the tick was on its way
+    open();
+    await window.settle();
+    const undoEggs = box.unbuy('e');                            // Undo on "Bought: Eggs", after its answer
+    const tapMoved = box.unbuy(moved);                          // or the row drawn as this phone's tick
+    const undoJuice = box.unbuy('j');                           // this phone's own tick: undone
+    await window.settle();
+    const eggs = [f.rows[0].bought_at, f.rows[0].bought_by];
+    const sent1 = f.sent.map((x) => `${x.op}:${x.item}`);
+    const putBack = box.unbuy(box.view().bought.find((r) => r.id === 'e'));   // Sam's row from Just bought, as the list shows it
+    await window.settle();
+    return { undoEggs, tapMoved, undoJuice, eggs, sent1, putBack, replies: replies(), sent: f.sent.map((x) => `${x.op}:${x.item}:${x.seen}`), juice: f.rows[1].bought_at, eggsNow: f.rows[0].bought_at };
+  });
+  check('an Undo given only the item, after a tick that found the line already bought by someone else, isn\'t queued: their purchase stays',
+    out.undoEggs === false && out.tapMoved === false && same(out.eggs, ['B-sam', 'p-sam']) && same(out.sent1, ['buy:e', 'buy:j', 'unbuy:j']), JSON.stringify(out));
+  check('… while this phone\'s own tick is undone by id, and someone else\'s purchase can still be put back from Just bought, as the list shows it',
+    out.undoJuice === true && out.juice === null && out.putBack === true && out.eggsNow === null
+    && same(out.replies, ['buy:same', 'buy:done', 'unbuy:done', 'unbuy:done']) && same(out.sent.map((x) => x.split(':').slice(0, 2).join(':')), ['buy:e', 'buy:j', 'unbuy:j', 'unbuy:e']),
+    JSON.stringify(out));
+
+  // ---- 18. Rows a waiting change moved have no seen of their own until it is answered
+  out = await ev(async () => {
+    localStorage.clear();
+    const f = window.fakeList([{ id: 'e', name: 'Eggs', added_at: 'A1' }, { id: 'h', name: 'Ham', added_at: 'A0', bought_at: 'B0', bought_by: 'p-alex' }]);
+    const { box, replies } = window.makeBox(f);
+    box.take(f.snapshot(), box.ticket());
+    const open = f.hold();
+    box.buy(box.view().to_buy.find((r) => r.id === 'e'));      // slow signal: on its way
+    box.unbuy(box.view().bought.find((r) => r.id === 'h'));    // waits behind it
+    const drawn = box.view();                                   // the list drawn 3 seconds later
+    const eggs = drawn.bought.find((r) => r.id === 'e');
+    const ham = drawn.to_buy.find((r) => r.id === 'h');
+    open();
+    await window.settle();                                      // both answered; the redraw waits for a finger
+    const r1 = box.unbuy(eggs);                                 // the rows as drawn, tapped
+    const r2 = box.buy(ham);
+    await window.settle();
+    return { seen: [eggs.seen, ham.seen, eggs.pending, ham.pending], r1, r2, sent: f.sent.map((x) => `${x.op}:${x.item}:${x.seen}`), replies: replies(),
+      eggs: f.rows[0].bought_at, ham: f.rows[1].bought_by, bought1: f.sent[2] && f.sent[2].seen };
+  });
+  check('a row a waiting tick or un-tick moved has no seen of its own (pending)', same(out.seen, [null, null, true, true]), JSON.stringify(out.seen));
+  check('… tapped after that change was answered (before the redraw), it goes with the seen in the answer, not the one from before: both done',
+    out.r1 === true && out.r2 === true && same(out.replies, ['buy:done', 'unbuy:done', 'unbuy:done', 'buy:done']) && out.sent[2].startsWith('unbuy:e:2026-')
+    && out.sent[3] === 'buy:h:A0' && out.eggs === null && out.ham === 'p-alex', JSON.stringify(out));
+
+  // ---- 19. A tick of a line that a waiting add brings back waits for that add
+  out = await ev(async () => {
+    localStorage.clear();
+    const f = window.fakeList([{ id: 'h', name: 'Huevos', aisle: 'dairy', added_at: 'A0', bought_at: '2026-10-27T13:30:00.111111+00:00', bought_by: 'p-alex' }],
+      { myDay: true, me: 'p-taylor' });
+    const { box, replies } = window.makeBox(f, { key: 'homehub.shop.day', owner: 'abcdef0123456789', who: undefined, mine: (r) => !!r.undo });
+    box.take(f.snapshot(), box.ticket());
+    f.mode = 'down';                                            // in the store, no signal
+    box.add('huevos');                                          // "¿Añadir otra vez?": the bought line comes back
+    await window.settle();
+    const back = box.view().items.find((r) => r.id === 'h');
+    const ticked = box.buy(back);                               // picked up before the add is answered
+    const mid = box.view().bought.map((r) => [r.name, r.undo, r.pending]);
+    const saved = JSON.parse(localStorage.getItem('homehub.shop.day')).queue.map((x) => [x.op, x.item || x.name, x.seen || null, !!x.after]);
+    f.mode = 'ok';
+    box.kick();
+    await window.settle();
+    return { back: [back.id, back.seen, back.pending], ticked, mid, saved, sent: f.sent.map((x) => [x.op, x.item || x.name, x.seen || null]), replies: replies(),
+      row: [f.rows[0].bought_at, f.rows[0].bought_by, f.rows[0].added_at] };
+  });
+  check('My day: a bought line an unsent add brings back is to buy, with a box but no seen of its own; its tick waits for the add',
+    same(out.back, ['h', null, true]) && out.ticked === true && same(out.mid, [['Huevos', true, true]]) && same(out.saved, [['add', 'huevos', null, false], ['buy', 'h', null, true]]), JSON.stringify(out));
+  check('… then the add brings it back ("back") and the tick goes with the line\'s new seen from its answer: bought by her, not "changed on another phone"',
+    same(out.replies, ['add:back', 'buy:done']) && same(out.sent.slice(-1), [['buy', 'h', out.row[2]]]) && out.row[2] !== 'A0' && !!out.row[0] && out.row[1] === 'p-taylor', JSON.stringify(out));
+  out = await ev(async () => {
+    localStorage.clear();
+    const f = window.fakeList([{ id: 'm', name: 'Milk', added_at: 'A1', bought_at: 'B1', bought_by: 'p-sam' }, { id: 'b', name: 'Bread', added_at: 'A2' }]);
+    const { box, replies } = window.makeBox(f);
+    box.take(f.snapshot(), box.ticket());
+    f.mode = 'down';
+    box.add('milk');
+    await window.settle();
+    const ticked = box.buy(box.view().to_buy.find((r) => r.id === 'm'));
+    const undone = box.unbuy('m');                              // Undo: the tick never left the phone
+    const unbuyBack = box.unbuy('m');                           // nothing to un-buy: the add brings it back
+    const queued = box.state().waiting;
+    f.mode = 'ok';
+    box.kick();
+    await window.settle();
+    // Bread: ticked (on its way), then added again (it comes back), then ticked again.
+    const open = f.hold();
+    box.buy(box.view().to_buy.find((r) => r.id === 'b'));
+    box.add('bread');
+    const again = box.buy(box.view().to_buy.find((r) => r.id === 'b'));
+    open();
+    await window.settle();
+    return { ticked, undone, unbuyBack, queued, replies: replies(), milk: f.rows[0].bought_at, again, bread: [f.rows[1].bought_at, f.rows[1].bought_by], sent: f.sent.map((x) => `${x.op}:${x.item || x.name}`) };
+  });
+  check('Food: the tick of a line brought back cancels with its Undo while it never left the phone; the add still goes',
+    out.ticked === true && out.undone === true && out.unbuyBack === false && out.queued === 1 && out.milk === null && same(out.replies.slice(0, 1), ['add:back']), JSON.stringify(out));
+  check('… a line ticked, added again and ticked again: the second tick waits for the add, and the line ends bought',
+    out.again === true && same(out.replies.slice(1), ['buy:done', 'add:back', 'buy:done']) && !!out.bread[0] && out.bread[1] === 'p-alex'
+    && same(out.sent.slice(-3), ['buy:b', 'add:bread', 'buy:b']), JSON.stringify(out));
   await context.close();
 
   // =====================================================================

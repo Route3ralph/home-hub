@@ -506,7 +506,7 @@
     // goes by id, so the outbox reverses that change (or takes seen from its reply).
     const arg = checked === drawnChecked && data ? data : id;
     const ok = checked ? st.box.unbuy(arg) : st.box.buy(arg);
-    if (!ok) return;
+    if (!ok) { notQueued(st, id, checked); return; }
     btn.setAttribute('aria-checked', String(!checked));
     st.dirty = true;
     const name = data ? data.name : rowEl.querySelector('.food-name').textContent;
@@ -518,9 +518,20 @@
     requestDraw(st);
   }
 
+  // A tap or Undo the outbox didn't queue: the list is drawn as it is now. An un-tick of a line that
+  // is still bought says "Changed on another phone": this phone's tick found someone else had bought it
+  // first, so the purchase isn't this phone's to undo (§8).
+  function notQueued(st, id, untick) {
+    const v = st.box.view();
+    if (untick && v && (v.bought || []).some((r) => r.id === id)) toast('Changed on another phone');
+    st.dirty = true;
+    requestDraw(st);
+  }
+
   // Undo from the "Bought" toast: un-tick it (in place, if it hasn't moved yet).
   function undoTick(st, id) {
-    if (st.ctx.stale() || !st.box.unbuy(id)) return;
+    if (st.ctx.stale()) return;
+    if (!st.box.unbuy(id)) { notQueued(st, id, true); return; }
     const btn = st.main.querySelector(`.food-row[data-where="buy"][data-id="${CSS.escape(id)}"] .food-tick`);
     if (btn) btn.setAttribute('aria-checked', 'false');
     st.dirty = true;
@@ -874,7 +885,8 @@
       send: (op) => (op.op === 'add'
         ? core.sb.rpc('add_to_list', { p_name: op.name, p_private: !!op.private })
         : core.sb.rpc('buy_item', { p_item: op.item, p_bought: op.op === 'buy', p_seen: op.seen })),
-      mine: (row) => !!st.me && row.bought_by === st.me,
+      // A member with no person has no bought_by to compare with: no mine, so an Undo goes as it did.
+      mine: st.me ? (row) => row.bought_by === st.me : undefined,
       onChange: () => requestDraw(st),
       onReply(op, reply, outcome) {
         if (op.op === 'add') {

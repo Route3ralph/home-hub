@@ -22,7 +22,8 @@
 // read and saved in the background after the day's own request; #list in Spanish at 390px (ticks in
 // place, the Undo toast, Comprado hoy, Add again, the add box and its suggestions, Comprar otra vez,
 // every new error word); the 10-second read only on #list; the outbox (not sent yet, the banner, a
-// reload, retries, "changed on another phone"); the saved list when Supabase gets no answer at the
+// reload, retries, "changed on another phone", a line added again offline and ticked before the add is
+// answered, Deshacer of a tick that found Alex's purchase); the saved list when Supabase gets no answer at the
 // start; a null answer clearing what was saved.
 // mock.js answers RPCs for signed-in members only, so the token functions (called signed out) are
 // answered by a route added here; everything else (config.js, supabase-js) comes from mock.js.
@@ -1201,6 +1202,49 @@ const ANDROID = 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KH
     await until(async () => (await texts(page, '.toast')).includes('Cambiado en otro teléfono')) && itemOf(db, 'Milk').bought_at === null
     && same(calls(db, 'buy_item_by_token').slice(-1)[0].body.p_seen, milkSeen) && await until(async () => names((await listView(page)).toBuy).includes('Milk · leche')),
     `${await text(page, '.toasts')} ${JSON.stringify(itemOf(db, 'Milk'))}`);
+
+  // Huevos, bought this morning by Alex: "¿Añadir otra vez?" with no signal brings it back, and she
+  // ticks it before the add is answered. The tick waits for the add and takes the line's new seen from
+  // its answer, so it buys the line; nobody else changed it, so no "Cambiado en otro teléfono".
+  await toasts(page);
+  db.offline = true;
+  await lrow(page, 'Huevos').click();
+  await page.click('.toast-action .toast-btn:not(.toast-x)');   // ¿Añadir otra vez?
+  await page.clock.fastForward('00:03');
+  check('no signal, "¿Añadir otra vez?" on a line bought this morning: it is to buy again at once, with a box, "⟳ sin enviar"',
+    await until(async () => (await listView(page)).toBuy.some((r) => r.name === 'Huevos' && r.unsent === '⟳ sin enviar' && r.checked === 'false')),
+    JSON.stringify((await listView(page)).toBuy));
+  await lrow(page, 'Huevos').click();   // she picks it up
+  db.offline = false;
+  await page.evaluate(() => window.dispatchEvent(new Event('online')));
+  await until(() => itemOf(db, 'Huevos').bought_by === P.taylor);
+  await page.waitForTimeout(400);
+  check('back online: the add, then her tick with the line\'s new seen from the add\'s answer: Huevos bought by Taylor, no "Cambiado en otro teléfono"',
+    itemOf(db, 'Huevos').bought_by === P.taylor && same(calls(db, 'buy_item_by_token').slice(-1)[0].body, { p_token: TAYLOR, p_item: itemOf(db, 'Huevos').id, p_bought: true, p_seen: itemOf(db, 'Huevos').added_at })
+    && itemOf(db, 'Huevos').added_at !== '2026-10-23T12:00:00.000000+00:00' && same(calls(db, 'add_to_list_by_token').map((c) => c.body.p_name), ['Huevos'])
+    && !(await texts(page, '.toast')).includes('Cambiado en otro teléfono'), `${await text(page, '.toasts')} ${JSON.stringify(itemOf(db, 'Huevos'))}`);
+
+  // Cilantro: Alex buys it on his phone before hers reads the list again; her tick finds it already
+  // bought ("no change"). It isn't hers to undo: Deshacer, or tapping the row again, sends nothing and
+  // says "Cambiado en otro teléfono"; Alex's purchase stays.
+  await toasts(page);
+  await page.clock.pauseAt(new Date((await page.evaluate(() => Date.now())) + 1000));   // the row stays where it is while the test taps
+  foodRpc.buy_item(db, { p_item: itemOf(db, 'Cilantro').id, p_bought: true, p_seen: itemOf(db, 'Cilantro').added_at }, 'alex@example.com');
+  const alexBought = itemOf(db, 'Cilantro').bought_at;
+  const ticks0 = calls(db, 'buy_item_by_token').length;
+  await lrow(page, 'Cilantro').click();
+  await until(() => calls(db, 'buy_item_by_token').length === ticks0 + 1 && !!calls(db, 'buy_item_by_token')[ticks0].done);
+  await page.waitForTimeout(300);
+  await page.click('.toast-action .toast-btn:not(.toast-x)');   // Deshacer
+  check('Deshacer after her tick found the line already bought by Alex: nothing is sent, "Cambiado en otro teléfono", and his purchase stays',
+    await until(async () => (await texts(page, '.toast')).includes('Cambiado en otro teléfono')) && calls(db, 'buy_item_by_token').length === ticks0 + 1
+    && itemOf(db, 'Cilantro').bought_at === alexBought && itemOf(db, 'Cilantro').bought_by === P.alex, `${await text(page, '.toasts')} ${JSON.stringify(calls(db, 'buy_item_by_token').slice(ticks0).map((c) => c.body))}`);
+  await toasts(page);
+  await lrow(page, 'Cilantro').click();   // the row, still ticked where it is: take it back
+  check('… and so does tapping the ticked row again: it stays ticked, nothing is sent',
+    await until(async () => (await texts(page, '.toast')).includes('Cambiado en otro teléfono')) && (await lrow(page, 'Cilantro').getAttribute('aria-checked')) === 'true'
+    && calls(db, 'buy_item_by_token').length === ticks0 + 1 && itemOf(db, 'Cilantro').bought_by === P.alex, `${await text(page, '.toasts')}`);
+  await page.clock.resume();
 
   // A null answer: the link was replaced. The saved list goes, and the link's screen shows.
   delete db.my[TAYLOR];
