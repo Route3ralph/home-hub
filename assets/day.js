@@ -1007,13 +1007,13 @@
       return;
     }
     if (entry.where === 'buy') {   // ticked a moment ago and still here: take it back
-      outbox.unbuy(r.id);
-      markRow(el, false);
       if (tickToast && tickToast.id === r.id) tickToast.el.closeToast();
+      if (outbox.unbuy(r.id)) markRow(el, false);
+      else notTakenBack(r.id);
       return;
     }
     if (r.undo) {
-      if (outbox.unbuy(r)) { markRow(el, false); toast(t('undone')); }
+      if (outbox.unbuy(r)) { markRow(el, false); toast(t('undone')); } else notTakenBack(r.id);
       return;
     }
     const v = outbox.view();
@@ -1022,8 +1022,18 @@
     }
   }
 
+  // A take-back the outbox didn't queue: the list is drawn as it is now. A line still bought says
+  // "Cambiado en otro teléfono": her tick found it already bought by someone else, so it isn't hers to
+  // undo (§8).
+  function notTakenBack(id) {
+    const v = outbox.view();
+    if (v && (v.bought || []).some((x) => x.id === id)) toast(t('changed_elsewhere'));
+    patched = true;
+    hold.request();
+  }
+
   // Deshacer on a tick's toast: the outbox takes the seen from the tick's reply (or, if the tick never
-  // left the phone, the two cancel out).
+  // left the phone, the two cancel out); not when her tick found it already bought by someone else.
   function undoTick(id) {
     tickToast = null;
     outbox.unbuy(id);

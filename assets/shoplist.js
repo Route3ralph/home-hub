@@ -48,7 +48,10 @@
                 that are waiting
        mine(row) optional: a bought row is this phone's own purchase (Food: row.bought_by === me;
                 My day: row.undo). It lets an Undo pressed before its tick was answered still undo
-                that tick when the reply to a resend says "already bought".
+                that tick when the reply to a resend says "already bought"; and an Undo given only
+                an id undoes only such a row (below). Without mine (Food, for a member with no
+                person: no bought_by to compare), a resent tick is never this phone's own, and an
+                Undo by id undoes the purchase whoever's it is.
        visible() optional: whether to retry now (default: the page isn't hidden)
        onChange()                    what view() or state() gives has changed: draw the list again
                                      (when no finger is on it, see hold())
@@ -56,7 +59,9 @@
                                      ('added' | 'back' | 'already', reply.name is the line's name);
                                      for a tick, 'done' (changed), 'same' (it was already so: a resend
                                      after a lost reply; say nothing) or 'changed' (someone else
-                                     changed it first: say "Changed on another phone")
+                                     changed it first: say "Changed on another phone"). A change sent
+                                     by a page that closed before its answer came is answered on the
+                                     page opened again in its place (box.stop(), below)
        onRefused(op, error)          the database refused it (42501, 22023, P0001, 54000, 23505, a
                                      PGRST… code, or any other answer that a resend can't change):
                                      the change is dropped; toast friendly(error) and read the list
@@ -69,11 +74,20 @@
                           with seen: its bought_at, the string as PostgREST gave it). Undo from
                           a tick's toast: box.unbuy(id), and the outbox takes the seen from the tick's
                           reply. A tick and its Undo cancel out while the tick has never left the
-                          phone; once it has, both are sent, in order. False when there is nothing to do.
+                          phone; once it has, both are sent, in order. A tick of a line that a waiting
+                          add brings back waits for that add, and takes the line's new seen from its
+                          reply. Given a row with no seen (one a waiting change moved, below) or only
+                          an id, the outbox takes the seen from the change waiting for that item, or
+                          else from the list as it has it now; an un-tick then undoes only this phone's
+                          own purchase (mine), never one its tick found already bought by someone else.
+                          False when there is nothing to do (or that un-tick isn't this phone's).
      box.view()           the last list with the changes still waiting laid over it, or null before
                           any list. Rows changed by a waiting change carry pending: true, and
-                          unsent: true while the outbox can't get an answer ("Not sent yet").
-                          A waiting add of something new is a row with id null (no box to tick).
+                          unsent: true while the outbox can't get an answer ("Not sent yet"); a row
+                          a waiting change moved (a tick, an un-tick, or an add bringing a bought line
+                          back) has seen: null until that change is answered, so a tap on it never
+                          sends the state it had before. A waiting add of something new is a row with
+                          id null (no box to tick).
      box.ticket(), box.take(snapshot, ticket)   a read of the list: ticket() before asking,
                           take(answer, ticket) after. Saved; ignored (false) if a write was answered
                           in between (its reply is newer). take() doesn't call onChange: draw after it.
@@ -85,11 +99,19 @@
      box.kick()           try now: on online, focus and visibilitychange, and once the page is ready
                           to send (a saved queue waits for the first kick())
      box.forget()         clear the queue and the saved list (a link that no longer works)
-     box.stop()           the page closed (ctx.signal, or My day leaving #list): no more sends,
-                          timers or saves. Whatever is waiting stays saved for next time.
+     box.stop()           the page closed (Food: ctx.signal; My day keeps its outbox while the page is
+                          open): no more sends, timers, saves or callbacks. Whatever is waiting stays
+                          saved for next time. A change that was on its way and is answered anyway comes
+                          off the saved queue then, by its id (a page opened since keeps its own queue
+                          there), and the changes waiting for it get their seen from the answer; a page
+                          opened again in this window that still has it takes that answer (or waits for
+                          it) instead of sending it again. With no answer it stays, and goes next time.
    A tap is sent at once, unless nothing is getting through: then it waits its turn behind the rest.
    Retries: 2, 5, 10 and 30 seconds after a change gets no answer (or a 5xx, 408 or 429), then every
-   30 seconds while the page is visible. Changes older than 24 hours are dropped.
+   30 seconds while the page is visible. Changes older than 24 hours are dropped. A change sent again
+   whose answer says "no change" was this phone's own when the row is as it asked: an un-tick (the
+   tick waiting behind it gets the row's seen), or a tick that finds the line bought by this phone
+   (mine); a tick found bought by someone else never hands its seen to the Undo behind it.
    The poll (the page's): every POLL_MS while the list is on screen and the page visible, and at once
    on focus, visibilitychange and online; none while state().busy; t = ticket(), read, take(answer, t),
    and no redraw when sameList() says the view is as drawn.
@@ -264,16 +286,29 @@
   // ============================================
   // THE OUTBOX
   // ============================================
+  // Every change on its way from an outbox that saves its queue, by the key it is saved under and its
+  // id: a Promise of its answer. When the page closes first (stop()), the change stays saved, and a
+  // page opened again in this window (Food → Today → Food) that finds it in the saved queue takes this
+  // answer (or waits for it) instead of sending it again. An entry goes once a page that is still open
+  // has the answer, at once when the answer is "no answer", or when a page reads a saved queue
+  // without that change.
+  const onTheWay = new Map();
+  let seq = 0;   // change ids are unique in this window, so an answer is never taken for another change
+
   function outbox(options) {
     const o = options || {};
     const key = o.key;
     const owner = o.owner == null ? null : String(o.owner);
+    const keep = !!key && owner != null;   // the queue and the list are saved on this device
     const send = o.send;
     const visible = o.visible || (() => typeof document === 'undefined' || document.visibilityState !== 'hidden');
     // The page's callbacks (a callback that throws is reported and doesn't stop the outbox).
     const emit = (name, ...args) => { if (typeof o[name] === 'function') { try { o[name](...args); } catch (err) { console.error(err); } } };
 
-    let queue = [];         // { id, op, item?, seen?, name?, private?, show?, at, sent, after? }, oldest first
+    // queue: { id, op, item?, seen?, name?, private?, show?, at, sent, again?, after? }, oldest first.
+    // sent: it has left the phone at least once; again: it was sent more than once, so the database
+    // may have done it already and this answer says "no change" (an earlier try's answer was lost).
+    let queue = [];
     let snap = null;        // the last list read or answered
     let fresh = false;      // a list came from the database since the page opened
     let inflight = null;    // the change on its way
@@ -284,8 +319,8 @@
     let bannerTimer = null;
     let again = false;      // kick() came while a change was on its way: if it gets no answer, try again at once
     let stopped = false;
-    let seq = 0;
     const nextId = () => `${Date.now().toString(36)}-${(seq++).toString(36)}`;
+    const wayKey = (op) => `${key} ${op.id}`;
 
     // ---- Saved on this device, for this owner only
     function read() {
@@ -300,6 +335,9 @@
       queue = Array.isArray(saved.queue) ? saved.queue.filter((x) => x && ['add', 'buy', 'unbuy'].includes(x.op)) : [];
       snap = saved.snap && typeof saved.snap === 'object' ? saved.snap : null;
       failing = queue.length > 0;
+      // Answers kept for changes this queue no longer has (a closed page took them off already).
+      const ids = new Set(queue.map(wayKey));
+      [...onTheWay.keys()].forEach((k) => { if (k.startsWith(`${key} `) && !ids.has(k)) onTheWay.delete(k); });
     }
     function save() {
       if (!key || owner == null || stopped) return;
@@ -311,25 +349,36 @@
     read();
 
     // ---- The queue
-    const lastFor = (item) => {
-      for (let i = queue.length - 1; i >= 0; i--) if (queue[i].item === item) return queue[i];
+    // The last waiting change of an item's tick: a buy or unbuy of it, or an add that brings its bought
+    // line back on the list (as view() lays the queue over the list).
+    function lastFor(item) {
+      const laid = queue.some((x) => x.op === 'add') ? overlay() : null;
+      for (let i = queue.length - 1; i >= 0; i--) {
+        const x = queue[i];
+        if (x.item === item || (laid && laid.backs.get(x.id) === item)) return x;
+      }
       return null;
-    };
-    // Drop a change and everything that was waiting for its reply.
-    function drop(op) {
+    }
+    // A queue without a change and everything that was waiting for its reply.
+    function without(list, op) {
       const gone = new Set([op.id]);
       let more = true;
       while (more) {
         more = false;
-        queue.forEach((x) => { if (x.after && gone.has(x.after) && !gone.has(x.id)) { gone.add(x.id); more = true; } });
+        list.forEach((x) => { if (x.after && gone.has(x.after) && !gone.has(x.id)) { gone.add(x.id); more = true; } });
       }
-      queue = queue.filter((x) => !gone.has(x.id));
-      return gone.size;
+      return list.filter((x) => !gone.has(x.id));
+    }
+    function drop(op) {
+      const before = queue.length;
+      queue = without(queue, op);
+      return before - queue.length;
     }
     const rowsOf = (s, which) => (s && Array.isArray(s[which === 'bought' ? 'bought' : listKey(s)]) ? s[which === 'bought' ? 'bought' : listKey(s)] : []);
     const idOf = (row) => (row && typeof row === 'object' ? row.id : row);
     const showOf = (row) => (row && typeof row === 'object'
       ? { name: row.name, note: row.note == null ? null : row.note, aisle: row.aisle || 'other', private: !!row.private, other: row.other } : null);
+    const isMine = (row) => typeof o.mine !== 'function' || !!o.mine(row);
 
     function queueTick(kind, row) {
       const item = idOf(row);
@@ -337,6 +386,7 @@
       const inverse = kind === 'buy' ? 'unbuy' : 'buy';
       const last = lastFor(item);
       if (last && last.op === kind) return false;   // already waiting to do just that
+      if (last && last.op === 'add' && kind === 'unbuy') return false;   // an add is bringing it back: nothing to un-buy
       if (last && last.op === inverse && !last.sent) {
         // Never left the phone: the two cancel out.
         drop(last);
@@ -345,13 +395,21 @@
       }
       const op = { id: nextId(), op: kind, item, seen: null, show: showOf(row), at: Date.now(), sent: false };
       if (last) {
-        op.after = last.id;   // its seen comes from that change's reply
+        // Its seen comes from that change's reply: a tick's or un-tick's row, or the line an add brought
+        // back (its new added_at).
+        op.after = last.id;
       } else {
-        // The row as the phone showed it; given only an id (Undo from a toast), the row as the list
-        // has it now.
         const shown = row && typeof row === 'object' ? row.seen : null;
-        const now = rowsOf(snap, kind === 'buy' ? 'to_buy' : 'bought').find((r) => r.id === item);
-        op.seen = shown != null ? shown : now ? now.seen : null;
+        if (shown != null) {
+          op.seen = shown;   // the row as the phone showed it
+        } else {
+          // Given no seen (an Undo from a toast, a row ticked in place a moment ago, or a row a waiting
+          // change had moved, answered since): the row as the list has it now. An un-tick then undoes
+          // only this phone's own purchase, never someone else's that its tick found already bought.
+          const now = rowsOf(snap, kind === 'buy' ? 'to_buy' : 'bought').find((r) => r.id === item);
+          if (!now || (kind === 'unbuy' && !isMine(now))) return false;
+          op.seen = now.seen;
+        }
         if (op.seen == null) return false;
       }
       queue.push(op);
@@ -393,6 +451,18 @@
       timer = setTimeout(() => { timer = null; if (visible()) pump(); }, delay);
     }
 
+    // One change to the database: a Promise of what supabase-js gives back (never rejected).
+    function ask(op) {
+      let p;
+      try {
+        p = Promise.resolve(send(op.op === 'add' ? { op: 'add', name: op.name, private: op.private }
+          : { op: op.op, item: op.item, seen: op.seen }));
+      } catch (err) {
+        p = Promise.reject(err);
+      }
+      return p.catch((err) => ({ data: null, error: err, status: 0 }));
+    }
+
     async function pump() {
       if (stopped || inflight) return;
       clearTimeout(timer);
@@ -402,18 +472,20 @@
         const op = queue[0];
         if (op.op !== 'add' && op.seen == null) { drop(op); changed(); continue; }   // its reply never gave one
         inflight = op;
+        // Sent by a page that closed before its answer came: take that answer, don't send it again.
+        let asked = keep ? onTheWay.get(wayKey(op)) : null;
+        if (!asked) {
+          if (op.sent) op.again = true;
+          asked = ask(op);
+          if (keep) onTheWay.set(wayKey(op), asked);
+        }
         op.sent = true;   // once it has left the phone, an Undo no longer cancels it
         save();
         emit('onChange');
-        let res;
-        try {
-          res = await send(op.op === 'add' ? { op: 'add', name: op.name, private: op.private }
-            : { op: op.op, item: op.item, seen: op.seen });
-        } catch (err) {
-          res = { data: null, error: err, status: 0 };
-        }
+        const res = await asked;
         inflight = null;
-        if (stopped) return;
+        if (stopped) { answeredLate(op, res); return; }
+        onTheWay.delete(wayKey(op));
         const how = answer(res);
         const kicked = again;
         again = false;
@@ -444,30 +516,71 @@
       if (!queue.length) failing = false;
     }
 
+    // What an answered change means for a queue (§8.4): the queue without it, the changes that were
+    // waiting for its reply given their seen from it (or dropped, with everything waiting for them),
+    // the list in the reply, and what to say.
+    function settled(list, op, reply) {
+      const s = snapshotOf(reply);
+      let rest = list.filter((x) => x.id !== op.id);
+      let outcome = reply.result;
+      let from;           // from(next): the row a change waiting for this one takes its seen from, or null
+      if (op.op === 'add') {
+        // A tick of the line this add brought back: that line, if it is the one the add landed on.
+        from = (next) => (reply.item_id != null && reply.item_id === next.item
+          ? rowsOf(s, next.op === 'buy' ? 'to_buy' : 'bought').find((r) => r.id === next.item) : null);
+      } else {
+        const done = reply.changed === true;
+        const where = op.op === 'buy' ? 'bought' : 'to_buy';
+        const found = rowsOf(s, where).find((r) => r.id === op.item);
+        // This phone's own change: it changed the row, or the row is as asked after this phone sent it
+        // again (its earlier try's answer was lost): an un-tick, or a tick that finds the line bought by
+        // this phone (mine). A tick sent again never counts by itself: the purchase may be someone
+        // else's, and an Undo waiting behind it must not undo that.
+        const ours = !!found && (done || (op.op === 'unbuy' && !!op.again)
+          || (op.op === 'buy' && typeof o.mine === 'function' && !!o.mine(found)));
+        outcome = done ? 'done' : found ? 'same' : 'changed';
+        from = () => (ours ? found : null);
+      }
+      rest.filter((x) => x.after === op.id).forEach((next) => {
+        if (!rest.includes(next)) return;   // dropped already, with a change it was waiting for
+        const row = from(next);
+        if (row) { next.seen = row.seen; delete next.after; return; }
+        rest = without(rest, next);
+        // Undo (or a tick) that can no longer be done as asked: the list shows it as it is now.
+        if (op.op !== 'add' && !rowsOf(s, next.op === 'buy' ? 'bought' : 'to_buy').some((r) => r.id === next.item)) outcome = 'changed';
+      });
+      return { queue: rest, snap: s, outcome };
+    }
+
     // A change was answered: take the list in the reply, give the changes waiting for this one their
     // seen, and say what happened.
     function settle(op, reply) {
-      queue = queue.filter((x) => x !== op);
-      snap = snapshotOf(reply);
+      const done = settled(queue, op, reply);
+      queue = done.queue;
+      snap = done.snap;
       fresh = true;
       writes++;
-      let outcome = reply.result;
-      if (op.op !== 'add') {
-        const done = reply.changed === true;
-        const where = op.op === 'buy' ? 'bought' : 'to_buy';
-        const row = rowsOf(snap, where).find((r) => r.id === op.item);
-        const ours = !!row && (done || (op.op === 'buy' && typeof o.mine === 'function' && !!o.mine(row)));
-        outcome = done ? 'done' : row ? 'same' : 'changed';
-        queue.filter((x) => x.after === op.id).forEach((next) => {
-          if (ours) { next.seen = row.seen; delete next.after; return; }
-          drop(next);
-          // Undo (or a tick) that can no longer be done as asked: the list shows it as it is now.
-          const now = rowsOf(snap, next.op === 'buy' ? 'bought' : 'to_buy').find((r) => r.id === next.item);
-          if (!now) outcome = 'changed';
-        });
-      }
       changed();
-      emit('onReply', op, reply, outcome);
+      emit('onReply', op, reply, done.outcome);
+    }
+
+    // The page closed while this change was on its way, and its answer came anyway (§8.2). It comes off
+    // the queue saved on this device by its id, never by saving this page's queue over it (a page
+    // opened since may have saved its own there), and the changes waiting for it get their seen from the
+    // answer, as settle() gives them. With no answer it stays saved, and goes again next time.
+    function answeredLate(op, res) {
+      const how = answer(res);
+      if (how === 'retry') { onTheWay.delete(wayKey(op)); return; }
+      if (!keep) return;
+      try {
+        const saved = JSON.parse(localStorage.getItem(key) || 'null');
+        if (!saved || saved.owner !== owner || saved.v !== 1 || !Array.isArray(saved.queue)) return;
+        const list = saved.queue.filter((x) => x && typeof x === 'object');
+        const was = list.find((x) => x.id === op.id);
+        if (!was) return;
+        saved.queue = how === 'ok' ? settled(list, was, res.data).queue : without(list, was);
+        localStorage.setItem(key, JSON.stringify(saved));
+      } catch (err) { /* the page works without it */ }
     }
 
     // ---- Reads
@@ -482,9 +595,14 @@
     }
 
     // ---- What the page draws
-    function view() {
+    // The last list with the changes still waiting laid over it (out), and the bought line each waiting
+    // add brings back on the list (backs: the add's id → the line's id). A row a waiting change moved
+    // has no seen of its own (null) until that change is answered: a tap on it takes its seen from that
+    // change's reply, or from the list in it.
+    function overlay() {
       if (!snap) return null;
       const out = JSON.parse(JSON.stringify(snap));
+      const backs = new Map();
       const lk = listKey(out);
       let toBuy = Array.isArray(out[lk]) ? out[lk] : [];
       let bought = Array.isArray(out.bought) ? out.bought : [];
@@ -502,12 +620,14 @@
           else if (o.who) r.bought_by = o.who;
           delete r.added_by;
           delete r.other;
+          r.seen = null;   // its bought_at comes in the reply
           bought.unshift(mark(r));
         } else if (op.op === 'unbuy') {
           const r = take1(bought, op.item) || (op.show && !toBuy.some((x) => x.id === op.item) ? Object.assign({ id: op.item, seen: null }, op.show) : null);
           if (!r) return;
           delete r.undo;
           delete r.bought_by;
+          r.seen = null;   // its added_at comes in the reply
           if (!myDay && o.who && !('added_by' in r)) r.added_by = o.who;
           toBuy.push(mark(r));
         } else {
@@ -531,8 +651,10 @@
             bought = bought.filter((x) => x !== r);
             delete r.undo;
             delete r.bought_by;
+            r.seen = null;   // the add gives it a new added_at
             r.note = p.note;
             toBuy.push(r);
+            backs.set(op.id, r.id);
           } else {
             r = { id: null, name: p.name, note: p.note, aisle: 'other', seen: null };
             if (!myDay) Object.assign(r, { private: priv, added_by: o.who || null });
@@ -546,7 +668,11 @@
       toBuy = toBuy.sort(byName);
       out[lk] = toBuy;
       out.bought = bought;
-      return out;
+      return { out, backs };
+    }
+    function view() {
+      const laid = overlay();
+      return laid && laid.out;
     }
 
     function waitingSince() {

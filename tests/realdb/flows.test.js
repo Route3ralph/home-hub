@@ -726,6 +726,8 @@ const MY_DAY_FNS = /^\/rest\/v1\/rpc\/(get_person_day|complete_by_token|undo_by_
     await until(async () => (await line('huevos')).bought_by === P.alex);
     await addOnFood(a.page, 'huevos');
     await until(async () => (await line('huevos')).bought_at === null);
+    // The database has the line before Alex's page has the answer and its toast: wait for that too.
+    await until(async () => /Back on the list/.test(await lastToast(a.page)), 3000);
     const huevos1 = await line('huevos');
     check('my day list: meanwhile Alex buys Huevos on Food and puts it back on the list ("Back on the list"): to buy, added by Alex, a new added_at',
       huevos1.added_by === P.alex && huevos1.added_at !== huevos0.added_at && /Back on the list/.test(await lastToast(a.page)), { huevos0, huevos1 });
@@ -763,6 +765,8 @@ const MY_DAY_FNS = /^\/rest\/v1\/rpc\/(get_person_day|complete_by_token|undo_by_
     await a.page.fill('#formDialog input[name="link"]', 'cooking.example.com/tacos');
     await a.page.click('#formDialog [type="submit"]');
     await until(async () => !!(await one(`select id from meals where day = '${TODAY}'`)));
+    // The database has the row before the page has the answer and its toast: wait for that too.
+    await until(async () => (await lastToast(a.page)) === 'Dinner tonight: Tacos', 3000);
     const meal = await one(`select slot, kind, title, cook_id, note, link, private, created_by, updated_by from meals where day = '${TODAY}'`);
     check('dinner: tonight\'s Tacos, Sam cooking, saved from Food (an upsert on day and slot, with the real grants), stamped by Alex',
       same(meal, { slot: 'dinner', kind: 'cook', title: 'Tacos', cook_id: P.sam, note: 'Chicken is in the freezer', link: 'https://cooking.example.com/tacos',
