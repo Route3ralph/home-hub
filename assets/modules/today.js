@@ -7,7 +7,10 @@
    line per project with work today; and a first-run checklist until the
    household is set up. With schema 3, events typed into Google Calendar
    (google_items) are in each person's day too, read only, and a one-time
-   notice says the calendar now goes to Google and the kitchen wall.
+   notice says the calendar now goes to Google and the kitchen wall. With
+   schema 4, tonight's dinner in one line under the person chips ("Dinner:
+   Tacos · Sam cooks ›", to the Food page), or a quiet "What's for dinner? ›"
+   when the family planned one in the last two weeks.
    Dates and times are the household's (core.v2).
    ===================================================================== */
 (function () {
@@ -147,6 +150,15 @@
     } catch (err) { return false; }
   }
 
+  // Dinners (schema 4) from 14 days before to today: today's for the line, the days before to decide
+  // whether to ask. Never throws: a failed read (null) leaves the line out. No request below schema 4.
+  async function loadDinners(today) {
+    if (!(core.schemaVersion >= 4)) return null;
+    try {
+      return (await q(core.sb.from('meals').select('day,slot,kind,title,cook_id,note,private').gte('day', dates.addDays(today, -14)).lte('day', today))) || [];
+    } catch (err) { return null; }
+  }
+
   // day_text for every kid and helper with a phone, so the Send buttons are ready to tap (a link
   // has to have its message before the tap, or phones block the new window).
   function loadTexts(today) {
@@ -157,7 +169,7 @@
   async function load() {
     const today = dates.today();
     const projects = loadProjects();
-    const [agenda, late, heads, setup, texts, , google, notice] = await Promise.all([
+    const [agenda, late, heads, setup, texts, , google, notice, dinners] = await Promise.all([
       call('agenda', { p_from: today, p_to: today }),
       call('late_items'),
       call('heads_up', { p_day: today }),
@@ -166,6 +178,7 @@
       projects,
       loadGoogle(today),
       loadNotice(today),
+      loadDinners(today),
     ]);
     const p = await projects;
     return {
@@ -180,6 +193,7 @@
       googleFailed: google.failed,
       kidSources: google.kidSources,
       notice,
+      dinners,
     };
   }
 
@@ -469,6 +483,28 @@
     }).join('')}</ul>`;
   }
 
+  // Tonight's dinner, the same under every chip: "Dinner: Tacos · Sam cooks ›" (a lock on a locked one,
+  // the note under it), to that day on the Food page. With none, "What's for dinner? ›" only when a
+  // dinner was planned on one of the 14 days before; a family that doesn't plan never sees a prompt.
+  const LOCK = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10.5" width="14" height="10" rx="2.2"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/></svg>';
+  const DINNER_KIND = { leftovers: 'Leftovers', out: 'Eating out', takeout: 'Takeout', fend: 'Fend for yourself' };
+  function dinnerHTML(d) {
+    if (!d.dinners) return '';
+    const href = `#/food/${encodeURIComponent(d.today)}`;
+    const m = d.dinners.find((x) => x.day === d.today && x.slot === 'dinner');
+    if (!m) {
+      const planned = d.dinners.some((x) => x.slot === 'dinner' && x.day < d.today);
+      return planned ? `<a class="today-dinner is-quiet" href="${href}">What's for dinner? <span aria-hidden="true">›</span></a>` : '';
+    }
+    const title = m.kind === 'cook' ? m.title : DINNER_KIND[m.kind] || '';
+    const p = ['out', 'fend'].includes(m.kind) ? null : activePerson(m.cook_id);
+    const me = !!p && !!v2.mePerson && v2.mePerson.id === p.id;
+    const who = !p ? '' : m.kind === 'cook' ? (me ? 'You cook' : `${firstName(p.name)} cooks`) : (me ? 'You\'re on dinner' : `${firstName(p.name)}'s on dinner`);
+    return `<a class="today-dinner" href="${href}"><span class="today-dinner-main"><span class="today-dinner-line"><b>Dinner:</b> ${esc(title)}${m.private
+      ? `<span class="today-dinner-lock" title="Locked: off the wall and other people's My day">${LOCK}<span class="sr-only">, locked</span></span>` : ''}${who ? ` · ${esc(who)}` : ''}</span>${m.note
+      ? `<small class="today-dinner-note">${esc(m.note)}</small>` : ''}</span><span class="today-dinner-go" aria-hidden="true">›</span></a>`;
+  }
+
   function setupHTML(setup) {
     const people = v2.people().filter((p) => p.active !== false);
     const steps = [
@@ -552,6 +588,7 @@
         <button type="button" class="today-gnotice-x" data-act="close-notice" aria-label="Close this notice">×</button></div>` : ''}
       ${whoHTML(st)}
       <div class="today-chips" role="group" aria-label="Whose day">${chipsHTML(v)}</div>
+      ${dinnerHTML(d)}
       <div class="today-grid${side ? ' has-side' : ''}">
         <div class="today-col">
           <section class="today-sec" aria-label="${esc(dayTitle)}">${ui.sectionHeading(dayTitle, dayItems.length)}

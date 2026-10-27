@@ -19,7 +19,7 @@
 // Run alone with: node tests/e2e/settings.test.js
 const { chromium } = require('playwright');
 const { createHash } = require('crypto');
-const { makeDb, install, signIn, withCalendars, calendarRow, linkRow, calendarRpc } = require('./mock');
+const { makeDb, install, signIn, withCalendars, calendarRow, linkRow, calendarRpc, withFood } = require('./mock');
 const { serve } = require('./server');
 
 let BASE = '';
@@ -935,6 +935,25 @@ const emailOf = (req) => {
     !(await page.$$('[data-ref="calendar"] button, [data-ref="calendar"] input, [data-ref="calendar"] select')).length
     && !(await page.$('[data-ref="gproblems"], [data-ref="grepairs"], [data-ref="gstale"], [data-ref="gmissing"]')) && !log.some((l) => /calendar_links/.test(l))
     && same(await texts(page, '.set-hearth li').then((x) => x.length), 5));
+  await page.context().close();
+
+  // ---------- Schema 4 (v1.2): dinners on Hub – Family come from the Food page (docs/v1.2-kitchen.md §6.3)
+  const mealDb = withFood(richDb());
+  Object.assign(mealDb.cal.family, { status: 'ok', access_role: 'writer', status_detail: null });
+  mealDb.previewRows = { [mealDb.cal.family.google_id]: [
+    { day: '2026-10-25', title: 'Dinner: Tacos (Sam)', private: false, item_kind: 'meal', item_id: 'meal-tacos', details: 'Sam cooks' },
+    { day: '2026-10-26', title: 'Dinner: Private item', private: true, item_kind: 'meal', item_id: 'meal-surprise' },
+    { day: '2026-10-26', title: 'Book club', private: false, item_kind: 'event', item_id: 'ev-book' },
+  ] };
+  ({ page } = await open({ label: 'google-meals', db: mealDb, rpc: Object.assign({}, v3Rpc, { hub_schema_version: () => 4 }) }));
+  await page.click(`[data-gpreview="${mealDb.cal.family.id}"]`);
+  await page.waitForTimeout(400);
+  const MEAL_HINT = 'Dinners come from the Food page. Lock a dinner there to keep its title off the wall, or turn off \'Dinners on the kitchen wall\'.';
+  const mealRows = await page.$$eval('#formDialog [data-ref="pv"] > li.set-pv-row', (lis) => lis.map((li) => [li.querySelector('.set-pv-title').textContent,
+    (li.querySelector('.set-pv-hint') || {}).textContent || null, !!li.querySelector('[data-gprivate]'), !!li.querySelector('.badge')]));
+  check('schema 4: a dinner in the preview has no Make private, and says it comes from the Food page (locked or not); an event keeps Make private',
+    same(mealRows, [['Dinner: Tacos (Sam)', MEAL_HINT, false, false], ['Dinner: Private item', MEAL_HINT, false, true], ['Book club', null, true, false]]), JSON.stringify(mealRows));
+  await page.screenshot({ path: SHOTS + 'settings-google-preview-meals.png' });
   await page.context().close();
 
   // ---------- Phones and desktops, light and dark

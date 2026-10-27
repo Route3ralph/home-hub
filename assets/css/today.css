@@ -111,3 +111,22 @@ section.today-who { padding: 14px 16px 16px; }
 }
 .today-gnotice-x:hover, .today-gnotice-x:focus-visible { background: var(--surface); outline: none; }
 .today-gfail { margin: 0 0 8px; padding: 8px 12px; border-radius: 9px; background: var(--warn-soft); color: var(--warn); font-size: 14px; }
+
+/* ---------- Tonight's dinner (schema 4): one line under the person chips, to the Food page ---------- */
+.today-dinner {
+  display: flex; align-items: center; gap: 8px; max-width: 760px; min-height: 48px; margin: 4px 0 2px; padding: 8px 8px 8px 14px;
+  border: 1px solid var(--border); border-radius: 12px; background: var(--surface);
+  color: var(--text); text-decoration: none;
+}
+.today-dinner:hover, .today-dinner:focus-visible { border-color: var(--accent); outline: none; }
+.today-dinner-main { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow-wrap: anywhere; }
+.today-dinner-line b { margin-right: 2px; font-weight: 700; }
+.today-dinner-note { color: var(--text-3); font-size: 13px; }
+.today-dinner-lock { display: inline-grid; place-items: center; margin-left: 6px; color: var(--text-3); vertical-align: -2px; }
+.today-dinner-lock svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linejoin: round; }
+.today-dinner-go { flex: none; display: grid; place-items: center; width: 28px; color: var(--text-3); font-size: 20px; }
+/* No dinner tonight, but the family plans them: a quiet question, no box. */
+.today-dinner.is-quiet {
+  display: inline-flex; min-height: 44px; padding: 0 2px; border: 0; background: none;
+  color: var(--accent); font-size: 14px; font-weight: 600;
+}
