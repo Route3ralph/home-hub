@@ -982,9 +982,12 @@ const ANDROID = 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KH
   await page.click('.toast-action .toast-btn:not(.toast-x)');
   await until(() => calls(db, 'add_to_list_by_token').length === 1);
   check('"¿Añadir otra vez?" adds it again by name', same(calls(db, 'add_to_list_by_token')[0].body, { p_token: TAYLOR, p_name: 'Huevos' }));
+  // The answer's toast lasts 3 seconds of the page's clock, so look for it before running the clock on.
+  const backToast = await until(async () => (await text(page, '.toast')) === 'Otra vez en la lista');
+  const backToastText = await text(page, '.toasts');
   await page.clock.runFor(3000);   // the tap on Huevos was a tap on the list: it moves 3 seconds later
-  check('... "Otra vez en la lista", and Huevos is to buy', await until(async () => (await text(page, '.toast')) === 'Otra vez en la lista'
-    && names((await listView(page)).toBuy).includes('Huevos')), await text(page, '.toasts'));
+  check('... "Otra vez en la lista", and Huevos is to buy', backToast && await until(async () => names((await listView(page)).toBuy).includes('Huevos')),
+    `${backToastText} ${JSON.stringify((await listView(page)).toBuy)}`);
   await toasts(page);
 
   // ---- The add box: Enter, the reply's words, the box keeps the focus
