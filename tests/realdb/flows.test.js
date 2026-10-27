@@ -768,9 +768,11 @@ const MY_DAY_FNS = /^\/rest\/v1\/rpc\/(get_person_day|complete_by_token|undo_by_
     // The database has the row before the page has the answer and its toast: wait for that too.
     await until(async () => (await lastToast(a.page)) === 'Dinner tonight: Tacos', 3000);
     const meal = await one(`select slot, kind, title, cook_id, note, link, private, created_by, updated_by from meals where day = '${TODAY}'`);
+    // The row is in the table before the page has the answer, so the toast is waited for, not read at once.
+    const savedToast = await until(async () => (await lastToast(a.page)) === 'Dinner tonight: Tacos');
     check('dinner: tonight\'s Tacos, Sam cooking, saved from Food (an upsert on day and slot, with the real grants), stamped by Alex',
       same(meal, { slot: 'dinner', kind: 'cook', title: 'Tacos', cook_id: P.sam, note: 'Chicken is in the freezer', link: 'https://cooking.example.com/tacos',
-        private: 'f', created_by: 'alex@example.com', updated_by: 'alex@example.com' }) && (await lastToast(a.page)) === 'Dinner tonight: Tacos', { meal, toast: await lastToast(a.page) });
+        private: 'f', created_by: 'alex@example.com', updated_by: 'alex@example.com' }) && savedToast, { meal, toast: await lastToast(a.page) });
 
     // Today, and "Send Jordan his day".
     await go(a.page, '#/');
@@ -834,6 +836,65 @@ const MY_DAY_FNS = /^\/rest\/v1\/rpc\/(get_person_day|complete_by_token|undo_by_
     const f = await failures();
     check('dinner: no API request failed', !f.length, f);
     await a.context.close();
+  });
+
+  // A locked dinner's prep reminder (docs/v1.2-kitchen.md §5): Food's button opens the real task form
+  // with Private ticked, and the task it saves is private, so "Prep: <title>" stays off My day, the
+  // texts and the email subject as the dinner's title does. The flow removes what it made.
+  await flow('food prep', async () => {
+    await h.mark();
+    const DAY = '2026-10-28';
+    let a = null;
+    try {
+      a = await open({ email: 'alex@example.com', path: `/#/food/${DAY}`, label: 'prep-alex' });
+      await a.page.waitForSelector('#formDialog .food-dinner', { timeout: 8000 });
+      await a.page.fill('#formDialog input[name="title"]', 'Birthday cake');
+      await a.page.click(`#formDialog [data-ref="cooks"] .pchip[data-person="${P.sam}"]`);
+      await a.page.click('#formDialog .food-more summary');
+      await a.page.check('#formDialog input[name="private"]');
+      await a.page.click('#formDialog [type="submit"]');
+      await until(async () => !!(await one(`select id from meals where day = '${DAY}'`)));
+      const meal = await one(`select kind, title, cook_id, private from meals where day = '${DAY}'`);
+      check('prep: Wednesday\'s "Birthday cake" saved locked, Sam cooking', same(meal, { kind: 'cook', title: 'Birthday cake', cook_id: P.sam, private: 't' }), meal);
+
+      await go(a.page, `#/food/${DAY}`);
+      await a.page.waitForSelector('#formDialog [data-act="prep"]', { timeout: 8000 });
+      await a.page.click('#formDialog [data-act="prep"]');
+      await a.page.waitForSelector('.tasks-form', { timeout: 8000 });
+      await settle(a.page, 200);
+      const form = await a.page.evaluate(() => {
+        const f = document.querySelector('.tasks-form');
+        return { h: f.querySelector('h3').textContent, title: f.elements.title.value, date: f.elements.when_date.value, category: f.elements.category.value,
+          more: f.querySelector('.tasks-more').open, private: f.elements.private.checked };
+      });
+      check('prep: "Add a prep reminder…" on the locked dinner opens the real task form: "Prep: Birthday cake", due today, family, More open, Private ticked',
+        same(form, { h: 'New task', title: 'Prep: Birthday cake', date: TODAY, category: 'family', more: true, private: true }), form);
+      await a.page.click('.tasks-form [type="submit"]');
+      await until(async () => !!(await one("select id from tasks where title = 'Prep: Birthday cake'")));
+      const task = await one("select id, private, responsible_id, due_date, category, created_by from tasks where title = 'Prep: Birthday cake'");
+      const { id: taskId, ...saved } = task || {};
+      check('prep: the task saved is private, Sam in charge, due today, family, made by Alex',
+        same(saved, { private: 't', responsible_id: P.sam, due_date: TODAY, category: 'family', created_by: 'alex@example.com' }), task);
+      const toastsNow = () => texts(a.page, '.toasts .toast, body > .toast');
+      check('prep: ... and Food comes back with "Prep reminder added"', await until(async () => (await a.page.evaluate(() => location.hash)) === '#/food'
+        && (await toastsNow()).includes('Prep reminder added')), await toastsNow());
+
+      // Sam is in charge: his My day, his text and his email subject say "Private item", never the title.
+      const tok = (await one(`select day_token from people where id = '${P.sam}'`)).day_token;
+      const onMyDay = await one(`select i->>'title' as title from jsonb_array_elements(public.get_person_day('${tok}')->'days'->0->'items') i where i->>'item_id' = '${taskId}'`);
+      check('prep: on Sam\'s My day the task reads "Private item"', !!onMyDay && onMyDay.title === 'Private item', onMyDay);
+      const text = (await one(`select public.day_text('${P.sam}', '${TODAY}') as t`)).t || '';
+      check('prep: Sam\'s day text has "Private item", not the title', /Private item/.test(text) && !/Birthday cake/.test(text), text);
+      const mail = await one(`select public.digest_for('${P.sam}', '${TODAY}') as d`);
+      const subject = mail && mail.d ? JSON.parse(mail.d).subject : null;
+      check('prep: Sam\'s morning email subject never has the title', typeof subject === 'string' && !/Birthday cake/.test(subject), subject);
+      const f = await failures();
+      check('prep: no API request failed', !f.length, f);
+    } finally {
+      if (a) await a.context.close();
+      await sql("delete from tasks where title = 'Prep: Birthday cake'");
+      await sql(`delete from meals where day = '${DAY}'`);
+    }
   });
 
   // ===================================================================

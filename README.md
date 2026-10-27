@@ -67,7 +67,7 @@ The **Food** page has this week's dinners at the top and the family's one shoppi
 - Tap a day: a name ("Tacos", with your usual dinners as suggestions), or one tap for Leftovers · Eating out · Takeout · Fend for yourself. Empty days are fine.
 - **Who cooks** (optional; for Leftovers and Takeout, who's on dinner): they see the note and the recipe link on their My day and in their email, and get the email that day even with nothing else in it.
 - **Keep the title private** (under More) locks a dinner: the wall, other people's My day and every email subject say "Private item". Grown-ups who sign in still see it.
-- **Add a prep reminder…** on a saved dinner makes an ordinary task for the day before ("Prep: Tacos"). It doesn't move if the dinner moves.
+- **Add a prep reminder…** on a saved dinner makes an ordinary task for the day before ("Prep: Tacos"). It doesn't move if the dinner moves. On a locked dinner it starts as a private task (Private is ticked under More), so the wall, My day and email subjects say "Private item".
 - Dinner shows on **Today**, on everyone's **My day**, at the end of Today in the morning email, in the cook's **Send their day** text, and on the wall's **Family column** as "Dinner: Tacos (Sam)", all day, once [Google Calendar and Hearth](#google-calendar-and-hearth) has a Family calendar. A parent can turn the wall copy off at the foot of the Food page.
 
 **Hearth's Meals and Groceries.** Use Home Hub's, not Hearth's Meals or Groceries: anything added there won't reach Taylor, the email or the hub. Home Hub can't read or fill them, and using both puts every dinner on the wall twice.
