@@ -7,8 +7,12 @@
 //   • CLAUDE.md and tests/README.md name every suite tests/run.sh runs, and every public page;
 //   • day.html carries the same ?v= as index.html (CLAUDE.md says so);
 //   • docs/v2-design.md names every table, column, function and anon-callable function the
-//     migrations add, and every signature it or docs/v1.1-google-calendar.md writes out has the
-//     migration's parameter names;
+//     migrations add, and every signature it, docs/v1.1-google-calendar.md or docs/v1.2-kitchen.md
+//     writes out has the migration's parameter names;
+//   • from migration 0004 (v1.2) on, docs/v2-design.md writes out every new table, added column
+//     and constraint as the migration has it (in ```sql blocks), the signature of every public
+//     function, every private function, and every function a migration renames;
+//   • anon can call exactly the token functions the design counts;
 //   • example phone numbers are in the fictional 555-0100 to 555-0199 range.
 // Reads files only: no database, no browser. Run alone with: node tests/docs/docs.test.js
 const fs = require('fs');
@@ -152,6 +156,12 @@ const migrations = migrationFiles.map((f) => read(`supabase/migrations/${f}`)).j
 const sqlNoComments = (s) => s.split('\n').map((l) => l.replace(/--.*$/, '')).join('\n');
 const mig = sqlNoComments(migrations);
 const baseline = sqlNoComments(read('supabase/schema.sql'));
+// From migration 0004 (v1.2) on, the design writes the database out in full (§9): the tables as
+// the migration creates them, every function. 0002 and 0003 are summarised (§3, §8).
+const FULL_FROM = '0004';
+const migLater = sqlNoComments(migrationFiles.filter((f) => f >= FULL_FROM).map((f) => read(`supabase/migrations/${f}`)).join('\n'));
+// The design's ```sql blocks, without their comments.
+const designSql = sqlNoComments([...design.matchAll(/```sql\n([\s\S]*?)```/g)].map((m) => m[1]).join('\n'));
 
 // Top-level comma split (a default value can have commas inside brackets).
 function splitArgs(s) {
@@ -190,6 +200,22 @@ const publicFns = [...new Set(migFns.filter((f) => f.schema === 'public').map((f
 const missingFns = publicFns.filter((n) => !designWords.has(n));
 check(`docs/v2-design.md names every public function the migrations add (${publicFns.length})`, !missingFns.length, `missing ${missingFns.join(', ')}`);
 
+// From 0004 on, the private ones too (§9 lists every helper, with who may call it).
+const laterFns = functions(migLater);
+const laterPrivate = [...new Set(laterFns.filter((f) => f.schema === 'private').map((f) => f.name))].sort();
+const missingPrivate = laterPrivate.filter((n) => !designWords.has(n));
+check(`docs/v2-design.md names every private function migration ${FULL_FROM} and later add (${laterPrivate.length})`,
+  laterPrivate.length > 0 && !missingPrivate.length, `missing ${missingPrivate.join(', ')}`);
+
+// A function a migration renames (a wrapped function's old body, "digest_for_v3") is named in the design
+// under both names, and so is the rule for changing a wrapped function later.
+const renamed = [...mig.matchAll(/alter\s+function\s+(?:public|private)\.(\w+)\s*\([^)]*\)\s+rename\s+to\s+(\w+)/gi)].map((m) => [m[1], m[2]]);
+const missingRenamed = renamed.flat().filter((n) => !designWords.has(n));
+check(`docs/v2-design.md names every function a migration renames, old and new name (${renamed.map((r) => r.join(' → ')).join(', ')})`,
+  renamed.length > 0 && !missingRenamed.length, `missing ${missingRenamed.join(', ')}`);
+check('docs/v2-design.md says a later change to a wrapped function replaces the wrapper and its _v3 body together',
+  !renamed.some(([, to]) => /_v\d+$/.test(to)) || /replaces the wrapper and its `?_v3`? body together/.test(design));
+
 // Every signature written out in the design (and in the v1.1 design, docs/v1.1-google-calendar.md)
 // has the real parameter names, in order. A signature is
 // "f()" or arguments that are parameters: "p" or "p_…" (the migrations' naming), or a name and a type
@@ -197,7 +223,9 @@ check(`docs/v2-design.md names every public function the migrations add (${publi
 // A call ("monday(start)", "series_after(greatest(due_date,
 // done_on))") isn't one. "f()" for a function whose parameters all have defaults is a call too.
 const PARAM = /^(?:out\s+)?(?:p(?:_[a-z0-9_]*)?|[a-z_][a-z0-9_]*\s+[a-z_][a-z0-9_.]*(?:\[\])?)(?:\s+[a-z_][a-z0-9_.]*(?:\[\])?|\s+default\s+\S+)*$/i;
-for (const [file, text] of [['docs/v2-design.md', design], ['docs/v1.1-google-calendar.md', read('docs/v1.1-google-calendar.md')]]) {
+const designSignatures = new Set();   // the functions whose signature docs/v2-design.md writes out
+for (const [file, text] of [['docs/v2-design.md', design], ['docs/v1.1-google-calendar.md', read('docs/v1.1-google-calendar.md')],
+  ['docs/v1.2-kitchen.md', read('docs/v1.2-kitchen.md')]]) {
   const wrong = [];
   let signatures = 0;
   for (const m of text.matchAll(/(?<![\w.])(?:(public|private)\.)?([a-z_][a-z0-9_]*)\(([^()]*)\)/g)) {
@@ -208,10 +236,17 @@ for (const [file, text] of [['docs/v2-design.md', design], ['docs/v1.1-google-ca
     if (!args.every((a) => PARAM.test(a) || (m[1] && /^[a-z_][a-z0-9_]*(?:\s+[a-z_][a-z0-9_.]*(?:\[\])?)*$/i.test(a)))) continue;
     const names = args.filter((a) => !/^out\s/i.test(a)).map((a) => a.split(/\s+/)[0].toLowerCase());
     signatures++;
-    if (!cands.some((f) => f.params.join() === names.join() || (!names.length && f.optional))) wrong.push(`${m[0]} → ${cands.map((f) => `${f.schema}.${f.name}(${f.params.join(', ')})`).join(' or ')}`);
+    const right = cands.filter((f) => f.params.join() === names.join() || (!names.length && f.optional));
+    if (!right.length) wrong.push(`${m[0]} → ${cands.map((f) => `${f.schema}.${f.name}(${f.params.join(', ')})`).join(' or ')}`);
+    else if (file === 'docs/v2-design.md') for (const f of right) designSignatures.add(`${f.schema}.${f.name}`);
   }
   check(`${file}: every function signature it writes out has the migration's parameter names (${signatures} checked)`, signatures > 0 && !wrong.length, wrong.join(' | '));
 }
+// From 0004 on, the design writes out every public function's signature, parameters and all.
+const laterPublic = [...new Set(laterFns.filter((f) => f.schema === 'public').map((f) => f.name))].sort();
+const unwritten = laterPublic.filter((n) => !designSignatures.has(`public.${n}`));
+check(`docs/v2-design.md writes out the signature of every public function migration ${FULL_FROM} and later add or replace (${laterPublic.length})`,
+  laterPublic.length > 0 && !unwritten.length, `missing ${unwritten.join(', ')}`);
 
 // The functions anon can call (the My day page and the share page) are the ones the design lists.
 const anon = new Set();
@@ -219,6 +254,19 @@ for (const m of mig.matchAll(/grant\s+execute\s+on\s+function\s+public\.(\w+)\([
 const tokenSec = design.slice(design.indexOf('### Anonymous token functions'), design.indexOf('### ', design.indexOf('### Anonymous token functions') + 5));
 const missingAnon = [...anon].filter((n) => !words(tokenSec).has(n)).sort();
 check(`docs/v2-design.md "Anonymous token functions" lists every function anon can call (${[...anon].sort().join(', ')})`, anon.size > 0 && !missingAnon.length, `missing ${missingAnon.join(', ')}`);
+// Each function anon can call is a decision (a secret is its only key): adding one means adding it here,
+// to the design and to tests/db/access.test.sql. 0002: My day and the confirmation email; 0004 (v1.2):
+// the helper's shopping list.
+const ANON = ['add_to_list_by_token', 'buy_item_by_token', 'complete_by_token', 'confirm_digest', 'get_list_by_token', 'get_person_day',
+  'stop_digest', 'undo_by_token'];
+check(`the migrations let anon call exactly the ${ANON.length} token functions this check knows`, [...anon].sort().join() === ANON.join(), [...anon].sort());
+// They are all My day's (day.html), and CLAUDE.md says day.html calls only them.
+const missingClaude = ANON.filter((n) => !clientSec.includes(`\`${n}\``));
+check(`CLAUDE.md "Client code" names every token function day.html may call (${ANON.length})`, !missingClaude.length, `missing ${missingClaude.join(', ')}`);
+const NUMBER = { five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12 };
+const counted = (/These (\w+) are the only new functions anon can call/.exec(tokenSec) || [])[1];
+check(`docs/v2-design.md "Anonymous token functions" counts them right ("These ${counted} are the only new functions anon can call": ${anon.size})`,
+  NUMBER[String(counted).toLowerCase()] === anon.size, tokenSec.slice(0, 300));
 
 // Every table, column and agenda_item field the migrations add is in the design.
 const tables = [];
@@ -238,10 +286,44 @@ check(`docs/v2-design.md names every table and type the migrations add (${tables
 const missingCols = columns.filter((c) => !designWords.has(c.split('.')[1]));
 check(`docs/v2-design.md names every column the migrations add (${columns.length})`, columns.length > 0 && !missingCols.length, `missing ${missingCols.join(', ')}`);
 
+// From 0004 on, the design writes out each new table (create table), added column (alter table … add
+// column) and added or dropped constraint exactly as the migration has it, comments and spacing aside, in
+// its ```sql blocks: so a column, a default or a check that changes in one changes in the other.
+const flat = (s) => s.replace(/\s+/g, ' ').replace(/\s*([(),;])\s*/g, '$1').trim().toLowerCase();
+const statements = [...migLater.matchAll(/create\s+table\s+public\.\w+\s*\([\s\S]*?\n\);|alter\s+table\s+public\.\w+\s+(?:add|drop)\s+(?:column|constraint)\b[^;]*;/gi)].map((m) => m[0]);
+const designFlat = flat(designSql);
+// A create table's body as {column or table constraint: its definition}, for saying what differs.
+function definitions(body) {
+  const out = {};
+  let cur = null;
+  let n = 0;
+  for (const l of sqlNoComments(body).split('\n')) {
+    const c = /^\s{1,3}([a-z_][a-z0-9_]*)\s+\S/i.exec(l);
+    if (c) cur = /^(check|primary|unique|foreign|constraint)$/i.test(c[1]) ? `table constraint ${++n} (${c[1].toLowerCase()})` : c[1];
+    if (cur) out[cur] = flat(`${out[cur] || ''} ${l}`).replace(/,$/, '');
+  }
+  return out;
+}
+const notWritten = statements.filter((st) => !designFlat.includes(flat(st))).map((st) => {
+  const t = /^create\s+table\s+public\.(\w+)/i.exec(st);
+  if (!t) return flat(st).slice(0, 80);
+  // Which columns differ, when the design has a block for the table.
+  const block = new RegExp(`create\\s+table\\s+public\\.${t[1]}\\s*\\(([\\s\\S]*?)\\n\\);`, 'i').exec(designSql);
+  if (!block) return `create table public.${t[1]} (no block in the design)`;
+  const want = definitions(/\(([\s\S]*)\n\);$/.exec(st)[1]);
+  const have = definitions(block[1]);
+  const diff = [...Object.keys(want).filter((c) => !(c in have)).map((c) => `missing ${c}`),
+    ...Object.keys(have).filter((c) => !(c in want)).map((c) => `not in the migration: ${c}`),
+    ...Object.keys(want).filter((c) => c in have && want[c] !== have[c]).map((c) => `${c} differs: "${want[c]}"`)];
+  return `create table public.${t[1]}: ${diff.join('; ') || 'the order differs'}`;
+});
+check(`docs/v2-design.md writes out every table, added column and constraint of migration ${FULL_FROM} and later as the migration has it (${statements.length})`,
+  statements.length > 0 && !notWritten.length, notWritten.join(' | '));
+
 // ---------------------------------------------------------------------
 // Example data in the docs is fictional (CLAUDE.md "Test data"): phone numbers in 555-0100 to 555-0199
 // ---------------------------------------------------------------------
-for (const f of ['CLAUDE.md', 'README.md', 'docs/v2-design.md', 'docs/v1.1-google-calendar.md', 'tests/README.md']) {
+for (const f of ['CLAUDE.md', 'README.md', 'docs/v2-design.md', 'docs/v1.1-google-calendar.md', 'docs/v1.2-kitchen.md', 'tests/README.md']) {
   const bad = [...read(f).matchAll(/\b555-(\d{4})\b/g)].map((m) => m[0]).filter((n) => !/^555-01\d\d$/.test(n));
   check(`${f}: example phone numbers are fictional (555-0100 to 555-0199)`, !bad.length, bad);
 }

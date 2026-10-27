@@ -19,14 +19,15 @@ v2 turns on by itself once the database is upgraded (see [Upgrading to v2](#upgr
 | **Directory** | Replaces Contractors. Contractors, **accounts and utilities**, services and emergency numbers, with search and one tap to call, text, WhatsApp, email or open the website. Account numbers are for admins only, masked until **Show**. A contract or promo end date gets a reminder 30 days ahead. |
 | **Family** | One list of everyone in the house: parents, adults, kids and helpers, each with a colour, language (English or Spanish), phone and email. Parents and adults can sign in; kids and helpers get a **My day link** (Copy, WhatsApp, Text, New link). |
 | **Settings** | Time zone, the usual morning-email time, days off (school holidays: repeating events can skip them), who new pet and house tasks go to, whether the morning email is running, and (v1.1) [Google Calendar and Hearth](#google-calendar-and-hearth). |
+| **Food** (v1.2) | This week's dinners and the family's one shopping list: see [Food](#food-dinners-and-the-shopping-list-v12). |
 
-**Event or task?** The ＋ button asks first. *Piano, pickups, appointments → Event. Pills, filters, chores, calls → Task.*
+**Event or task?** The ＋ button asks first. *Piano, pickups, appointments → Event. Pills, filters, chores, calls → Task.* With v1.2 it also offers **Shopping**, for something to buy.
 
 **My day.** A kid or helper opens their link (no password, nothing to install) and sees their today and tomorrow in their language. They can tick off their own tasks, with Undo. "Add to Home Screen" keeps it one tap away. If the link ever gets passed around, **New link** on the Family page stops the old one at once.
 
 **Morning email.** Anyone with an email address can get their day before breakfast (or tomorrow's plan in the evening). Parents also get a block per kid or helper with Send buttons, what nobody is on, and the project lines. The first email asks the person to confirm their address; signing in to the hub confirms it too. Every email has a link to stop them.
 
-**On a phone.** The bottom bar has Today · Calendar · ＋ · Tasks · More. Add the hub to your Home Screen (Settings explains how on iPhone and Android) and it opens like an app.
+**On a phone.** The bottom bar has Today · Calendar · ＋ · Tasks · More (with v1.2: Today · Calendar · ＋ · Tasks · Food · More). Add the hub to your Home Screen (Settings explains how on iPhone and Android) and it opens like an app.
 
 Every date and time is in the household's time zone, wherever your phone is.
 
@@ -49,6 +50,37 @@ Every date and time is in the household's time zone, wherever your phone is.
 
 Each schedule task has two kinds of notes. **Notes** appear on the shared link. **Private notes** are family-only and never shared, so they're the place for gate codes and similar details.
 
+## Food: dinners and the shopping list (v1.2)
+
+The **Food** page has this week's dinners at the top and the family's one shopping list below: groceries, and household things too (batteries, detergent). It turns on by itself once the database is upgraded to v1.2 (see [Turning on Food](#turning-on-food)). The design, with every rule, is [`docs/v1.2-kitchen.md`](docs/v1.2-kitchen.md).
+
+**The shopping list**
+- **Add:** **Food →** type **→ Enter** (the box stays ready for the next one), or **＋ → Shopping** from any page. "2 milk", "2 lb ground beef" or "Milk: 2 gallons" put the amount in a small note. Something already on the list isn't added twice ("Already on the list"), and "Leche" joins "Milk".
+- **Tap = bought.** The line is struck through, with **Undo**, then moves to **Just bought** (today's buys; tap one to put it back). **Buy again** (folded away) has what was bought in the last 60 days: one tap puts it back on the list, so the weekly milk is one tap.
+- Lines are grouped by aisle, in store order, cold things last. The hub guesses the aisle; **Aisle?** or **⋯ → Edit** corrects it, and the item remembers.
+- **⋯ → Forget** removes a line for good (a typo), so it isn't suggested again.
+- **The lock** next to **Add** (or in **⋯ → Edit**). Locked: hidden from My day links; every grown-up who signs in still sees it. The list is seen by Taylor and anyone her link reaches: lock anything private. (So it isn't for a gift for someone who signs in.)
+- **Taylor's list.** Her My day shows a **Lista de compras** button: the list in Spanish, in big rows, where she ticks things off (and can undo her own tick for 15 minutes) and adds what has run out. **Send Taylor the list** on the Food page sends her the link. At the foot of the Food page a parent chooses what she can do: Off · See and tick · See, tick and add. Kids see dinners on their My day, not the list.
+- **Two phones, bad signal.** The list checks for changes every 10 seconds while it's open. With no signal, ticks and adds wait on the phone ("Not sent yet") and go when it's back. **Open Food before you go into the store, and don't reload it there:** the hub can't start without the database.
+
+**Dinners**
+- Tap a day: a name ("Tacos", with your usual dinners as suggestions), or one tap for Leftovers · Eating out · Takeout · Fend for yourself. Empty days are fine.
+- **Who cooks** (optional; for Leftovers and Takeout, who's on dinner): they see the note and the recipe link on their My day and in their email, and get the email that day even with nothing else in it.
+- **Keep the title private** (under More) locks a dinner: the wall, other people's My day and every email subject say "Private item". Grown-ups who sign in still see it.
+- **Add a prep reminder…** on a saved dinner makes an ordinary task for the day before ("Prep: Tacos"). It doesn't move if the dinner moves.
+- Dinner shows on **Today**, on everyone's **My day**, at the end of Today in the morning email, in the cook's **Send their day** text, and on the wall's **Family column** as "Dinner: Tacos (Sam)", all day, once [Google Calendar and Hearth](#google-calendar-and-hearth) has a Family calendar. A parent can turn the wall copy off at the foot of the Food page.
+
+**Hearth's Meals and Groceries.** Use Home Hub's, not Hearth's Meals or Groceries: anything added there won't reach Taylor, the email or the hub. Home Hub can't read or fill them, and using both puts every dinner on the wall twice.
+
+### Turning on Food
+
+The order matters (the design's §15):
+1. `tests/run.sh` ends with `0 failed`; merge. The site stays on schema 3, with no Food tab and nothing new.
+2. Nothing to deploy: hub-jobs and `supabase/cron.sql` don't change.
+3. The owner runs [`supabase/migrations/0004_meals_and_shopping.sql`](supabase/migrations/0004_meals_and_shopping.sql) in the Supabase SQL editor. Food appears at the next load. If it says "already installed" or "isn't installed", nothing was changed.
+
+To hide Food again, turn off both switches at the foot of the Food page first, then follow the design's §15.
+
 ## Messaging contractors
 
 A **Message** button appears on a project's Team cards and in a schedule task's details (and on the Contractors page before v2). It drafts a note with that contractor's upcoming dates and, if sharing is on, a link to their part of the live schedule. Edit the draft, then choose how to send it:
@@ -67,6 +99,7 @@ The first three come from your own phone number or email address, so replies com
 - The email that asks someone to confirm their address carries its own confirmation code, never their My day link, so an email that goes to a mistyped address gives nothing away.
 - The share page can read one project by its secret link. It returns only the schedule plus each contractor's name and company. It never returns phone numbers, emails or private notes. Turning sharing off, or clicking **Get a new link**, stops the old link immediately.
 - **Google Calendar (v1.1)** copies to the kitchen wall only what everyone in the house may see, and only after an admin has looked at it: see [Privacy](#privacy) under Google Calendar and Hearth.
+- **The shopping list (v1.2)** is seen by every grown-up who signs in, and by the helper's My day link (and so anyone her link reaches) while a parent allows it. A locked line never reaches a My day link. What is typed there is shown as plain text, only on the Food page and her own screen, never in an email, a text or on the wall. A dinner's note and recipe link go only to the person cooking it.
 - This repository is public, but it contains only code. `config.js` holds a *publishable* key, which is designed to be public. Never put a `service_role` or secret key in this repo.
 
 The rules are in [`supabase/schema.sql`](supabase/schema.sql) and [`supabase/migrations/`](supabase/migrations/).
@@ -287,15 +320,16 @@ Never commit the token. The rules for changing the repo (tests, migrations, depl
 | File | What it is |
 |---|---|
 | `index.html`, `assets/hub.js` | The private hub: `hub.js` is the core (sign-in, the shell and bottom bar, forms, data access, messages, toasts, the shared v2 pieces) |
-| `assets/modules/` | The hub's pages, one file each. v2: `today.js`, `calendar.js`, `tasks.js`, `projects.js` (v1 and v2), `directory.js`, `people.js` (Family), `settings.js`. v1: `home.js`, `contractors.js`, `family.js`. Each page shows only for the database version it was made for |
-| `assets/styles.css`, `assets/css/` | Styles with automatic light and dark mode: the shared ones, then one file per v2 page |
-| `day.html`, `assets/day.js` | The public My day page for kids and helpers (no sign-in; the link carries the person's code) |
+| `assets/modules/` | The hub's pages, one file each. v2: `today.js`, `calendar.js`, `tasks.js`, `projects.js` (v1 and v2), `directory.js`, `people.js` (Family), `settings.js`; v1.2: `food.js` (Food). v1: `home.js`, `contractors.js`, `family.js`. Each page shows only for the database version it was made for |
+| `assets/shoplist.js` | The shopping list's shared pieces, for the Food page and My day: aisles in English and Spanish, grouping, and the outbox that keeps changes on the phone until they are sent |
+| `assets/styles.css`, `assets/css/` | Styles with automatic light and dark mode: the shared ones, then one file per v2 page (`food.css` for Food) |
+| `day.html`, `assets/day.js` | The public My day page for kids and helpers (no sign-in; the link carries the person's code), with the helper's shopping list (`#list`) |
 | `share.html` | The public, read-only project page |
 | `assets/gantt.js` | Schedule engine and Gantt chart, shared by the hub and the share page |
 | `manifest.webmanifest`, `assets/icons/` | The Home Screen app: name, colours and icons |
 | `config.js` | Database connection settings |
 | `supabase/schema.sql` | The v1 tables, security rules and functions (the baseline) |
-| `supabase/migrations/` | Every database change since, in order: `0002_home_hub_v2.sql` is v2, `0003_google_calendar.sql` is v1.1 (Google Calendar) |
+| `supabase/migrations/` | Every database change since, in order: `0002_home_hub_v2.sql` is v2, `0003_google_calendar.sql` is v1.1 (Google Calendar), `0004_meals_and_shopping.sql` is v1.2 (Food) |
 | `supabase/preflight.sql` | Read-only checks to run before applying the v2 migration (0002 only) |
 | `supabase/cron.sql` | Schedules the morning email and the Google Calendar job (pg_cron) once hub-jobs is deployed |
 | `supabase/config.toml` | Supabase CLI settings: both Edge Functions deploy with JWT verification off |
@@ -304,6 +338,7 @@ Never commit the token. The rules for changing the repo (tests, migrations, depl
 | `supabase/email-templates/` | The sign-in email, for Supabase's email templates |
 | `docs/v2-design.md` | The v2 design: what was built and why |
 | `docs/v1.1-google-calendar.md` | The v1.1 design: Google Calendar and Hearth |
+| `docs/v1.2-kitchen.md` | The v1.2 design: Food, dinners and the shopping list |
 | `.mcp.json`, `.claude/settings.json` | Supabase access for Claude Code sessions (token comes from the environment) |
 | `tests/` | Automated tests: run `tests/run.sh` (see [`tests/README.md`](tests/README.md)) |
 | `CLAUDE.md` | Rules for changing this repo: tests, migrations, deploy order, test data |
