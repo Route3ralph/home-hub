@@ -706,6 +706,29 @@ const detailOf = (s: ReturnType<typeof setup>) => JSON.parse(s.runs()[0]?.detail
   const SEP = String.fromCharCode(0x2028, 0x2029);   // the Unicode line and paragraph separators, never written out here
   const sepTitle = renderDigest({ ...gDigest, subject: `Mon Nov 9: a${SEP[0]}b\r\nBcc: x@example.com`, calendar: { warning: `w${SEP[1]}x\ny`, items_failed: null, put_back: [] } } as any, SITE);
   check('... line breaks and separators can\'t split the subject or a calendar line', sepTitle.subject === 'Mon Nov 9: a b Bcc: x@example.com' && sepTitle.text.includes('\nw x y\n'), JSON.stringify(sepTitle.subject));
+  // A dinner (v1.2, docs/v1.2-kitchen.md §9): digest_for's wrapper adds a 'meal' row at the end of Today
+  // (the slot's word as its time, who's on it as its detail) and, on a quiet day, names it in the
+  // subject. render.ts draws it as any row and escapes it like any title: hub-jobs needs no change.
+  const mealRow = (time: string, title: string, detail: string | null) =>
+    ({ ...item('meal', time, title, detail), item_id: 'eeeeeeee-0000-4000-8000-000000000001' });
+  const mealEn = renderDigest({ ...alexDigest(), today: [...alexDigest().today, mealRow('Dinner', hostile, 'Sam cooks')] } as any, SITE, { canSignIn: true });
+  check('a dinner titled <img src=x onerror=…> at the end of Today: escaped in the HTML, in the time column as "Dinner", after the other rows',
+    !/<img/.test(mealEn.html) && (mealEn.html.match(/&lt;img src=x onerror=alert\(1\)&gt;/g) || []).length === 1
+    && mealEn.html.indexOf('&lt;img src=x') > mealEn.html.indexOf('Pay water bill') && />Dinner<\/td>/.test(mealEn.html) && (mealEn.html.match(/width="84"/g) || []).length === 13, (mealEn.html.match(/&lt;img/g) || []).length);
+  check('... and in the text part as text, the last row of Today: "Dinner  <img …> · Sam cooks"',
+    mealEn.text.includes(`☐ Pay water bill\nDinner  ${hostile} · Sam cooks\n\nLate`), mealEn.text.slice(0, 200));
+  const mealEs = renderDigest({ ...morganDigest(), today: [...morganDigest().today, mealRow('Cena', hostile, 'Cocinas tú · <b>350°</b> 20 min')] } as any, SITE);
+  check('... in Spanish: "Cena", the title and the note (the cook\'s) escaped in the HTML, as text in the text part',
+    !/<img|<b>/.test(mealEs.html) && />Cena<\/td>/.test(mealEs.html) && mealEs.html.includes('&lt;img src=x onerror=alert(1)&gt;')
+    && mealEs.html.includes('Cocinas tú · &lt;b&gt;350°&lt;/b&gt; 20 min') && mealEs.text.includes(`☐ Asunto privado\nCena  ${hostile} · Cocinas tú · <b>350°</b> 20 min\n`),
+    mealEs.text.slice(0, 300));
+  const quiet = renderDigest({ ...samDigest(), today: [mealRow('Dinner', hostile, 'You cook')], subject: `Mon Nov 9: Dinner: ${hostile} · You cook` } as any, SITE, { canSignIn: true });
+  check('... and on a quiet day the dinner is the subject: plain text on one line, escaped in the HTML <title>; no "Nothing planned"',
+    quiet.subject === `Mon Nov 9: Dinner: ${hostile} · You cook` && quiet.html.includes('<title>Mon Nov 9: Dinner: &lt;img src=x onerror=alert(1)&gt; · You cook</title>')
+    && !/<img/.test(quiet.html) && !quiet.text.includes('Nothing planned') && quiet.text.includes(`Dinner  ${hostile} · You cook`), quiet.subject);
+  const quietEs = renderDigest({ ...emptyMorgan(), today: [mealRow('Cena', 'Asunto privado', 'Cocina Sam')], empty: false, subject: 'lun 9 nov: Cena: Asunto privado' } as any, SITE);
+  check('... a locked dinner\'s subject in Spanish ("lun 9 nov: Cena: Asunto privado"), and its row for a helper who isn\'t on it',
+    quietEs.subject === 'lun 9 nov: Cena: Asunto privado' && quietEs.text.startsWith('Hoy · lun 9 nov\n\nCena  Asunto privado · Cocina Sam\n'), quietEs.text.slice(0, 120));
   const evC = renderConfirm({ name: '<b>Mo</b>', language: 'en' }, `${SITE}day.html?c=${CONFIRM_MORGAN}#confirm`);
   check('confirmation email escapes the name', evC.html.includes('Hi &lt;b&gt;Mo&lt;/b&gt;,') && !evC.html.includes('<b>Mo'));
 

@@ -734,6 +734,52 @@ const calendarCalls = (s: ReturnType<typeof setup>) => s.G.calls.filter((c) => c
   r = await run(s);
   check('without SITE_URL the plan gets p_site null (events have no link) and nothing stops', s.rpcs('calendar_plan')[0]?.args.p_site === null && r.body.stop === null && r.body.inserted === 1, r.body);
 
+  // A dinner (v1.2, docs/v1.2-kitchen.md §10): migration 0004's plan rows of item_kind 'meal', all day on
+  // Hub – Family. hub-jobs has nothing of its own for them: the body goes to Google as it is, and the
+  // row comes back to calendar_record unchanged, through an insert, an update (locked) and a delete.
+  const mealPlan = (op: 'insert' | 'update' | 'delete', base: any = null) => {
+    const r: any = base ? { ...base, op } : planRow('insert', CAL.family, { title: 'Dinner: Tacos (Sam)', day: '2026-11-03' });
+    r.op = op;
+    r.item_kind = 'meal';
+    if (op === 'delete') return { ...r, body: null, hash: null };
+    const locked = op === 'update';
+    r.title = locked ? 'Dinner: Private item' : 'Dinner: Tacos (Sam)';
+    r.body = {
+      ...r.body, summary: r.title, visibility: locked ? 'private' : 'default',
+      description: locked ? 'Made by Home Hub: changes made here are undone. Change it in Home Hub.\nOpen in Home Hub: https://family.example/hub/#/food'
+        : 'Made by Home Hub: changes made here are undone. Change it in Home Hub.\nSam cooks\nOpen in Home Hub: https://family.example/hub/#/food',
+      extendedProperties: { private: { ...r.body.extendedProperties.private, homehub_kind: 'meal' } },
+    };
+    r.hash = `hash-meal-${op}`;
+    return r;
+  };
+  const sameRow = (rec: any, row: any) => !!rec && Object.keys(row).filter((k) => k !== 'pending' && k !== 'hiding').every((k) => JSON.stringify(rec[k]) === JSON.stringify(row[k]));
+  const mIns = mealPlan('insert');
+  s = setup({ plan: [mIns] });
+  const fam = s.cal(CAL.family.google, 'Hub – Family');
+  r = await run(s);
+  const mPost = s.G.calls.find((c) => c.method === 'POST');
+  check('a dinner (item_kind meal): POSTed to Hub – Family with the plan\'s body as it is (all day, not busy)',
+    r.status === 200 && r.body.inserted === 1 && mPost?.cal === CAL.family.google && JSON.stringify(mPost.body) === JSON.stringify(mIns.body)
+    && mIns.body.start.date === '2026-11-03' && mIns.body.end.date === '2026-11-04' && mIns.body.transparency === 'transparent', { body: r.body, post: mPost?.body });
+  check('... recorded as it came: item_kind meal, the meal\'s id and day, ok, with Google\'s hash', sameRow(s.recorded()[0], mIns) && s.recorded()[0].ok === true
+    && s.recorded()[0].item_kind === 'meal' && /^[0-9a-f]{64}$/.test(s.recorded()[0].google_hash), s.recorded()[0]);
+  const mUpd = mealPlan('update', mIns);
+  s.st.plan = [mUpd];
+  r = await run(s);
+  const mPut = s.G.calls.filter((c) => c.method === 'PUT');
+  const rUpd = s.recorded().find((x: any) => x.op === 'update');
+  check('... locked: one PUT of the same event ("Dinner: Private item", visibility private), recorded unchanged',
+    r.body.updated === 1 && mPut.length === 1 && mPut[0].event === mIns.event_id && JSON.stringify(mPut[0].body) === JSON.stringify(mUpd.body)
+    && fam.events.get(mIns.event_id)?.summary === 'Dinner: Private item' && sameRow(rUpd, mUpd) && rUpd.ok === true, { body: r.body, rec: rUpd });
+  const mDel = mealPlan('delete', mIns);
+  s.st.plan = [mDel];
+  r = await run(s);
+  const mDelete = s.G.calls.filter((c) => c.method === 'DELETE');
+  const rDel = s.recorded().find((x: any) => x.op === 'delete');
+  check('... cleared: one DELETE of it, recorded unchanged (ok)', r.body.deleted === 1 && mDelete.length === 1 && mDelete[0].event === mIns.event_id
+    && !fam.events.has(mIns.event_id) && sameRow(rDel, mDel) && rDel.ok === true, { body: r.body, rec: rDel });
+
   // 409 → PUT; 409 then PUT 404 → clash.
   const re409 = planRow('insert', CAL.taylor);
   const clash = planRow('insert', CAL.taylor);
