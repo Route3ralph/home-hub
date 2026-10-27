@@ -765,8 +765,6 @@ const MY_DAY_FNS = /^\/rest\/v1\/rpc\/(get_person_day|complete_by_token|undo_by_
     await a.page.fill('#formDialog input[name="link"]', 'cooking.example.com/tacos');
     await a.page.click('#formDialog [type="submit"]');
     await until(async () => !!(await one(`select id from meals where day = '${TODAY}'`)));
-    // The database has the row before the page has the answer and its toast: wait for that too.
-    await until(async () => (await lastToast(a.page)) === 'Dinner tonight: Tacos', 3000);
     const meal = await one(`select slot, kind, title, cook_id, note, link, private, created_by, updated_by from meals where day = '${TODAY}'`);
     // The row is in the table before the page has the answer, so the toast is waited for, not read at once.
     const savedToast = await until(async () => (await lastToast(a.page)) === 'Dinner tonight: Tacos');
