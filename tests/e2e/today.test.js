@@ -3,7 +3,10 @@
 // project lines, the first-run checklist and "Which one is you?". On schema 3 (migration 0003): events
 // read from Google Calendar (google_items) in each person's day and under Everyone, in time order, never
 // in Late, Heads-up or Nobody's on it; the line when they can't be loaded; the one-time notice after the
-// first Start copying (docs/v1.1-google-calendar.md §5.4).
+// first Start copying (docs/v1.1-google-calendar.md §5.4). On schema 4 (migration 0004): tonight's
+// dinner in one line under the person chips, the same under every chip, to that day on the Food page;
+// "What's for dinner? ›" only after a dinner in the last 14 days; nothing when the read fails; and no
+// meals request at all below schema 4 (docs/v1.2-kitchen.md §6.2).
 //
 // The fake RPCs answer with the shapes in supabase/migrations/0002_home_hub_v2.sql (agenda_item rows
 // with all 27 columns, day_text as text, complete_task / undo_task as uuids, save_person as a people
@@ -14,7 +17,7 @@
 // Run alone with: node tests/e2e/today.test.js
 const { chromium } = require('playwright');
 const { randomUUID, createHash } = require('crypto');
-const { makeDb, install, signIn, SUPA, withCalendars, calendarRow, googleEventRow, calendarRpc } = require('./mock');
+const { makeDb, install, signIn, SUPA, withCalendars, calendarRow, googleEventRow, calendarRpc, withFood, mealRow } = require('./mock');
 const { serve } = require('./server');
 
 let BASE = '';
@@ -188,6 +191,7 @@ const STUBS = {
   directory: { nav: { label: 'Directory', order: 50 } },
   people: { nav: { label: 'Family', order: 60 } },
   settings: { nav: { label: 'Settings', order: 70 } },
+  food: { nav: { label: 'Food', order: 35, primary: true }, min: 4 },   // schema 4 only, as the real one
 };
 const stubModule = (name, s) => `;(function () {
   var provides = {};
@@ -195,9 +199,9 @@ const stubModule = (name, s) => `;(function () {
     (window.__added = window.__added || []).push({ page: ${JSON.stringify(name)}, defaults: defaults });
   };` : ''}
   HomeHub.register({
-    name: ${JSON.stringify(name)}, schema: { min: 2, max: 99 }, nav: ${JSON.stringify(s.nav)},
-    match: function (parts) { return parts[0] === ${JSON.stringify(name)} ? {} : null; },
-    render: function (main) { main.innerHTML = '<h1 id="stub">${s.nav.label}</h1>'; },
+    name: ${JSON.stringify(name)}, schema: { min: ${s.min || 2}, max: 99 }, nav: ${JSON.stringify(s.nav)},
+    match: function (parts) { return parts[0] === ${JSON.stringify(name)} ? { day: parts[1] || null } : null; },
+    render: function (main, ctx) { main.innerHTML = '<h1 id="stub">${s.nav.label}</h1><p id="stubDay">' + (ctx.params.day || '') + '</p>'; },
     provides: provides,
   });
 })();`;
@@ -819,7 +823,8 @@ const emailOf = (req) => {
     );
     return g;
   }
-  ({ page, db } = await open({ label: 'google', db: googleTodayDb(), rpc: gRpc }));
+  ({ page, db, log } = await open({ label: 'google', db: googleTodayDb(), rpc: gRpc }));
+  check('schema 3: no meals request and no dinner line (the tables come with schema 4)', !log.some((l) => /\/rest\/v1\/meals/.test(l)) && !(await page.$('.today-dinner')));
   check('schema 3: google_items for today only', same(calls(db, 'google_items').map((c) => c.body), [{ p_from: TODAY, p_to: TODAY }]), JSON.stringify(calls(db, 'google_items')));
   check('your day: your Google events and Family\'s, in time order with the rest (all-day first, then by time, then tasks)',
     same(await titles(page, 'day'), ['Farmers market', 'Grandma visiting', 'Alex dentist', 'School run', 'Call the plumber', 'Heartworm pill']), (await titles(page, 'day')).join(','));
@@ -902,6 +907,66 @@ const emailOf = (req) => {
   ({ page } = await open({ label: 'google-desktop-dark', db: googleTodayDb(), rpc: gRpc, ctx: { colorScheme: 'dark', viewport: { width: 1280, height: 900 } } }));
   check('1280px (dark): no sideways scroll', await noSideScroll(page));
   await page.screenshot({ path: SHOTS + 'today-google-desktop-dark.png', fullPage: true });
+  await page.context().close();
+
+  // =====================================================================
+  // 9e. Schema 4 (v1.2): tonight's dinner
+  // =====================================================================
+  const fRpc = Object.assign({ hub_schema_version: () => 4 }, calendarRpc);
+  const dinnerDb = (...meals) => {
+    const d = withFood(todayDb());
+    meals.forEach((m) => d.meals.push(mealRow(Object.assign({ day: TODAY }, m))));
+    return d;
+  };
+  const dinnerLine = (page) => page.$eval('.today-dinner', (a) => ({ text: a.querySelector('.today-dinner-line') ? a.querySelector('.today-dinner-line').textContent.replace(/\s+/g, ' ').trim() : a.textContent.trim(),
+    note: (a.querySelector('.today-dinner-note') || {}).textContent || null, href: a.getAttribute('href'), lock: !!a.querySelector('.today-dinner-lock'), quiet: a.classList.contains('is-quiet'),
+    under: a.previousElementSibling && a.previousElementSibling.classList.contains('today-chips') })).catch(() => null);
+  ({ page, db, log } = await open({ label: 'dinner', rpc: fRpc, db: dinnerDb({ title: 'Tacos', cook_id: ID.sam, note: 'Chicken is in the freezer', link: 'https://cooking.example.com/tacos' }) }));
+  let dl = await dinnerLine(page);
+  check('schema 4: one line under the person chips, "Dinner: Tacos · Sam cooks", the note under it, to today on the Food page',
+    same(dl, { text: 'Dinner: Tacos · Sam cooks', note: 'Chicken is in the freezer', href: `#/food/${TODAY}`, lock: false, quiet: false, under: true }), JSON.stringify(dl));
+  check('schema 4: meals read once, 14 days before to today, the columns the line needs', same(log.filter((l) => /\/rest\/v1\/meals/.test(l)).map(decodeURIComponent),
+    [`GET /rest/v1/meals?select=day,slot,kind,title,cook_id,note,private&day=gte.${addDays(TODAY, -14)}&day=lte.${TODAY}`]), JSON.stringify(log.filter((l) => /meals/.test(l))));
+  await chip(page, 'Jordan').click();
+  await page.waitForTimeout(100);
+  check('the same line under every chip', same(await dinnerLine(page), dl));
+  await page.click('.today-dinner');
+  await page.waitForTimeout(300);
+  check('a tap opens today\'s dinner on the Food page', (await page.evaluate(() => location.hash)) === `#/food/${TODAY}` && (await text(page, '#stubDay')) === TODAY);
+  await page.context().close();
+  ({ page } = await open({ label: 'dinner-sam', email: 'sam@example.com', rpc: fRpc, db: dinnerDb({ title: 'Tacos', cook_id: ID.sam }) }));
+  dl = await dinnerLine(page);
+  check('the cook sees "You cook"', dl && dl.text === 'Dinner: Tacos · You cook', JSON.stringify(dl));
+  await page.context().close();
+  ({ page } = await open({ label: 'dinner-leftovers', rpc: fRpc, db: dinnerDb({ kind: 'leftovers', title: null, cook_id: ID.taylor, private: true }) }));
+  dl = await dinnerLine(page);
+  check('leftovers: "Dinner: Leftovers · Taylor\'s on dinner", with a lock when it is locked', dl && dl.text === 'Dinner: Leftovers, locked · Taylor\'s on dinner' && dl.lock, JSON.stringify(dl));
+  await page.context().close();
+  ({ page } = await open({ label: 'dinner-quiet', rpc: fRpc, db: dinnerDb({ day: addDays(TODAY, -3), title: 'Soup' }, { day: addDays(TODAY, 1), title: 'Pizza' }) }));
+  dl = await dinnerLine(page);
+  check('no dinner tonight, one 3 days ago: a quiet "What\'s for dinner? ›" to the Food page', dl && dl.text === 'What\'s for dinner? ›' && dl.quiet && dl.href === `#/food/${TODAY}`, JSON.stringify(dl));
+  await page.context().close();
+  const old = dinnerDb();
+  old.meals.push(mealRow({ day: addDays(TODAY, -15), title: 'Soup' }), mealRow({ day: addDays(TODAY, 2), title: 'Pizza' }));
+  ({ page } = await open({ label: 'dinner-none', rpc: fRpc, db: old }));
+  check('none tonight and none in the 14 days before: no prompt at all', !(await page.$('.today-dinner')) && (await titles(page, 'day')).length > 0);
+  await page.context().close();
+  ({ page, db } = await open({ label: 'dinner-fail', rpc: fRpc, db: dinnerDb({ title: 'Tacos' }), allowConsole: /status of 500/, path: '/#/tasks' }));
+  await page.route('**/rest/v1/meals*', (route) => route.fulfill({ status: 500, headers: { ...CORS, 'content-type': 'application/json' }, body: JSON.stringify({ code: 'XX000', message: 'Database restarting' }) }));
+  await go(page, '#/');
+  await page.waitForTimeout(300);
+  check('the read fails: no line, and the day draws as usual', !(await page.$('.today-dinner')) && same(await titles(page, 'day'), ['Grandma visiting', 'School run', 'Call the plumber', 'Heartworm pill']),
+    JSON.stringify(await titles(page, 'day')));
+  await page.context().close();
+  for (const scheme of ['light', 'dark']) {
+    ({ page } = await open({ label: `dinner-phone-${scheme}`, rpc: fRpc, db: dinnerDb({ title: 'Tacos', cook_id: ID.sam, note: 'Chicken is in the freezer' }), ctx: Object.assign({ colorScheme: scheme }, phone) }));
+    const box = await page.$eval('.today-dinner', (a) => { const r = a.getBoundingClientRect(); return [Math.round(r.height), r.right <= window.innerWidth]; });
+    check(`schema 4 phone (${scheme}): the dinner line is a 44px+ target that fits; no sideways scroll`, box[0] >= 44 && box[1] && await noSideScroll(page), JSON.stringify(box));
+    await page.screenshot({ path: SHOTS + `today-dinner-phone-${scheme}.png` });
+    await page.context().close();
+  }
+  ({ page } = await open({ label: 'dinner-desktop', rpc: fRpc, db: dinnerDb({ title: 'Tacos', cook_id: ID.sam }), ctx: { viewport: { width: 1280, height: 900 } } }));
+  await page.screenshot({ path: SHOTS + 'today-dinner-desktop.png' });
   await page.context().close();
 
   // =====================================================================

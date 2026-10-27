@@ -8,3 +8,220 @@
 
 /* ---------- Head ---------- */
 .food-head { margin-bottom: 10px; }
+.food-sec { min-width: 0; max-width: 860px; }
+.food-sec:empty { display: none; }
+.food-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 0 6px 0 8px;
+}
+.food-empty { padding: 12px 14px; }
+.food-fail { margin: 6px 0 0; color: var(--text-3); font-size: 14px; }
+.food-retry { display: inline-flex; align-items: center; min-height: 44px; font-size: 14px; }
+.food-lockmark { display: inline-grid; place-items: center; margin-left: 6px; color: var(--text-3); vertical-align: -2px; }
+.food-lockmark svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linejoin: round; }
+
+/* ---------- This week's dinners: one row of 7 cards, today first ---------- */
+.food-week { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 8px; padding: 2px 0 4px; }
+.food-day-item { min-width: 0; display: flex; }
+.food-day {
+  flex: 1; min-width: 0; min-height: 92px;
+  display: flex; flex-direction: column; align-items: flex-start; gap: 2px;
+  padding: 10px 12px; border: 1.5px solid var(--border); border-radius: 14px;
+  background: var(--surface); color: var(--text); text-align: left; cursor: pointer;
+}
+.food-day:hover, .food-day:focus-visible { border-color: var(--accent); outline: none; }
+.food-day.is-today { border-color: var(--accent); background: var(--accent-soft); }
+.food-day-label { color: var(--text-3); font-size: 12px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; }
+.food-day.is-today .food-day-label { color: var(--accent); }
+.food-day-title {
+  font-weight: 650; line-height: 1.3; overflow-wrap: anywhere;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.food-day.is-empty .food-day-title { color: var(--text-3); font-weight: 500; }
+.food-day-cook { color: var(--text-2); font-size: 13px; overflow-wrap: anywhere; }
+/* Phones: the row scrolls sideways inside itself (never the page), edge to edge. */
+@media (max-width: 760px) {
+  .food-week {
+    display: flex; overflow-x: auto; overscroll-behavior-x: contain; scroll-snap-type: x proximity;
+    margin: 0 -16px; padding: 2px 16px 8px; scrollbar-width: none;
+  }
+  .food-week::-webkit-scrollbar { display: none; }
+  .food-day-item { flex: none; width: 116px; scroll-snap-align: start; }
+}
+/* No dinner planned for two weeks: one quiet line, so the list comes first. */
+.food-plan {
+  display: inline-flex; align-items: center; gap: 6px; min-height: 44px; margin: 8px 0 0; padding: 0 2px;
+  border: 0; background: none; color: var(--accent); font-size: 15px; font-weight: 650; cursor: pointer;
+}
+
+/* ---------- The dinner dialog ---------- */
+dialog:has(> .food-dinner), dialog:has(> .food-edit), dialog:has(> .food-quick) { width: min(560px, calc(100vw - 16px)); }
+.food-dinner .d-close, .food-edit .d-close, .food-quick .d-close { width: 44px; height: 44px; }
+.food-chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 2px; }
+.food-chip {
+  min-height: 44px; padding: 6px 14px;
+  border: 1.5px solid var(--border); border-radius: 999px; background: var(--surface);
+  color: var(--text); font-size: 15px; font-weight: 550; cursor: pointer; overflow-wrap: anywhere; text-align: left;
+}
+.food-chip:hover { border-color: var(--text-3); }
+.food-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.food-chip[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); color: var(--text); font-weight: 650; }
+.food-sugg .food-chip { background: var(--surface-2); }
+.food-fs { margin: 14px 0 0; padding: 0; border: 0; min-width: 0; }
+.food-fs legend { padding: 0; margin-bottom: 4px; font-size: 13px; font-weight: 600; color: var(--text-2); }
+.food-more { margin-top: 14px; }
+.food-more summary { display: inline-flex; align-items: center; min-height: 44px; font-weight: 650; color: var(--accent); cursor: pointer; }
+.food-more[open] summary { margin-bottom: 4px; }
+.food-more .field { margin-bottom: 10px; }
+.food-more textarea { min-height: 64px; }
+.food-check { display: flex; align-items: center; gap: 10px; min-height: 44px; font-weight: 600; }
+.food-check input { width: 22px; height: 22px; }
+.food-help { display: block; margin: -4px 0 8px; color: var(--text-3); font-size: 13px; }
+.food-prep { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin: 14px 0 4px; padding: 10px 12px; border-radius: 12px; background: var(--surface-2); }
+.food-prep .btn { min-height: 44px; }
+.food-prep small { flex: 1 1 200px; color: var(--text-3); font-size: 13px; }
+.food-dinner .form-actions .btn, .food-edit .form-actions .btn, .food-quick .form-actions .btn { min-height: 44px; }
+.food-merge { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin: 0 0 12px; }
+.food-merge .btn { min-height: 44px; }
+.food-merge small { color: var(--text-3); font-size: 13px; }
+.food-said { min-height: 1.5em; margin: 2px 0 10px; color: var(--accent); font-weight: 600; }
+.food-quick input, .food-edit input[type="text"] { font-size: 16px; }
+
+/* ---------- The add box: 16px text so phones don't zoom ---------- */
+.food-list-sec { margin-top: 22px; }
+.food-add { position: relative; }
+.food-add-row { display: flex; align-items: center; gap: 8px; }
+.food-add-row input {
+  flex: 1; min-width: 0; min-height: 48px; padding: 10px 14px;
+  border: 1.5px solid var(--border); border-radius: 12px; background: var(--surface); color: var(--text);
+  font-size: 16px;
+}
+.food-add-row input:focus { border-color: var(--accent); outline: none; }
+.food-add-btn { flex: none; min-height: 48px; padding: 10px 18px; border-radius: 12px; font-size: 16px; }
+.food-lock {
+  flex: none; display: grid; place-items: center; width: 48px; height: 48px;
+  border: 1.5px solid var(--border); border-radius: 12px; background: var(--surface); color: var(--text-3); cursor: pointer;
+}
+.food-lock svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linejoin: round; }
+.food-lock[aria-pressed="true"] { border-color: var(--warn); background: var(--warn-soft); color: var(--warn); }
+.food-lock:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.food-lock-hint { margin: 6px 2px 0; color: var(--warn); font-size: 13px; }
+.food-suggest {
+  list-style: none; margin: 6px 0 0; padding: 4px; border: 1px solid var(--border); border-radius: 12px;
+  background: var(--surface); box-shadow: var(--shadow);
+}
+.food-sug {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 0 6px; width: 100%; min-height: 44px; padding: 6px 10px;
+  border: 0; border-radius: 8px; background: none; color: var(--text); text-align: left; cursor: pointer;
+}
+.food-sug:hover, .food-sug:focus-visible { background: var(--surface-2); outline: none; }
+.food-sug .food-name { font-weight: 600; overflow-wrap: anywhere; }
+.food-onlist { margin-left: auto; padding: 1px 8px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-size: 12px; font-weight: 650; }
+
+/* ---------- The list: aisles, rows ---------- */
+.food-list .banner { margin: 12px 0 0; }
+.food-offline .linkbtn { font-size: 14px; }
+/* One card per part; inside it each aisle's name, then its rows. */
+.food-group + .food-group { border-top: 1px solid var(--border); }
+.food-aisle { margin: 0; padding: 12px 4px 2px; font-size: 13px; font-weight: 700; color: var(--accent); }
+.food-row {
+  display: flex; align-items: center; gap: 2px;
+  min-height: 56px; border-bottom: 1px solid var(--line);
+}
+.food-row:last-child, .food-aisle-pick:last-child { border-bottom: 0; }
+/* The whole row is the tick. */
+.food-tick {
+  flex: 1; min-width: 0; min-height: 56px;
+  display: flex; align-items: center; gap: 12px;
+  padding: 6px 4px; border: 0; border-radius: 10px; background: none; color: var(--text); text-align: left; cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.food-tick:hover, .food-tick:focus-visible { background: var(--surface-2); outline: none; }
+.food-tick.is-waiting { cursor: default; padding-left: 42px; }
+.food-tick.is-waiting:hover { background: none; }
+.food-box {
+  flex: none; display: grid; place-items: center;
+  width: 26px; height: 26px; border-radius: 8px;
+  border: 2px solid var(--text-3); background: var(--surface);
+  transition: background 0.15s, border-color 0.15s;
+}
+.food-box svg { width: 18px; height: 18px; fill: none; stroke: var(--surface); stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; opacity: 0; }
+.food-tick[aria-checked="true"] .food-box { background: var(--accent); border-color: var(--accent); }
+.food-tick[aria-checked="true"] .food-box svg { opacity: 1; }
+.food-what { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.food-line { overflow-wrap: anywhere; }
+.food-name { font-size: 16px; font-weight: 600; }
+.food-other { color: var(--text-3); font-size: 13px; font-weight: 500; }
+.food-note { color: var(--text-3); font-size: 13px; overflow-wrap: anywhere; }
+.food-tick[aria-checked="true"] .food-name { text-decoration: line-through; color: var(--text-3); }
+.food-row.is-bought .food-name { color: var(--text-3); }
+.food-row.is-bought .food-tick[aria-checked="false"] .food-name { color: var(--text); }
+.food-unsent { align-self: flex-start; margin-top: 2px; padding: 0 7px; border-radius: 999px; background: var(--warn-soft); color: var(--warn); font-size: 12px; font-weight: 650; }
+.food-dot { flex: none; display: flex; padding: 0 4px; }
+.food-menu {
+  flex: none; display: grid; place-items: center; width: 44px; height: 44px; padding: 0;
+  border: 0; border-radius: 50%; background: none; color: var(--text-3); cursor: pointer;
+}
+.food-menu:hover, .food-menu:focus-visible { background: var(--surface-2); color: var(--text); outline: none; }
+.food-menu svg { width: 20px; height: 20px; }
+.food-menu svg circle { fill: currentColor; }
+/* Rows under Other: "Aisle?" opens the ten aisles under the row. */
+.food-aisle-q {
+  flex: none; min-height: 44px; padding: 0 10px; border: 0; border-radius: 999px; background: none;
+  color: var(--accent); font-size: 13px; font-weight: 650; cursor: pointer;
+}
+.food-aisle-q:hover, .food-aisle-q:focus-visible, .food-aisle-q[aria-expanded="true"] { background: var(--accent-soft); outline: none; }
+.food-aisle-pick { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 4px 12px 42px; border-bottom: 1px solid var(--line); }
+.food-aisle-pick .food-chip { font-size: 14px; padding: 4px 12px; }
+
+/* Buy again: folded away; a tap puts a line back on the list. */
+.food-again-toggle {
+  display: inline-flex; align-items: center; gap: 6px; min-height: 44px; margin-top: 16px; padding: 0 2px;
+  border: 0; background: none; color: var(--accent); font-size: 15px; font-weight: 650; cursor: pointer;
+}
+.food-again-toggle span { display: inline-block; transition: transform 0.15s; }
+.food-again-toggle[aria-expanded="true"] span { transform: rotate(90deg); }
+.food-plus {
+  flex: none; display: grid; place-items: center; width: 26px; height: 26px; border-radius: 50%;
+  background: var(--accent-soft); color: var(--accent);
+}
+.food-plus svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; opacity: 1; }
+.food-row[data-where="again"] .food-name { color: var(--text-2); font-weight: 550; }
+.food-row[data-where="again"].is-done .food-plus { background: var(--accent); color: var(--surface); }
+
+/* ---------- Send Taylor the list ---------- */
+.food-send { list-style: none; margin: 0; padding: 0 12px; }
+.food-send li { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+.food-send li:last-child { border-bottom: 0; }
+.food-send-who { display: flex; align-items: center; gap: 8px; flex: 1 1 180px; min-width: 0; overflow-wrap: anywhere; }
+.food-send-btns { display: flex; gap: 8px; flex-wrap: wrap; }
+.food-send-btns .btn { min-height: 44px; min-width: 44px; justify-content: center; }
+
+/* ---------- The parents' switches ---------- */
+.food-set { padding: 4px 14px; }
+.food-set-row { padding: 12px 0; border-bottom: 1px solid var(--line); }
+.food-set-row:last-of-type { border-bottom: 0; }
+.food-set-title { margin: 0 0 8px; font-weight: 650; }
+.food-seg { display: flex; flex-wrap: wrap; gap: 6px; }
+.food-seg-btn {
+  min-height: 44px; padding: 6px 14px; border: 1.5px solid var(--border); border-radius: 999px;
+  background: var(--surface); color: var(--text); font-weight: 550; cursor: pointer;
+}
+.food-seg-btn[aria-checked="true"] { border-color: var(--accent); background: var(--accent); color: var(--surface); font-weight: 650; }
+.food-seg-btn:disabled { cursor: default; opacity: 0.75; }
+.food-seg-btn[aria-checked="true"]:disabled { opacity: 1; }
+.food-seg-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.food-switch { display: flex; align-items: center; gap: 12px; min-height: 44px; font-weight: 650; cursor: pointer; }
+.food-switch input { flex: none; width: 22px; height: 22px; accent-color: var(--accent); }
+.food-switch input:disabled + span { cursor: default; }
+.food-set-hint { display: block; margin: 2px 0 0 34px; color: var(--text-3); font-size: 13px; }
+.food-set-note { margin: 0; padding: 10px 0; color: var(--text-3); font-size: 13px; }
+
+@media (max-width: 640px) {
+  .food-card { padding: 0 2px 0 4px; }
+  .food-tick { gap: 10px; }
+  .food-aisle-pick { padding-left: 4px; }
+}

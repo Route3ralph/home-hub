@@ -205,7 +205,8 @@ function googleItems(db, b) {
 // calendar_preview(p_calendar): admins only. The rows come from db.previewRows[calendar id or its
 // Google ID] (what calendar_desired would give for the job's window, yesterday to 60 days ahead:
 // { day, title, private, item_kind, item_id, place, details }); an event or task that is private now
-// reads "Private item", without place or details, so Make private shows in the next read.
+// reads "Private item", without place or details, so Make private shows in the next read (a dinner keeps
+// its title: a locked one is "Dinner: Private item" already).
 function calendarPreview(db, b, email) {
   (db.previewCalls = db.previewCalls || []).push(b);
   const m = db.members.find((x) => x.email === email);
@@ -215,7 +216,8 @@ function calendarPreview(db, b, email) {
   return rows.map((r) => {
     const src = r.item_kind === 'event' ? (db.events || []).find((x) => x.id === r.item_id) : r.item_kind === 'task' ? (db.tasks || []).find((x) => x.id === r.item_id) : null;
     const priv = !!(r.private || (src && src.private));
-    return { day: r.day, title: priv ? 'Private item' : r.title, private: priv, item_kind: r.item_kind, item_id: r.item_id,
+    // A locked dinner (schema 4) is already "Dinner: Private item" in what the wall gets, as the real one says.
+    return { day: r.day, title: priv && r.item_kind !== 'meal' ? 'Private item' : r.title, private: priv, item_kind: r.item_kind, item_id: r.item_id,
       place: priv ? null : r.place || null, details: priv ? null : r.details || null };
   });
 }
@@ -259,7 +261,8 @@ function calendarJob(db, body, email) {
 // and the shopping list. withFood(db, { now, helperList, mealsOnWall }) adds the two tables, as a
 // database with 0004 has them (makeDb() leaves them out, so on schema 2 or 3 a stray read answers 404
 // and a stray call of a list function 404 PGRST202, as live), the household's meals_on_wall and
-// helper_list, and my_day_use (the My day caps). Use it only for a schema-4 database.
+// helper_list, and my_day_use (the My day caps), and 0003's calendar tables when the database doesn't
+// have them yet (withCalendars). Use it only for a schema-4 database.
 //   meals           members read, plan, change and clear (insert and update only the page's columns,
 //                   upsert on (day, slot)), with the table's checks and its tidy trigger
 //   shopping_items  members read, change name / note / aisle / private, and forget (delete); no insert
@@ -371,6 +374,8 @@ function withFood(db, opts) {
   db.foodNow = o.now ? Date.parse(o.now)
     : db.clock && db.clock.local_date ? instantOf(db.clock.local_date, db.clock.local_time || '09:00:00', tz)
       : Date.parse('2026-10-27T13:42:00Z');
+  // A schema-4 database has 0003's tables too (the Food page asks whether there is a Family calendar).
+  if (!db.calendars) withCalendars(db);
   return Object.assign(db, { meals: [], shopping_items: [], my_day_use: [] });
 }
 // A meals row and a shopping_items row with the tables' defaults.
