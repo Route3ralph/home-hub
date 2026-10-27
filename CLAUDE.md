@@ -4,7 +4,7 @@ A private family web app (static site on GitHub Pages + Supabase). See `README.m
 
 ## Before every PR
 
-- Run `tests/run.sh` and make sure it ends with `0 failed` and exit status 0 (about 9 minutes). It runs, in order:
+- Run `tests/run.sh` and make sure it ends with `0 failed` and exit status 0 (about 13 minutes). It runs, in order:
   - the database tests (`tests/db/run.sh`): RLS, functions, recurrence in a throwaway Postgres;
   - the contract check (`tests/contract/check.sh`): every `.rpc()` / `.from()` in the site and the Edge Functions names a function or table that exists in the migrated schema, with argument names it takes, and that the caller (signed out, signed in, Edge Function) may use. Rename a function or a parameter and this fails until every caller is updated;
   - the Edge Function tests (`tests/fn/*.test.ts`);
