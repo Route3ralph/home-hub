@@ -764,9 +764,11 @@ const MY_DAY_FNS = /^\/rest\/v1\/rpc\/(get_person_day|complete_by_token|undo_by_
     await a.page.click('#formDialog [type="submit"]');
     await until(async () => !!(await one(`select id from meals where day = '${TODAY}'`)));
     const meal = await one(`select slot, kind, title, cook_id, note, link, private, created_by, updated_by from meals where day = '${TODAY}'`);
+    // The row is in the table before the page has the answer, so the toast is waited for, not read at once.
+    const savedToast = await until(async () => (await lastToast(a.page)) === 'Dinner tonight: Tacos');
     check('dinner: tonight\'s Tacos, Sam cooking, saved from Food (an upsert on day and slot, with the real grants), stamped by Alex',
       same(meal, { slot: 'dinner', kind: 'cook', title: 'Tacos', cook_id: P.sam, note: 'Chicken is in the freezer', link: 'https://cooking.example.com/tacos',
-        private: 'f', created_by: 'alex@example.com', updated_by: 'alex@example.com' }) && (await lastToast(a.page)) === 'Dinner tonight: Tacos', { meal, toast: await lastToast(a.page) });
+        private: 'f', created_by: 'alex@example.com', updated_by: 'alex@example.com' }) && savedToast, { meal, toast: await lastToast(a.page) });
 
     // Today, and "Send Jordan his day".
     await go(a.page, '#/');
