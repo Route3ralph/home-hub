@@ -12,7 +12,8 @@
 // banner, a reload keeps the queue and it goes once; "Changed on another phone"; a 503 retried, a
 // 42501 dropped; a line added again offline and ticked; a tick, its untick, the name added again and a
 // tick again, all sent; Taylor's Just bought row untick, tick, untick (or Undo) put back with its drawn
-// seen; an Undo of a tick that found Sam's purchase; an add answered after leaving Food isn't sent again,
+// seen; an Undo of a tick that found Sam's purchase, or a tap on the ticked row (and for a member with no
+// person: Alex's purchase isn't his, one with no bought_by is); an add answered after leaving Food isn't sent again,
 // even from a Food page opened before the answer, tapped and killed); the saved list when the reads fail, dropped for someone else; the parents' two
 // switches (read-only for members); Send Taylor the list; the Add sheet's Shopping; the dinner read
 // failing on its own; phones and desktops, light and dark.
@@ -620,6 +621,23 @@ const emailOf = (req) => {
     && item(db, 'Ice cream').bought_at === at(TODAY, '09:40', '000555'), JSON.stringify([calls(db, 'buy_item').slice(iceBefore).map((c) => c.body), await toasts(page)]));
   await tick(page, 3100);
   check('…and the list shows it as it is: under Just bought, with Sam\'s dot', (await names(page, 'bought')).includes('Ice cream') && !(await names(page, 'buy')).includes('Ice cream'));
+  // The same, taken back by tapping the row (still ticked where it is) instead of Undo: the tap goes by
+  // id, the outbox doesn't queue an un-tick of Sam's purchase, and the page says why, as for Undo.
+  await page.evaluate(() => document.querySelectorAll('.toasts .toast').forEach((t) => t.remove()));
+  const chicken0 = calls(db, 'buy_item').length;
+  Object.assign(item(db, 'Chicken'), { bought_at: at(TODAY, '09:41', '000666'), bought_by: ID.sam });
+  await row(page, 'buy', 'Chicken').locator('.food-tick').click();
+  for (let i = 0; i < 50 && calls(db, 'buy_item').length === chicken0; i++) await sleep(40);   // the tick is sent…
+  await until(page, () => { const sv = JSON.parse(localStorage.getItem('homehub.shop.hub') || 'null'); return !!sv && !sv.queue.length; });   // …and answered
+  await page.evaluate(() => document.querySelectorAll('.toasts .toast').forEach((t) => t.remove()));   // "Bought: Chicken"
+  await row(page, 'buy', 'Chicken').locator('.food-tick').click();
+  await until(page, () => [...document.querySelectorAll('.toasts .toast')].some((t) => t.textContent === 'Changed on another phone'), 2000);
+  check('…and so does tapping the ticked row again: nothing is sent, "Changed on another phone", and Sam\'s purchase stays',
+    calls(db, 'buy_item').length === chicken0 + 1 && (await toasts(page)).includes('Changed on another phone') && item(db, 'Chicken').bought_by === ID.sam
+    && item(db, 'Chicken').bought_at === at(TODAY, '09:41', '000666'), JSON.stringify([calls(db, 'buy_item').slice(chicken0).map((c) => c.body), await toasts(page)]));
+  await tick(page, 3100);
+  check('…and Chicken moves to Just bought, with Sam\'s dot', (await names(page, 'bought')).includes('Chicken') && !(await names(page, 'buy')).includes('Chicken')
+    && (await row(page, 'bought', 'Chicken').locator('.pdot').getAttribute('title')) === 'Sam Example');
   // One row tapped three times inside the hold, each tap answered before the next. Every un-tick gives
   // the line a new seen (§4.2), so a tap on a row already changed here goes by id, with the seen the
   // list has now, never the one it was drawn with: no "Changed on another phone", and it ends as tapped.
@@ -1069,8 +1087,9 @@ const emailOf = (req) => {
       JSON.stringify([queueAfterTap, calls(dbL, 'add_to_list').map((c) => c.body.p_name), item(dbL, 'Zucchini').bought_at, await toasts(pg2)]));
     await ctxL.close();
   }
-  // A member with no person (Sam's email isn't on his person): there is no bought_by to tell whose a
-  // purchase is, so an Undo after the tick's answer undoes it, as it always did.
+  // A member with no person (Sam's email isn't on his person): the database records his purchases with
+  // no bought_by, so a purchase with none is his, and one with a person isn't. An Undo after the tick's
+  // answer undoes it, as it always did.
   {
     const dbN = stockList(foodDb());
     dbN.people.find((p) => p.id === ID.sam).email = null;
@@ -1080,9 +1099,33 @@ const emailOf = (req) => {
     await pg.click('.toasts .toast-action button');
     await until(pg, () => false, 400);
     const ticks = calls(dbN, 'buy_item').map((c) => c.body);
-    check('a member with no person: an Undo after the tick\'s answer still undoes it (nothing to compare a purchase with)',
+    check('a member with no person: an Undo after the tick\'s answer still undoes it',
       ticks.length === 2 && ticks[0].p_bought === true && ticks[1].p_bought === false && item(dbN, 'Coffee').bought_at === null
       && !(await toasts(pg)).includes('Changed on another phone'), JSON.stringify([ticks, await toasts(pg)]));
+    // A tick that finds the line already bought (on another phone, since this one read the list). Bought
+    // by Alex: the Undo behind it isn't this phone's to make, so nothing is sent ("Changed on another
+    // phone"). Bought with no bought_by (Sam himself, on his other phone): it is, and the Undo puts it back.
+    await pg.evaluate(() => document.querySelectorAll('.toasts .toast').forEach((t) => t.remove()));
+    let n0 = calls(dbN, 'buy_item').length;
+    Object.assign(item(dbN, 'Ice cream'), { bought_at: at(TODAY, '09:40', '000555'), bought_by: ID.alex });
+    await row(pg, 'buy', 'Ice cream').locator('.food-tick').click();
+    await until(pg, () => false, 400);
+    await pg.click('.toasts .toast-action button');
+    await until(pg, () => false, 400);
+    check('a member with no person: an Undo after a tick that found Alex\'s purchase sends nothing ("Changed on another phone"), and Alex\'s purchase stays',
+      calls(dbN, 'buy_item').length === n0 + 1 && (await toasts(pg)).includes('Changed on another phone') && item(dbN, 'Ice cream').bought_by === ID.alex
+      && item(dbN, 'Ice cream').bought_at === at(TODAY, '09:40', '000555'), JSON.stringify([calls(dbN, 'buy_item').slice(n0).map((c) => c.body), await toasts(pg)]));
+    await pg.evaluate(() => document.querySelectorAll('.toasts .toast').forEach((t) => t.remove()));
+    n0 = calls(dbN, 'buy_item').length;
+    Object.assign(item(dbN, 'Bananas'), { bought_at: at(TODAY, '09:41', '000556'), bought_by: null });   // bought on Sam's other phone
+    await row(pg, 'buy', 'Bananas').locator('.food-tick').click();
+    await until(pg, () => false, 400);
+    await pg.click('.toasts .toast-action button');
+    await until(pg, () => false, 400);
+    const bananaCalls = calls(dbN, 'buy_item').slice(n0).map((c) => keyed(c.body));
+    check('... and an Undo after a tick that found the line bought with no bought_by (his own, on his other phone) puts it back, with that purchase\'s seen',
+      bananaCalls.length === 2 && bananaCalls[0].p_bought === true && same(bananaCalls[1], { p_item: item(dbN, 'Bananas').id, p_bought: false, p_seen: at(TODAY, '09:41', '000556') })
+      && item(dbN, 'Bananas').bought_at === null && !(await toasts(pg)).includes('Changed on another phone'), JSON.stringify([bananaCalls, await toasts(pg)]));
     await pg.context().close();
   }
 

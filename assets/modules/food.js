@@ -927,8 +927,9 @@
       send: (op) => (op.op === 'add'
         ? core.sb.rpc('add_to_list', { p_name: op.name, p_private: !!op.private, p_key: op.key })
         : core.sb.rpc('buy_item', { p_item: op.item, p_bought: op.op === 'buy', p_seen: op.seen, p_key: op.key })),
-      // A member with no person has no bought_by to compare with: no mine, so an Undo goes as it did.
-      mine: st.me ? (row) => row.bought_by === st.me : undefined,
+      // This phone's own purchase: bought_by is the signed-in person. A member with no person buys with
+      // no bought_by (the database's p_by is null), so a row with none is theirs, and anyone else's isn't.
+      mine: (row) => (row.bought_by == null ? null : row.bought_by) === (st.me || null),
       onChange: () => requestDraw(st),
       onReply(op, reply, outcome) {
         if (op.op === 'add') {
