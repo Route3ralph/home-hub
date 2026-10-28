@@ -17,7 +17,8 @@
 // household's midnight; rows a waiting change moved have no seen of their own; a tick of a line a
 // waiting add brings back waits for that add, and goes to the line the add lands on if the database takes
 // another (a waiting add drawn on the line with its own lock first); a waiting add's note laid over the list as the database
-// joins it.
+// joins it; two tabs of one list (each keeps the other's waiting changes when it saves, with the change each waits for, and a
+// page opened while the other tab is open takes that tab's changes, sends them and never cancels one against a tap).
 // Part 1 runs in day.html (which loads shoplist.js before day.js; day.js and supabase-js are stubbed
 // out) with a fake send() in the page and the page's clock paused, so every timer runs when the test
 // says. Part 2 runs the outbox in the hub on a schema-4 database, through supabase-js and mock.js's
@@ -114,6 +115,8 @@ function pageFake() {
     return f;
   };
   // An outbox with every callback recorded in ev.
+  // window.inTab(id): the outboxes made after it are in that tab of the browser (its id in sessionStorage,
+  // as the outbox keeps it), as if made by another page; null: back to this page's own.
   window.makeBox = (f, extra) => {
     const ev = [];
     const box = HomeShop.outbox(Object.assign({
@@ -122,6 +125,12 @@ function pageFake() {
       onGone: () => ev.push('gone'), onExpired: (k) => ev.push(`expired:${k}`),
     }, extra));
     return { box, ev, replies: () => ev.filter((e) => e !== 'change') };
+  };
+  window.inTab = (id) => {
+    if (window.ownTab === undefined) window.ownTab = sessionStorage.getItem('homehub.shop.tab');
+    const to = id == null ? window.ownTab : id;
+    if (to == null) sessionStorage.removeItem('homehub.shop.tab');
+    else sessionStorage.setItem('homehub.shop.tab', to);
   };
 }
 
@@ -1338,6 +1347,184 @@ function pageFake() {
   check('… so with both closed, the page opened next sends both waiting changes: Limones is on the list and Eggs is bought',
     out.waiting === 2 && same(out.sent.slice().sort(), ['add:Limones', 'buy:e']) && same(out.rows, ['Eggs:bought', 'Limones:to buy', 'Milk:to buy'])
     && out.left === 0 && same(out.end, []), JSON.stringify(out));
+
+  // ---- 23b. A tab that has sent the other tab's add (read from the saved queue) keeps, when it saves, the
+  // other tab's tick waiting for that add together with the add, never the tick alone (it could never get
+  // its seen, and would be dropped without a word with whatever waits behind it): a page reloaded from what
+  // is saved sends both (the add's key gives its first answer, with its seen), and a tap behind the tick
+  // there goes too.
+  out = await ev(async () => {
+    localStorage.clear();
+    const f = window.fakeList([{ id: 'b', name: 'Bread', added_at: 'A0', added_by: 'p-sam', bought_at: '2026-10-27T12:00:00.000001+00:00', bought_by: 'p-sam' },
+      { id: 'm', name: 'Milk', added_at: 'A1' }]);
+    const up = { one: true, two: true };
+    const via = (tab) => (op) => (up[tab] ? f.send(op) : Promise.resolve({ data: null, error: { message: 'TypeError: Failed to fetch', code: '' }, status: 0 }));
+    const saved = () => (JSON.parse(localStorage.getItem('homehub.shop.hub') || 'null') || { queue: [] }).queue.map((x) => `${x.op}:${x.item || x.name}`);
+    window.inTab('tab-1');
+    const one = window.makeBox(f, { send: via('one') });
+    one.box.take(f.snapshot(), one.box.ticket());
+    up.one = false;                                                // tab 1 loses signal
+    one.box.add('Bread');                                          // Sam bought it this morning: the add brings it back
+    await window.settle();
+    window.inTab('tab-2');
+    const two = window.makeBox(f, { send: via('two') });          // tab 2, opened after, with signal
+    two.box.take(f.snapshot(), two.box.ticket());
+    two.box.kick();                                                // sends the add it read from the saved queue: 'back'
+    await window.settle();
+    one.box.buy(one.box.view().to_buy.find((r) => r.name === 'Bread'));   // tab 1 ticks Bread: waits for its own copy of the add
+    await window.settle();
+    two.box.take(f.snapshot(), two.box.ticket());                  // tab 2's poll saves
+    const afterRead = saved();
+    two.box.stop();                                                // tab 2 reloaded with no signal
+    up.two = false;
+    const again = window.makeBox(f, { send: via('two') });
+    const drawn = again.box.view().bought.map((r) => r.name);
+    again.box.add('Pan dulce');
+    const r = again.box.unbuy(again.box.view().bought.find((x) => x.name === 'Bread'));   // takes Bread back
+    await window.settle();
+    up.one = true;                                                 // signal back
+    up.two = true;
+    again.box.kick();
+    await window.settle();
+    one.box.kick();
+    await window.settle();
+    window.inTab(null);
+    const bread = f.rows.find((x) => x.id === 'b');
+    return { afterRead, drawn, r, replies: again.replies(), one: one.replies(), bread: bread.bought_at ? 'bought' : 'to buy',
+      left: [again.box.state().waiting, one.box.state().waiting], end: saved() };
+  });
+  check('two tabs: a tab that sent the other tab\'s add keeps that tab\'s tick waiting for it together with the add in the saved queue, never the tick alone',
+    same(out.afterRead, ['add:Bread', 'buy:b']), JSON.stringify(out));
+  check('… so reloaded, it shows the tick and sends both (the add\'s first answer, with its seen), and the un-tick tapped behind the tick there goes too: Bread is to buy, as last tapped',
+    same(out.drawn, ['Bread']) && out.r === true && same(out.replies, ['add:back', 'buy:done', 'add:added', 'unbuy:done']) && same(out.one, ['add:back', 'buy:done'])
+    && out.bread === 'to buy' && same(out.left, [0, 0]) && same(out.end, []), JSON.stringify(out));
+
+  // ---- 23c. A page opened while another tab of the list still holds waiting changes (the front tab
+  // reloaded after it saved them back, or Food -> Today -> Food there) takes them too: that tab may be
+  // closed, or still open and about to send them. So it marks them taken in the saved queue, and a tap in
+  // either tab never cancels one (only that tab's copy would go, and the other would still send it): the
+  // tap waits its turn after it, so the last tap wins whichever tab sends first.
+  for (const where of ['reloaded', 'older']) {
+    for (const first of ['reloaded', 'older']) {
+      out = await ev(async ([where, first]) => {
+        localStorage.clear();
+        const f = window.fakeList([{ id: 'e', name: 'Eggs', added_at: 'A1' }, { id: 'm', name: 'Milk', added_at: 'A2' }]);
+        window.inTab('tab-older');
+        const older = window.makeBox(f);                         // a tab opened earlier, still open
+        older.box.take(f.snapshot(), older.box.ticket());
+        window.inTab('tab-front');
+        let front = window.makeBox(f);
+        front.box.take(f.snapshot(), front.box.ticket());
+        f.mode = 'down';                                         // no signal
+        older.box.buy(older.box.view().to_buy.find((r) => r.id === 'e'));   // sent, no answer
+        await window.settle();
+        older.box.buy(older.box.view().to_buy.find((r) => r.id === 'm'));   // waits its turn: never left the phone
+        front.box.take(f.snapshot(), front.box.ticket());        // the front tab saves (the other's two kept)
+        front.box.stop();
+        front = window.makeBox(f);                               // and reloads, the older tab still open
+        const drawn = front.box.view().bought.map((r) => r.name);
+        const tab = where === 'reloaded' ? front : older;        // the user unticks Milk in one of them
+        const before = tab.box.state().waiting;
+        const r = tab.box.unbuy(tab.box.view().bought.find((x) => x.id === 'm'));
+        const after = tab.box.state().waiting;
+        f.mode = 'ok';
+        for (const b of first === 'reloaded' ? [front, older] : [older, front]) { b.box.kick(); await window.settle(); }
+        window.inTab(null);
+        const milkKeys = [...new Set(f.sent.filter((x) => x.op === 'buy' && x.item === 'm').map((x) => x.key))];
+        return { drawn, before, r, after, milkKeys: milkKeys.length, rows: f.rows.map((x) => `${x.name}:${x.bought_at ? 'bought' : 'to buy'}`).sort(),
+          left: [front.box.state().waiting, older.box.state().waiting] };
+      }, [where, first]);
+      check(`two tabs: the front tab reloaded while the other waits with a tick of Milk it never sent shows it; an un-tick in the ${where} tab is queued after it, not cancelled, and the last tap wins (${first} tab sends first)`,
+        out.drawn.includes('Milk') && out.before === 2 && out.r === true && out.after === 3 && out.milkKeys === 1
+        && same(out.rows, ['Eggs:bought', 'Milk:to buy']) && same(out.left, [0, 0]), JSON.stringify(out));
+    }
+  }
+
+  // The same once the reloaded tab has sent the older tab's tick and taken it off the saved queue (so the
+  // mark went with it): the older tab, still without signal, finds it gone from there, so another page
+  // has it, and the un-tick there still waits its turn after it rather than cancelling it.
+  out = await ev(async () => {
+    localStorage.clear();
+    const f = window.fakeList([{ id: 'e', name: 'Eggs', added_at: 'A1' }, { id: 'm', name: 'Milk', added_at: 'A2' }]);
+    const up = { older: false };
+    const via = (op) => (up.older ? f.send(op) : Promise.resolve({ data: null, error: { message: 'TypeError: Failed to fetch', code: '' }, status: 0 }));
+    window.inTab('tab-older');
+    const older = window.makeBox(f, { send: via });              // no signal in the older tab
+    older.box.take(f.snapshot(), older.box.ticket());
+    older.box.buy(older.box.view().to_buy.find((r) => r.id === 'e'));   // sent, no answer
+    await window.settle();
+    older.box.buy(older.box.view().to_buy.find((r) => r.id === 'm'));   // waits its turn: never left the phone
+    window.inTab('tab-front');
+    const front = window.makeBox(f);                             // the front tab reloaded, with signal
+    front.box.take(f.snapshot(), front.box.ticket());
+    front.box.kick();                                            // sends both ticks (Milk is bought)
+    await window.settle();
+    const sent = f.sent.map((x) => `${x.op}:${x.item}`);
+    const r = older.box.unbuy(older.box.view().bought.find((x) => x.id === 'm'));   // Milk: not bought after all
+    const waiting = older.box.state().waiting;
+    up.older = true;
+    older.box.kick();
+    await window.settle();
+    window.inTab(null);
+    return { sent, r, waiting, rows: f.rows.map((x) => `${x.name}:${x.bought_at ? 'bought' : 'to buy'}`).sort(), left: older.box.state().waiting, older: older.replies() };
+  });
+  check('… and once the reloaded tab has sent the older tab\'s tick of Milk (gone from the saved queue), an un-tick in the older tab still goes after it, not cancelled: Milk is to buy, as last tapped',
+    same(out.sent, ['buy:e', 'buy:m']) && out.r === true && out.waiting === 3 && same(out.rows, ['Eggs:bought', 'Milk:to buy']) && out.left === 0
+    && same(out.older, ['buy:done', 'buy:done', 'unbuy:done']), JSON.stringify(out));
+  // The same tab reloaded (sessionStorage keeps its id) is the same tab: a tick waiting from before the
+  // reload is still its own, and its Undo there still cancels it (nothing is sent).
+  out = await ev(async () => {
+    localStorage.clear();
+    const f = window.fakeList([{ id: 'm', name: 'Milk', added_at: 'A2' }]);
+    let a = window.makeBox(f);
+    a.box.take(f.snapshot(), a.box.ticket());
+    f.mode = 'down';
+    a.box.add('Limones');                                        // no answer: what follows waits its turn
+    await window.settle();
+    a.box.buy(a.box.view().to_buy.find((r) => r.id === 'm'));
+    a.box.stop();
+    a = window.makeBox(f);                                       // reloaded
+    const r = a.box.unbuy(a.box.view().bought.find((x) => x.id === 'm'));
+    const waiting = a.box.state().waiting;
+    f.mode = 'ok';
+    a.box.kick();
+    await window.settle();
+    return { r, waiting, sent: f.sent.map((x) => `${x.op}:${x.item || x.name}`), milk: f.rows[0].bought_at ? 'bought' : 'to buy', left: a.box.state().waiting };
+  });
+  check('the same tab reloaded: its own tick waiting from before the reload is still its own, and an un-tick there cancels it (only the add is sent)',
+    out.r === true && out.waiting === 1 && same(out.sent, ['add:Limones', 'add:Limones']) && out.milk === 'to buy' && out.left === 0, JSON.stringify(out));
+
+  // ---- 23d. A page reloaded while the other tab is still open sends that tab's waiting tick too, and both
+  // pages get its answer and say what it means: so the reloaded tab can say "changed on another phone"
+  // about a tick made in the other one (§8, what it doesn't do). The database does the tick once, by its key.
+  out = await ev(async () => {
+    localStorage.clear();
+    const f = window.fakeList([{ id: 'e', name: 'Eggs', added_at: 'A1' }, { id: 'm', name: 'Milk', added_at: 'A2' }]);
+    window.inTab('tab-B');
+    const b = window.makeBox(f);                                 // tab B, behind
+    b.box.take(f.snapshot(), b.box.ticket());
+    window.inTab('tab-A');
+    let a = window.makeBox(f);                                   // tab A, in front
+    a.box.take(f.snapshot(), a.box.ticket());
+    f.mode = 'down';                                             // no signal in tab B
+    b.box.buy(b.box.view().to_buy.find((r) => r.id === 'e'));
+    await window.settle();
+    Object.assign(f.rows[0], { added_at: 'A-sam', added_by: 'p-sam' });   // Sam bought Eggs and put them back
+    a.box.take(f.snapshot(), a.box.ticket());                    // tab A reads the list (and saves B's tick back)
+    a.box.stop();                                                // and is reloaded
+    a = window.makeBox(f);
+    const shown = a.box.view().bought.map((r) => r.id);
+    f.mode = 'ok';
+    a.box.kick();
+    await window.settle();
+    b.box.kick();
+    await window.settle();
+    window.inTab(null);
+    return { shown, a: a.replies(), b: b.replies(), keys: new Set(f.sent.map((x) => x.key)).size, eggs: f.rows[0].bought_at ? 'bought' : 'to buy',
+      left: [a.box.state().waiting, b.box.state().waiting] };
+  });
+  check('two tabs: a page reloaded while the other tab is open shows and sends that tab\'s waiting tick, and so does that tab (one key); both get the answer and both say "changed on another phone"',
+    same(out.shown, ['e']) && same(out.a, ['buy:changed']) && same(out.b, ['buy:changed']) && out.keys === 1 && out.eggs === 'to buy' && same(out.left, [0, 0]), JSON.stringify(out));
   await context.close();
 
   // =====================================================================

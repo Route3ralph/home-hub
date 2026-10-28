@@ -68,7 +68,8 @@
                                      else changed it first, or since: say "Changed on another
                                      phone"). A change sent
                                      by a page that closed before its answer came is answered on the
-                                     page opened again in its place (box.stop(), below)
+                                     page opened again in its place (box.stop(), below), and one
+                                     another tab made, on a page that took it (two tabs, below)
        onRefused(op, error)          the database refused it (42501, 22023, P0001, 54000, 23505, a
                                      PGRST… code, or any other answer that a resend can't change):
                                      the change is dropped; toast friendly(error) and read the list
@@ -82,11 +83,12 @@
                           a tick's toast: box.unbuy(id), and the outbox takes the seen from the tick's
                           reply (kept while the page is open, so it works after a read past the
                           household's midnight has taken the line out of bought). A tick and its Undo
-                          cancel out while the tick has never left the phone and no add waits after it
-                          (an add reads the line as the changes before it leave it); otherwise both are
-                          sent, in order. A tick of a line that a waiting add brings back waits for
-                          that add, and takes the line's new seen from its reply (from the line the add
-                          landed on, if the database took another one: §4.1). Given a row with no
+                          cancel out while the tick has never left the phone, no other page has it (two
+                          tabs, below) and no add waits after it (an add reads the line as the changes
+                          before it leave it); otherwise both are sent, in order, and the last tap wins.
+                          A tick of a line that a waiting add brings back waits for that add, and takes
+                          the line's new seen from its reply (from the line the add landed on, if the
+                          database took another one: §4.1). Given a row with no
                           seen (one a waiting change moved, below) or only an id, the outbox takes the
                           seen from the change waiting for that item; for an un-tick, else from the
                           answer to this phone's own tick of it (or from this phone's put-back of it
@@ -140,8 +142,17 @@
    the Undo behind it; an un-tick that finds the line to buy at the seen this phone's own add gave it
    ("back") does hand its seen on.
    Two pages of the same list in one browser (two tabs) save under the same key: each keeps the other's
-   waiting changes there when it saves (all but those it has taken off its own queue), so a change
-   waiting in a tab that closes goes from the next page opened. Neither shows or sends the other's.
+   waiting changes there when it saves (all but those it has taken off its own queue, and with each the
+   change it waits for, even one it has: sent again, its key gives that answer), so a change waiting in a
+   tab that closes goes from the next page opened. Two pages open side by side don't show or send each
+   other's; but a page opened while the other tab is still open (a reload, Food → Today → Food) can't
+   tell it from a closed one, so it takes that tab's waiting changes too: it shows and sends them (the
+   database does each once, by its key), and both pages get the answer and say what it means (so either
+   may say "Changed on another phone" about a tap made in the other). It marks them taken in what is
+   saved, and neither page then cancels a taken change against a tap (only its own copy would go, and
+   the other page would still send it): the tap waits its turn after it, so the last tap wins. A tab is
+   known by an id in sessionStorage (homehub.shop.tab) that every change carries, so a reload is the same
+   tab; a tab the browser duplicates copies it, and the two count as one.
    The poll (the page's): every POLL_MS while the list is on screen and the page visible, and at once
    on focus, visibilitychange and online; none while state().busy; t = ticket(), read, take(answer, t),
    and no redraw when sameList() says the view is as drawn.
@@ -340,6 +351,21 @@
   const onTheWay = new Map();
   let seq = 0;   // change ids are unique in this window, so an answer is never taken for another change
 
+  // This tab of the browser (§8.2): an id kept in sessionStorage (TAB_KEY), so a reload of the tab, Food →
+  // Today → Food, or a phone restoring a tab it had put away is the same tab, and another tab of the same
+  // list is another. Every change carries the id of the tab it was made in. Without sessionStorage, each
+  // page load is a tab of its own.
+  const TAB_KEY = 'homehub.shop.tab';
+  let loadTab = null;
+  function tabId() {
+    const make = () => newKey() || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    try {
+      let id = sessionStorage.getItem(TAB_KEY);
+      if (!id) { id = make(); sessionStorage.setItem(TAB_KEY, id); }
+      return id;
+    } catch (err) { return loadTab || (loadTab = make()); }
+  }
+
   function outbox(options) {
     const o = options || {};
     const key = o.key;
@@ -349,10 +375,18 @@
     const visible = o.visible || (() => typeof document === 'undefined' || document.visibilityState !== 'hidden');
     // The page's callbacks (a callback that throws is reported and doesn't stop the outbox).
     const emit = (name, ...args) => { if (typeof o[name] === 'function') { try { o[name](...args); } catch (err) { console.error(err); } } };
+    // Two pages of the same list in one browser (two tabs) share what is saved (save(), below). A page
+    // opened (or reloaded) while the other tab is still open can't tell whether that tab is open or closed,
+    // so it takes that tab's waiting changes from the saved queue too, shows them and sends them; the
+    // other tab, if open, sends them as well, and the database does each once, by its key.
+    const tab = keep ? tabId() : null;
+    // A change another tab made (it carries that tab's id).
+    const theirs = (x) => tab != null && x.tab != null && x.tab !== tab;
 
-    // queue: { id, op, key, item?, seen?, name?, private?, show?, at, sent, after? }, oldest first.
-    // key: the change's own key, sent with every try (the database does it once per key); sent: it
-    // has left the phone at least once.
+    // queue: { id, op, key, tab, item?, seen?, name?, private?, show?, at, sent, after?, taken? }, oldest
+    // first. key: the change's own key, sent with every try (the database does it once per key); tab: the
+    // tab it was made in; sent: it has left the phone at least once; taken: a page in another tab has
+    // read it from the saved queue (read()), so two pages may send it.
     let queue = [];
     let snap = null;        // the last list read or answered
     let fresh = false;      // a list came from the database since the page opened
@@ -383,7 +417,8 @@
     // The ids of the changes this page has taken off its queue (answered, refused, cancelled, dropped or
     // expired). Another page of the same list in this browser (a second tab) saves its own waiting
     // changes under the same key: save() keeps every saved change this page neither holds nor has taken
-    // off, so a change waiting in that page isn't lost if it closes before it sends it.
+    // off (and the change each of those waits for), so a change waiting in that page isn't lost if it
+    // closes before it sends it.
     const finished = new Set();
     function setQueue(next) {
       const kept = new Set(next.map((x) => x.id));
@@ -404,6 +439,11 @@
       queue = Array.isArray(saved.queue) ? saved.queue.filter((x) => x && ['add', 'buy', 'unbuy'].includes(x.op)) : [];
       snap = saved.snap && typeof saved.snap === 'object' ? saved.snap : null;
       failing = queue.length > 0;
+      // Another tab's waiting changes, taken here too: marked taken in the saved queue (saved below), so
+      // neither page cancels one against a tap (queueTick(): only its own copy would go, and the other
+      // page would still send it).
+      let marked = false;
+      queue.forEach((x) => { if (theirs(x) && !x.taken) { x.taken = true; marked = true; } });
       // Answers kept for changes this queue no longer has (a closed page took them off already).
       const ids = new Set(queue.map(wayKey));
       [...onTheWay.keys()].forEach((k) => { if (k.startsWith(`${key} `) && !ids.has(k)) onTheWay.delete(k); });
@@ -411,10 +451,27 @@
       // comes (answeredEarly), not at its first kick(), so no save of this page's queue (a tap, a read)
       // puts it back on the saved queue once it has been answered, for a later visit to send again.
       if (keep) queue.forEach((x) => { const p = onTheWay.get(wayKey(x)); if (p) p.then((res) => answeredEarly(x, res)); });
+      if (marked) save();
+    }
+    // A change another tab made, or one of this page's that a page in another tab has taken from the saved
+    // queue: marked there by its read(), or gone from there, which only a page that took it does, once it
+    // has taken it off its own queue (this page saves every change it queues there at once).
+    function taken(op) {
+      if (op.taken || theirs(op)) return true;
+      if (!keep) return false;
+      try {
+        const saved = JSON.parse(localStorage.getItem(key) || 'null');
+        const x = saved && saved.owner === owner && saved.v === 1 && Array.isArray(saved.queue) ? saved.queue.find((y) => y && y.id === op.id) : null;
+        if (!x || x.taken) op.taken = true;
+      } catch (err) { /* as not taken */ }
+      return !!op.taken;
     }
     // This page's queue and list, with the changes another page of this list (a second tab) has waiting
-    // there: those this page neither holds nor has taken off its queue stay. The two queues are merged,
-    // older first, each in its own order (a change always after the one it waits for).
+    // there: those this page neither holds nor has taken off its queue stay, and with each of them the
+    // change it waits for, even one this page has taken off (answered here: sent again, its key gives that
+    // answer, with its seen), so no page ever reads a change that can never go. The two queues are merged,
+    // older first, each in its own order (a change always after the one it waits for). A change this page
+    // holds that another page has marked taken stays marked.
     function save() {
       if (!key || owner == null || stopped) return;
       try {
@@ -422,8 +479,16 @@
         try {
           const saved = JSON.parse(localStorage.getItem(key) || 'null');
           if (saved && saved.owner === owner && saved.v === 1 && Array.isArray(saved.queue)) {
-            const held = new Set(queue.map((x) => x.id));
-            others = saved.queue.filter((x) => x && typeof x === 'object' && ['add', 'buy', 'unbuy'].includes(x.op) && !held.has(x.id) && !finished.has(x.id));
+            const held = new Map(queue.map((x) => [x.id, x]));
+            const rest = saved.queue.filter((x) => x && typeof x === 'object' && ['add', 'buy', 'unbuy'].includes(x.op));
+            rest.forEach((x) => { if (x.taken && held.has(x.id)) held.get(x.id).taken = true; });
+            const theirsSaved = rest.filter((x) => !held.has(x.id));
+            const kept = new Set(theirsSaved.filter((x) => !finished.has(x.id)).map((x) => x.id));
+            for (let more = true; more;) {
+              more = false;
+              theirsSaved.forEach((x) => { if (kept.has(x.id) && x.after && !kept.has(x.after)) { kept.add(x.after); more = true; } });
+            }
+            others = theirsSaved.filter((x) => kept.has(x.id));
           }
         } catch (err) { others = []; }
         const all = [];
@@ -478,11 +543,13 @@
       const last = lastFor(item);
       if (last && last.op === kind) return false;   // already waiting to do just that
       if (last && last.op === 'add' && kind === 'unbuy') return false;   // an add is bringing it back: nothing to un-buy
-      if (last && last.op === inverse && !last.sent && !queue.slice(queue.indexOf(last) + 1).some((x) => x.op === 'add')) {
-        // Never left the phone, and no add waits after it: the two cancel out. (An add after it reads the
-        // line as that change leaves it: an add of a line an un-tick puts back joins it, and without the
-        // un-tick it would bring the bought line back, so this tap would be lost. Then this one waits
-        // its turn after it, below.) A put-back that carried the row's seen (a row under Just bought or
+      if (last && last.op === inverse && !last.sent && !taken(last) && !queue.slice(queue.indexOf(last) + 1).some((x) => x.op === 'add')) {
+        // Never left the phone, no other page has it, and no add waits after it: the two cancel out. (An
+        // add after it reads the line as that change leaves it: an add of a line an un-tick puts back joins
+        // it, and without the un-tick it would bring the bought line back, so this tap would be lost. A
+        // change another tab made, or one another page has taken from the saved queue, would still go
+        // from that page, and this tap would be lost too. Then this one waits its turn after it, below,
+        // so the last tap wins.) A put-back that carried the row's seen (a row under Just bought or
         // Buy again, whoever bought it) stays this phone's to make: an un-tick of the line by id after
         // this (the next tap on it, or the Undo on "Bought") goes with that same seen.
         drop(last);
@@ -490,7 +557,7 @@
         changed();
         return true;
       }
-      const op = { id: nextId(), op: kind, key: newKey(), item, seen: null, show: showOf(row), at: Date.now(), sent: false };
+      const op = { id: nextId(), op: kind, key: newKey(), tab, item, seen: null, show: showOf(row), at: Date.now(), sent: false };
       if (last) {
         // Its seen comes from that change's reply: a tick's or un-tick's row, or the line an add brought
         // back (its new added_at).
@@ -524,7 +591,7 @@
 
     function add(text, priv) {
       if (stopped || !parse(text).name) return false;
-      queue.push({ id: nextId(), op: 'add', key: newKey(), name: String(text), private: !!priv, at: Date.now(), sent: false });
+      queue.push({ id: nextId(), op: 'add', key: newKey(), tab, name: String(text), private: !!priv, at: Date.now(), sent: false });
       changed();
       send1();
       return true;
