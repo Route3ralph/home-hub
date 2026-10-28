@@ -17,13 +17,14 @@
 // days[i].meals and list keys (personDayFood), and the list's token functions (foodRpc, the
 // migration's rules and shapes): get_list_by_token(p_token) → { language, as_of, can_add, items,
 // bought, suggest? } or null; add_to_list_by_token(p_token, p_name) → { result, item_id, name } and
-// the list; buy_item_by_token(p_token, p_item, p_bought, p_seen) → { changed } and the list. Meal rows
+// the list; buy_item_by_token(p_token, p_item, p_bought, p_seen) → { changed, seen } and the list. Meal rows
 // in English and Spanish; the list button only with `list`, and no list request without it; the list
 // read and saved in the background after the day's own request; #list in Spanish at 390px (ticks in
 // place, the Undo toast (Deshacer unticks the row where it is, under Comprado hoy too), Comprado hoy, Add again, the add box and its suggestions, Comprar otra vez,
 // every new error word); the 10-second read only on #list; the outbox (not sent yet, the banner, a
 // reload, retries, "changed on another phone", a line added again offline and ticked before the add is
-// answered, Deshacer of a tick that found Alex's purchase); the saved list when Supabase gets no answer at the
+// answered, Deshacer of a tick that found Alex's purchase, Deshacer of a tick waiting for "¿Añadir otra vez?"
+// after a read past midnight); the saved list when Supabase gets no answer at the
 // start; a null answer clearing what was saved.
 // mock.js answers RPCs for signed-in members only, so the token functions (called signed out) are
 // answered by a route added here; everything else (config.js, supabase-js) comes from mock.js.
@@ -1308,6 +1309,43 @@ const ANDROID = 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KH
     itemOf(db, 'Huevos').bought_by === P.taylor && same(keyed(calls(db, 'buy_item_by_token').slice(-1)[0].body), { p_token: TAYLOR, p_item: itemOf(db, 'Huevos').id, p_bought: true, p_seen: itemOf(db, 'Huevos').added_at })
     && itemOf(db, 'Huevos').added_at !== '2026-10-23T12:00:00.000000+00:00' && same(calls(db, 'add_to_list_by_token').map((c) => c.body.p_name), ['Huevos'])
     && !(await texts(page, '.toast')).includes('Cambiado en otro teléfono'), `${await text(page, '.toasts')} ${JSON.stringify(itemOf(db, 'Huevos'))}`);
+
+  // Yogur, bought this morning by Alex: "¿Añadir otra vez?" with no signal brings it back and she ticks
+  // it (the tick waits for the add). The add still gets no answer when a read past the household's
+  // midnight does (Alex's purchase is yesterday's now, so the list no longer has the line): the waiting
+  // add is drawn as a new row. Deshacer takes her tick back (it never left the phone): "Deshecho…", not
+  // "Cambiado en otro teléfono"; then the add goes, and nothing is bought.
+  await toasts(page);
+  db.shopping_items.push(shopItem({ name: 'Yogur', aisle: 'dairy', added_at: '2026-10-23T12:00:00.000000+00:00', added_by: P.alex, bought_at: '2026-10-25T13:31:00.111111+00:00', bought_by: P.alex }));
+  await page.clock.fastForward('00:11');
+  await until(async () => names((await listView(page)).bought).includes('Yogur'));
+  db.offline = true;
+  await lrow(page, 'Yogur').click();
+  await page.click('.toast-action .toast-btn:not(.toast-x)');   // ¿Añadir otra vez?
+  await page.clock.fastForward('00:03');
+  await until(async () => (await listView(page)).toBuy.some((r) => r.name === 'Yogur' && r.checked === 'false' && r.unsent === '⟳ sin enviar'));
+  await toasts(page);
+  await lrow(page, 'Yogur').click();   // she picks it up: the tick waits for the add
+  itemOf(db, 'Yogur').bought_at = '2026-10-24T13:31:00.111111+00:00';   // past midnight: yesterday's purchase
+  db.offline = false;
+  db.status = { add_to_list_by_token: 503 };   // the add still gets no answer; the read does
+  const readsDone = () => calls(db, 'get_list_by_token').filter((c) => c.done).length;
+  const reads0 = readsDone();
+  for (let i = 0; i < 8 && readsDone() === reads0; i++) { await page.clock.fastForward('00:10'); await page.waitForTimeout(200); }
+  await page.waitForTimeout(300);
+  const yogurDrawn = (await listView(page)).toBuy.filter((r) => r.name === 'Yogur').map((r) => r.checked);
+  await page.click('.toast-action .toast-btn:not(.toast-x)');   // Deshacer
+  await page.waitForTimeout(300);
+  const yogurToasts = await texts(page, '.toast');
+  check('Deshacer of a tick waiting for "¿Añadir otra vez?", after a read past midnight drew that add as a new row: "Deshecho…", not "Cambiado en otro teléfono"',
+    readsDone() > reads0 && yogurDrawn.length === 1 && yogurToasts.includes('Deshecho. Vuelve a estar en tu lista.') && !yogurToasts.includes('Cambiado en otro teléfono'),
+    JSON.stringify([yogurDrawn, yogurToasts]));
+  db.status = null;
+  await page.evaluate(() => window.dispatchEvent(new Event('online')));
+  await until(() => itemOf(db, 'Yogur').bought_at === null);
+  await page.waitForTimeout(400);
+  check('... then the add goes, and nothing is bought', itemOf(db, 'Yogur').bought_at === null && calls(db, 'buy_item_by_token').every((c) => c.body.p_item !== itemOf(db, 'Yogur').id),
+    JSON.stringify(itemOf(db, 'Yogur')));
 
   // Cilantro: Alex buys it on his phone before hers reads the list again; her tick finds it already
   // bought ("no change"). It isn't hers to undo: Deshacer, or tapping the row again, sends nothing and

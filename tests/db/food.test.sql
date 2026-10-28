@@ -434,15 +434,15 @@ select test.is((pg_temp.parse(repeat('x', 5000)) like repeat('x', 60) || ' | - |
 :as_owner
 set hub.now = '2026-10-27 09:15:30.123456 America/New_York';
 :as_admin
-select test.is(add_to_list('Milk') - 'to_buy' - 'bought' - 'as_of' - 'item_id', '{"result": "added", "name": "Milk"}'::jsonb,
-               'add_to_list: a new line → added, with its name');
+select test.is(add_to_list('Milk') - 'to_buy' - 'bought' - 'as_of' - 'item_id', jsonb_build_object('result', 'added', 'name', 'Milk', 'seen', private.now()),
+               'add_to_list: a new line → added, with its name and its seen (its added_at)');
 select test.is((select concat_ws(' ', added_by = test.person('Alex'), added_at = private.now(), aisle, private, bought_at, updated_by)
                 from shopping_items where name = 'Milk'), 't t dairy f alex@example.com',
                '... added now by Alex (the caller''s person), in Dairy & eggs, to buy, stamped with the email');
 select test.is((select (r ->> 'item_id')::uuid = (pg_temp.line('Milk')).id and r ? 'to_buy' and r ? 'bought' and r ? 'as_of'
                 from (select add_to_list('Milk') as r) x), true, '... the reply has the line''s id and the list (shopping_list)');
-select test.is(add_to_list(' MILK ') - 'to_buy' - 'bought' - 'as_of' - 'item_id', '{"result": "already", "name": "Milk"}'::jsonb,
-               '" MILK " is the same line: already, with the line''s name');
+select test.is(add_to_list(' MILK ') - 'to_buy' - 'bought' - 'as_of' - 'item_id', jsonb_build_object('result', 'already', 'name', 'Milk', 'seen', (pg_temp.line('Milk')).added_at),
+               '" MILK " is the same line: already, with the line''s name and its seen');
 select test.is((select count(*) from shopping_items), 1::bigint, '... one row');
 select test.is(add_to_list('Milk: 2 gallons') ->> 'result', 'already', 'a note for a line to buy: already');
 select test.is((pg_temp.line('Milk')).note, '2 gallons', '... the note is added');
@@ -456,7 +456,8 @@ select test.is(add_to_list('2 milk') ->> 'result', 'already', 'the same add agai
 select test.is((select xmin::text = (select x from before) from shopping_items where name = 'Milk'), true, '... and nothing is written');
 drop table before;
 :as_admin
-select test.is(add_to_list('Leche') - 'to_buy' - 'bought' - 'as_of', jsonb_build_object('result', 'already', 'item_id', (pg_temp.line('Milk')).id, 'name', 'Milk'),
+select test.is(add_to_list('Leche') - 'to_buy' - 'bought' - 'as_of', jsonb_build_object('result', 'already', 'item_id', (pg_temp.line('Milk')).id, 'name', 'Milk',
+                                                                                     'seen', (pg_temp.line('Milk')).added_at),
                '"Leche" while "Milk" is to buy: that line (already, "Milk")');
 select test.is((select count(*) from shopping_items), 1::bigint, '... still one row');
 select test.is(pg_temp.el(shopping_list(), 'to_buy', 'Milk') - 'id' - 'seen' - 'added_by',
@@ -525,14 +526,14 @@ select test.is(buy_item((pg_temp.line('Detergent')).id, true, (pg_temp.line('Det
 :as_owner
 set hub.now = '2026-10-28 18:00 America/New_York';
 :as_admin
-select test.is(add_to_list('detergent: big pack') - 'to_buy' - 'bought' - 'as_of' - 'item_id', '{"result": "back", "name": "Detergent"}'::jsonb,
-               'bought, then added again: back, with the line''s name');
+select test.is(add_to_list('detergent: big pack') - 'to_buy' - 'bought' - 'as_of' - 'item_id', jsonb_build_object('result', 'back', 'name', 'Detergent', 'seen', private.now()),
+               'bought, then added again: back, with the line''s name and the seen it gave it (its new added_at)');
 select test.is((select concat_ws(' ', bought_at, bought_by, added_at = private.now(), added_by = test.person('Alex'), note, aisle) from shopping_items
                 where name = 'Detergent'), 't t big pack personal',
                '... to buy again, added now by Alex, with the new note and the corrected aisle (a correction sticks)');
 select (x ->> 'seen') as milk_seen4 from pg_temp.el(shopping_list(), 'to_buy', 'Milk') x \gset
 select buy_item(:'milk', true, :'milk_seen4');
-select test.is(add_to_list('Leche') - 'to_buy' - 'bought' - 'as_of' - 'item_id', '{"result": "added", "name": "Leche"}'::jsonb,
+select test.is(add_to_list('Leche') - 'to_buy' - 'bought' - 'as_of' - 'item_id', jsonb_build_object('result', 'added', 'name', 'Leche', 'seen', private.now()),
                '"Leche" while "Milk" is only bought: a new line (a bought twin isn''t brought back)');
 select test.is(pg_temp.el(shopping_list(), 'to_buy', 'Leche') ->> 'other', 'milk', 'shopping_list: "other" for "Leche" read by Alex is "milk"');
 :as_owner
@@ -764,13 +765,14 @@ select test.throws(format('select add_to_list_by_token(%L, %L)', test.token('Mor
                    'a 201-character name → 22023');
 select test.is(pg_temp.used('2026-10-28'), 'none', '... refused before anything is counted');
 select test.is(add_to_list_by_token(test.token('Morgan'), '<img src=x onerror=alert(1)>') - 'items' - 'bought' - 'suggest' - 'item_id',
-               '{"result": "added", "name": "<img src=x onerror=alert(1)>", "language": "es", "as_of": "2026-10-28T10:00", "can_add": true}'::jsonb,
-               'a hostile name is stored as text; the reply has the result and her list');
+               '{"result": "added", "name": "<img src=x onerror=alert(1)>", "language": "es", "as_of": "2026-10-28T10:00", "can_add": true}'::jsonb
+               || jsonb_build_object('seen', current_setting('hub.now')::timestamptz),
+               'a hostile name is stored as text; the reply has the result, its seen and her list');
 select test.is((select concat_ws(' | ', l.name, l.private, l.added_by = test.person('Morgan'), l.updated_by) from pg_temp.line('<img src=x onerror=alert(1)>') l),
                '<img src=x onerror=alert(1)> | f | t | Morgan (My day)', '... unlocked, added by her, updated_by "Morgan (My day)"');
 select test.is(pg_temp.used('2026-10-28'), '1 0', '... one change counted');
 select test.is(add_to_list_by_token(test.token('Morgan'), 'Leche') - 'items' - 'bought' - 'suggest' - 'language' - 'as_of' - 'can_add',
-               jsonb_build_object('result', 'already', 'item_id', (pg_temp.line('Milk')).id, 'name', 'Milk'),
+               jsonb_build_object('result', 'already', 'item_id', (pg_temp.line('Milk')).id, 'name', 'Milk', 'seen', (pg_temp.line('Milk')).added_at),
                '"Leche" while "Milk" is to buy: "Ya está en la lista como Milk"');
 select test.is(pg_temp.used('2026-10-28'), '1 0', '... nothing changed, nothing counted');
 -- A note with " · " in it (what the list puts between joined notes), sent again after a lost reply:
@@ -924,6 +926,158 @@ set hub.now = '2026-11-04 00:14:56 America/New_York';
 :as_admin
 select test.is(coalesce(pg_temp.names(shopping_list(), 'bought'), '-'), '-', '... at 00:14:56, 15 minutes after it, no more: bought is since midnight');
 select test.is(buy_item((pg_temp.line('Late milk')).id, false, :'late_seen') ->> 'changed', 'true', '... and his Undo with the seen from that answer puts it back on the list');
+rollback;
+
+-- The same for a member with no person (Sam, once no active person has his email: still a member). His
+-- ticks have no bought_by, and they are his (§8, as the Food page counts them), so shopping_list() keeps
+-- his of the last 15 minutes too: a tick at 23:59:55 sent again at 00:00:03 finds its line under bought.
+begin;
+:as_owner
+update people set email = null where id = test.person('Sam');
+set hub.now = '2026-11-03 23:40 America/New_York';
+insert into shopping_items (name, added_at, added_by) values ('Pears', '2026-11-03 20:00 America/New_York', test.person('Alex')),
+                                                         ('Rice', '2026-11-03 20:00 America/New_York', test.person('Alex'));
+:as_admin
+select buy_item((pg_temp.line('Rice')).id, true, (pg_temp.line('Rice')).added_at);
+:as_owner
+set hub.now = '2026-11-03 23:59:55 America/New_York';
+:as_adult
+select test.is(buy_item((pg_temp.line('Pears')).id, true, (pg_temp.line('Pears')).added_at, 'd0000000-0000-4000-8000-0000000000b1') ->> 'changed', 'true',
+               'Sam, a member with no person, ticks Pears at 23:59:55 (the answer never reaches his phone)');
+select test.is((pg_temp.line('Pears')).bought_by, null, '... bought_by is null');
+:as_owner
+set hub.now = '2026-11-04 00:00:03 America/New_York';
+:as_adult
+select (r ->> 'changed') as np_changed, coalesce(pg_temp.names(r, 'bought'), '-') as np_bought
+from (select buy_item((pg_temp.line('Pears')).id, true, (pg_temp.line('Pears')).added_at, 'd0000000-0000-4000-8000-0000000000b1') as r) x \gset
+select test.is(:'np_changed' || ' | ' || :'np_bought', 'true | Pears',
+               '... sent again at 00:00:03: its first answer, with Pears under bought (his own tick, no bought_by), not Alex''s Rice of 23:40');
+:as_admin
+select test.is(coalesce(pg_temp.names(shopping_list(), 'bought'), '-'), '-', '... Alex''s list then: neither Sam''s tick nor his own Rice of 23:40');
+:as_stranger
+select test.is(coalesce(pg_temp.names(shopping_list(), 'bought'), '-'), '-', '... and someone signed in who isn''t family still gets nothing');
+rollback;
+
+-- A tick's answer carries the seen it gave the line ({changed, seen}: the tick's bought_at, an un-tick's
+-- new added_at; an add's, the line's added_at), and a second try gets that same seen, whatever happened
+-- to the line since (§8). So the change waiting behind it on the phone goes with this change's own seen,
+-- never with the newer one someone else gave the line: Sam's Undo never reopens Alex's purchase, and
+-- his tick never buys Alex's new need.
+begin;
+:as_owner
+set hub.now = '2026-11-05 15:00 America/New_York';
+insert into shopping_items (name, added_at, added_by) values ('Oats', '2026-11-05 09:00 America/New_York', test.person('Alex')),
+                                                         ('Kale', '2026-11-05 09:00 America/New_York', test.person('Alex'));
+:as_adult
+select buy_item((pg_temp.line('Oats')).id, true, '2026-11-05 09:00 America/New_York', 'e0000000-0000-4000-8000-000000000001') as oats1 \gset
+select test.is(concat_ws(' | ', :'oats1'::jsonb ->> 'changed', (:'oats1'::jsonb ->> 'seen') = (pg_temp.el(:'oats1'::jsonb, 'bought', 'Oats') ->> 'seen'),
+                         (:'oats1'::jsonb ->> 'seen') = (to_jsonb((pg_temp.line('Oats')).bought_at) #>> '{}')), 'true | t | t',
+               'Sam ticks Oats: changed, with the seen the tick gave it (its bought_at, as the list writes it; the answer never reaches his phone)');
+select coalesce(:'oats1'::jsonb ->> 'seen', '1970-01-01T00:00:00+00:00') as oats_sam \gset
+:as_owner
+set hub.now = '2026-11-05 15:01 America/New_York';
+:as_admin
+select test.is(add_to_list('Oats: 2') ->> 'result', 'back', 'Alex adds "Oats: 2": back on the list');
+select test.is(buy_item((pg_temp.line('Oats')).id, true, (pg_temp.line('Oats')).added_at) ->> 'changed', 'true', '... and buys it');
+:as_owner
+set hub.now = '2026-11-05 15:02 America/New_York';
+:as_adult
+select buy_item((pg_temp.line('Oats')).id, true, '2026-11-05 09:00 America/New_York', 'e0000000-0000-4000-8000-000000000001') as oats2 \gset
+select test.is(concat_ws(' | ', :'oats2'::jsonb ->> 'changed', (:'oats2'::jsonb ->> 'seen') = :'oats_sam', (pg_temp.el(:'oats2'::jsonb, 'bought', 'Oats') ->> 'seen') <> :'oats_sam',
+                         (pg_temp.el(:'oats2'::jsonb, 'bought', 'Oats') ->> 'bought_by')::uuid = test.person('Alex')), 'true | t | t | t',
+               '... Sam''s phone sends the tick again: its first answer, with its own seen, not the list''s (Alex''s purchase now)');
+select test.is(buy_item((pg_temp.line('Oats')).id, false, :'oats_sam', 'e0000000-0000-4000-8000-000000000002') ->> 'changed', 'false',
+               '... so the Undo waiting behind it, sent with that seen, changes nothing');
+select test.is((select concat_ws(' ', l.bought_at is not null, l.bought_by = test.person('Alex')) from pg_temp.line('Oats') l), 't t', '... and Oats stays bought by Alex');
+select test.is(coalesce(buy_item((pg_temp.line('Oats')).id, true, :'oats_sam') ->> 'seen', '-'), '-', 'a change that changes nothing has no seen');
+-- An un-tick: its new added_at.
+select test.is(buy_item((pg_temp.line('Kale')).id, true, (pg_temp.line('Kale')).added_at) ->> 'changed', 'true', 'Sam buys Kale');
+select (pg_temp.line('Kale')).bought_at as kale_bought \gset
+:as_owner
+set hub.now = '2026-11-05 15:03 America/New_York';
+:as_adult
+select buy_item((pg_temp.line('Kale')).id, false, :'kale_bought', 'e0000000-0000-4000-8000-000000000003') as kale1 \gset
+select test.is(concat_ws(' | ', :'kale1'::jsonb ->> 'changed', (:'kale1'::jsonb ->> 'seen') = (pg_temp.el(:'kale1'::jsonb, 'to_buy', 'Kale') ->> 'seen'),
+                         (:'kale1'::jsonb ->> 'seen') = (to_jsonb((pg_temp.line('Kale')).added_at) #>> '{}')), 'true | t | t',
+               '... and puts it back: the answer''s seen is the line''s new added_at (the answer never reaches his phone)');
+select coalesce(:'kale1'::jsonb ->> 'seen', '1970-01-01T00:00:00+00:00') as kale_sam \gset
+:as_owner
+set hub.now = '2026-11-05 15:04 America/New_York';
+:as_admin
+select test.is(buy_item((pg_temp.line('Kale')).id, true, (pg_temp.line('Kale')).added_at) ->> 'changed', 'true', 'Alex buys Kale');
+select test.is(buy_item((pg_temp.line('Kale')).id, false, (pg_temp.line('Kale')).bought_at) ->> 'changed', 'true', '... and puts it back (a new need)');
+:as_adult
+select buy_item((pg_temp.line('Kale')).id, false, :'kale_bought', 'e0000000-0000-4000-8000-000000000003') as kale2 \gset
+select test.is(concat_ws(' | ', :'kale2'::jsonb ->> 'changed', (:'kale2'::jsonb ->> 'seen') = :'kale_sam', (pg_temp.el(:'kale2'::jsonb, 'to_buy', 'Kale') ->> 'seen') <> :'kale_sam'),
+               'true | t | t', '... Sam''s phone sends the un-tick again: its first answer, with its own seen, not the list''s');
+select test.is(buy_item((pg_temp.line('Kale')).id, true, :'kale_sam', 'e0000000-0000-4000-8000-000000000004') ->> 'changed', 'false',
+               '... so the tick waiting behind it, sent with that seen, changes nothing: Alex''s new need stays to buy');
+-- An add: the line's added_at, the first try's again on a second try.
+:as_admin
+select add_to_list('Figs', false, 'e0000000-0000-4000-8000-000000000005') as figs1 \gset
+select test.is(concat_ws(' | ', :'figs1'::jsonb ->> 'result', (:'figs1'::jsonb ->> 'seen') = (pg_temp.el(:'figs1'::jsonb, 'to_buy', 'Figs') ->> 'seen')), 'added | t',
+               'Alex adds Figs: the answer''s seen is the line''s added_at (the answer never reaches his phone)');
+select test.is(add_to_list('Figs: 2') ->> 'seen', :'figs1'::jsonb ->> 'seen', '... "Figs: 2" joins it ("already"): the same added_at');
+:as_owner
+set hub.now = '2026-11-05 15:05 America/New_York';
+:as_adult
+select test.is(buy_item((pg_temp.line('Figs')).id, true, (pg_temp.line('Figs')).added_at) ->> 'changed', 'true', 'Sam buys Figs');
+select test.is(buy_item((pg_temp.line('Figs')).id, false, (pg_temp.line('Figs')).bought_at) ->> 'changed', 'true', '... and puts it back');
+:as_admin
+select add_to_list('Figs', false, 'e0000000-0000-4000-8000-000000000005') as figs2 \gset
+select test.is(concat_ws(' | ', :'figs2'::jsonb ->> 'result', (:'figs2'::jsonb ->> 'seen') = (:'figs1'::jsonb ->> 'seen'),
+                         (pg_temp.el(:'figs2'::jsonb, 'to_buy', 'Figs') ->> 'seen') <> (:'figs1'::jsonb ->> 'seen')), 'added | t | t',
+               '... Alex''s phone sends the add again: its first answer, with its own seen, not the list''s (Sam''s put-back)');
+-- From My day, the same.
+:as_anon
+select buy_item_by_token(test.token('Morgan'), (pg_temp.line('Kale')).id, true, (pg_temp.line('Kale')).added_at, 'e0000000-0000-4000-8000-000000000006') as kale3 \gset
+select test.is(concat_ws(' | ', :'kale3'::jsonb ->> 'changed', (:'kale3'::jsonb ->> 'seen') = (pg_temp.el(:'kale3'::jsonb, 'bought', 'Kale') ->> 'seen')), 'true | t',
+               'Morgan ticks Kale on My day: the answer''s seen is its bought_at, as her list writes it');
+select test.is(buy_item_by_token(test.token('Morgan'), (pg_temp.line('Kale')).id, true, (pg_temp.line('Kale')).added_at, 'e0000000-0000-4000-8000-000000000006') ->> 'seen',
+               :'kale3'::jsonb ->> 'seen', '... the same seen when sent again');
+select add_to_list_by_token(test.token('Morgan'), 'Nueces', 'e0000000-0000-4000-8000-000000000007') as nueces \gset
+select test.is((:'nueces'::jsonb ->> 'seen') = (pg_temp.el(:'nueces'::jsonb, 'items', 'Nueces') ->> 'seen'), true, '... and her add''s answer, the line''s added_at');
+rollback;
+
+-- A tick at 23:57 whose answer was lost, sent again only at 00:16: bought before midnight and more than
+-- 15 minutes ago, the line isn't in that answer's bought, but the answer's seen is still the bought_at
+-- the tick made, so the Undo waiting behind it can go with it (§8).
+begin;
+:as_owner
+set hub.now = '2026-11-03 20:00 America/New_York';
+insert into shopping_items (name, added_at, added_by) values ('Apples', '2026-11-03 20:00 America/New_York', test.person('Alex'));
+set hub.now = '2026-11-03 23:57 America/New_York';
+:as_admin
+select test.is(buy_item((pg_temp.line('Apples')).id, true, '2026-11-03 20:00 America/New_York', 'd0000000-0000-4000-8000-000000000011') ->> 'changed', 'true',
+               'Alex ticks Apples at 23:57 (the answer never reaches his phone)');
+:as_owner
+set hub.now = '2026-11-04 00:16 America/New_York';
+:as_admin
+select (r ->> 'changed') as apples_changed, coalesce(r ->> 'seen', '1970-01-01T00:00:00+00:00') as apples_seen, coalesce(pg_temp.names(r, 'bought'), '-') as apples_bought
+from (select buy_item((pg_temp.line('Apples')).id, true, '2026-11-03 20:00 America/New_York', 'd0000000-0000-4000-8000-000000000011') as r) x \gset
+select test.is(:'apples_changed' || ' | ' || :'apples_bought', 'true | -', '... sent again at 00:16: its first answer; Apples isn''t under bought (before midnight, 19 minutes ago)');
+select test.is(:'apples_seen', to_jsonb((pg_temp.line('Apples')).bought_at) #>> '{}', '... and the answer''s seen is still that tick''s bought_at');
+select test.is(buy_item((pg_temp.line('Apples')).id, false, :'apples_seen') ->> 'changed', 'true', '... so his Undo with it puts Apples back on the list');
+rollback;
+
+-- Two pages of the list in one browser can each send their copy of one tick, its seen taken from
+-- different answers: the same key, for the same line and the same direction, is the same change, so the
+-- second copy gets the first answer and nothing is done again (Plums isn't bought again after Alex's
+-- own put-back).
+begin;
+:as_owner
+set hub.now = '2026-11-05 16:00 America/New_York';
+insert into shopping_items (name, added_at, added_by) values ('Plums', '2026-11-05 09:00 America/New_York', test.person('Alex')),
+                                                         ('Lemons', '2026-11-05 09:00 America/New_York', test.person('Alex'));
+:as_admin
+select test.is(buy_item((pg_temp.line('Plums')).id, true, '2026-11-05 09:00 America/New_York', 'e0000000-0000-4000-8000-000000000011') ->> 'changed', 'true', 'Alex ticks Plums');
+select test.is(buy_item((pg_temp.line('Plums')).id, false, (pg_temp.line('Plums')).bought_at, 'e0000000-0000-4000-8000-000000000012') ->> 'changed', 'true', '... and puts it back');
+select test.is(buy_item((pg_temp.line('Plums')).id, true, (pg_temp.line('Plums')).added_at, 'e0000000-0000-4000-8000-000000000011') ->> 'changed', 'true',
+               '... the tick''s key again, with the line''s new seen (a second tab''s copy): its first answer');
+select test.is((pg_temp.line('Plums')).bought_at, null, '... and Plums isn''t bought again');
+select test.is(buy_item((pg_temp.line('Lemons')).id, true, (pg_temp.line('Lemons')).added_at, 'e0000000-0000-4000-8000-000000000011') ->> 'changed', 'true',
+               '... while that key with another line is another change: done as it comes');
+select test.ok((pg_temp.line('Lemons')).bought_at is not null, '... Lemons is bought');
 rollback;
 
 -- A tick whose reply was lost, someone else's Undo within 15 minutes, then the same tick sent again by

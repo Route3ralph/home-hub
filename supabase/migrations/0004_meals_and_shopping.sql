@@ -713,22 +713,25 @@ end;
 $$;
 
 -- Each change a phone sends to the list, done once (§8). A phone may send a change more than once:
--- its answer was lost on the way, or the page was reloaded or left while it was on its way. The
--- phone gives each change a key when it is made (a random uuid, assets/shoplist.js) and sends it with
--- every try. The first try that arrives does the change and keeps its answer here; a try after it
--- gets that answer and does nothing again. So a resent add never brings back a line someone bought
--- since, and a resent un-tick that was done answers "changed" (the tick waiting behind it then goes
--- with the line's seen), while one that never arrived is done now, against the state it was made on.
--- A key is its sender's: one sent by someone else, from the other side (My day or signed in), or
--- with another change counts as no key. Kept 2 days (a phone drops a change after 24 hours), and a
--- sender's latest 200, so a My day link can't make it grow without end. Row-level security on, no
--- policies and no privileges: only the definer functions that write the list reach it.
+-- its answer was lost on the way, or the page was reloaded or left while it was on its way, or two
+-- pages of the list in one browser each sent their copy of it. The phone gives each change a key when
+-- it is made (a random uuid, assets/shoplist.js) and sends it with every try. The first try that
+-- arrives does the change and keeps its answer here; a try after it gets that answer and does nothing
+-- again. So a resent add never brings back a line someone bought since, and a resent tick or un-tick
+-- that was done answers "changed" with the seen it gave the line (the change waiting behind it on the
+-- phone goes with that seen, never with a newer one someone else gave the line since), while one that
+-- never arrived is done now, against the state it was made on. A key is its sender's: one sent by
+-- someone else, from the other side (My day or signed in), or with another change (another name or
+-- lock for an add, another line or direction for a tick) counts as no key. Kept 2 days (a phone drops
+-- a change after 24 hours), and a sender's latest 200, so a My day link can't make it grow without
+-- end (the keys of a member with no person, who has no id, go by the 2 days only). Row-level security
+-- on, no policies and no privileges: only the definer functions that write the list reach it.
 create table private.list_done (
   key    uuid primary key,                    -- the phone's key for the change
   by_id  uuid,                                -- who sent it (p_by): a person, or null for a member with no person
   my_day boolean not null,                    -- sent from a My day link
   ask    text not null,                       -- what was asked: the change and its arguments
-  answer jsonb,                               -- the first answer: {result, item_id, name}, or the tick's true or false
+  answer jsonb,                               -- the first answer: an add's {result, item_id, name, seen}, a tick's {changed, seen}
   at     timestamptz not null                 -- private.now() when it was done
 );
 create index list_done_at on private.list_done (at);
@@ -771,7 +774,11 @@ begin
 end;
 $$;
 
--- private.list_add, once per key: the first answer again for a second try.
+-- private.list_add, once per key: {result, item_id, name, seen}, seen the line's added_at once the add is
+-- done (the one it gave the line, for 'added' and 'back'). A second try gets the first answer again, seen
+-- and all, whatever happened to the line since: a tick waiting behind the add on the phone goes with
+-- the line as this add left it, never as someone else left it since. (The seen is written again here,
+-- so its text is the list's: to_jsonb writes a timestamptz in the session's time zone.)
 create function private.list_add_once(p_key uuid, p_name text, p_private boolean, p_by uuid, p_my_day boolean)
 returns jsonb
 language plpgsql
@@ -784,9 +791,10 @@ begin
   select * into c from private.list_claim(p_key, p_by, p_my_day,
     concat_ws(' ', 'add', coalesce(p_private, false) and not coalesce(p_my_day, false), md5(coalesce(p_name, ''))));
   if c.answer is not null then
-    return c.answer;
+    return c.answer || jsonb_build_object('seen', (c.answer ->> 'seen')::timestamptz);
   end if;
   r := private.list_add(p_name, p_private, p_by, p_my_day);
+  r := r || jsonb_build_object('seen', (select i.added_at from public.shopping_items i where i.id = (r ->> 'item_id')::uuid));
   if c.held then
     update private.list_done x set answer = r where x.key = p_key;
   end if;
@@ -794,25 +802,36 @@ begin
 end;
 $$;
 
--- private.list_buy, once per key: the first answer (true or false) again for a second try.
+-- private.list_buy, once per key: {changed, seen}, seen the seen it gave the line when it changed it (a
+-- tick's bought_at, an un-tick's new added_at; null when nothing changed). A second try gets the first
+-- answer again, seen and all, whatever happened to the line since: the phone gives the change waiting
+-- behind it this change's own seen, never a newer one someone else gave the line (so an Undo never
+-- reopens their purchase, and a tick never buys their new need), and still has it when the line is no
+-- longer in the list (a tick of 23:57 sent again at 00:16). The key is for its line and direction,
+-- whatever seen comes with it: two pages of the list in one browser may each send their copy of one
+-- tick, with its seen taken from different answers. (The seen is written again here, so its text is
+-- the list's: to_jsonb writes a timestamptz in the session's time zone.)
 create function private.list_buy_once(p_key uuid, p_item uuid, p_bought boolean, p_seen timestamptz, p_by uuid, p_my_day boolean)
-returns boolean
+returns jsonb
 language plpgsql
 set search_path = ''
 as $$
 declare
   c record;
   v boolean;
+  r jsonb;
 begin
-  select * into c from private.list_claim(p_key, p_by, p_my_day, concat_ws(' ', 'buy', p_item, p_bought, extract(epoch from p_seen)));
+  select * into c from private.list_claim(p_key, p_by, p_my_day, concat_ws(' ', 'buy', p_item, p_bought));
   if c.answer is not null then
-    return (c.answer #>> '{}')::boolean;
+    return jsonb_build_object('changed', (c.answer ->> 'changed')::boolean, 'seen', (c.answer ->> 'seen')::timestamptz);
   end if;
   v := private.list_buy(p_item, p_bought, p_seen, p_by, p_my_day);
+  r := jsonb_build_object('changed', v, 'seen',
+         case when v then (select case when p_bought then i.bought_at else i.added_at end from public.shopping_items i where i.id = p_item) end);
   if c.held then
-    update private.list_done x set answer = to_jsonb(v) where x.key = p_key;
+    update private.list_done x set answer = r where x.key = p_key;
   end if;
-  return v;
+  return r;
 end;
 $$;
 
@@ -879,7 +898,8 @@ $$;
 --   bought: [{id, name, note, aisle, private, bought_by, seen}], everything bought since the
 --           household's midnight, and the caller's own ticks of the last 15 minutes (so a tick at
 --           23:59, its answer lost and sent again after midnight, is still the caller's to undo, as
---           My day's list keeps hers), the latest first
+--           My day's list keeps hers; for a member with no person, the ticks with no bought_by, as
+--           the database records theirs), the latest first
 -- added_by and bought_by are person ids. seen is added_at (to buy) or bought_at (bought), as
 -- to_jsonb writes a timestamptz; the page sends it back as p_seen. other: the name in the
 -- reader's language when the word list knows it in the other one ("Leche" is 'milk' for Alex).
@@ -908,7 +928,7 @@ as $$
                                          order by i.bought_at desc, i.name_key, i.id)
                         from public.shopping_items i
                         where i.bought_at >= s.midnight
-                           or (i.bought_by = s.me and i.bought_at >= s.now - interval '15 minutes')), '[]'))
+                           or (i.bought_by is not distinct from s.me and i.bought_at >= s.now - interval '15 minutes')), '[]'))
   from s;
 $$;
 
@@ -917,8 +937,8 @@ $$;
 -- Write first, read in a later statement: the snapshot then sees the write.
 -- ---------------------------------------------------------------------
 
--- Add to the list (§4.1): {result, item_id, name} and the list. p_key: the phone's key for this add,
--- so a second try gets the first answer and changes nothing (private.list_done).
+-- Add to the list (§4.1): {result, item_id, name, seen} and the list (seen: the line's added_at). p_key:
+-- the phone's key for this add, so a second try gets the first answer and changes nothing (private.list_done).
 create function public.add_to_list(p_name text, p_private boolean default false, p_key uuid default null)
 returns jsonb
 language plpgsql
@@ -936,8 +956,9 @@ begin
 end;
 $$;
 
--- Bought, or not (Undo, or back on the list) (§4.2): {changed} and the list. p_key: the phone's key
--- for this change, so a second try gets the first answer and changes nothing (private.list_done).
+-- Bought, or not (Undo, or back on the list) (§4.2): {changed, seen} and the list (seen: the one it gave
+-- the line, when it changed it). p_key: the phone's key for this change, so a second try gets the first
+-- answer, seen and all, and changes nothing (private.list_done).
 create function public.buy_item(p_item uuid, p_bought boolean, p_seen timestamptz, p_key uuid default null)
 returns jsonb
 language plpgsql
@@ -945,13 +966,13 @@ security definer
 set search_path = ''
 as $$
 declare
-  v boolean;
+  r jsonb;
 begin
   if not private.is_member() then
     raise exception 'Only the family can change the shopping list.' using errcode = '42501';
   end if;
-  v := private.list_buy_once(p_key, p_item, p_bought, p_seen, (private.shop_who()).id, false);
-  return jsonb_build_object('changed', v) || public.shopping_list();
+  r := private.list_buy_once(p_key, p_item, p_bought, p_seen, (private.shop_who()).id, false);
+  return r || public.shopping_list();
 end;
 $$;
 
@@ -985,7 +1006,7 @@ begin
 end;
 $$;
 
--- Add from My day (helper_list 'add' only): {result, item_id, name} and her list. It only ever
+-- Add from My day (helper_list 'add' only): {result, item_id, name, seen} and her list. It only ever
 -- finds or makes an unlocked line. Anything over 200 characters is refused before any work.
 -- p_key: her phone's key for this add (private.list_done), as for add_to_list.
 create function public.add_to_list_by_token(p_token text, p_name text, p_key uuid default null)
@@ -1021,7 +1042,7 @@ begin
 end;
 $$;
 
--- Tick or Undo from My day (See and tick, or See, tick and add): {changed} and her list.
+-- Tick or Undo from My day (See and tick, or See, tick and add): {changed, seen} and her list.
 -- p_key: her phone's key for this change (private.list_done), as for buy_item.
 create function public.buy_item_by_token(p_token text, p_item uuid, p_bought boolean, p_seen timestamptz, p_key uuid default null)
 returns jsonb
@@ -1032,7 +1053,7 @@ as $$
 declare
   me     public.people;
   v_mode text;
-  v      boolean;
+  r      jsonb;
 begin
   me := private.person_by_token(p_token);
   if me.id is null then
@@ -1042,8 +1063,8 @@ begin
   if me.role <> 'helper' or coalesce(v_mode, 'off') = 'off' then
     raise exception 'The shopping list isn''t on your My day.' using errcode = '42501';
   end if;
-  v := private.list_buy_once(p_key, p_item, p_bought, p_seen, me.id, true);
-  return jsonb_build_object('changed', v) || private.list_for_helper(me.id);
+  r := private.list_buy_once(p_key, p_item, p_bought, p_seen, me.id, true);
+  return r || private.list_for_helper(me.id);
 end;
 $$;
 

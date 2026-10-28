@@ -756,6 +756,56 @@ const emailOf = (req) => {
     JSON.stringify([resent, boughtResend, item(db, 'Milk'), said]));
   await page.context().close();
 
+  // The same when nothing gets through until 00:16:03 (a locked phone, no signal), and for a member with
+  // no person (Sam, his person's email gone) at 00:00:03. The tick's first answer comes then, "done", but
+  // at 00:16 the list in it has no Milk under Just bought (bought before midnight, more than 15 minutes
+  // ago); the answer's seen, the bought_at the tick made, still gives the Undo waiting behind it its seen.
+  // A member with no person's ticks have no bought_by, and shopping_list() keeps those of the last 15
+  // minutes as theirs too. Either way Milk is to buy again, and nothing says "Changed on another phone".
+  for (const late of [{ label: 'resend at 00:16', email: 'alex@example.com', wait: 8000 + 16 * 60e3, when: '00:16:03' },
+    { label: 'no person, resend at 00:00:03', email: 'sam@example.com', noPerson: true, wait: 8000, when: '00:00:03' }]) {
+    db = foodDb();
+    if (late.noPerson) db.people.find((p) => p.id === ID.sam).email = null;
+    db.shopping_items.push(shopItem({ name: 'Milk', aisle: 'dairy', added_at: at(TODAY, '09:00'), added_by: ID.alex }));
+    db.foodNow = Date.parse('2026-10-28T03:59:51Z');   // 23:59:51 in New York
+    ({ page } = await open({ label: late.label, db, email: late.email }));
+    await pause(page);
+    await page.evaluate(() => {
+      window.__said = [];
+      new MutationObserver(() => document.querySelectorAll('.toasts .toast').forEach((t) => window.__said.push(t.textContent.replace(/\s+/g, ' ').trim())))
+        .observe(document.body, { childList: true, subtree: true });
+    });
+    let lostFirst = true;
+    await page.route('**/rest/v1/rpc/buy_item', (route) => {
+      const req = route.request();
+      if (req.method() === 'OPTIONS' || !lostFirst) return route.fallback();
+      lostFirst = false;
+      const body = JSON.parse(req.postData());
+      (db.rpcCalls = db.rpcCalls || []).push({ name: 'buy_item', body, email: late.email });
+      foodRpc.buy_item(db, body, late.email);   // done in the database; the answer never comes back
+      return route.abort('internetdisconnected');
+    });
+    db.foodNow += 4000;                                  // 23:59:55: Milk ticked
+    await row(page, 'buy', 'Milk').locator('.food-tick').click();
+    await sleep(400);
+    const boughtLate = item(db, 'Milk').bought_at;
+    const boughtBy = item(db, 'Milk').bought_by;
+    await page.click('.toasts .toast-action button');    // Undo: waits behind the tick
+    await sleep(200);
+    db.foodNow += late.wait;                             // the tick goes again
+    await tick(page, 2100);
+    await until(page, () => !JSON.parse(localStorage.getItem('homehub.shop.hub')).queue.length, 3000);
+    await tick(page, 3100);
+    const sentLate = calls(db, 'buy_item').map((c) => [c.body.p_bought, c.body.p_seen, c.body.p_key]);
+    const saidLate = await page.evaluate(() => window.__said);
+    check(`a tick at 23:59:55 whose answer was lost, its Undo, and the tick sent again at ${late.when}${late.noPerson ? ' by a member with no person (bought_by null)' : ''}: the Undo goes with the tick's bought_at, Milk is to buy again, and nothing says "Changed on another phone"`,
+      !!boughtLate && boughtBy === (late.noPerson ? null : ID.alex) && sentLate.length === 3 && sentLate[0][0] === true && same(sentLate[1], sentLate[0])
+      && sentLate[2][0] === false && sentLate[2][1] === boughtLate
+      && item(db, 'Milk').bought_at === null && (await names(page, 'buy')).includes('Milk') && !saidLate.includes('Changed on another phone'),
+      JSON.stringify([sentLate, boughtLate, item(db, 'Milk'), saidLate]));
+    await page.context().close();
+  }
+
   // The toast's Undo after the row has moved to Just bought, while a tap elsewhere on the list holds it
   // there: the row is unticked where it is, and a tap on it goes by id, never with the bought_at it was
   // drawn with (the Undo replaced it). Ticked again, then unticked before that answer comes: each goes

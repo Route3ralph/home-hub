@@ -519,11 +519,13 @@ const shopWho = (db, email) => (db.people || []).find((p) => p.active !== false 
 const helperList = (db) => ((db.household && db.household[0]) || {}).helper_list || 'add';
 const withOtherWord = (o, name, lang) => { const w = foodOther(name, lang); if (w) o.other = w; return o; };
 
-// shopping_list(): what to buy, and today's buys and the reader's own ticks of the last 15 minutes (§3.4).
+// shopping_list(): what to buy, and today's buys and the reader's own ticks of the last 15 minutes (§3.4;
+// for a member with no person, the ticks with no bought_by, as the database records theirs).
 function shoppingList(db, email) {
   const who = shopWho(db, email) || {};
   const lang = who.language === 'es' ? 'es' : 'en';
-  const mineNow = (r) => who.id != null && r.bought_by === who.id && within(db, r.bought_at, UNDO_US);
+  const member = (db.members || []).some((m) => m.email === email);
+  const mineNow = (r) => member && (r.bought_by == null ? null : r.bought_by) === (who.id == null ? null : who.id) && within(db, r.bought_at, UNDO_US);
   const items = db.shopping_items;
   return {
     as_of: asOf(db),
@@ -637,9 +639,24 @@ function listBuy(db, item, bought, seen, by, myDay, stamp) {
   return true;
 }
 
+// list_add_once's answer: list_add's, with seen, the line's added_at once the add is done.
+function addAnswer(db, name, priv, by, myDay) {
+  const r = listAdd(db, name, priv, by, myDay, foodStamp(db));
+  const row = db.shopping_items.find((x) => x.id === r.item_id);
+  return Object.assign(r, { seen: row ? row.added_at : null });
+}
+// list_buy_once's answer: {changed, seen}, seen the one it gave the line when it changed it (a tick's
+// bought_at, an un-tick's new added_at), else null.
+function buyAnswer(db, item, bought, seen, by, myDay) {
+  const changed = listBuy(db, item, bought, seen, by, myDay, foodStamp(db));
+  const row = changed ? db.shopping_items.find((x) => x.id === item) : null;
+  return { changed, seen: row ? (bought ? row.bought_at : row.added_at) : null };
+}
+
 // private.list_claim with list_add_once and list_buy_once (§8): a change sent with a key (p_key) is done
-// once; a second try gets the first answer and changes nothing. A key is its sender's (who, and from My
-// day or signed in) and that change's (ask); any other counts as no key.
+// once; a second try gets the first answer (seen and all) and changes nothing. A key is its sender's (who,
+// and from My day or signed in) and that change's (ask: an add's name and lock, a tick's line and
+// direction, whatever its seen); any other counts as no key.
 function listOnce(db, key, by, myDay, ask, run) {
   if (key == null) return run();
   db.list_done = db.list_done || [];
@@ -650,7 +667,7 @@ function listOnce(db, key, by, myDay, ask, run) {
   return answer;
 }
 const addAsk = (name, priv, myDay) => `add ${!!priv && !myDay} ${String(name)}`;
-const buyAsk = (item, bought, seen) => `buy ${item} ${bought} ${micros(seen)}`;
+const buyAsk = (item, bought) => `buy ${item} ${bought}`;
 
 // PostgREST finds a function by the names of the arguments sent: every one must be known and every
 // one without a default sent, or it answers 404 PGRST202.
@@ -689,7 +706,7 @@ const foodRpc = {
     if (!db.members.some((m) => m.email === email)) throw new Raise('42501', MEMBERS_ONLY);
     const before = JSON.stringify(db.shopping_items);
     const by = (shopWho(db, email) || {}).id || null;
-    const r = listOnce(db, b.p_key, by, false, addAsk(b.p_name, b.p_private, false), () => listAdd(db, b.p_name, b.p_private, by, false, foodStamp(db)));
+    const r = listOnce(db, b.p_key, by, false, addAsk(b.p_name, b.p_private, false), () => addAnswer(db, b.p_name, b.p_private, by, false));
     stampChanged(db, before, email);
     return Object.assign(r, shoppingList(db, email));
   }),
@@ -697,10 +714,9 @@ const foodRpc = {
     if (!db.members.some((m) => m.email === email)) throw new Raise('42501', MEMBERS_ONLY);
     const before = JSON.stringify(db.shopping_items);
     const by = (shopWho(db, email) || {}).id || null;
-    const changed = listOnce(db, b.p_key, by, false, buyAsk(b.p_item, b.p_bought, b.p_seen),
-      () => listBuy(db, b.p_item, b.p_bought, b.p_seen, by, false, foodStamp(db)));
+    const r = listOnce(db, b.p_key, by, false, buyAsk(b.p_item, b.p_bought), () => buyAnswer(db, b.p_item, b.p_bought, b.p_seen, by, false));
     stampChanged(db, before, email);
-    return Object.assign({ changed }, shoppingList(db, email));
+    return Object.assign(r, shoppingList(db, email));
   }),
   get_list_by_token: foodCall('get_list_by_token', ['p_token'], [], (db, b) => {
     const me = byTokenFood(db, b.p_token);
@@ -715,7 +731,7 @@ const foodRpc = {
     if (b.p_name == null) throw new Raise('22023', 'Type what to buy.');
     if (Array.from(String(b.p_name)).length > 200) throw new Raise('22023', "That's too long to add.");
     const before = JSON.stringify(db.shopping_items);
-    const r = listOnce(db, b.p_key, me.id, true, addAsk(b.p_name, false, true), () => listAdd(db, b.p_name, false, me.id, true, foodStamp(db)));
+    const r = listOnce(db, b.p_key, me.id, true, addAsk(b.p_name, false, true), () => addAnswer(db, b.p_name, false, me.id, true));
     stampChanged(db, before, `${me.name} (My day)`);
     return Object.assign(r, listForHelper(db, me));
   }),
@@ -724,10 +740,9 @@ const foodRpc = {
     if (!me) return null;
     if (me.role !== 'helper' || helperList(db) === 'off') throw new Raise('42501', NOT_ON_MY_DAY);
     const before = JSON.stringify(db.shopping_items);
-    const changed = listOnce(db, b.p_key, me.id, true, buyAsk(b.p_item, b.p_bought, b.p_seen),
-      () => listBuy(db, b.p_item, b.p_bought, b.p_seen, me.id, true, foodStamp(db)));
+    const r = listOnce(db, b.p_key, me.id, true, buyAsk(b.p_item, b.p_bought), () => buyAnswer(db, b.p_item, b.p_bought, b.p_seen, me.id, true));
     stampChanged(db, before, `${me.name} (My day)`);
-    return Object.assign({ changed }, listForHelper(db, me));
+    return Object.assign(r, listForHelper(db, me));
   }),
 };
 

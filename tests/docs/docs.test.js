@@ -13,6 +13,7 @@
 //     and constraint as the migration has it (in ```sql blocks), the signature of every public
 //     function, every private function, and every function a migration renames;
 //   • anon can call exactly the token functions the design counts;
+//   • docs/v1.2-kitchen.md §2 counts the public and private functions migration 0004 adds;
 //   • example phone numbers are in the fictional 555-0100 to 555-0199 range.
 // Reads files only: no database, no browser. Run alone with: node tests/docs/docs.test.js
 const fs = require('fs');
@@ -267,6 +268,21 @@ const NUMBER = { five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 
 const counted = (/These (\w+) are the only new functions anon can call/.exec(tokenSec) || [])[1];
 check(`docs/v2-design.md "Anonymous token functions" counts them right ("These ${counted} are the only new functions anon can call": ${anon.size})`,
   NUMBER[String(counted).toLowerCase()] === anon.size, tokenSec.slice(0, 300));
+
+// docs/v1.2-kitchen.md §2 counts the functions 0004 adds ("six new public and … new private functions"):
+// those under a name no earlier file has (a wrapper, made again under its old name once the old body is
+// renamed, isn't new).
+{
+  const earlier = sqlNoComments([read('supabase/schema.sql'), ...migrationFiles.filter((f) => f < '0004').map((f) => read(`supabase/migrations/${f}`))].join('\n'));
+  const old = new Set(functions(earlier).map((f) => `${f.schema}.${f.name}`));
+  const m0004 = migrationFiles.find((f) => f.startsWith('0004'));
+  const added = functions(sqlNoComments(read(`supabase/migrations/${m0004}`))).filter((f) => !old.has(`${f.schema}.${f.name}`));
+  const count = (schema) => new Set(added.filter((f) => f.schema === schema).map((f) => f.name)).size;
+  const N = Object.assign({ thirteen: 13, fourteen: 14, fifteen: 15, sixteen: 16, seventeen: 17, eighteen: 18, nineteen: 19, twenty: 20 }, NUMBER);
+  const said = /(\w+) new public and (\w+) new private functions/.exec(section(read('docs/v1.2-kitchen.md'), /^## 2\. What ships/)) || [];
+  check(`docs/v1.2-kitchen.md §2 counts the functions 0004 adds ("${said[1]} new public and ${said[2]} new private": ${count('public')} and ${count('private')})`,
+    N[String(said[1]).toLowerCase()] === count('public') && N[String(said[2]).toLowerCase()] === count('private'), said[0]);
+}
 
 // Every table, column and agenda_item field the migrations add is in the design (tables in private too).
 const tables = [];

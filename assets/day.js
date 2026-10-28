@@ -1008,7 +1008,7 @@
       if (!outbox.buy(entry.where === 'buy' ? as : r.id)) return;
       entry.tapped = true;
       markRow(el, true);
-      tickToast = { id: r.id, el: toast(t('bought_toast', { title: r.name }), { ms: UNDO_MS, action: { label: t('undo'), onClick: () => undoTick(r.id) } }) };
+      tickToast = { id: r.id, el: toast(t('bought_toast', { title: r.name }), { ms: UNDO_MS, action: { label: t('undo'), onClick: () => undoTick(r.id, r.name) } }) };
       return;
     }
     if (entry.where === 'buy') {   // ticked a moment ago and still here: take it back
@@ -1038,11 +1038,15 @@
 
   // Deshacer on a tick's toast: the outbox takes the seen from the tick's reply (or, if the tick never
   // left the phone, the two cancel out); not when her tick found it already bought by someone else.
-  function undoTick(id) {
+  // Back on her list is the line itself, or the add still waiting that brings it back ("¿Añadir otra
+  // vez?"): drawn as a new row with no id yet once a read past the household's midnight has taken the
+  // bought line out of the list. Anything else (a line someone else bought, or forgot) has changed.
+  function undoTick(id, name) {
     tickToast = null;
     outbox.unbuy(id);
     const v = outbox.view();
-    if (v && (v.items || []).some((x) => x.id === id)) {
+    const back = (x) => x.id === id || (x.id == null && name != null && shop.nameKey(x.name) === shop.nameKey(shop.parse(name).name));
+    if (v && (v.items || []).some(back)) {
       toast(t('undone'));
       // Unticked where it is drawn now: to buy if it hasn't moved yet, under Comprado hoy if it has.
       // Changed here: a tap on it now goes by id, never with the seen it was drawn with.
