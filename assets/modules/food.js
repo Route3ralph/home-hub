@@ -537,13 +537,17 @@
     requestDraw(st);
   }
 
-  // Undo from the "Bought" toast: un-tick it (in place, if it hasn't moved yet).
+  // Undo from the "Bought" toast: un-tick it where it is drawn now, under To buy if it hasn't moved yet,
+  // under Just bought if it has (the list may be held by a tap). Changed here either way: a tap on it
+  // now goes by id, never with the seen it was drawn with, which the un-tick replaces (§8.1).
   function undoTick(st, id) {
     if (st.ctx.stale()) return;
     if (!st.box.unbuy(id)) { notQueued(st, id, true); return; }
-    const btn = st.main.querySelector(`.food-row[data-where="buy"][data-id="${CSS.escape(id)}"] .food-tick`);
-    if (btn) btn.setAttribute('aria-checked', 'false');
-    st.tapped.add(`buy:${id}`);   // changed here: a tap on it now goes by id
+    ['buy', 'bought'].forEach((where) => {
+      const btn = st.main.querySelector(`.food-row[data-where="${where}"][data-id="${CSS.escape(id)}"] .food-tick`);
+      if (btn) btn.setAttribute('aria-checked', 'false');
+      st.tapped.add(`${where}:${id}`);
+    });
     st.dirty = true;
     requestDraw(st);
   }

@@ -1044,12 +1044,15 @@
     const v = outbox.view();
     if (v && (v.items || []).some((x) => x.id === id)) {
       toast(t('undone'));
-      const el = rowEl(`buy|${id}`);
-      if (el) {
+      // Unticked where it is drawn now: to buy if it hasn't moved yet, under Comprado hoy if it has.
+      // Changed here: a tap on it now goes by id, never with the seen it was drawn with.
+      ['buy', 'bought'].forEach((where) => {
+        const el = rowEl(`${where}|${id}`);
+        if (!el) return;
         const entry = listRows[Number(el.dataset.i)];
-        if (entry) entry.tapped = true;   // changed here: a tap on it now goes by id
+        if (entry) entry.tapped = true;
         markRow(el, false);
-      }
+      });
     } else {
       toast(t('changed_elsewhere'));
     }

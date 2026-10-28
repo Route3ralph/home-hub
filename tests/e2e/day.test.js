@@ -20,7 +20,7 @@
 // the list; buy_item_by_token(p_token, p_item, p_bought, p_seen) → { changed } and the list. Meal rows
 // in English and Spanish; the list button only with `list`, and no list request without it; the list
 // read and saved in the background after the day's own request; #list in Spanish at 390px (ticks in
-// place, the Undo toast, Comprado hoy, Add again, the add box and its suggestions, Comprar otra vez,
+// place, the Undo toast (Deshacer unticks the row where it is, under Comprado hoy too), Comprado hoy, Add again, the add box and its suggestions, Comprar otra vez,
 // every new error word); the 10-second read only on #list; the outbox (not sent yet, the banner, a
 // reload, retries, "changed on another phone", a line added again offline and ticked before the add is
 // answered, Deshacer of a tick that found Alex's purchase); the saved list when Supabase gets no answer at the
@@ -1107,6 +1107,46 @@ const ANDROID = 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KH
   await lrow(page, 'Tortillas').click();
   check('the day\'s cap on ticks: the same words', await page.waitForSelector('.toast-error', { timeout: 3000 }).then(() => text(page, '.toast-error')).catch(() => '')
     .then((s) => s === 'Es mucho para un día. Pide a la familia que añada el resto.'), await text(page, '.toasts'));
+  await page.context().close();
+
+  // ---- Deshacer after the row has moved to Comprado hoy, while a tap on the list holds it there: the row
+  // is unticked where it is, and a tap on it goes by id, never with the bought_at it was drawn with (the
+  // Undo replaced it). Ticked again, then taken back before that answer comes: each with the line's seen
+  // at that moment, and Cilantro ends as last tapped, with no "Cambiado en otro teléfono".
+  db = withList(foodDb());
+  ({ page, db } = await open({ label: 'list-undo-moved', db, path: `/day.html?t=${TAYLOR}#list`, ctx: phone(), allowConsole: LIST_ERRORS }));
+  await page.clock.pauseAt(new Date((await page.evaluate(() => Date.now())) + 1000));
+  await lrow(page, 'Cebollas').click();
+  await lrow(page, 'Cilantro').click();
+  await until(() => calls(db, 'buy_item_by_token').length === 2);
+  await page.clock.runFor(3100);                                       // both under Comprado hoy
+  const movedDay = names((await listView(page)).bought).includes('Cilantro');
+  const cilBought = itemOf(db, 'Cilantro').bought_at;
+  await lrow(page, 'Cebollas').click();                                // she takes back Cebollas: the list holds
+  await until(() => calls(db, 'buy_item_by_token').length === 3);
+  await page.click('.toast-action .toast-btn:not(.toast-x)');          // Deshacer on "Comprado: Cilantro"
+  await until(() => calls(db, 'buy_item_by_token').length === 4 && itemOf(db, 'Cilantro').bought_at === null);
+  await page.waitForTimeout(250);
+  const afterDeshacer = await lrow(page, 'Cilantro').getAttribute('aria-checked');
+  const cilSeen = itemOf(db, 'Cilantro').added_at;
+  const said = [];
+  const c0 = calls(db, 'buy_item_by_token').length;
+  db.slow = { buy_item_by_token: 1500 };
+  await lrow(page, 'Cilantro').click();                                // ticked again
+  said.push(...await texts(page, '.toast'));
+  await page.waitForTimeout(300);
+  await lrow(page, 'Cilantro').click();                                // and taken back, before that answer
+  said.push(...await texts(page, '.toast'));
+  const shownDay = await lrow(page, 'Cilantro').getAttribute('aria-checked');
+  await until(() => calls(db, 'buy_item_by_token').length === c0 + 2 && itemOf(db, 'Cilantro').bought_at === null, 8000);
+  await page.waitForTimeout(400);
+  said.push(...await texts(page, '.toast'));
+  db.slow = null;
+  const cilCalls = calls(db, 'buy_item_by_token').slice(c0).map((c) => [c.body.p_bought, c.body.p_seen]);
+  check('Deshacer after the row moved to Comprado hoy (the list held): unticked where it is; tapped again it goes by id with the new seen, and tick then take back end as tapped, with no "Cambiado"',
+    movedDay && afterDeshacer === 'false' && cilCalls.length === 2 && same(cilCalls[0], [true, cilSeen]) && cilCalls[1][0] === false && cilCalls[1][1] !== cilBought
+    && shownDay === 'false' && itemOf(db, 'Cilantro').bought_at === null && !said.some((x) => x.includes('Cambiado')),
+    JSON.stringify([movedDay, afterDeshacer, cilCalls, cilBought, cilSeen, shownDay, said]));
   await page.context().close();
 
   // ---- See and tick: no add box, no Comprar otra vez, an old tick does nothing

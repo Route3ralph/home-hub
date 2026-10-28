@@ -5,7 +5,7 @@
 // (day, slot), Clear this day, and Add a prep reminder… only on a saved dinner); the shopping list
 // (the add box: Enter keeps focus, "2 milk", the toasts, the lock, suggestions; aisles in store order
 // and the Aisle? chips; tap = bought, struck through where it is and moved 3 seconds after the last
-// tap; Undo; Just bought; Buy again, folded and remembered; Edit, Forget, a rename clash and Merge); a
+// tap; Undo (the row unticked where it is, under Just bought too); Just bought; Buy again, folded and remembered; Edit, Forget, a rename clash and Merge); a
 // hostile name and title as text; the 10-second poll on page.clock (a change made elsewhere, held
 // while tapping, no redraw when nothing changed, none while hidden); the outbox (no connection, the
 // banner, a reload keeps the queue and it goes once; "Changed on another phone"; a 503 retried, a
@@ -685,6 +685,43 @@ const emailOf = (req) => {
     !!boughtResend && resent.length === 3 && resent[0][0] === true && same(resent[1], resent[0]) && resent[2][0] === false && resent[2][1] === boughtResend
     && item(db, 'Milk').bought_at === null && (await names(page, 'buy')).includes('Milk') && !said.includes('Changed on another phone'),
     JSON.stringify([resent, boughtResend, item(db, 'Milk'), said]));
+  await page.context().close();
+
+  // The toast's Undo after the row has moved to Just bought, while a tap elsewhere on the list holds it
+  // there: the row is unticked where it is, and a tap on it goes by id, never with the bought_at it was
+  // drawn with (the Undo replaced it). Ticked again, then unticked before that answer comes: each goes
+  // with the line's seen at that moment, and Milk ends as last tapped, with nothing about another phone.
+  db = stockList(foodDb());
+  ({ page } = await open({ label: 'undo moved', db }));
+  await pause(page);
+  let slowBuys = 0;
+  await page.route('**/rest/v1/rpc/buy_item', async (route) => { if (route.request().method() !== 'OPTIONS' && slowBuys) await sleep(slowBuys); return route.fallback(); });
+  await row(page, 'buy', 'Milk').locator('.food-tick').click();
+  await sleep(300);
+  await tick(page, 3100);                                              // Milk moves to Just bought
+  const movedOk = (await names(page, 'bought')).includes('Milk');
+  const milkBought = item(db, 'Milk').bought_at;
+  await row(page, 'bought', 'Eggs').locator('.food-tick').click();    // a tap on the list: it holds
+  await sleep(300);
+  await page.click('.toasts .toast-action button');                   // Undo on "Bought: Milk"
+  await until(page, () => false, 400);
+  const afterUndo = await row(page, 'bought', 'Milk').locator('.food-tick').getAttribute('aria-checked');
+  const undoneSeen = item(db, 'Milk').added_at;
+  const m0 = calls(db, 'buy_item').length;
+  slowBuys = 1500;
+  await row(page, 'bought', 'Milk').locator('.food-tick').click();    // ticked again
+  await sleep(300);
+  await row(page, 'bought', 'Milk').locator('.food-tick').click();    // and unticked, before that answer
+  await sleep(300);
+  const shownLast = await row(page, 'bought', 'Milk').locator('.food-tick').getAttribute('aria-checked');
+  await until(page, () => !JSON.parse(localStorage.getItem('homehub.shop.hub')).queue.length, 8000);
+  slowBuys = 0;
+  await tick(page, 3100);
+  const milkCalls = calls(db, 'buy_item').slice(m0).map((c) => [c.body.p_bought, c.body.p_seen]);
+  check('the toast\'s Undo after the row moved to Just bought (the list held): unticked where it is; tapped again it goes by id with the Undo\'s new seen, and tick then untick end as tapped, with nothing about another phone',
+    movedOk && afterUndo === 'false' && milkCalls.length === 2 && same(milkCalls[0], [true, undoneSeen]) && milkCalls[1][0] === false && milkCalls[1][1] !== milkBought
+    && shownLast === 'false' && item(db, 'Milk').bought_at === null && (await names(page, 'buy')).includes('Milk') && !(await toasts(page)).includes('Changed on another phone'),
+    JSON.stringify([movedOk, afterUndo, milkCalls, milkBought, undoneSeen, shownLast, await toasts(page)]));
   await page.context().close();
 
   // Someone else's purchase under Just bought (Taylor's Eggs), tapped: untick, tick, and untick again (or
