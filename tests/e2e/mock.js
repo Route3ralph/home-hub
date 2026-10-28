@@ -519,15 +519,17 @@ const shopWho = (db, email) => (db.people || []).find((p) => p.active !== false 
 const helperList = (db) => ((db.household && db.household[0]) || {}).helper_list || 'add';
 const withOtherWord = (o, name, lang) => { const w = foodOther(name, lang); if (w) o.other = w; return o; };
 
-// shopping_list(): what to buy, and today's buys (§3.4).
+// shopping_list(): what to buy, and today's buys and the reader's own ticks of the last 15 minutes (§3.4).
 function shoppingList(db, email) {
-  const lang = (shopWho(db, email) || {}).language === 'es' ? 'es' : 'en';
+  const who = shopWho(db, email) || {};
+  const lang = who.language === 'es' ? 'es' : 'en';
+  const mineNow = (r) => who.id != null && r.bought_by === who.id && within(db, r.bought_at, UNDO_US);
   const items = db.shopping_items;
   return {
     as_of: asOf(db),
     to_buy: items.filter((r) => r.bought_at == null).sort(byNameKey).map((r) => withOtherWord({
       id: r.id, name: r.name, note: r.note, aisle: r.aisle, private: r.private, added_by: r.added_by, seen: r.added_at }, r.name, lang)),
-    bought: items.filter((r) => boughtToday(db, r)).sort(byBought).map((r) => ({
+    bought: items.filter((r) => r.bought_at != null && (boughtToday(db, r) || mineNow(r))).sort(byBought).map((r) => ({
       id: r.id, name: r.name, note: r.note, aisle: r.aisle, private: r.private, bought_by: r.bought_by, seen: r.bought_at })),
   };
 }

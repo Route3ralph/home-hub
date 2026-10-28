@@ -877,7 +877,9 @@ $$;
 -- caller's rights: members see it all, locked lines included; anyone else gets empty lists.
 --   to_buy: [{id, name, note, aisle, private, added_by, seen, other}], A–Z
 --   bought: [{id, name, note, aisle, private, bought_by, seen}], everything bought since the
---           household's midnight, the latest first
+--           household's midnight, and the caller's own ticks of the last 15 minutes (so a tick at
+--           23:59, its answer lost and sent again after midnight, is still the caller's to undo, as
+--           My day's list keeps hers), the latest first
 -- added_by and bought_by are person ids. seen is added_at (to buy) or bought_at (bought), as
 -- to_jsonb writes a timestamptz; the page sends it back as p_seen. other: the name in the
 -- reader's language when the word list knows it in the other one ("Leche" is 'milk' for Alex).
@@ -890,7 +892,7 @@ security invoker
 set search_path = ''
 as $$
   with s as (
-    select coalesce((private.shop_who()).language, 'en') as lang, private.now() as now,
+    select coalesce((private.shop_who()).language, 'en') as lang, (private.shop_who()).id as me, private.now() as now,
            public.today_local()::timestamp at time zone private.tz() as midnight
   )
   select jsonb_build_object(
@@ -905,7 +907,8 @@ as $$
                                                             'private', i.private, 'bought_by', i.bought_by, 'seen', i.bought_at)
                                          order by i.bought_at desc, i.name_key, i.id)
                         from public.shopping_items i
-                        where i.bought_at >= s.midnight), '[]'))
+                        where i.bought_at >= s.midnight
+                           or (i.bought_by = s.me and i.bought_at >= s.now - interval '15 minutes')), '[]'))
   from s;
 $$;
 

@@ -882,6 +882,50 @@ select test.is(buy_item_by_token(test.token('Morgan'), (pg_temp.line('Late milk'
                '... and she can still undo it');
 rollback;
 
+-- Midnight, signed in: shopping_list()'s bought keeps the caller's own ticks of the last 15 minutes too,
+-- so a tick at 23:59:55 whose answer was lost and that is sent again after midnight finds its line in the
+-- answer, and the Undo waiting behind it can still be sent with its seen (§8).
+begin;
+:as_owner
+set hub.now = '2026-11-03 23:40 America/New_York';
+insert into shopping_items (name, added_at, added_by) values ('Bread', '2026-11-03 20:00 America/New_York', test.person('Alex')),
+                                                         ('Late milk', '2026-11-03 20:00 America/New_York', test.person('Alex')),
+                                                         ('Rice', '2026-11-03 20:00 America/New_York', test.person('Alex'));
+:as_admin
+select buy_item((pg_temp.line('Rice')).id, true, (pg_temp.line('Rice')).added_at);
+:as_owner
+set hub.now = '2026-11-03 23:50 America/New_York';
+:as_adult
+select buy_item((pg_temp.line('Bread')).id, true, (pg_temp.line('Bread')).added_at);
+:as_owner
+set hub.now = '2026-11-03 23:59:55 America/New_York';
+:as_admin
+select test.is(buy_item((pg_temp.line('Late milk')).id, true, (pg_temp.line('Late milk')).added_at, 'd0000000-0000-4000-8000-000000000001') ->> 'changed', 'true',
+               'Alex ticks Late milk at 23:59:55 (the answer never reaches his phone)');
+:as_owner
+set hub.now = '2026-11-04 00:00:03 America/New_York';
+:as_admin
+select (r ->> 'changed') as late_changed, coalesce(pg_temp.el(r, 'bought', 'Late milk') ->> 'seen', '1970-01-01T00:00:00+00:00') as late_seen,
+       coalesce(pg_temp.names(r, 'bought'), '-') as late_bought
+from (select buy_item((pg_temp.line('Late milk')).id, true, (pg_temp.line('Late milk')).added_at, 'd0000000-0000-4000-8000-000000000001') as r) x \gset
+select test.is(:'late_changed' || ' | ' || :'late_bought', 'true | Late milk',
+               '... sent again at 00:00:03: its first answer, with Late milk under bought (his own tick of the last 15 minutes), not his Rice of 23:40');
+select test.is(:'late_seen', to_jsonb((pg_temp.line('Late milk')).bought_at) #>> '{}', '... with its seen (its bought_at)');
+select test.is(coalesce(pg_temp.names(buy_item((pg_temp.line('Late milk')).id, true, (pg_temp.line('Late milk')).added_at), 'bought'), '-'), 'Late milk',
+               '... and so with no key (changed false, the line under bought: his own)');
+:as_adult
+select test.is(coalesce(pg_temp.names(shopping_list(), 'bought'), '-'), 'Bread', 'Sam''s list then: his own Bread of 23:50, not Alex''s tick');
+:as_owner
+set hub.now = '2026-11-04 00:14:54 America/New_York';
+:as_admin
+select test.is(coalesce(pg_temp.names(shopping_list(), 'bought'), '-'), 'Late milk', 'Alex''s at 00:14:54: still his tick of 23:59:55');
+:as_owner
+set hub.now = '2026-11-04 00:14:56 America/New_York';
+:as_admin
+select test.is(coalesce(pg_temp.names(shopping_list(), 'bought'), '-'), '-', '... at 00:14:56, 15 minutes after it, no more: bought is since midnight');
+select test.is(buy_item((pg_temp.line('Late milk')).id, false, :'late_seen') ->> 'changed', 'true', '... and his Undo with the seen from that answer puts it back on the list');
+rollback;
+
 -- A tick whose reply was lost, someone else's Undo within 15 minutes, then the same tick sent again by
 -- the outbox: false, and the Undo stands. Every un-tick gives the line a new seen (added_at is now), so
 -- the line is never back in the state the tick was sent against (§4.2). Signed in, then from My day.

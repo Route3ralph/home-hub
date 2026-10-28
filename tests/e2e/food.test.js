@@ -612,8 +612,9 @@ const emailOf = (req) => {
   await page.context().close();
 
   // ---- Undo on the "Bought" toast after the household's midnight: a tick at 23:59:57, the 10-second
-  // poll at 00:00:01 (shopping_list's bought is since midnight, so the line is in neither part), Undo
-  // at 00:00:02. It goes with the seen from the tick's reply (§6.1), and the line is to buy again.
+  // poll when the database's clock says 00:15:01 (shopping_list's bought is since midnight, plus the
+  // caller's own ticks of the last 15 minutes, so the line is in neither part), Undo a second later. It
+  // goes with the seen from the tick's reply (§6.1), and the line is to buy again.
   db = foodDb();
   db.shopping_items.push(shopItem({ name: 'Milk', aisle: 'dairy', added_at: at(TODAY, '09:00'), added_by: ID.alex }));
   db.foodNow = Date.parse('2026-10-28T03:59:51Z');   // 23:59:51 in New York
@@ -626,22 +627,64 @@ const emailOf = (req) => {
   await row(page, 'buy', 'Milk').locator('.food-tick').click();
   await sleep(300);
   const boughtLate = item(db, 'Milk').bought_at;
-  db.foodNow += 4000;                                  // 00:00:01: the poll
+  db.foodNow += 4000 + 15 * 60e3;                      // 00:15:01: the poll (the page's own clock moves 4 seconds)
   await tick(page, 4000);
-  check('the poll after midnight leaves a tick of 23:59:57 out of Just bought (and To buy); its toast is still up',
+  check('the poll after midnight, past the tick\'s 15 minutes, leaves a tick of 23:59:57 out of Just bought (and To buy); its toast is still up',
     !!boughtLate && !(await names(page, 'bought')).includes('Milk') && !(await names(page, 'buy')).includes('Milk')
     && (await page.$$eval('.toasts .toast-action span', (ts) => ts.map((t) => t.textContent))).includes('Bought: Milk'),
     JSON.stringify([boughtLate, await names(page, 'buy'), await names(page, 'bought'), await toasts(page)]));
-  db.foodNow += 1000;                                  // 00:00:02: Undo
+  db.foodNow += 1000;                                  // 00:15:02: Undo
   await tick(page, 1000);
   await page.click('.toasts .toast-action button');
   await sleep(300);
   await tick(page, 3100);
   const lateUndo = calls(db, 'buy_item').slice(-1)[0];
-  check('Undo at 00:00:02: buy_item(p_item, false, <bought_at from the tick\'s reply>); Milk is to buy again, with no "Changed on another phone"',
+  check('Undo at 00:15:02: buy_item(p_item, false, <bought_at from the tick\'s reply>); Milk is to buy again, with no "Changed on another phone"',
     !!lateUndo && same(keyed(lateUndo.body), { p_item: item(db, 'Milk').id, p_bought: false, p_seen: boughtLate }) && item(db, 'Milk').bought_at === null
     && (await names(page, 'buy')).includes('Milk') && !(await toasts(page)).includes('Changed on another phone'),
     JSON.stringify([lateUndo && lateUndo.body, boughtLate, await names(page, 'buy'), await toasts(page)]));
+  await page.context().close();
+
+  // A tick at 23:59:55 whose answer is lost (the database did it), its Undo pressed meanwhile, and the
+  // tick sent again at 00:00:03: that answer (the first one's, "done") has the line under Just bought,
+  // since shopping_list's bought keeps the caller's own ticks of the last 15 minutes, so the Undo waiting
+  // behind it goes with that purchase's seen and Milk is to buy again; no "Changed on another phone".
+  db = foodDb();
+  db.shopping_items.push(shopItem({ name: 'Milk', aisle: 'dairy', added_at: at(TODAY, '09:00'), added_by: ID.alex }));
+  db.foodNow = Date.parse('2026-10-28T03:59:51Z');   // 23:59:51 in New York
+  ({ page } = await open({ label: 'midnight resend', db }));
+  await pause(page);
+  await page.evaluate(() => {
+    window.__said = [];
+    new MutationObserver(() => document.querySelectorAll('.toasts .toast').forEach((t) => window.__said.push(t.textContent.replace(/\s+/g, ' ').trim())))
+      .observe(document.body, { childList: true, subtree: true });
+  });
+  let lostOnce = true;
+  await page.route('**/rest/v1/rpc/buy_item', (route) => {
+    const req = route.request();
+    if (req.method() === 'OPTIONS' || !lostOnce) return route.fallback();
+    lostOnce = false;
+    const body = JSON.parse(req.postData());
+    (db.rpcCalls = db.rpcCalls || []).push({ name: 'buy_item', body, email: 'alex@example.com' });
+    foodRpc.buy_item(db, body, 'alex@example.com');   // done in the database; the answer never comes back
+    return route.abort('internetdisconnected');
+  });
+  db.foodNow += 4000;                                  // 23:59:55: Milk ticked
+  await row(page, 'buy', 'Milk').locator('.food-tick').click();
+  await sleep(400);
+  const boughtResend = item(db, 'Milk').bought_at;
+  await page.click('.toasts .toast-action button');    // Undo: waits behind the tick
+  await sleep(200);
+  db.foodNow += 8000;                                  // 00:00:03: the tick goes again
+  await tick(page, 2100);
+  await until(page, () => !JSON.parse(localStorage.getItem('homehub.shop.hub')).queue.length, 3000);
+  await tick(page, 3100);
+  const resent = calls(db, 'buy_item').map((c) => [c.body.p_bought, c.body.p_seen, c.body.p_key]);
+  const said = await page.evaluate(() => window.__said);
+  check('a tick at 23:59:55 whose answer was lost, its Undo, and the tick sent again at 00:00:03: the Undo goes with the tick\'s bought_at, Milk is to buy again, and nothing says "Changed on another phone"',
+    !!boughtResend && resent.length === 3 && resent[0][0] === true && same(resent[1], resent[0]) && resent[2][0] === false && resent[2][1] === boughtResend
+    && item(db, 'Milk').bought_at === null && (await names(page, 'buy')).includes('Milk') && !said.includes('Changed on another phone'),
+    JSON.stringify([resent, boughtResend, item(db, 'Milk'), said]));
   await page.context().close();
 
   // Someone else's purchase under Just bought (Taylor's Eggs), tapped: untick, tick, and untick again (or
