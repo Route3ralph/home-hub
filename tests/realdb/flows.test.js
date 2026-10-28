@@ -842,6 +842,7 @@ const MY_DAY_FNS = /^\/rest\/v1\/rpc\/(get_person_day|complete_by_token|undo_by_
   await flow('food prep', async () => {
     await h.mark();
     const DAY = '2026-10-28';
+    const SAT = '2026-10-31';
     let a = null;
     try {
       a = await open({ email: 'alex@example.com', path: `/#/food/${DAY}`, label: 'prep-alex' });
@@ -886,12 +887,34 @@ const MY_DAY_FNS = /^\/rest\/v1\/rpc\/(get_person_day|complete_by_token|undo_by_
       const mail = await one(`select public.digest_for('${P.sam}', '${TODAY}') as d`);
       const subject = mail && mail.d ? JSON.parse(mail.d).subject : null;
       check('prep: Sam\'s morning email subject never has the title', typeof subject === 'string' && !/Birthday cake/.test(subject), subject);
+
+      // Saturday's "Surprise pie", saved unlocked; Alex ticks the lock and taps "Add a prep reminder…"
+      // without Save. The real task form takes over the dialog (there is no Save to come back to), so
+      // the dialog saves the dinner locked first, and the reminder is private too.
+      await sql(`insert into meals (day, slot, kind, title, cook_id) values ('${SAT}', 'dinner', 'cook', 'Surprise pie', '${P.sam}')`);
+      await go(a.page, `#/food/${SAT}`);
+      await a.page.waitForSelector('#formDialog [data-act="prep"]', { timeout: 8000 });
+      await a.page.click('#formDialog .food-more summary');
+      await a.page.check('#formDialog input[name="private"]');
+      await a.page.click('#formDialog [data-act="prep"]');
+      await a.page.waitForSelector('.tasks-form', { timeout: 8000 });
+      await settle(a.page, 200);
+      const pieForm = await a.page.evaluate(() => ({ title: document.querySelector('.tasks-form').elements.title.value, private: document.querySelector('.tasks-form').elements.private.checked }));
+      const pieMeal = await one(`select private from meals where day = '${SAT}'`);
+      check('prep (lock ticked, not saved): the dinner is saved locked before the task form takes over the dialog, and the form has Private ticked',
+        same(pieForm, { title: 'Prep: Surprise pie', private: true }) && pieMeal && pieMeal.private === 't', [pieForm, pieMeal]);
+      await a.page.click('.tasks-form [type="submit"]');
+      await until(async () => !!(await one("select id from tasks where title = 'Prep: Surprise pie'")));
+      const pieTask = await one("select private from tasks where title = 'Prep: Surprise pie'");
+      check('prep (lock ticked, not saved): the reminder saved is private, and the dinner\'s card has the lock', pieTask && pieTask.private === 't'
+        && await until(async () => (await a.page.evaluate(() => location.hash)) === '#/food'
+          && !!(await a.page.$(`.food-day[data-day="${SAT}"] .food-lockmark`))), pieTask);
       const f = await failures();
       check('prep: no API request failed', !f.length, f);
     } finally {
       if (a) await a.context.close();
-      await sql("delete from tasks where title = 'Prep: Birthday cake'");
-      await sql(`delete from meals where day = '${DAY}'`);
+      await sql("delete from tasks where title in ('Prep: Birthday cake', 'Prep: Surprise pie')");
+      await sql(`delete from meals where day in ('${DAY}', '${SAT}')`);
     }
   });
 

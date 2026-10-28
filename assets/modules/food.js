@@ -162,7 +162,8 @@
   // ============================================
   // A day's dinner: what, who, More (note, recipe link, lock); Save upserts on (day, slot). On a
   // dinner already saved, also Clear this day and Add a prep reminder… (the task form takes over the
-  // dialog, so it is offered only when nothing unsaved would be lost).
+  // dialog, so it is offered only on a saved dinner, and saves what was changed here first, as Save
+  // does: nothing in the dialog is lost, and the reminder is made from the dinner as saved).
   async function openDinner(st, day) {
     let m = mealOn(st, day);
     if (!m && (day < dates.addDays(st.today, -14) || day > dates.addDays(st.today, 6))) {
@@ -255,36 +256,63 @@
       }
       const act = e.target.closest('[data-act]');
       if (act && act.dataset.act === 'clear') clearDay(st, day, act, fail);
-      else if (act && act.dataset.act === 'prep') prepReminder(st, m, fail, !!m.private || el.private.checked);
+      else if (act && act.dataset.act === 'prep') prepFromDialog(act);
     });
 
-    form.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      errBox.hidden = true;
+    // The dinner as the dialog has it now, or null (and the reason shown) when it can't be saved.
+    function dialogRow() {
       const title = S.clean(el.title.value, 80);
-      if (state.kind === 'cook' && !title) { fail('Type what\'s for dinner, or tap Leftovers, Eating out, Takeout or Fend for yourself.'); return; }
+      if (state.kind === 'cook' && !title) { fail('Type what\'s for dinner, or tap Leftovers, Eating out, Takeout or Fend for yourself.'); return null; }
       const link = state.kind === 'cook' ? recipeLink(el.link.value) : '';
-      if (link === null) { fail('The recipe link has to be a web address starting with https://.'); return; }
-      const row = {
+      if (link === null) { fail('The recipe link has to be a web address starting with https://.'); return null; }
+      return {
         day, slot: 'dinner', kind: state.kind, title: state.kind === 'cook' ? title : null,
         cook_id: NOBODY.includes(state.kind) ? null : state.cook, note: S.clean(el.note.value, 300) || null,
         link: link || null, private: el.private.checked,
       };
-      const btn = form.querySelector('[type="submit"]');
+    }
+    // Save upserts it on (day, slot), with the toast; false (and the reason shown) when that fails.
+    async function saveRow(row, btn) {
       btn.disabled = true;
       try {
         await q(core.sb.from('meals').upsert(row, { onConflict: 'day,slot' }).select('id'));
       } catch (err) {
         btn.disabled = false;
         fail(friendly(err));
-        return;
+        return false;
       }
-      formDialog.close();
       toast(`Dinner ${day === st.today ? 'tonight' : `on ${weekday(day)}`}: ${mealTitle(row)}`);
+      return true;
+    }
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      errBox.hidden = true;
+      const row = dialogRow();
+      if (!row || !(await saveRow(row, form.querySelector('[type="submit"]')))) return;
+      formDialog.close();
       if (st.ctx.stale()) return;
       await loadMeals(st);
       if (!st.ctx.stale()) drawWeek(st);
     });
+
+    // Add a prep reminder…: the task form takes over this dialog, so whatever was changed here and not
+    // saved yet (the lock ticked or unticked, another cook, a new title) is saved first, as Save does
+    // (the same checks; one that can't be saved says why and opens nothing). The reminder is then made
+    // from the dinner as saved: a lock ticked here locks the dinner, not only its reminder.
+    const was = (k) => (k === 'private' ? !!m.private : m[k] == null || m[k] === '' ? null : m[k]);
+    async function prepFromDialog(btn) {
+      errBox.hidden = true;
+      const row = dialogRow();
+      if (!row) return;
+      if (['kind', 'title', 'cook_id', 'note', 'link', 'private'].some((k) => row[k] !== was(k))) {
+        if (!(await saveRow(row, btn))) return;
+        btn.disabled = false;
+        m = Object.assign({}, m, row);
+        if (!st.ctx.stale()) loadMeals(st).then(() => { if (!st.ctx.stale()) drawWeek(st); });
+      }
+      if (!st.ctx.stale()) prepReminder(st, m, fail);
+    }
 
     // Closing it leaves #/food/<date> for #/food, so a reload doesn't open it again.
     formDialog.addEventListener('close', () => {
@@ -313,9 +341,9 @@
   // A prep reminder is an ordinary task (§5): "Prep: Tacos", due the day before or, for tonight's,
   // today (never born Late), the cook in charge, family; saving it comes back to Food.
   // A locked dinner's is a private task (Private ticked under More), so "Prep: <title>" stays off the
-  // wall, other people's My day and every email subject as the dinner's title does. `locked` is the
-  // saved lock or the box ticked in the dialog now: either one keeps the title private.
-  function prepReminder(st, m, fail, locked) {
+  // wall, other people's My day and every email subject as the dinner's title does. m is the dinner as
+  // saved (the dialog saves its changes first), so the reminder's lock is always the dinner's.
+  function prepReminder(st, m, fail) {
     let open;
     try { open = core.use('tasks').openTaskForm; } catch (err) { fail(friendly(err)); return; }
     if (typeof open !== 'function') { fail('Adding tasks isn\'t available yet. Reload the page to get the latest version.'); return; }
@@ -326,7 +354,7 @@
       date: before > dates.today() ? before : dates.today(),
       responsible_id: cook ? cook.id : null,
       category: 'family',
-      private: !!locked,
+      private: !!m.private,
       onSaved() {
         toast('Prep reminder added');
         if (location.hash !== '#/food') location.hash = '#/food';
