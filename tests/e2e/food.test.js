@@ -9,8 +9,10 @@
 // hostile name and title as text; the 10-second poll on page.clock (a change made elsewhere, held
 // while tapping, no redraw when nothing changed, none while hidden); the outbox (no connection, the
 // banner, a reload keeps the queue and it goes once; "Changed on another phone"; a 503 retried, a
-// 42501 dropped; a line added again offline and ticked; an Undo of a tick that found Sam's purchase;
-// an add answered after leaving Food isn't sent again); the saved list when the reads fail, dropped for someone else; the parents' two
+// 42501 dropped; a line added again offline and ticked; a tick, its untick, the name added again and a
+// tick again, all sent; Taylor's Just bought row untick, tick, untick (or Undo) put back with its drawn
+// seen; an Undo of a tick that found Sam's purchase; an add answered after leaving Food isn't sent again,
+// even from a Food page opened before the answer, tapped and killed); the saved list when the reads fail, dropped for someone else; the parents' two
 // switches (read-only for members); Send Taylor the list; the Add sheet's Shopping; the dinner read
 // failing on its own; phones and desktops, light and dark.
 //
@@ -642,6 +644,36 @@ const emailOf = (req) => {
     JSON.stringify([lateUndo && lateUndo.body, boughtLate, await names(page, 'buy'), await toasts(page)]));
   await page.context().close();
 
+  // Someone else's purchase under Just bought (Taylor's Eggs), tapped: untick, tick, and untick again (or
+  // the toast's Undo), while an add is on its way. The first two cancel on the phone; the last puts the
+  // line back with the seen it was drawn with, as the first would have: no "Changed on another phone".
+  for (const third of ['tap', 'undo']) {
+    db = stockList(foodDb());
+    ({ page } = await open({ label: `put back while held (${third})`, db }));
+    await pause(page);
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    await page.route('**/rest/v1/rpc/add_to_list', async (route) => { if (route.request().method() !== 'OPTIONS') await gate; return route.fallback(); });
+    await addItem(page, 'Zucchini');
+    await sleep(200);
+    const eggsBought = item(db, 'Eggs').bought_at;
+    const tapEggs = async () => { await row(page, 'bought', 'Eggs').locator('.food-tick').click(); await sleep(200); };
+    await tapEggs();   // untick: queued behind the add
+    await tapEggs();   // tick: the two cancel out
+    if (third === 'tap') await tapEggs();
+    else { await page.click('.toasts .toast-action button'); await sleep(200); }
+    const checked = await row(page, 'bought', 'Eggs').locator('.food-tick').getAttribute('aria-checked');
+    const said = await toasts(page);
+    release();
+    await sleep(800);
+    await tick(page, 3100);
+    const eggCalls = calls(db, 'buy_item').map((c) => keyed(c.body));
+    check(`Taylor's Eggs under Just bought: untick, tick, ${third === 'tap' ? 'untick' : 'Undo'} while an add is on its way: one buy_item(false, <the seen it was drawn with>), back on the list, no "Changed on another phone"`,
+      (third === 'undo' || checked === 'false') && !said.includes('Changed on another phone') && same(eggCalls, [{ p_item: item(db, 'Eggs').id, p_bought: false, p_seen: eggsBought }])
+      && item(db, 'Eggs').bought_at === null && (await names(page, 'buy')).includes('Eggs'), JSON.stringify([checked, said, eggCalls, eggsBought]));
+    await page.context().close();
+  }
+
   // =====================================================================
   // 5. Edit, Forget, a rename clash and Merge
   // =====================================================================
@@ -786,6 +818,31 @@ const emailOf = (req) => {
     applesBuy.length === 1 && same(keyed(applesBuy[0].body), { p_item: item(db, 'Apples').id, p_bought: true, p_seen: item(db, 'Apples').added_at })
     && item(db, 'Apples').bought_by === ID.alex && item(db, 'Apples').bought_at !== applesBought && !!item(db, 'Apples').bought_at
     && !(await toasts(page)).includes('Changed on another phone'), JSON.stringify([applesBuy.map((c) => c.body), item(db, 'Apples'), await toasts(page)]));
+  // A tick that gets no answer, its untick (waiting), the name typed again ("2 detergent" joins the line
+  // the untick puts back) and the line ticked again: the last tick waits its turn behind the untick
+  // instead of cancelling it across the add (which would then bring the bought line back). Back online,
+  // all three go, and Detergent ends bought, as last tapped.
+  await page.evaluate(() => document.querySelectorAll('.toasts .toast').forEach((t) => t.remove()));
+  const det0 = calls(db, 'buy_item').length;
+  await page.route('**/rest/v1/rpc/buy_item', (route) => route.abort('internetdisconnected'));
+  await row(page, 'buy', 'Detergent').locator('.food-tick').click();   // tick: no answer
+  await sleep(300);
+  await row(page, 'buy', 'Detergent').locator('.food-tick').click();   // untick, in place
+  await sleep(200);
+  await addItem(page, '2 detergent');
+  const joined = await until(page, () => [...document.querySelectorAll('[data-part="buy"] .food-row')].some((r) => r.querySelector('.food-name').textContent === 'Detergent'
+    && (r.querySelector('.food-note') || {}).textContent === '2' && r.querySelector('.food-tick').getAttribute('aria-checked') === 'false'), 6000);
+  await row(page, 'buy', 'Detergent').locator('.food-tick').click();   // ticked again
+  await sleep(300);
+  await page.unroute('**/rest/v1/rpc/buy_item');
+  await page.evaluate(() => window.dispatchEvent(new Event('online')));
+  await until(page, () => !document.querySelector('.food-unsent') && !JSON.parse(localStorage.getItem('homehub.shop.hub')).queue.length, 8000);
+  await sleep(3300);
+  const detCalls = calls(db, 'buy_item').slice(det0).map((c) => c.body.p_bought);
+  check('a tick with no answer, its untick, "2 detergent" (joining the line) and a tick again: back online, all go in order and Detergent ends bought, note 2 (no cancel across the add)',
+    joined && same(detCalls, [true, false, true]) && !!item(db, 'Detergent').bought_at && item(db, 'Detergent').bought_by === ID.alex && item(db, 'Detergent').note === '2'
+    && (await names(page, 'bought')).includes('Detergent') && !(await names(page, 'buy')).includes('Detergent') && !(await toasts(page)).includes('Changed on another phone'),
+    JSON.stringify([joined, detCalls, item(db, 'Detergent'), await toasts(page)]));
   // A 503 is retried; a 42501 is dropped, with the database's words.
   let first503 = true;
   await page.route('**/rest/v1/rpc/buy_item', (route) => {
@@ -850,7 +907,36 @@ const emailOf = (req) => {
     check('…and Food opened again before the answer waits for it rather than sending the add a second time: Granola is on the list once',
       calls(dbL, 'add_to_list').length === 2 && dbL.shopping_items.filter((r) => r.name === 'Granola').length === 1 && (await names(pg, 'buy')).includes('Granola')
       && same((await saved()).queue, []), JSON.stringify([calls(dbL, 'add_to_list').map((c) => c.body), (await saved()).queue]));
-    await pg.context().close();
+    // Alex adds Zucchini, taps Today and opens Food again; that page's list read is slow, so it hasn't
+    // sent its saved queue yet. The add's answer comes, then Alex ticks Rice there, and the tab is killed
+    // before its read ends. That page took the answer as it came, so its tap didn't save the add back,
+    // and the next visit doesn't send it again.
+    holdNext();
+    await addItem(pg, 'Zucchini');
+    await caught();
+    await toTab('#/', onToday);
+    let readGo;
+    const readHeld = new Promise((r) => { readGo = r; });
+    await pg.route('**/rest/v1/rpc/shopping_list', async (route) => { if (route.request().method() !== 'OPTIONS') await readHeld; return route.fallback(); });
+    await toTab('#/food', onFood);
+    await sleep(300);
+    held.go();
+    await sleep(500);
+    await row(pg, 'buy', 'Rice').locator('.food-tick').click();
+    await sleep(500);
+    const queueAfterTap = (await saved()).queue.map((x) => x.op + ':' + (x.name || x.item));
+    Object.assign(item(dbL, 'Zucchini'), { bought_at: at(TODAY, '09:43', '000654'), bought_by: ID.sam });   // then Sam buys it
+    const ctxL = pg.context();
+    await pg.unroute('**/rest/v1/rpc/shopping_list');
+    await pg.close({ runBeforeUnload: false });   // the tab is killed (iOS discards it) before its read ends
+    readGo();
+    const { page: pg2 } = await open({ label: 'late answer, next visit', db: dbL, context: ctxL });
+    await until(pg2, () => false, 1500);
+    check('…and a Food page opened before that answer takes it as it comes: a tap there never saves the add back, so a tab killed before its reads end doesn\'t send it again',
+      !queueAfterTap.includes('add:Zucchini') && calls(dbL, 'add_to_list').filter((c) => c.body.p_name === 'Zucchini').length === 1
+      && item(dbL, 'Zucchini').bought_by === ID.sam && !!item(dbL, 'Rice').bought_at && !(await toasts(pg2)).includes('Back on the list'),
+      JSON.stringify([queueAfterTap, calls(dbL, 'add_to_list').map((c) => c.body.p_name), item(dbL, 'Zucchini').bought_at, await toasts(pg2)]));
+    await ctxL.close();
   }
   // A member with no person (Sam's email isn't on his person): there is no bought_by to tell whose a
   // purchase is, so an Undo after the tick's answer undoes it, as it always did.

@@ -77,15 +77,18 @@
                           a tick's toast: box.unbuy(id), and the outbox takes the seen from the tick's
                           reply (kept while the page is open, so it works after a read past the
                           household's midnight has taken the line out of bought). A tick and its Undo
-                          cancel out while the tick has never left the phone; once it has, both are
+                          cancel out while the tick has never left the phone and no add waits after it
+                          (an add reads the line as the changes before it leave it); otherwise both are
                           sent, in order. A tick of a line that a waiting add brings back waits for
-                          that add, and takes the line's new seen from its reply. Given a row with no
+                          that add, and takes the line's new seen from its reply (from the line the add
+                          landed on, if the database took another one: §4.1). Given a row with no
                           seen (one a waiting change moved, below) or only an id, the outbox takes the
                           seen from the change waiting for that item; for an un-tick, else from the
-                          answer to this phone's own tick of it; else from the list as it has it now.
-                          An un-tick then undoes only this phone's own purchase (mine), never one its
-                          tick found already bought by someone else. False when there is nothing to do
-                          (or that un-tick isn't this phone's). A page sends a row it has ticked or
+                          answer to this phone's own tick of it (or from this phone's put-back of it
+                          that a tick cancelled before it was sent); else from the list as it has it
+                          now. An un-tick then undoes only this phone's own purchase (mine), never one
+                          its tick found already bought by someone else. False when there is nothing to
+                          do (or that un-tick isn't this phone's). A page sends a row it has ticked or
                           unticked since it drew it by id: every un-tick gives the line a new seen.
      box.view()           the last list with the changes still waiting laid over it, or null before
                           any list. Rows changed by a waiting change carry pending: true, and
@@ -109,9 +112,12 @@
                           open): no more sends, timers, saves or callbacks. Whatever is waiting stays
                           saved for next time. A change that was on its way and is answered anyway comes
                           off the saved queue then, by its id (a page opened since keeps its own queue
-                          there), and the changes waiting for it get their seen from the answer; a page
-                          opened again in this window that still has it takes that answer (or waits for
-                          it) instead of sending it again. With no answer it stays, and goes next time.
+                          there), the changes waiting for it get their seen from the answer, and the
+                          list in the answer becomes the saved list (unless a newer one is saved); a
+                          page opened again in this window that still has it takes that answer as soon
+                          as it comes, even before its first kick(), so that page never saves it back
+                          (or, sending, waits for it) instead of sending it again. With no answer it
+                          stays, and goes next time.
    A tap is sent at once, unless nothing is getting through: then it waits its turn behind the rest.
    Retries: 2, 5, 10 and 30 seconds after a change gets no answer (or a 5xx, 408 or 429), then every
    30 seconds while the page is visible. Changes older than 24 hours are dropped. Every try of a
@@ -346,11 +352,12 @@
     let stopped = false;
     const nextId = () => `${Date.now().toString(36)}-${(seq++).toString(36)}`;
     const wayKey = (op) => `${key} ${op.id}`;
-    // This phone's own purchases, from the answers to its ticks: item → { seen, show }, the bought row's
-    // seen (its bought_at) and how to draw it. An un-tick given no seen (the toast's Undo, a row ticked
-    // here a moment ago) goes with it (§6.1: "the seen of the reply's bought row"), so it still works
-    // after a read past the household's midnight has taken the line out of bought. Kept while the page
-    // is open; any other answered change of that item, or forget(), drops it.
+    // This phone's own purchases, from the answers to its ticks (or a put-back of a bought row this phone
+    // took back before it was sent): item → { seen, show }, the bought row's seen (its bought_at) and
+    // how to draw it. An un-tick given no seen (the toast's Undo, a row ticked here a moment ago) goes
+    // with it (§6.1: "the seen of the reply's bought row"), so it still works after a read past the
+    // household's midnight has taken the line out of bought. Kept while the page is open; any other
+    // answered change of that item, or forget(), drops it.
     const ownBuys = new Map();
 
     // ---- Saved on this device, for this owner only
@@ -369,6 +376,10 @@
       // Answers kept for changes this queue no longer has (a closed page took them off already).
       const ids = new Set(queue.map(wayKey));
       [...onTheWay.keys()].forEach((k) => { if (k.startsWith(`${key} `) && !ids.has(k)) onTheWay.delete(k); });
+      // A change a closed page sent that is still on its way: this page takes its answer as soon as it
+      // comes (answeredEarly), not at its first kick(), so no save of this page's queue (a tap, a read)
+      // puts it back on the saved queue once it has been answered, for a later visit to send again.
+      if (keep) queue.forEach((x) => { const p = onTheWay.get(wayKey(x)); if (p) p.then((res) => answeredEarly(x, res)); });
     }
     function save() {
       if (!key || owner == null || stopped) return;
@@ -418,9 +429,15 @@
       const last = lastFor(item);
       if (last && last.op === kind) return false;   // already waiting to do just that
       if (last && last.op === 'add' && kind === 'unbuy') return false;   // an add is bringing it back: nothing to un-buy
-      if (last && last.op === inverse && !last.sent) {
-        // Never left the phone: the two cancel out.
+      if (last && last.op === inverse && !last.sent && !queue.slice(queue.indexOf(last) + 1).some((x) => x.op === 'add')) {
+        // Never left the phone, and no add waits after it: the two cancel out. (An add after it reads the
+        // line as that change leaves it: an add of a line an un-tick puts back joins it, and without the
+        // un-tick it would bring the bought line back, so this tap would be lost. Then this one waits
+        // its turn after it, below.) A put-back that carried the row's seen (a row under Just bought or
+        // Buy again, whoever bought it) stays this phone's to make: an un-tick of the line by id after
+        // this (the next tap on it, or the Undo on "Bought") goes with that same seen.
         drop(last);
+        if (last.op === 'unbuy' && last.seen != null) ownBuys.set(item, { seen: last.seen, show: last.show });
         changed();
         return true;
       }
@@ -563,9 +580,22 @@
       let from;           // from(next): the row a change waiting for this one takes its seen from, or null
       let own = null;     // a tick of this phone's own: the bought row in the answer
       if (op.op === 'add') {
-        // A tick of the line this add brought back: that line, if it is the one the add landed on.
-        from = (next) => (reply.item_id != null && reply.item_id === next.item
-          ? rowsOf(s, next.op === 'buy' ? 'to_buy' : 'bought').find((r) => r.id === next.item) : null);
+        // A tick of the line this add brings back (as overlay() drew it) takes its seen from the line the
+        // add landed on. That is the line drawn, unless the database took another (§4.1: a line with this
+        // lock first, to buy or bought, even one bought before today, which the list doesn't have; or the
+        // line drawn was forgotten since): then the tick, and whatever waits behind it for that line,
+        // goes to the line the add landed on, never dropped without a word.
+        const landed = reply.item_id;
+        from = (next) => {
+          if (landed == null) return null;
+          if (next.item !== landed) {
+            const was = next.item;
+            const moved = new Set([next.id]);
+            rest.forEach((x) => { if (x.after && moved.has(x.after) && x.item === was) { moved.add(x.id); x.item = landed; } });
+            next.item = landed;
+          }
+          return rowsOf(s, next.op === 'buy' ? 'to_buy' : 'bought').find((r) => r.id === landed) || null;
+        };
       } else {
         const done = reply.changed === true;
         const where = op.op === 'buy' ? 'bought' : 'to_buy';
@@ -609,7 +639,10 @@
     // The page closed while this change was on its way, and its answer came anyway (§8.2). It comes off
     // the queue saved on this device by its id, never by saving this page's queue over it (a page
     // opened since may have saved its own there), and the changes waiting for it get their seen from the
-    // answer, as settle() gives them. With no answer it stays saved, and goes again next time.
+    // answer, as settle() gives them; the list in the answer becomes the saved list (unless a newer one
+    // is saved: a later as_of), so the next visit, before a read or without one, shows that change done
+    // and lays what still waits over the line as it is now. With no answer it stays saved, and goes
+    // again next time.
     function answeredLate(op, res) {
       const how = answer(res);
       if (how === 'retry') { onTheWay.delete(wayKey(op)); return; }
@@ -620,9 +653,31 @@
         const list = saved.queue.filter((x) => x && typeof x === 'object');
         const was = list.find((x) => x.id === op.id);
         if (!was) return;
-        saved.queue = how === 'ok' ? settled(list, was, res.data).queue : without(list, was);
+        if (how === 'ok') {
+          const done = settled(list, was, res.data);
+          saved.queue = done.queue;
+          const kept = saved.snap && typeof saved.snap === 'object' ? String(saved.snap.as_of || '') : '';
+          if (!kept || kept <= String(done.snap.as_of || '')) saved.snap = done.snap;   // as_of: 'YYYY-MM-DDTHH:MI'
+        } else {
+          saved.queue = without(list, was);
+        }
         localStorage.setItem(key, JSON.stringify(saved));
       } catch (err) { /* the page works without it */ }
+    }
+
+    // The answer to a change a closed page sent (read() found it on the saved queue), come before this
+    // page sent it itself: taken now, as pump() takes an answer. With no answer it stays, and goes with
+    // the rest. The closed page's answeredLate() has already taken it off the saved queue; settle()
+    // then saves this page's queue without it. One this page is waiting for (inflight) is pump()'s.
+    function answeredEarly(op, res) {
+      if (stopped || inflight === op || !queue.includes(op)) return;
+      const how = answer(res);
+      if (how === 'retry') return;
+      onTheWay.delete(wayKey(op));
+      if (how === 'gone') { forget(); emit('onChange'); emit('onGone'); return; }
+      if (how === 'refused') { drop(op); changed(); emit('onRefused', op, res.error); }
+      else settle(op, res.data);
+      if (!queue.length) failing = false;
     }
 
     // ---- Reads
@@ -678,14 +733,17 @@
           const priv = !!op.private;
           const exact = (r) => nameKey(r.name) === k;
           const twin = (r) => !!r.other && nameKey(r.other) === k;
-          // The line it lands on, as the database looks (§4.1): one with this name, with this lock
-          // first, then the other lock; else a twin in the other language, while it is to buy.
-          const pick = (list, match) => list.find((r) => match(r) && (myDay || !!r.private === priv))
-            || list.find((r) => match(r) && (myDay || !r.private || !priv));
-          let r = pick(toBuy, exact);
-          let back = null;
-          if (!r) back = pick(bought, exact);
-          if (!r && !back) r = pick(toBuy, twin);
+          // The line it lands on, as the database looks (§4.1): the one with this name and this lock, to
+          // buy or bought; else the other lock's, to buy or bought; else a twin in the other language,
+          // while it is to buy (this lock first). A line bought before today isn't in the list: if the
+          // database takes it, settled() moves a tick waiting for this add to it.
+          const lock = (x) => myDay || !!x.private === priv;
+          const pick = (list, match) => list.find((x) => match(x) && lock(x)) || list.find(match);
+          let r = toBuy.find((x) => exact(x) && lock(x)) || null;
+          let back = r ? null : bought.find((x) => exact(x) && lock(x)) || null;
+          if (!r && !back) r = toBuy.find(exact) || null;
+          if (!r && !back) back = bought.find(exact) || null;
+          if (!r && !back) r = pick(toBuy, twin) || null;
           if (r) {
             // Its note joins after " · ", unless the line's note has it already: the whole note, or a
             // run of its " · " parts (§4.1, as the database reads it).
