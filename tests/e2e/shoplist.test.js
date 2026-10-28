@@ -6,8 +6,11 @@
 // keeps everything ("not sent yet", retries at 2, 5, 10 and 30 seconds, the banner after 15), the queue
 // and the list saved for their owner only, refusals, a link that no longer works, "changed on another
 // phone", changes older than 24 hours; a change answered after its page closed (taken off the saved
-// queue by id, never sent again, its answer taken by a page opened since); a resend's "no change" (an
-// un-tick's is this phone's own, a tick's only when the line is bought by this phone); an Undo by id
+// queue by id, never sent again, its answer taken by a page opened since); every change sent with its own
+// key, so a second try gets the first answer and changes nothing (a resent add never brings back a line
+// bought since, a resent un-tick that never got through doesn't hand its seen to the tick behind it
+// when someone has put the line back); a tick's "no change" is this phone's own only when the line is
+// bought by this phone; an Undo by id
 // only of this phone's own purchase, with the seen from its tick's answer even after a read past the
 // household's midnight; rows a waiting change moved have no seen of their own; a tick of a line a
 // waiting add brings back waits for that add; a waiting add's note laid over the list as the database
@@ -30,9 +33,19 @@ const check = (name, ok, detail) => results.push(`${ok ? 'PASS' : 'FAIL'}  ${nam
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const TOKEN = '0123456789abcdef0123456789abcdef';
 const START = new Date('2026-10-27T13:42:00Z');
+// A change as sent, its key checked and set aside: every change carries its own key, a version 4 uuid
+// (a missing or malformed key stays in, so the comparison fails).
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const keyed = (x, k = 'key') => {
+  const rest = Object.assign({}, x);
+  const key = rest[k];
+  delete rest[k];
+  return UUID.test(key) ? rest : Object.assign(rest, { [k]: key === undefined ? 'missing' : key });
+};
 
 // In the page: a stand-in for the list functions (the Food page's shapes; { items } for My day's),
-// with the rules of §4.2 for a tick (it changes a row only in the state the phone saw), and a send()
+// with the rules of §4.2 for a tick (it changes a row only in the state the phone saw), each change done
+// once per key (a second try gets the first answer, as private.list_done keeps it), and a send()
 // whose answers the test controls: mode 'ok', 'down' (no answer), '503', 'refuse' (P0001), 'null'
 // (a token function's null), 'lost' (applied, then the answer is lost); gate holds the answers.
 function pageFake() {
@@ -70,6 +83,14 @@ function pageFake() {
       if (r && op.op === 'unbuy' && r.bought_at && r.bought_at === op.seen) { Object.assign(r, { bought_at: null, bought_by: null, added_at: stamp() }); changed = true; }
       return Object.assign({ changed }, f.snapshot());
     };
+    // f.apply once per key: a second try gets the first answer, with the list as it is now.
+    f.done = new Map();
+    f.answer = (op) => {
+      if (op.key && f.done.has(op.key)) return Object.assign({}, f.done.get(op.key), f.snapshot());
+      const reply = f.apply(op);
+      if (op.key) f.done.set(op.key, op.op === 'add' ? { result: reply.result, item_id: reply.item_id, name: reply.name } : { changed: reply.changed });
+      return reply;
+    };
     f.send = async (op) => {
       f.sent.push(JSON.parse(JSON.stringify(op)));
       if (f.gate) await f.gate;
@@ -77,7 +98,7 @@ function pageFake() {
       if (f.mode === '503') return { data: null, error: { message: 'Service Unavailable', code: '' }, status: 503 };
       if (f.mode === 'refuse') return { data: null, error: { message: 'Too many ticks from My day today.', code: 'P0001' }, status: 400 };
       if (f.mode === 'null') return { data: null, error: null, status: 200 };
-      const reply = f.apply(op);
+      const reply = f.answer(op);
       if (f.mode === 'lost') { f.mode = 'ok'; throw new TypeError('Failed to fetch'); }
       return { data: reply, error: null, status: 200 };
     };
@@ -224,8 +245,9 @@ function pageFake() {
   check('a tick shows at once, before any answer: the row moves to bought, marked pending (not "not sent yet"), with the buyer',
     same(out.shown, { toBuy: ['Eggs'], bought: [['Milk', true, false, 'p-alex']] }) && out.st1.busy && out.st1.waiting === 1, JSON.stringify([out.shown, out.st1]));
   check('Undo once the tick has left the phone: queued behind it, not cancelled', out.undo === true && out.st2.waiting === 2, JSON.stringify(out.st2));
-  check('both are sent, in order; the Undo carries the seen from the tick\'s reply (bought_at, microseconds kept)',
-    out.sent.length === 2 && same(out.sent[0], { op: 'buy', item: 'm', seen: '2026-10-27T13:00:00.111111+00:00' }) && out.sent[1].op === 'unbuy'
+  check('both are sent, in order, each with its own key; the Undo carries the seen from the tick\'s reply (bought_at, microseconds kept)',
+    out.sent.length === 2 && same(keyed(out.sent[0]), { op: 'buy', item: 'm', seen: '2026-10-27T13:00:00.111111+00:00' }) && out.sent[1].op === 'unbuy'
+    && UUID.test(out.sent[1].key) && out.sent[1].key !== out.sent[0].key
     && /^2026-10-27T13:42:\d\d\.\d{6}\+00:00$/.test(out.sent[1].seen) && same(out.replies, ['buy:done', 'unbuy:done']), JSON.stringify([out.sent, out.replies]));
   check('after the answers: Milk is to buy again, nothing waits, the list and an empty queue are saved for their owner',
     same(out.after.to_buy.map((r) => r.name), ['Eggs', 'Milk']) && !out.after.to_buy.some((r) => r.pending) && out.st3.waiting === 0 && !out.st3.busy
@@ -249,7 +271,7 @@ function pageFake() {
     return { mid: mid.bought.map((r) => r.name), st, twice, sent: f.sent, replies: replies(), eggs: f.rows.find((r) => r.id === 'e').bought_at, after: box.view().to_buy.map((r) => [r.name, r.id]) };
   });
   check('a tick waiting behind another change shows at once', same(out.mid, ['Eggs']), JSON.stringify(out.mid));
-  check('Undo before the tick left the phone: the two cancel out, nothing is sent for them', out.st.waiting === 1 && same(out.sent, [{ op: 'add', name: 'Bread', private: false }])
+  check('Undo before the tick left the phone: the two cancel out, nothing is sent for them', out.st.waiting === 1 && same(out.sent.map((x) => keyed(x)), [{ op: 'add', name: 'Bread', private: false }])
     && out.eggs === null && same(out.replies, ['add:added']), JSON.stringify([out.st, out.sent, out.replies]));
   check('a tick of a row the list doesn\'t have does nothing', out.twice === false);
   check('the add is answered: Bread is on the list with its id', same(out.after, [['Bread', 'i-2'], ['Eggs', 'e']]), JSON.stringify(out.after));
@@ -405,12 +427,13 @@ function pageFake() {
     Object.assign(f.rows[3], { bought_at: 'B-sam2', bought_by: 'p-sam' });
     open();
     await window.settle();
-    return { replies: replies(), eggsStill, juice, rice: [f.rows[3].bought_at, f.rows[3].bought_by], sent: f.sent.map((x) => `${x.op}:${x.item}`) };
+    return { replies: replies(), eggsStill, juice, rice: [f.rows[3].bought_at, f.rows[3].bought_by], sent: f.sent.map((x) => `${x.op}:${x.item}`), keys: f.sent.map((x) => x.key) };
   });
   check('a tick someone else already did answers changed: false, and it is the same as asked: nothing to say', out.replies[0] === 'buy:same', JSON.stringify(out.replies));
   check('a tick from before someone put the line back buys nothing new: "changed on another phone"', out.replies[1] === 'buy:changed' && out.eggsStill === null, JSON.stringify(out.replies));
-  check('a lost answer: the tick is sent again (changed: false, but bought by me), and the Undo queued behind it still undoes it',
-    same(out.replies.slice(2, 4), ['buy:same', 'unbuy:done']) && out.juice === null, JSON.stringify(out));
+  check('a lost answer: the tick is sent again with the same key and gets its first answer ("done", nothing done twice), and the Undo queued behind it still undoes it',
+    same(out.replies.slice(2, 4), ['buy:done', 'unbuy:done']) && out.juice === null && same(out.keys.slice(2, 4), [out.keys[2], out.keys[2]]) && UUID.test(out.keys[2]),
+    JSON.stringify(out));
   check('an Undo queued behind a tick that someone else beat is dropped, never undoing their purchase: "changed on another phone"',
     out.replies[4] === 'buy:changed' && same(out.rice, ['B-sam2', 'p-sam']) && !out.sent.includes('unbuy:r'), JSON.stringify(out));
 
@@ -619,11 +642,36 @@ function pageFake() {
     open();
   });
   await tick(2000);                     // the un-tick goes again: "no change", Milk is to buy
-  out = await ev(() => ({ r: window.r16, sent: window.f16.sent.map((x) => `${x.op}:${x.seen}`), replies: window.b16.replies(),
+  out = await ev(() => ({ r: window.r16, sent: window.f16.sent.map((x) => `${x.op}:${x.seen}`), keys: window.f16.sent.map((x) => x.key), replies: window.b16.replies(),
     milk: [window.f16.rows[0].bought_at, window.f16.rows[0].bought_by, window.f16.rows[0].added_at], st: window.b16.box.state() }));
-  check('an un-tick sent again after a lost answer finds the line to buy (its own change): the tick behind it goes with the line\'s new seen, and Milk is bought, with nothing to say',
-    out.r === true && same(out.sent, ['unbuy:B1', 'unbuy:B1', `buy:${out.milk[2]}`]) && out.milk[2] !== 'A1' && same(out.replies, ['unbuy:same', 'buy:done'])
+  check('an un-tick sent again after a lost answer gets its first answer (done, with the same key): the tick behind it goes with the line\'s new seen, and Milk is bought, with nothing to say',
+    out.r === true && same(out.sent, ['unbuy:B1', 'unbuy:B1', `buy:${out.milk[2]}`]) && out.milk[2] !== 'A1' && same(out.replies, ['unbuy:done', 'buy:done'])
+    && out.keys[0] === out.keys[1] && UUID.test(out.keys[0])
     && !!out.milk[0] && out.milk[1] === 'p-alex' && out.st.waiting === 0, JSON.stringify(out));
+  // The same taps when the un-tick never got through, and Sam put the line back meanwhile (a new need):
+  // the un-tick, done only now, finds the line no longer as it saw it, "no change", so the tick waiting
+  // behind it is dropped ("changed on another phone") and never buys Sam's need.
+  await ev(() => {
+    localStorage.clear();
+    const f = window.fakeList([{ id: 'm', name: 'Milk', added_at: 'A1', bought_at: 'B1', bought_by: 'p-alex' }]);
+    window.f16 = f;
+    window.b16 = window.makeBox(f);
+    const { box } = window.b16;
+    box.take(f.snapshot(), box.ticket());
+    f.mode = 'down';                    // the un-tick gets no answer and isn't done
+    box.unbuy(box.view().bought[0]);
+    window.r16 = box.buy('m');          // tapped again: it waits behind the un-tick
+  });
+  await tick(0);
+  await ev(() => {
+    Object.assign(window.f16.rows[0], { bought_at: null, bought_by: null, added_at: 'A-sam', added_by: 'p-sam' });   // Sam puts Milk back
+    window.f16.mode = 'ok';
+  });
+  await tick(2000);
+  out = await ev(() => ({ r: window.r16, sent: window.f16.sent.map((x) => `${x.op}:${x.seen}`), replies: window.b16.replies(),
+    milk: [window.f16.rows[0].bought_at, window.f16.rows[0].added_at], st: window.b16.box.state() }));
+  check('an un-tick that never got through, sent again after Sam put the line back: "no change", so the tick behind it is dropped ("changed on another phone") and Sam\'s need stays to buy',
+    out.r === true && same(out.sent, ['unbuy:B1', 'unbuy:B1']) && same(out.replies, ['unbuy:changed']) && same(out.milk, [null, 'A-sam']) && out.st.waiting === 0, JSON.stringify(out));
   await ev(() => {
     localStorage.clear();
     const f = window.fakeList([{ id: 'r', name: 'Rice', added_at: 'A2' }]);
@@ -796,7 +844,7 @@ function pageFake() {
     return { boughtAt, gone, undo, shown, sent: f.sent, replies: replies(), milk: f.rows[0].bought_at, after: box.view().to_buy.map((r) => r.name) };
   });
   check('Undo by id after a read past midnight left the line out of the list: sent with the seen from the tick\'s reply, shown to buy at once, and Milk is to buy again',
-    out.gone === 0 && out.undo === true && same(out.shown, [['Milk', 'dairy', true]]) && out.sent.length === 2 && same(out.sent[1], { op: 'unbuy', item: 'm', seen: out.boughtAt })
+    out.gone === 0 && out.undo === true && same(out.shown, [['Milk', 'dairy', true]]) && out.sent.length === 2 && same(keyed(out.sent[1]), { op: 'unbuy', item: 'm', seen: out.boughtAt })
     && same(out.replies, ['buy:done', 'unbuy:done']) && out.milk === null && same(out.after, ['Milk']), JSON.stringify(out));
   out = await ev(async () => {
     localStorage.clear();
@@ -814,6 +862,28 @@ function pageFake() {
   });
   check('… a purchase since then by someone else stays: the Undo carries this phone\'s tick\'s seen, so it is answered "changed on another phone"',
     out.undo === true && same(out.sent.slice(1), [`unbuy:${out.mine}`]) && same(out.replies, ['buy:done', 'unbuy:changed']) && same(out.milk, ['B-sam', 'p-sam']), JSON.stringify(out));
+  // ---- 22. An add done with its answer lost, sent again once Sam has bought the line: the same key,
+  // so it gets its first answer and changes nothing (Milk stays bought, not "back on the list"). The
+  // same after a reload, from the saved queue.
+  for (const reload of [false, true]) {
+    out = await ev(async (again) => {
+      localStorage.clear();
+      const f = window.fakeList([{ id: 'm', name: 'Milk', aisle: 'dairy', added_at: 'A1' }, { id: 'e', name: 'Eggs', added_at: 'A2' }]);
+      let { box, replies } = window.makeBox(f);
+      box.take(f.snapshot(), box.ticket());
+      f.mode = 'lost';                                   // done, and the answer lost
+      box.add('Milk: 2 · big');
+      await window.settle();
+      Object.assign(f.rows[0], { bought_at: 'B-sam', bought_by: 'p-sam' });   // Sam buys Milk
+      if (again) { box.stop(); ({ box, replies } = window.makeBox(f)); }        // the page reloaded, the add saved
+      box.kick();
+      await window.settle();
+      return { sent: f.sent.map((x) => [x.op, x.name, x.key]), replies: replies(), milk: [f.rows[0].bought_at, f.rows[0].bought_by], st: box.state() };
+    }, reload);
+    check(`an add whose answer was lost, sent again${reload ? ' after a reload (from the saved queue)' : ''} once Sam bought the line: the same key, its first answer ("already"), and Milk stays bought by Sam`,
+      out.sent.length === 2 && out.sent[0][2] === out.sent[1][2] && UUID.test(out.sent[0][2]) && same(out.replies, ['add:already'])
+      && same(out.milk, ['B-sam', 'p-sam']) && out.st.waiting === 0, JSON.stringify(out));
+  }
   await context.close();
 
   // =====================================================================
@@ -848,8 +918,8 @@ function pageFake() {
     window.log2 = [];
     window.box2 = HomeShop.outbox({
       key: HomeShop.KEYS.hub, owner: me, who: me, mine: (r) => r.bought_by === me,
-      send: (op) => (op.op === 'add' ? sb.rpc('add_to_list', { p_name: op.name, p_private: !!op.private })
-        : sb.rpc('buy_item', { p_item: op.item, p_bought: op.op === 'buy', p_seen: op.seen })),
+      send: (op) => (op.op === 'add' ? sb.rpc('add_to_list', { p_name: op.name, p_private: !!op.private, p_key: op.key })
+        : sb.rpc('buy_item', { p_item: op.item, p_bought: op.op === 'buy', p_seen: op.seen, p_key: op.key })),
       onReply: (op, r, how) => window.log2.push([op.op, how, r.name || null]),
       onRefused: (op, e) => window.log2.push(['refused', op.op, e.code]),
     });
@@ -876,7 +946,7 @@ function pageFake() {
   const buys = (db.rpcCalls || []).filter((c) => c.name === 'buy_item');
   check('a tick and its Undo through buy_item: seen goes back exactly as the database wrote it (microseconds), and the line is to buy again, with a new seen',
     same(p2.log, [['buy', 'done', null], ['unbuy', 'done', null]]) && buys.length === 2 && buys[0].body.p_seen === milkSeen0 && /\.\d{6}\+00:00$/.test(buys[1].body.p_seen)
-    && same(buys[1].body, { p_item: milkRow.id, p_bought: false, p_seen: buys[1].body.p_seen }) && milkRow.bought_at === null && milkRow.added_at !== milkSeen0
+    && same(keyed(buys[1].body, 'p_key'), { p_item: milkRow.id, p_bought: false, p_seen: buys[1].body.p_seen }) && milkRow.bought_at === null && milkRow.added_at !== milkSeen0
     && (p2.view.to_buy.find((r) => r.name === 'milk') || {}).seen === milkRow.added_at, JSON.stringify([p2.log, buys.map((b) => b.body), milkRow.added_at]));
   // No connection for buy_item: the tick waits, "not sent yet"; it goes once when the connection is back.
   await page.route('**/rest/v1/rpc/buy_item', (route) => route.abort('internetdisconnected'));
@@ -895,6 +965,19 @@ function pageFake() {
   await until(() => window.box2.state().waiting === 0);
   p2 = await page.evaluate(() => window.log2.slice(-1)[0]);
   check('an unknown id answers changed: false, which the outbox reports as changed on another phone', same(p2, ['unbuy', 'changed', null]), JSON.stringify(p2));
+  // The same key twice through supabase-js and the fakes: the first answer, nothing done twice.
+  p2 = await page.evaluate(async () => {
+    const sb = HomeHub.core.sb;
+    const key = crypto.randomUUID();
+    const a = await sb.rpc('add_to_list', { p_name: 'Bagels', p_key: key });
+    const { data } = await sb.rpc('shopping_list');
+    const bagels = (data.to_buy || []).find((r) => r.name === 'Bagels') || {};
+    await sb.rpc('buy_item', { p_item: bagels.id, p_bought: true, p_seen: bagels.seen, p_key: crypto.randomUUID() });
+    const b = await sb.rpc('add_to_list', { p_name: 'Bagels', p_key: key });
+    return [a.data && a.data.result, b.data && b.data.result, !!b.data && b.data.bought.some((r) => r.name === 'Bagels'), !!b.data && b.data.to_buy.some((r) => r.name === 'Bagels')];
+  });
+  check('through the fakes: an add sent twice with the same key gets its first answer ("added") and doesn\'t bring back the line bought in between',
+    same(p2, ['added', 'added', true, false]), JSON.stringify(p2));
   await page.evaluate(() => HomeHub.core.sb.auth.signOut());
   await page.waitForTimeout(500);
   check('signing out removes the saved list', (await page.evaluate(() => localStorage.getItem('homehub.shop.hub'))) === null);

@@ -927,6 +927,116 @@ select test.is((pg_temp.line('Raisins')).bought_at, null, '... Raisins stays to 
 select test.is(pg_temp.used('2026-11-05'), '0 1', '... and the resend isn''t counted');
 rollback;
 
+-- Each change done once (§8, private.list_done): a phone sends every change with its own key, and a
+-- second try (its answer lost, or the page reloaded with it on its way) gets the first answer and
+-- changes nothing, whatever happened to the line since. A key is its sender's and that change's.
+begin;
+:as_owner
+set hub.now = '2026-11-06 10:00 America/New_York';
+:as_admin
+select test.is(add_to_list('Yogurt', false, 'a0000000-0000-4000-8000-000000000001') ->> 'result', 'added', 'keys: Alex adds Yogurt (a key with it)');
+select test.is(add_to_list('Yogurt: 2 · big', false, 'a0000000-0000-4000-8000-000000000002') ->> 'result', 'already',
+               '... and "Yogurt: 2 · big" (the answer never reaches his phone)');
+:as_owner
+set hub.now = '2026-11-06 10:01 America/New_York';
+:as_adult
+select test.is(buy_item((pg_temp.line('Yogurt')).id, true, (pg_temp.line('Yogurt')).added_at, 'b0000000-0000-4000-8000-000000000001') ->> 'changed', 'true',
+               '... Sam buys Yogurt');
+select (pg_temp.line('Yogurt')).bought_at as yogurt_bought \gset
+:as_owner
+set hub.now = '2026-11-06 10:02 America/New_York';
+:as_admin
+select test.is((select concat_ws(' | ', r ->> 'result', r ->> 'name', (r ->> 'item_id')::uuid = (pg_temp.line('Yogurt')).id)
+                from (select add_to_list('Yogurt: 2 · big', false, 'a0000000-0000-4000-8000-000000000002') as r) x), 'already | Yogurt | t',
+               '... Alex''s phone sends the add again, with its key: the first answer ("already")');
+select test.is((select concat_ws(' | ', l.bought_at = :'yogurt_bought', l.bought_by = test.person('Sam'), l.note) from pg_temp.line('Yogurt') l),
+               't | t | 2 · big', '... and changes nothing: Yogurt stays bought by Sam (not back on the list), its note as it was');
+select test.is(pg_temp.names(add_to_list('Yogurt: 2 · big', false, 'a0000000-0000-4000-8000-000000000002'), 'bought'), 'Yogurt',
+               '... the answer''s list is the list as it is now (Yogurt under bought)');
+:as_adult
+select test.is(add_to_list('Yogurt: 2 · big', false, 'a0000000-0000-4000-8000-000000000002') ->> 'result', 'back',
+               'Sam sending Alex''s key: not his, so it is his own add (Yogurt back on the list)');
+select test.is((pg_temp.line('Yogurt')).added_by, test.person('Sam'), '... added by Sam');
+:as_admin
+select test.is(add_to_list('Granola', false, 'a0000000-0000-4000-8000-000000000002') ->> 'result', 'added',
+               'Alex''s key with another change (Granola): no key, the add is done');
+select test.is(add_to_list('Yogurt: 2 · big', false, 'a0000000-0000-4000-8000-000000000002') ->> 'result', 'already',
+               '... and the key still gives its own change''s first answer');
+select test.is(add_to_list('Yogurt: 2 · big', false, 'a0000000-0000-4000-8000-000000000003') ->> 'result', 'already',
+               'a new key is a new add (Yogurt is to buy again: already)');
+select test.is(add_to_list('Yogurt: 2 · big') ->> 'result', 'already', '... and no key is as before');
+-- Ticks: the first answer again, true or false.
+select (pg_temp.line('Granola')).added_at as granola_seen \gset
+select test.is(buy_item((pg_temp.line('Granola')).id, true, :'granola_seen', 'a0000000-0000-4000-8000-000000000011') ->> 'changed', 'true', 'Alex ticks Granola');
+select (pg_temp.line('Granola')).bought_at as granola_bought \gset
+:as_owner
+set hub.now = '2026-11-06 10:03 America/New_York';
+:as_admin
+select test.is(buy_item((pg_temp.line('Granola')).id, true, :'granola_seen', 'a0000000-0000-4000-8000-000000000011') ->> 'changed', 'true',
+               '... the tick sent again (its answer lost): true, its first answer');
+select test.is((pg_temp.line('Granola')).bought_at, :'granola_bought'::timestamptz, '... bought once');
+select test.is(buy_item((pg_temp.line('Granola')).id, false, :'granola_bought', 'a0000000-0000-4000-8000-000000000012') ->> 'changed', 'true',
+               'his Undo (the answer lost)');
+select (pg_temp.line('Granola')).added_at as granola_seen2 \gset
+:as_owner
+set hub.now = '2026-11-06 10:04 America/New_York';
+:as_admin
+select test.is(buy_item((pg_temp.line('Granola')).id, true, :'granola_seen2', 'a0000000-0000-4000-8000-000000000013') ->> 'changed', 'true',
+               '... and his tick again');
+select test.is(buy_item((pg_temp.line('Granola')).id, false, :'granola_bought', 'a0000000-0000-4000-8000-000000000012') ->> 'changed', 'true',
+               '... the Undo sent again: true (it was done), and it undoes nothing now');
+select test.is((pg_temp.line('Granola')).bought_by, test.person('Alex'), '... Granola stays bought (his last tap)');
+-- An un-tick that never arrived, while someone else put the line back: done now, against the state it
+-- was made on, so false; its key keeps that answer.
+select (pg_temp.line('Granola')).bought_at as granola_bought2 \gset
+select test.is(buy_item((pg_temp.line('Granola')).id, false, :'granola_bought2', 'a0000000-0000-4000-8000-000000000014') ->> 'changed', 'true',
+               'Alex puts Granola back on the list');
+:as_adult
+select test.is(buy_item((pg_temp.line('Granola')).id, false, :'granola_bought2', 'b0000000-0000-4000-8000-000000000014') ->> 'changed', 'false',
+               'Sam''s un-tick of the same purchase, arriving only now (it never got through before): false');
+select test.is(buy_item((pg_temp.line('Granola')).id, false, :'granola_bought2', 'b0000000-0000-4000-8000-000000000014') ->> 'changed', 'false',
+               '... and false again when sent again');
+-- From My day: counted once.
+:as_anon
+select test.is(add_to_list_by_token(test.token('Morgan'), 'Galletas', 'c0000000-0000-4000-8000-000000000001') ->> 'result', 'added',
+               'Morgan adds Galletas on My day (a key with it)');
+select test.is(pg_temp.used('2026-11-06'), '1 0', '... one change counted');
+:as_admin
+select test.is(buy_item((pg_temp.line('Galletas')).id, true, (pg_temp.line('Galletas')).added_at) ->> 'changed', 'true', '... Alex buys it');
+:as_anon
+select test.is(add_to_list_by_token(test.token('Morgan'), 'Galletas', 'c0000000-0000-4000-8000-000000000001') ->> 'result', 'added',
+               '... her add sent again: the first answer ("added")');
+select test.is((select concat_ws(' ', l.bought_by = test.person('Alex'), pg_temp.used('2026-11-06')) from pg_temp.line('Galletas') l), 't 1 0',
+               '... Galletas stays bought by Alex, and nothing more is counted');
+select (pg_temp.line('Granola')).added_at as granola_seen3 \gset
+select test.is(buy_item_by_token(test.token('Morgan'), (pg_temp.line('Granola')).id, true, :'granola_seen3',
+                                 'c0000000-0000-4000-8000-000000000002') ->> 'changed', 'true', 'she ticks Granola');
+select test.is(buy_item_by_token(test.token('Morgan'), (pg_temp.line('Granola')).id, true, :'granola_seen3',
+                                 'c0000000-0000-4000-8000-000000000002') ->> 'changed', 'true', '... sent again: true');
+select test.is((select concat_ws(' ', l.bought_by = test.person('Morgan'), pg_temp.used('2026-11-06')) from pg_temp.line('Granola') l), 't 1 1',
+               '... one tick counted');
+:as_admin
+select test.is(add_to_list('Galletas', false, 'c0000000-0000-4000-8000-000000000001') ->> 'result', 'back',
+               'her key sent signed in: not the same sender (My day), so it is a new add');
+-- What is kept: 2 days, and a sender's latest 200.
+:as_owner
+select test.is((select count(*) from private.list_done where answer is null), 0::bigint, 'every key kept has its answer');
+set hub.now = '2026-11-08 10:05 America/New_York';
+:as_anon
+do $$
+begin
+  for i in 1 .. 205 loop   -- 205 ticks of unknown lines: false, not counted, each with its key
+    perform public.buy_item_by_token(test.token('Morgan'), gen_random_uuid(), true, now(), gen_random_uuid());
+  end loop;
+end;
+$$;
+:as_owner
+select test.is((select count(*) from private.list_done where by_id = test.person('Morgan')), 200::bigint, 'a sender''s latest 200 keys are kept');
+select test.is((select count(*) from private.list_done where at < '2026-11-06 10:05 America/New_York'), 0::bigint,
+               '... and none older than 2 days');
+select test.is((select count(*) from private.list_done where by_id = test.person('Alex')), 0::bigint, '... (Alex''s, from 2 days ago, are gone)');
+rollback;
+
 -- The caps: 30 changes and 100 ticks a day, counted per call.
 :as_owner
 set hub.now = '2026-10-29 10:00 America/New_York';

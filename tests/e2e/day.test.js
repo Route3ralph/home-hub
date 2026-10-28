@@ -41,6 +41,15 @@ const SHOTS = __dirname + '/shots/';
 const results = [];
 const check = (name, ok, detail) => results.push(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? `  (${String(detail).slice(0, 240)})` : ''}`);
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+// A list change's body as sent, its key checked and set aside: every change carries its own key
+// (p_key, a version 4 uuid), sent with every try; a missing or malformed one stays in, so a comparison fails.
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const keyed = (body) => {
+  const rest = Object.assign({}, body);
+  const key = rest.p_key;
+  delete rest.p_key;
+  return UUID.test(key) ? rest : Object.assign(rest, { p_key: key === undefined ? 'missing' : key });
+};
 const CORS = { 'access-control-allow-origin': '*', 'access-control-allow-headers': '*', 'access-control-allow-methods': 'GET,POST,PATCH,DELETE,OPTIONS', 'access-control-expose-headers': '*' };
 
 // ---- Fixtures (fictional people only)
@@ -940,7 +949,7 @@ const ANDROID = 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KH
   check('tick: "Comprado: Cebollas" with Deshacer and ×', (await text(page, '.toast-action span')) === 'Comprado: Cebollas' && same(await texts(page, '.toast-action button'), ['Deshacer', '×']));
   await until(() => calls(db, 'buy_item_by_token').length === 1);
   check('tick: buy_item_by_token with the token, the line, true and the seen it was shown with (microseconds kept)',
-    same(calls(db, 'buy_item_by_token')[0].body, { p_token: TAYLOR, p_item: itemOf(db, 'Cebollas').id, p_bought: true, p_seen: '2026-10-24T22:15:03.123456+00:00' }),
+    same(keyed(calls(db, 'buy_item_by_token')[0].body), { p_token: TAYLOR, p_item: itemOf(db, 'Cebollas').id, p_bought: true, p_seen: '2026-10-24T22:15:03.123456+00:00' }),
     JSON.stringify(calls(db, 'buy_item_by_token')[0].body));
   await lrow(page, 'Cilantro').click();
   lv = await listView(page);
@@ -961,7 +970,7 @@ const ANDROID = 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KH
   await page.click('.toast-action .toast-btn:not(.toast-x)');
   await until(() => calls(db, 'buy_item_by_token').length === 3);
   check('Deshacer: buy_item_by_token with false and the seen of her tick (from the reply)',
-    same(calls(db, 'buy_item_by_token')[2].body, { p_token: TAYLOR, p_item: itemOf(db, 'Cilantro').id, p_bought: false, p_seen: cilantroBought }), JSON.stringify(calls(db, 'buy_item_by_token')[2].body));
+    same(keyed(calls(db, 'buy_item_by_token')[2].body), { p_token: TAYLOR, p_item: itemOf(db, 'Cilantro').id, p_bought: false, p_seen: cilantroBought }), JSON.stringify(calls(db, 'buy_item_by_token')[2].body));
   check('Deshacer: "Deshecho…", and Cilantro is back to buy', await until(async () => (await text(page, '.toast')) === 'Deshecho. Vuelve a estar en tu lista.'
     && same(names((await listView(page)).toBuy), ['Cilantro', 'Tortillas', 'Milk · leche'])), JSON.stringify(await listView(page)));
   await toasts(page);
@@ -972,7 +981,7 @@ const ANDROID = 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KH
   check('tapping her own tick under Comprado hoy: unticked at once, no question, the undone toast',
     (await lrow(page, 'Cebollas').getAttribute('aria-checked')) === 'false' && (await text(page, '.toast')) === 'Deshecho. Vuelve a estar en tu lista.' && !(await page.$('.toast-action')));
   await until(() => calls(db, 'buy_item_by_token').length === 4);
-  check('... with buy_item_by_token(false) and its seen', same(calls(db, 'buy_item_by_token')[3].body, { p_token: TAYLOR, p_item: itemOf(db, 'Cebollas').id, p_bought: false, p_seen: cebollasBought }));
+  check('... with buy_item_by_token(false) and its seen', same(keyed(calls(db, 'buy_item_by_token')[3].body), { p_token: TAYLOR, p_item: itemOf(db, 'Cebollas').id, p_bought: false, p_seen: cebollasBought }));
   await page.clock.runFor(3000);
   check('... and it is back to buy once the finger is off the list', same(names((await listView(page)).toBuy), ['Cebollas', 'Cilantro', 'Tortillas', 'Milk · leche']));
   await toasts(page);
@@ -1018,7 +1027,7 @@ const ANDROID = 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KH
     (await text(page, '.toast-action span')) === 'Huevos' && (await texts(page, '.toast-action button'))[0] === '¿Añadir otra vez?' && db.calls.length === before);
   await page.click('.toast-action .toast-btn:not(.toast-x)');
   await until(() => calls(db, 'add_to_list_by_token').length === 1);
-  check('"¿Añadir otra vez?" adds it again by name', same(calls(db, 'add_to_list_by_token')[0].body, { p_token: TAYLOR, p_name: 'Huevos' }));
+  check('"¿Añadir otra vez?" adds it again by name', same(keyed(calls(db, 'add_to_list_by_token')[0].body), { p_token: TAYLOR, p_name: 'Huevos' }));
   // The answer's toast lasts 3 seconds of the page's clock, so look for it before running the clock on.
   const backToast = await until(async () => (await text(page, '.toast')) === 'Otra vez en la lista');
   const backToastText = await text(page, '.toasts');
@@ -1030,7 +1039,7 @@ const ANDROID = 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KH
   // ---- The add box: Enter, the reply's words, the box keeps the focus
   await typeAdd(page, 'Leche');
   await until(() => calls(db, 'add_to_list_by_token').length === 2);
-  check('add: add_to_list_by_token with the text as typed', same(calls(db, 'add_to_list_by_token')[1].body, { p_token: TAYLOR, p_name: 'Leche' }));
+  check('add: add_to_list_by_token with the text as typed', same(keyed(calls(db, 'add_to_list_by_token')[1].body), { p_token: TAYLOR, p_name: 'Leche' }));
   check('add "Leche" while Milk is to buy: "Ya está en la lista como Milk"', await until(async () => (await text(page, '.toast')) === 'Ya está en la lista como Milk'), await text(page, '.toasts'));
   check('add: the box is empty and keeps the focus', (await page.$eval('.list-input', (i) => i.value)) === '' && await page.evaluate(() => document.activeElement && document.activeElement.classList.contains('list-input')));
   await toasts(page);
@@ -1047,7 +1056,7 @@ const ANDROID = 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KH
   check('Comprar otra vez: lately bought names by aisle (none locked, none older than 30 days)', same(again, [['Despensa', ['Arroz']], ['Limpieza y hogar', ['Jabón']]]), JSON.stringify(again));
   await page.click('.list-chip[data-key="again|Arroz"]');
   await until(() => calls(db, 'add_to_list_by_token').length === 5);
-  check('Comprar otra vez: a tap adds it by name, "Otra vez en la lista"', same(calls(db, 'add_to_list_by_token')[4].body, { p_token: TAYLOR, p_name: 'Arroz' })
+  check('Comprar otra vez: a tap adds it by name, "Otra vez en la lista"', same(keyed(calls(db, 'add_to_list_by_token')[4].body), { p_token: TAYLOR, p_name: 'Arroz' })
     && await until(async () => (await text(page, '.toast')) === 'Otra vez en la lista'));
   await page.clock.runFor(3000);
   check('Comprar otra vez: stays open, now without Arroz', await until(async () => (await page.$eval('.list-again', (d) => d.open)) && (await text(page, '.list-again summary')) === 'Comprar otra vez (1) ›'));
@@ -1058,7 +1067,7 @@ const ANDROID = 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KH
   check('suggestions: "2 jab" suggests Jabón', same(await texts(page, '.list-suggest .list-sug'), ['Jabón']), JSON.stringify(await texts(page, '.list-suggest .list-sug')));
   await page.click('.list-sug');
   await until(() => calls(db, 'add_to_list_by_token').length === 6);
-  check('suggestions: picking one adds it with the amount typed', same(calls(db, 'add_to_list_by_token')[5].body, { p_token: TAYLOR, p_name: 'Jabón: 2' })
+  check('suggestions: picking one adds it with the amount typed', same(keyed(calls(db, 'add_to_list_by_token')[5].body), { p_token: TAYLOR, p_name: 'Jabón: 2' })
     && (await page.$eval('.list-input', (i) => i.value)) === '' && await page.$eval('.list-suggest', (e) => e.hidden));
   await page.fill('.list-input', 'zz');
   check('suggestions: none for a name she hasn\'t bought', await page.$eval('.list-suggest', (e) => e.hidden));
@@ -1209,7 +1218,7 @@ const ANDROID = 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KH
   db.offline = false;
   await page.evaluate(() => window.dispatchEvent(new Event('online')));
   check('back online: the tick is sent once, with the seen it was shown with', await until(() => calls(db, 'buy_item_by_token').length === 1)
-    && same(calls(db, 'buy_item_by_token')[0].body, { p_token: TAYLOR, p_item: itemOf(db, 'Tortillas').id, p_bought: true, p_seen: tortillasSeen }) && itemOf(db, 'Tortillas').bought_by === P.taylor);
+    && same(keyed(calls(db, 'buy_item_by_token')[0].body), { p_token: TAYLOR, p_item: itemOf(db, 'Tortillas').id, p_bought: true, p_seen: tortillasSeen }) && itemOf(db, 'Tortillas').bought_by === P.taylor);
   check('back online: the banners and the marks go', await until(async () => !(await page.$('.list-offline, .list-unsent, .lrow-unsent'))), await text(page, '.list-banners'));
   await page.waitForTimeout(500);
   check('... and nothing is sent twice', calls(db, 'buy_item_by_token').length === 1);
@@ -1256,7 +1265,7 @@ const ANDROID = 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KH
   await until(() => itemOf(db, 'Huevos').bought_by === P.taylor);
   await page.waitForTimeout(400);
   check('back online: the add, then her tick with the line\'s new seen from the add\'s answer: Huevos bought by Taylor, no "Cambiado en otro teléfono"',
-    itemOf(db, 'Huevos').bought_by === P.taylor && same(calls(db, 'buy_item_by_token').slice(-1)[0].body, { p_token: TAYLOR, p_item: itemOf(db, 'Huevos').id, p_bought: true, p_seen: itemOf(db, 'Huevos').added_at })
+    itemOf(db, 'Huevos').bought_by === P.taylor && same(keyed(calls(db, 'buy_item_by_token').slice(-1)[0].body), { p_token: TAYLOR, p_item: itemOf(db, 'Huevos').id, p_bought: true, p_seen: itemOf(db, 'Huevos').added_at })
     && itemOf(db, 'Huevos').added_at !== '2026-10-23T12:00:00.000000+00:00' && same(calls(db, 'add_to_list_by_token').map((c) => c.body.p_name), ['Huevos'])
     && !(await texts(page, '.toast')).includes('Cambiado en otro teléfono'), `${await text(page, '.toasts')} ${JSON.stringify(itemOf(db, 'Huevos'))}`);
 

@@ -30,6 +30,15 @@ const SHOTS = __dirname + '/shots/';
 const results = [];
 const check = (name, ok, detail) => results.push(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? `  (${String(detail).slice(0, 300)})` : ''}`);
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+// A list change's body as sent, its key checked and set aside: every change carries its own key
+// (p_key, a version 4 uuid), sent with every try; a missing or malformed one stays in, so a comparison fails.
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const keyed = (body) => {
+  const rest = Object.assign({}, body);
+  const key = rest.p_key;
+  delete rest.p_key;
+  return UUID.test(key) ? rest : Object.assign(rest, { p_key: key === undefined ? 'missing' : key });
+};
 const CORS = { 'access-control-allow-origin': '*', 'access-control-allow-headers': '*', 'access-control-allow-methods': 'GET,POST,PATCH,DELETE,OPTIONS', 'access-control-expose-headers': '*' };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -504,7 +513,7 @@ const emailOf = (req) => {
     JSON.stringify([await names(page, 'buy'), item(db, 'Detergent').bought_by]));
   const buys = calls(db, 'buy_item');
   check('each tick is buy_item(p_item, true, p_seen) with the line as the phone saw it (microseconds kept)', buys.length === 2
-    && same(buys[0].body, { p_item: item(db, 'Detergent').id, p_bought: true, p_seen: item(db, 'Detergent').added_at }), JSON.stringify(buys.map((c) => c.body)));
+    && same(keyed(buys[0].body), { p_item: item(db, 'Detergent').id, p_bought: true, p_seen: item(db, 'Detergent').added_at }), JSON.stringify(buys.map((c) => c.body)));
   check('the toast: "Bought: Shampoo" with Undo', same(await page.$$eval('.toasts .toast-action', (ts) => ts.map((t) => [t.querySelector('span').textContent, t.querySelector('button').textContent])), [['Bought: Shampoo', 'Undo']]));
   await tick(page, 2500);
   check('still in place 2.5 seconds after the last tap', same(await names(page, 'buy'), order0));
@@ -514,7 +523,7 @@ const emailOf = (req) => {
   await page.click('.toasts .toast-action button');
   await sleep(300);
   const undo = calls(db, 'buy_item').slice(-1)[0];
-  check('Undo: buy_item(p_item, false, p_seen) with the seen of the reply\'s bought row; Shampoo is to buy again', undo && same(undo.body, { p_item: item(db, 'Shampoo').id, p_bought: false,
+  check('Undo: buy_item(p_item, false, p_seen) with the seen of the reply\'s bought row; Shampoo is to buy again', undo && same(keyed(undo.body), { p_item: item(db, 'Shampoo').id, p_bought: false,
     p_seen: undo.body.p_seen }) && /\.\d{6}\+00:00$/.test(undo.body.p_seen) && item(db, 'Shampoo').bought_at === null && (await names(page, 'buy')).includes('Shampoo'),
   JSON.stringify(undo && undo.body));
   await row(page, 'bought', 'Eggs').locator('.food-tick').click();
@@ -530,7 +539,7 @@ const emailOf = (req) => {
   await row(page, 'again', 'Onions').locator('.food-tick').click();
   await sleep(300);
   const back = calls(db, 'buy_item').slice(-1)[0];
-  check('one tap puts it back on the list: buy_item(p_item, false, <its bought_at>)', same(back.body, { p_item: item(db, 'Onions').id, p_bought: false, p_seen: at(addDays(TODAY, -10), '17:00') })
+  check('one tap puts it back on the list: buy_item(p_item, false, <its bought_at>)', same(keyed(back.body), { p_item: item(db, 'Onions').id, p_bought: false, p_seen: at(addDays(TODAY, -10), '17:00') })
     && item(db, 'Onions').bought_at === null && item(db, 'Onions').added_by === ID.alex && (await lastToast(page)) === 'Back on the list: Onions', JSON.stringify(back.body));
   await tick(page, 3100);
   check('…it leaves Buy again for To buy (Produce)', !(await names(page, 'again')).includes('Onions') && (await toBuy(page)).some((r) => r[0] === 'Produce' && r[1] === 'Onions'));
@@ -628,7 +637,7 @@ const emailOf = (req) => {
   await tick(page, 3100);
   const lateUndo = calls(db, 'buy_item').slice(-1)[0];
   check('Undo at 00:00:02: buy_item(p_item, false, <bought_at from the tick\'s reply>); Milk is to buy again, with no "Changed on another phone"',
-    !!lateUndo && same(lateUndo.body, { p_item: item(db, 'Milk').id, p_bought: false, p_seen: boughtLate }) && item(db, 'Milk').bought_at === null
+    !!lateUndo && same(keyed(lateUndo.body), { p_item: item(db, 'Milk').id, p_bought: false, p_seen: boughtLate }) && item(db, 'Milk').bought_at === null
     && (await names(page, 'buy')).includes('Milk') && !(await toasts(page)).includes('Changed on another phone'),
     JSON.stringify([lateUndo && lateUndo.body, boughtLate, await names(page, 'buy'), await toasts(page)]));
   await page.context().close();
@@ -774,7 +783,7 @@ const emailOf = (req) => {
   await sleep(300);
   const applesBuy = calls(db, 'buy_item').slice(buysBefore);
   check('back online: the add brings it back, then the tick goes with its new added_at: Apples bought by Alex again, no "Changed on another phone"',
-    applesBuy.length === 1 && same(applesBuy[0].body, { p_item: item(db, 'Apples').id, p_bought: true, p_seen: item(db, 'Apples').added_at })
+    applesBuy.length === 1 && same(keyed(applesBuy[0].body), { p_item: item(db, 'Apples').id, p_bought: true, p_seen: item(db, 'Apples').added_at })
     && item(db, 'Apples').bought_by === ID.alex && item(db, 'Apples').bought_at !== applesBought && !!item(db, 'Apples').bought_at
     && !(await toasts(page)).includes('Changed on another phone'), JSON.stringify([applesBuy.map((c) => c.body), item(db, 'Apples'), await toasts(page)]));
   // A 503 is retried; a 42501 is dropped, with the database's words.

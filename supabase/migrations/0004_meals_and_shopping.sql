@@ -712,6 +712,110 @@ begin
 end;
 $$;
 
+-- Each change a phone sends to the list, done once (§8). A phone may send a change more than once:
+-- its answer was lost on the way, or the page was reloaded or left while it was on its way. The
+-- phone gives each change a key when it is made (a random uuid, assets/shoplist.js) and sends it with
+-- every try. The first try that arrives does the change and keeps its answer here; a try after it
+-- gets that answer and does nothing again. So a resent add never brings back a line someone bought
+-- since, and a resent un-tick that was done answers "changed" (the tick waiting behind it then goes
+-- with the line's seen), while one that never arrived is done now, against the state it was made on.
+-- A key is its sender's: one sent by someone else, from the other side (My day or signed in), or
+-- with another change counts as no key. Kept 2 days (a phone drops a change after 24 hours), and a
+-- sender's latest 200, so a My day link can't make it grow without end. Row-level security on, no
+-- policies and no privileges: only the definer functions that write the list reach it.
+create table private.list_done (
+  key    uuid primary key,                    -- the phone's key for the change
+  by_id  uuid,                                -- who sent it (p_by): a person, or null for a member with no person
+  my_day boolean not null,                    -- sent from a My day link
+  ask    text not null,                       -- what was asked: the change and its arguments
+  answer jsonb,                               -- the first answer: {result, item_id, name}, or the tick's true or false
+  at     timestamptz not null                 -- private.now() when it was done
+);
+create index list_done_at on private.list_done (at);
+create index list_done_by on private.list_done (by_id, at);
+alter table private.list_done enable row level security;
+revoke all on private.list_done from public, anon, authenticated, service_role;
+
+-- A change's key, claimed for this call (held: do the change, then keep its answer), or the answer
+-- the first try of the same change got (answer: give it, do nothing). Neither: no key, or a key that
+-- isn't this sender's or this change's; do the change and keep nothing. A second try that arrives
+-- while the first is still being done waits on the key (the insert) and then reads its answer.
+create function private.list_claim(p_key uuid, p_by uuid, p_my_day boolean, p_ask text, out held boolean, out answer jsonb)
+language plpgsql
+set search_path = ''
+as $$
+declare
+  d private.list_done;
+begin
+  held := false;
+  if p_key is null then
+    return;
+  end if;
+  insert into private.list_done (key, by_id, my_day, ask, at)
+  values (p_key, p_by, coalesce(p_my_day, false), p_ask, private.now())
+  on conflict (key) do nothing;
+  if found then
+    held := true;
+    delete from private.list_done x where x.at < private.now() - interval '2 days';
+    if p_by is not null then
+      delete from private.list_done x
+      where x.key in (select y.key from private.list_done y where y.by_id = p_by and y.key <> p_key
+                      order by y.at desc, y.key offset 199);
+    end if;
+    return;
+  end if;
+  select * into d from private.list_done x where x.key = p_key;
+  if d.by_id is not distinct from p_by and d.my_day = coalesce(p_my_day, false) and d.ask = p_ask then
+    answer := d.answer;
+  end if;
+end;
+$$;
+
+-- private.list_add, once per key: the first answer again for a second try.
+create function private.list_add_once(p_key uuid, p_name text, p_private boolean, p_by uuid, p_my_day boolean)
+returns jsonb
+language plpgsql
+set search_path = ''
+as $$
+declare
+  c record;
+  r jsonb;
+begin
+  select * into c from private.list_claim(p_key, p_by, p_my_day,
+    concat_ws(' ', 'add', coalesce(p_private, false) and not coalesce(p_my_day, false), md5(coalesce(p_name, ''))));
+  if c.answer is not null then
+    return c.answer;
+  end if;
+  r := private.list_add(p_name, p_private, p_by, p_my_day);
+  if c.held then
+    update private.list_done x set answer = r where x.key = p_key;
+  end if;
+  return r;
+end;
+$$;
+
+-- private.list_buy, once per key: the first answer (true or false) again for a second try.
+create function private.list_buy_once(p_key uuid, p_item uuid, p_bought boolean, p_seen timestamptz, p_by uuid, p_my_day boolean)
+returns boolean
+language plpgsql
+set search_path = ''
+as $$
+declare
+  c record;
+  v boolean;
+begin
+  select * into c from private.list_claim(p_key, p_by, p_my_day, concat_ws(' ', 'buy', p_item, p_bought, extract(epoch from p_seen)));
+  if c.answer is not null then
+    return (c.answer #>> '{}')::boolean;
+  end if;
+  v := private.list_buy(p_item, p_bought, p_seen, p_by, p_my_day);
+  if c.held then
+    update private.list_done x set answer = to_jsonb(v) where x.key = p_key;
+  end if;
+  return v;
+end;
+$$;
+
 -- My day's list (§3.4), for a helper: her language, the household's local date and time of
 -- this answer, whether she can add, the unlocked lines to buy (A–Z), the unlocked lines bought
 -- since the household's midnight and her own ticks of the last 15 minutes (so a tick at 23:55
@@ -810,8 +914,9 @@ $$;
 -- Write first, read in a later statement: the snapshot then sees the write.
 -- ---------------------------------------------------------------------
 
--- Add to the list (§4.1): {result, item_id, name} and the list.
-create function public.add_to_list(p_name text, p_private boolean default false)
+-- Add to the list (§4.1): {result, item_id, name} and the list. p_key: the phone's key for this add,
+-- so a second try gets the first answer and changes nothing (private.list_done).
+create function public.add_to_list(p_name text, p_private boolean default false, p_key uuid default null)
 returns jsonb
 language plpgsql
 security definer
@@ -823,13 +928,14 @@ begin
   if not private.is_member() then
     raise exception 'Only the family can change the shopping list.' using errcode = '42501';
   end if;
-  r := private.list_add(p_name, coalesce(p_private, false), (private.shop_who()).id, false);
+  r := private.list_add_once(p_key, p_name, coalesce(p_private, false), (private.shop_who()).id, false);
   return r || public.shopping_list();
 end;
 $$;
 
--- Bought, or not (Undo, or back on the list) (§4.2): {changed} and the list.
-create function public.buy_item(p_item uuid, p_bought boolean, p_seen timestamptz)
+-- Bought, or not (Undo, or back on the list) (§4.2): {changed} and the list. p_key: the phone's key
+-- for this change, so a second try gets the first answer and changes nothing (private.list_done).
+create function public.buy_item(p_item uuid, p_bought boolean, p_seen timestamptz, p_key uuid default null)
 returns jsonb
 language plpgsql
 security definer
@@ -841,7 +947,7 @@ begin
   if not private.is_member() then
     raise exception 'Only the family can change the shopping list.' using errcode = '42501';
   end if;
-  v := private.list_buy(p_item, p_bought, p_seen, (private.shop_who()).id, false);
+  v := private.list_buy_once(p_key, p_item, p_bought, p_seen, (private.shop_who()).id, false);
   return jsonb_build_object('changed', v) || public.shopping_list();
 end;
 $$;
@@ -878,7 +984,8 @@ $$;
 
 -- Add from My day (helper_list 'add' only): {result, item_id, name} and her list. It only ever
 -- finds or makes an unlocked line. Anything over 200 characters is refused before any work.
-create function public.add_to_list_by_token(p_token text, p_name text)
+-- p_key: her phone's key for this add (private.list_done), as for add_to_list.
+create function public.add_to_list_by_token(p_token text, p_name text, p_key uuid default null)
 returns jsonb
 language plpgsql
 security definer
@@ -906,13 +1013,14 @@ begin
   if char_length(p_name) > 200 then
     raise exception 'That''s too long to add.' using errcode = '22023';
   end if;
-  r := private.list_add(p_name, false, me.id, true);
+  r := private.list_add_once(p_key, p_name, false, me.id, true);
   return r || private.list_for_helper(me.id);
 end;
 $$;
 
 -- Tick or Undo from My day (See and tick, or See, tick and add): {changed} and her list.
-create function public.buy_item_by_token(p_token text, p_item uuid, p_bought boolean, p_seen timestamptz)
+-- p_key: her phone's key for this change (private.list_done), as for buy_item.
+create function public.buy_item_by_token(p_token text, p_item uuid, p_bought boolean, p_seen timestamptz, p_key uuid default null)
 returns jsonb
 language plpgsql
 security definer
@@ -931,7 +1039,7 @@ begin
   if me.role <> 'helper' or coalesce(v_mode, 'off') = 'off' then
     raise exception 'The shopping list isn''t on your My day.' using errcode = '42501';
   end if;
-  v := private.list_buy(p_item, p_bought, p_seen, me.id, true);
+  v := private.list_buy_once(p_key, p_item, p_bought, p_seen, me.id, true);
   return jsonb_build_object('changed', v) || private.list_for_helper(me.id);
 end;
 $$;
@@ -1423,29 +1531,29 @@ revoke execute on function public.shopping_list()                               
 grant  execute on function public.shopping_list()                                         to authenticated, service_role;
 
 -- Signed-in actions (each checks membership first).
-revoke execute on function public.add_to_list(text, boolean)                              from public, anon, service_role;
-revoke execute on function public.buy_item(uuid, boolean, timestamptz)                    from public, anon, service_role;
-grant  execute on function public.add_to_list(text, boolean)                              to authenticated;
-grant  execute on function public.buy_item(uuid, boolean, timestamptz)                    to authenticated;
+revoke execute on function public.add_to_list(text, boolean, uuid)                        from public, anon, service_role;
+revoke execute on function public.buy_item(uuid, boolean, timestamptz, uuid)              from public, anon, service_role;
+grant  execute on function public.add_to_list(text, boolean, uuid)                        to authenticated;
+grant  execute on function public.buy_item(uuid, boolean, timestamptz, uuid)              to authenticated;
 
 -- The My day page: the token is the key.
 revoke execute on function public.get_list_by_token(text)                                 from public, service_role;
-revoke execute on function public.add_to_list_by_token(text, text)                        from public, service_role;
-revoke execute on function public.buy_item_by_token(text, uuid, boolean, timestamptz)     from public, service_role;
+revoke execute on function public.add_to_list_by_token(text, text, uuid)                  from public, service_role;
+revoke execute on function public.buy_item_by_token(text, uuid, boolean, timestamptz, uuid) from public, service_role;
 grant  execute on function public.get_list_by_token(text)                                 to anon, authenticated;
-grant  execute on function public.add_to_list_by_token(text, text)                        to anon, authenticated;
-grant  execute on function public.buy_item_by_token(text, uuid, boolean, timestamptz)     to anon, authenticated;
+grant  execute on function public.add_to_list_by_token(text, text, uuid)                  to anon, authenticated;
+grant  execute on function public.buy_item_by_token(text, uuid, boolean, timestamptz, uuid) to anon, authenticated;
 
 -- hub-jobs: the new digest_for, as 0003's was.
 revoke execute on function public.digest_for(uuid, date)                                  from public, anon, authenticated;
 grant  execute on function public.digest_for(uuid, date)                                  to service_role;
 
 -- Helpers in private: none for anon. The ones that act for someone else (list_add, list_buy,
--- count_my_day, list_for_helper) and the word list are for nobody but the definer functions
--- above. day_text runs as a member (Today's "Send their day") and as service_role (inside the
--- email), the wall as an admin (the preview) and as service_role, shopping_list() as the member
--- who calls it, and the tidy triggers as the member who saves: so what those reach is granted to
--- authenticated and service_role.
+-- list_claim, list_add_once, list_buy_once, count_my_day, list_for_helper) and the word list are
+-- for nobody but the definer functions above. day_text runs as a member (Today's "Send their day")
+-- and as service_role (inside the email), the wall as an admin (the preview) and as service_role,
+-- shopping_list() as the member who calls it, and the tidy triggers as the member who saves: so
+-- what those reach is granted to authenticated and service_role.
 revoke execute on function private.meals_tidy()                                           from public, anon;
 revoke execute on function private.shopping_items_tidy()                                  from public, anon;
 revoke execute on function private.food_word(text, text)                                  from public, anon;
@@ -1456,6 +1564,9 @@ revoke execute on function private.shop_who()                                   
 revoke execute on function private.count_my_day(uuid, text)                               from public, anon, authenticated;
 revoke execute on function private.list_add(text, boolean, uuid, boolean)                 from public, anon, authenticated;
 revoke execute on function private.list_buy(uuid, boolean, timestamptz, uuid, boolean)    from public, anon, authenticated;
+revoke execute on function private.list_claim(uuid, uuid, boolean, text)                   from public, anon, authenticated;
+revoke execute on function private.list_add_once(uuid, text, boolean, uuid, boolean)       from public, anon, authenticated;
+revoke execute on function private.list_buy_once(uuid, uuid, boolean, timestamptz, uuid, boolean) from public, anon, authenticated;
 revoke execute on function private.list_for_helper(uuid)                                  from public, anon, authenticated;
 revoke execute on function private.meal_title(public.meals, text)                         from public, anon;
 revoke execute on function private.meal_digest_item(public.meals, uuid, text, boolean)    from public, anon;

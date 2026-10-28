@@ -37,21 +37,23 @@
                 day: the first 16 hex characters of the token's SHA-256, never the token itself).
                 Anything saved for someone else is removed unread. null: nothing is saved or read.
        send(op) sends one change and returns what supabase-js gives back ({ data, error, status }):
-                  { op: 'add', name, private }   add_to_list(p_name: name, p_private: private) /
-                                                 add_to_list_by_token(p_token, p_name: name)
-                  { op: 'buy',   item, seen }    buy_item(p_item: item, p_bought: true,  p_seen: seen)
-                  { op: 'unbuy', item, seen }    buy_item(p_item: item, p_bought: false, p_seen: seen)
-                                                 (My day: the same through buy_item_by_token)
+                  { op: 'add', name, private, key }   add_to_list(p_name: name, p_private: private, p_key: key) /
+                                                      add_to_list_by_token(p_token, p_name: name, p_key: key)
+                  { op: 'buy',   item, seen, key }    buy_item(p_item: item, p_bought: true,  p_seen: seen, p_key: key)
+                  { op: 'unbuy', item, seen, key }    buy_item(p_item: item, p_bought: false, p_seen: seen, p_key: key)
+                                                      (My day: the same through buy_item_by_token)
                 name is the text as typed; seen is the row's state as the phone saw it, a string,
-                sent back as it came (never through a Date: it keeps microseconds).
+                sent back as it came (never through a Date: it keeps microseconds); key is the
+                change's own key, a random uuid made when it was queued and sent with every try of
+                it (null where the browser can't make one), so the database does it once (below).
        who      optional, the Food page: the signed-in person's id, as added_by / bought_by on rows
                 that are waiting
-       mine(row) optional: a bought row is this phone's own purchase (Food: row.bought_by === me;
-                My day: row.undo). It lets an Undo pressed before its tick was answered still undo
-                that tick when the reply to a resend says "already bought"; and an Undo given only
-                an id undoes only such a row (below). Without mine (Food, for a member with no
-                person: no bought_by to compare), a resent tick is never this phone's own, and an
-                Undo by id undoes the purchase whoever's it is.
+       mine(row) optional: a bought row is this phone's own purchase (Food: bought by the signed-in
+                person, or with no bought_by for a member with no person; My day: row.undo). A tick
+                answered "no change" that finds the line bought by this phone counts as this phone's
+                own (the Undo pressed behind it still undoes it), and an Undo given only an id
+                undoes only such a row (below). Without mine, a tick answered "no change" is never
+                this phone's own, and an Undo by id undoes the purchase whoever's it is.
        visible() optional: whether to retry now (default: the page isn't hidden)
        onChange()                    what view() or state() gives has changed: draw the list again
                                      (when no finger is on it, see hold())
@@ -112,10 +114,15 @@
                           it) instead of sending it again. With no answer it stays, and goes next time.
    A tap is sent at once, unless nothing is getting through: then it waits its turn behind the rest.
    Retries: 2, 5, 10 and 30 seconds after a change gets no answer (or a 5xx, 408 or 429), then every
-   30 seconds while the page is visible. Changes older than 24 hours are dropped. A change sent again
-   whose answer says "no change" was this phone's own when the row is as it asked: an un-tick (the
-   tick waiting behind it gets the row's seen), or a tick that finds the line bought by this phone
-   (mine); a tick found bought by someone else never hands its seen to the Undo behind it.
+   30 seconds while the page is visible. Changes older than 24 hours are dropped. Every try of a
+   change carries its key, and the database does a change once per key: a try after the first (its
+   answer was lost, or the page closed with it on its way) gets the first try's answer and changes
+   nothing. So a resent add never brings back a line someone bought since; a resent tick or un-tick
+   that was done answers "done", and the change waiting behind it takes the row's seen; and one that
+   never got through is done now, against the state it was made on: if the line changed since (an
+   un-tick whose line someone put back meanwhile), "no change", and the tick waiting behind it is
+   dropped ("changed on another phone"), never buying their new need. A tick found bought by someone
+   else never hands its seen to the Undo behind it.
    The poll (the page's): every POLL_MS while the list is on screen and the page visible, and at once
    on focus, visibilitychange and online; none while state().busy; t = ticket(), read, take(answer, t),
    and no redraw when sameList() says the view is as drawn.
@@ -259,6 +266,20 @@
   // Food's snapshot keeps the lines to buy in to_buy, My day's in items.
   const listKey = (snap) => (snap && Array.isArray(snap.to_buy) ? 'to_buy' : 'items');
 
+  // A change's key (§8): a random uuid (version 4), sent with every try of the change, so the
+  // database does it once. crypto.randomUUID, else one made with crypto.getRandomValues; null where
+  // there is neither (the change then goes without one).
+  function newKey() {
+    try {
+      if (typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+      const b = crypto.getRandomValues(new Uint8Array(16));
+      b[6] = (b[6] & 0x0f) | 0x40;
+      b[8] = (b[8] & 0x3f) | 0x80;
+      const h = Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
+      return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+    } catch (err) { return null; }
+  }
+
   async function tokenOwner(token) {
     try {
       const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(String(token)));
@@ -309,9 +330,9 @@
     // The page's callbacks (a callback that throws is reported and doesn't stop the outbox).
     const emit = (name, ...args) => { if (typeof o[name] === 'function') { try { o[name](...args); } catch (err) { console.error(err); } } };
 
-    // queue: { id, op, item?, seen?, name?, private?, show?, at, sent, again?, after? }, oldest first.
-    // sent: it has left the phone at least once; again: it was sent more than once, so the database
-    // may have done it already and this answer says "no change" (an earlier try's answer was lost).
+    // queue: { id, op, key, item?, seen?, name?, private?, show?, at, sent, after? }, oldest first.
+    // key: the change's own key, sent with every try (the database does it once per key); sent: it
+    // has left the phone at least once.
     let queue = [];
     let snap = null;        // the last list read or answered
     let fresh = false;      // a list came from the database since the page opened
@@ -403,7 +424,7 @@
         changed();
         return true;
       }
-      const op = { id: nextId(), op: kind, item, seen: null, show: showOf(row), at: Date.now(), sent: false };
+      const op = { id: nextId(), op: kind, key: newKey(), item, seen: null, show: showOf(row), at: Date.now(), sent: false };
       if (last) {
         // Its seen comes from that change's reply: a tick's or un-tick's row, or the line an add brought
         // back (its new added_at).
@@ -437,7 +458,7 @@
 
     function add(text, priv) {
       if (stopped || !parse(text).name) return false;
-      queue.push({ id: nextId(), op: 'add', name: String(text), private: !!priv, at: Date.now(), sent: false });
+      queue.push({ id: nextId(), op: 'add', key: newKey(), name: String(text), private: !!priv, at: Date.now(), sent: false });
       changed();
       send1();
       return true;
@@ -472,8 +493,8 @@
     function ask(op) {
       let p;
       try {
-        p = Promise.resolve(send(op.op === 'add' ? { op: 'add', name: op.name, private: op.private }
-          : { op: op.op, item: op.item, seen: op.seen }));
+        p = Promise.resolve(send(op.op === 'add' ? { op: 'add', name: op.name, private: op.private, key: op.key || null }
+          : { op: op.op, item: op.item, seen: op.seen, key: op.key || null }));
       } catch (err) {
         p = Promise.reject(err);
       }
@@ -492,7 +513,6 @@
         // Sent by a page that closed before its answer came: take that answer, don't send it again.
         let asked = keep ? onTheWay.get(wayKey(op)) : null;
         if (!asked) {
-          if (op.sent) op.again = true;
           asked = ask(op);
           if (keep) onTheWay.set(wayKey(op), asked);
         }
@@ -550,12 +570,12 @@
         const done = reply.changed === true;
         const where = op.op === 'buy' ? 'bought' : 'to_buy';
         const found = rowsOf(s, where).find((r) => r.id === op.item);
-        // This phone's own change: it changed the row, or the row is as asked after this phone sent it
-        // again (its earlier try's answer was lost): an un-tick, or a tick that finds the line bought by
-        // this phone (mine). A tick sent again never counts by itself: the purchase may be someone
-        // else's, and an Undo waiting behind it must not undo that.
-        const ours = !!found && (done || (op.op === 'unbuy' && !!op.again)
-          || (op.op === 'buy' && typeof o.mine === 'function' && !!o.mine(found)));
+        // This phone's own change: it changed the row (a second try's answer is the first one's, so a
+        // try whose answer was lost says so too), or it is a tick that finds the line bought by this
+        // phone (mine). "No change" never counts by itself: for a tick the purchase may be someone
+        // else's, and an Undo waiting behind it must not undo that; for an un-tick the line may be to
+        // buy because someone else put it back since, and a tick waiting behind it must not buy that.
+        const ours = !!found && (done || (op.op === 'buy' && typeof o.mine === 'function' && !!o.mine(found)));
         outcome = done ? 'done' : found ? 'same' : 'changed';
         from = () => (ours ? found : null);
         if (op.op === 'buy' && ours) own = found;

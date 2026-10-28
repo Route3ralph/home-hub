@@ -893,8 +893,8 @@
       owner: st.me,
       who: st.me,
       send: (op) => (op.op === 'add'
-        ? core.sb.rpc('add_to_list', { p_name: op.name, p_private: !!op.private })
-        : core.sb.rpc('buy_item', { p_item: op.item, p_bought: op.op === 'buy', p_seen: op.seen })),
+        ? core.sb.rpc('add_to_list', { p_name: op.name, p_private: !!op.private, p_key: op.key })
+        : core.sb.rpc('buy_item', { p_item: op.item, p_bought: op.op === 'buy', p_seen: op.seen, p_key: op.key })),
       // A member with no person has no bought_by to compare with: no mine, so an Undo goes as it did.
       mine: st.me ? (row) => row.bought_by === st.me : undefined,
       onChange: () => requestDraw(st),

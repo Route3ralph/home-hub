@@ -743,8 +743,8 @@
   // The outbox's send(): one change, answered with what supabase-js gives back.
   function sendList(op) {
     return one(() => (op.op === 'add'
-      ? sb.rpc('add_to_list_by_token', { p_token: token, p_name: op.name })
-      : sb.rpc('buy_item_by_token', { p_token: token, p_item: op.item, p_bought: op.op === 'buy', p_seen: op.seen })));
+      ? sb.rpc('add_to_list_by_token', { p_token: token, p_name: op.name, p_key: op.key })
+      : sb.rpc('buy_item_by_token', { p_token: token, p_item: op.item, p_bought: op.op === 'buy', p_seen: op.seen, p_key: op.key })));
   }
 
   function makeOutbox() {

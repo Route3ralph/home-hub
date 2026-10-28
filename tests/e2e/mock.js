@@ -268,7 +268,8 @@ function calendarJob(db, body, email) {
 //   shopping_items  members read, change name / note / aisle / private, and forget (delete); no insert
 //                   (adds go through add_to_list); a rename or lock clash is 23505
 //   household       admins change it (members get no rows back, as row-level security answers)
-// foodRpc has the functions, with the migration's shapes and rules (§3.4, §4.1, §4.2): shopping_list,
+// foodRpc has the functions, with the migration's shapes and rules (§3.4, §4.1, §4.2, and §8's keys:
+// a change sent again with its p_key gets the first answer, db.list_done): shopping_list,
 // add_to_list, buy_item (signed in), and get_list_by_token, add_to_list_by_token, buy_item_by_token
 // (My day: mock.js answers RPCs for members only, so a My day test routes these itself, as day.test.js
 // does for the other token functions). personDayFood(db, person, answer) adds get_person_day's meals
@@ -376,7 +377,7 @@ function withFood(db, opts) {
       : Date.parse('2026-10-27T13:42:00Z');
   // A schema-4 database has 0003's tables too (the Food page asks whether there is a Family calendar).
   if (!db.calendars) withCalendars(db);
-  return Object.assign(db, { meals: [], shopping_items: [], my_day_use: [] });
+  return Object.assign(db, { meals: [], shopping_items: [], my_day_use: [], list_done: [] });
 }
 // A meals row and a shopping_items row with the tables' defaults.
 const mealRow = (o) => Object.assign({
@@ -634,6 +635,21 @@ function listBuy(db, item, bought, seen, by, myDay, stamp) {
   return true;
 }
 
+// private.list_claim with list_add_once and list_buy_once (§8): a change sent with a key (p_key) is done
+// once; a second try gets the first answer and changes nothing. A key is its sender's (who, and from My
+// day or signed in) and that change's (ask); any other counts as no key.
+function listOnce(db, key, by, myDay, ask, run) {
+  if (key == null) return run();
+  db.list_done = db.list_done || [];
+  const d = db.list_done.find((x) => x.key === key);
+  if (d) return d.by_id === by && d.my_day === myDay && d.ask === ask ? JSON.parse(JSON.stringify(d.answer)) : run();
+  const answer = run();
+  db.list_done.push({ key, by_id: by, my_day: myDay, ask, answer: JSON.parse(JSON.stringify(answer)), at: db.foodNow });
+  return answer;
+}
+const addAsk = (name, priv, myDay) => `add ${!!priv && !myDay} ${String(name)}`;
+const buyAsk = (item, bought, seen) => `buy ${item} ${bought} ${micros(seen)}`;
+
 // PostgREST finds a function by the names of the arguments sent: every one must be known and every
 // one without a default sent, or it answers 404 PGRST202.
 function foodCall(name, args, defaults, run) {
@@ -643,7 +659,7 @@ function foodCall(name, args, defaults, run) {
       return { __status: 404, body: { code: 'PGRST202', message: `Could not find the function public.${name}(${sent.sort().join(', ')}) in the schema cache`, details: null, hint: null } };
     }
     const anon = name.endsWith('_by_token');
-    const saved = JSON.stringify({ items: db.shopping_items, use: db.my_day_use });
+    const saved = JSON.stringify({ items: db.shopping_items, use: db.my_day_use, done: db.list_done || [] });
     try {
       return run(db, b, email);
     } catch (e) {
@@ -652,6 +668,7 @@ function foodCall(name, args, defaults, run) {
       const back = JSON.parse(saved);
       db.shopping_items.splice(0, db.shopping_items.length, ...back.items);
       db.my_day_use.splice(0, db.my_day_use.length, ...back.use);
+      db.list_done = back.done;
       return raised(e, anon);
     }
   };
@@ -666,17 +683,20 @@ function stampChanged(db, before, by) {
 }
 const foodRpc = {
   shopping_list: foodCall('shopping_list', [], [], (db, b, email) => shoppingList(db, email)),
-  add_to_list: foodCall('add_to_list', ['p_name'], ['p_private'], (db, b, email) => {
+  add_to_list: foodCall('add_to_list', ['p_name'], ['p_private', 'p_key'], (db, b, email) => {
     if (!db.members.some((m) => m.email === email)) throw new Raise('42501', MEMBERS_ONLY);
     const before = JSON.stringify(db.shopping_items);
-    const r = listAdd(db, b.p_name, b.p_private, (shopWho(db, email) || {}).id || null, false, foodStamp(db));
+    const by = (shopWho(db, email) || {}).id || null;
+    const r = listOnce(db, b.p_key, by, false, addAsk(b.p_name, b.p_private, false), () => listAdd(db, b.p_name, b.p_private, by, false, foodStamp(db)));
     stampChanged(db, before, email);
     return Object.assign(r, shoppingList(db, email));
   }),
-  buy_item: foodCall('buy_item', ['p_item', 'p_bought', 'p_seen'], [], (db, b, email) => {
+  buy_item: foodCall('buy_item', ['p_item', 'p_bought', 'p_seen'], ['p_key'], (db, b, email) => {
     if (!db.members.some((m) => m.email === email)) throw new Raise('42501', MEMBERS_ONLY);
     const before = JSON.stringify(db.shopping_items);
-    const changed = listBuy(db, b.p_item, b.p_bought, b.p_seen, (shopWho(db, email) || {}).id || null, false, foodStamp(db));
+    const by = (shopWho(db, email) || {}).id || null;
+    const changed = listOnce(db, b.p_key, by, false, buyAsk(b.p_item, b.p_bought, b.p_seen),
+      () => listBuy(db, b.p_item, b.p_bought, b.p_seen, by, false, foodStamp(db)));
     stampChanged(db, before, email);
     return Object.assign({ changed }, shoppingList(db, email));
   }),
@@ -685,7 +705,7 @@ const foodRpc = {
     if (!me || me.role !== 'helper' || helperList(db) === 'off') return null;
     return listForHelper(db, me);
   }),
-  add_to_list_by_token: foodCall('add_to_list_by_token', ['p_token', 'p_name'], [], (db, b) => {
+  add_to_list_by_token: foodCall('add_to_list_by_token', ['p_token', 'p_name'], ['p_key'], (db, b) => {
     const me = byTokenFood(db, b.p_token);
     if (!me) return null;
     if (me.role !== 'helper' || helperList(db) === 'off') throw new Raise('42501', NOT_ON_MY_DAY);
@@ -693,16 +713,17 @@ const foodRpc = {
     if (b.p_name == null) throw new Raise('22023', 'Type what to buy.');
     if (Array.from(String(b.p_name)).length > 200) throw new Raise('22023', "That's too long to add.");
     const before = JSON.stringify(db.shopping_items);
-    const r = listAdd(db, b.p_name, false, me.id, true, foodStamp(db));
+    const r = listOnce(db, b.p_key, me.id, true, addAsk(b.p_name, false, true), () => listAdd(db, b.p_name, false, me.id, true, foodStamp(db)));
     stampChanged(db, before, `${me.name} (My day)`);
     return Object.assign(r, listForHelper(db, me));
   }),
-  buy_item_by_token: foodCall('buy_item_by_token', ['p_token', 'p_item', 'p_bought', 'p_seen'], [], (db, b) => {
+  buy_item_by_token: foodCall('buy_item_by_token', ['p_token', 'p_item', 'p_bought', 'p_seen'], ['p_key'], (db, b) => {
     const me = byTokenFood(db, b.p_token);
     if (!me) return null;
     if (me.role !== 'helper' || helperList(db) === 'off') throw new Raise('42501', NOT_ON_MY_DAY);
     const before = JSON.stringify(db.shopping_items);
-    const changed = listBuy(db, b.p_item, b.p_bought, b.p_seen, me.id, true, foodStamp(db));
+    const changed = listOnce(db, b.p_key, me.id, true, buyAsk(b.p_item, b.p_bought, b.p_seen),
+      () => listBuy(db, b.p_item, b.p_bought, b.p_seen, me.id, true, foodStamp(db)));
     stampChanged(db, before, `${me.name} (My day)`);
     return Object.assign({ changed }, listForHelper(db, me));
   }),

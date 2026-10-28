@@ -50,7 +50,7 @@ delete from members where email = 'casey@example.com';
 select test.is((select string_agg(c.relname, ', ') from pg_class c
                 where c.relnamespace = 'public'::regnamespace and c.relkind in ('r', 'p') and not c.relrowsecurity),
                null, 'every public table has row-level security');
--- Tables in private (0004's food_pairs) are read only by definer functions: row-level security on,
+-- Tables in private (0004's food_pairs and list_done) are read only by definer functions: row-level security on,
 -- no policies, and no privilege at all for anon, signed-in users or service_role.
 select test.is((select string_agg(c.relname, ', ' order by c.relname) from pg_class c
                 where c.relnamespace = 'private'::regnamespace and c.relkind in ('r', 'p')
@@ -62,7 +62,7 @@ select test.is((select string_agg(c.relname, ', ' order by c.relname) from pg_cl
                null, 'every private table has row-level security, no policies and no privilege for anon, authenticated or service_role');
 select test.is((select string_agg(c.relname, ', ' order by c.relname) from pg_class c
                 where c.relnamespace = 'private'::regnamespace and c.relkind in ('r', 'p')),
-               'food_pairs', '... (the private tables: food_pairs)');
+               'food_pairs, list_done', '... (the private tables: food_pairs, list_done)');
 select test.is((select string_agg(p.proname, ', ' order by p.proname) from pg_proc p
                 where p.pronamespace = 'public'::regnamespace and has_function_privilege('anon', p.oid, 'execute')),
                'add_to_list_by_token, buy_item_by_token, complete_by_token, confirm_digest, get_list_by_token, get_person_day, '
@@ -81,7 +81,8 @@ select test.is((select string_agg(p.proname, ', ' order by p.proname) from pg_pr
 select test.is((select string_agg(p.proname, ', ' order by p.proname) from pg_proc p
                 where p.pronamespace = 'private'::regnamespace and has_function_privilege('authenticated', p.oid, 'execute')
                   and p.proname in ('complete_task', 'undo_task', 'roll_task', 'person_by_token', 'my_day_item', 'digest_item', 'people_confirm_sync',
-                                    'count_my_day', 'food_words', 'guess_aisle', 'list_add', 'list_buy', 'list_for_helper')),
+                                    'count_my_day', 'food_words', 'guess_aisle', 'list_add', 'list_buy', 'list_for_helper',
+                                    'list_claim', 'list_add_once', 'list_buy_once')),
                null, 'members cannot call the private helpers that act for someone else');
 select test.is((select string_agg(r, ', ' order by r) from unnest(array['anon', 'authenticated', 'service_role']) r
                 where has_table_privilege(r, 'public.people_confirm', 'insert, update, delete, truncate, references, trigger')),
