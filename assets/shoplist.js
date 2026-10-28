@@ -59,9 +59,10 @@
                                      (when no finger is on it, see hold())
        onReply(op, reply, outcome)   a change was answered. outcome: for an add, reply.result
                                      ('added' | 'back' | 'already', reply.name is the line's name);
-                                     for a tick, 'done' (changed), 'same' (it was already so: a resend
-                                     after a lost reply; say nothing) or 'changed' (someone else
-                                     changed it first: say "Changed on another phone"). A change sent
+                                     for a tick, 'done' (changed; a resend's answer is the first
+                                     try's), 'same' (it was already so: someone else did the same;
+                                     say nothing) or 'changed' (someone else changed it first: say
+                                     "Changed on another phone"). A change sent
                                      by a page that closed before its answer came is answered on the
                                      page opened again in its place (box.stop(), below)
        onRefused(op, error)          the database refused it (42501, 22023, P0001, 54000, 23505, a
