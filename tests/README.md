@@ -3,7 +3,7 @@
 Run everything from the repository root:
 
 ```sh
-tests/run.sh            # all suites, then the totals; exit status 0 only if everything passed (about 13 minutes)
+tests/run.sh            # all suites, then the totals; exit status 0 only if everything passed (about 16 minutes)
 tests/run.sh fn e2e     # only the suites named (db, contract, fn, e2e, realdb, docs)
 ```
 

@@ -115,7 +115,7 @@ const WEEK = [
         P.t('from_day', { day: 'el lun' }, 'es'), P.t('from_day', { day: 'hoy' }, 'es'), P.t('nonsense_key', null, 'en'),
         P.t('who_sees', { tutor: 'Pat' }, 'es'), P.t('link_gone', null, 'es'), P.t('turn_in', null, 'es'),
       ],
-      esc: P.esc(`<b>"Tom" & 'Jerry'</b>`),
+      esc: P.esc(`<b>"Sam" & 'Alex'</b>`),
       clean: [P.clean('  two\u0007 lines\u2028and\u200b\u202e bidi\u00a0 ', 100), P.clean('abcdef', 3), P.clean(null, 5)],
       block: [P.cleanBlock('Line one\r\n\r\n\r\n\tLine\u202e two  \n\n\nLast\u200b', 4000), P.cleanBlock('a\n'.repeat(70), 4000).split('\n').length, P.cleanBlock('xyz', 2)],
       id: [P.newId(), P.newId()],
@@ -138,7 +138,7 @@ const WEEK = [
       '+20 when Pat checks it', '+20 cuando Pat lo revise', 'del lun', 'de hoy', 'nonsense_key',
       'Pat y los adultos de tu familia ven tu plan y tus notas. Los adultos ven tus puntos.',
       'Este enlace ya no funciona. Pide uno nuevo a la familia.', 'Entregarlo']), JSON.stringify(basics.sample));
-  check('esc(): & < > " \' escaped', basics.esc === '&lt;b&gt;&quot;Tom&quot; &amp; &#39;Jerry&#39;&lt;/b&gt;', basics.esc);
+  check('esc(): & < > " \' escaped', basics.esc === '&lt;b&gt;&quot;Sam&quot; &amp; &#39;Alex&#39;&lt;/b&gt;', basics.esc);
   check('clean(): as private.clean_text (one line, no control, bidi or zero-width characters, cut to its length)',
     same(basics.clean, ['two lines and bidi', 'abc', '']), JSON.stringify(basics.clean));
   check('cleanBlock(): as private.clean_block (line breaks kept, never two blank lines in a row, at most 60 lines, cut to its length)',

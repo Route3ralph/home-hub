@@ -279,7 +279,7 @@ insert into public.points_ledger (kid_id, at, day, kind, delta, note, who)
 select id, '2026-10-30 21:00+00', '2026-10-30', 'given', 30, 'A good start', 'alex@example.com' from public.people where name = 'Taylor';
 insert into public.rewards (kid_id, title, cost) select id, 'Choose Friday''s dinner', 15 from public.people where name = 'Taylor';
 insert into public.reward_asks (kid_id, reward_id, title, cost, asked_at) select kid_id, id, title, cost, '2026-10-31 15:00+00' from public.rewards;
-update public.household set homework_never_send = '{"Northfield"}', homework_ai = true;
+update public.household set homework_never_send = '{"Example Academy"}', homework_ai = true;
 SQL
   then report "FAIL  same output at 0005: loading homework data  ($(tail -n 1 "$dir/load.log"))"; ok=0; fi
   same_output hub_04 >"$dir/same_04.txt" 2>&1
