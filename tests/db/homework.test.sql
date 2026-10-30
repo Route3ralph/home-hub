@@ -376,9 +376,12 @@ select test.throws($$select plan_by_token(test.token('Robin'), pg_temp.aid('Map 
                    'his side: a plan not given to him isn''t his to change yet ("being planned")');
 select test.throws($$select plan_by_token(test.token('Robin'), pg_temp.aid('Worksheet 4.2'), '[]', 0)$$, 'That plan isn''t on your list.',
                    'his side: another kid''s plan is refused');
+select test.is((pg_temp.el(homework_by_token(test.token('Robin')) -> 'assignments', 'Book report') ->> 'plan_rev')::int, pg_temp.rev('Book report'),
+               'his view carries each assignment''s plan_rev, which his own save needs');
 select test.is(pg_temp.run($$select plan_by_token(test.token('Robin'), pg_temp.aid('Book report'),
                                                   pg_temp.steps_of('Book report', 'Gather two sources', '{"day": "2026-11-04", "minutes": 15}'),
-                                                  pg_temp.rev('Book report'))$$), 'ok', 'his side: a plain step moved and its minutes changed');
+                                                  (pg_temp.el(homework_by_token(test.token('Robin')) -> 'assignments', 'Book report') ->> 'plan_rev')::int)$$),
+               'ok', 'his side: a plain step moved and its minutes changed (with the plan_rev from his view)');
 select test.is(pg_temp.run($$select plan_by_token(test.token('Robin'), pg_temp.aid('Book report'),
                                                   pg_temp.steps_of('Book report', 'Check it against the rubric', '{"title": "Check every rubric line"}',
                                                                    '{"title": "Ask about the font size", "minutes": 5}'),
@@ -948,6 +951,8 @@ select pg_temp.start(91);
 set hub.now = '2026-11-11 16:50 America/New_York';
 select test.is(pg_temp.stop(91) -> 'earned', '{"focus": 8, "on_time": 10, "capped": false}'::jsonb,
                'the parents'' values: 2 per 5 minutes and 10 for an on-time start');
+select test.is(homework_by_token(test.token('Taylor')) -> 'on_time' -> 'points', '10'::jsonb,
+               '... and her view''s on-time line names their value (+10)');
 rollback;
 begin;
 :as_admin
@@ -984,9 +989,11 @@ select tutor_assignment_by_token(pg_temp.pat(), '{"id": "a0000000-0000-4000-8000
 select tutor_plan_by_token(pg_temp.pat(), 'a0000000-0000-4000-8000-000000000003',
                            '[{"kind": "milestone", "title": "Decimals set 1", "minutes": 10}, {"kind": "milestone", "title": "Decimals set 2", "minutes": 10}]',
                            0, true);
-select test.is((select jsonb_build_object('paid', r -> 'paid', 'used_up', r -> 'used_up')
+select test.is((select jsonb_build_object('has_paid', r ? 'paid', 'used_up', r -> 'used_up')
                 from tutor_step_by_token(pg_temp.pat(), pg_temp.sid('Decimals set 1'), 'check') r),
-               '{"paid": 0, "used_up": true}'::jsonb, 'a fifth check that week: recorded, pays nothing, and the tutor sees "used up"');
+               '{"has_paid": false, "used_up": true}'::jsonb,
+               'a fifth check that week: the tutor sees "used up", and no points (no paid)');
+select test.is(pg_temp.pts('Taylor', 'milestone'), 100, '... it pays nothing');
 select test.is((select (checked_at is not null) from pg_temp.st('Decimals set 1')), true, '... the check is recorded');
 select test.is((select jsonb_build_object('checked', x -> 'checked', 'waiting', x -> 'waiting')
                 from pg_temp.el(pg_temp.el(homework_by_token(test.token('Taylor')) -> 'assignments', 'Decimals drill') -> 'steps', 'Decimals set 1') x),
@@ -1006,7 +1013,10 @@ set hub.now = '2026-11-23 16:00 America/New_York';
 select tutor_assignment_by_token(pg_temp.pat(), '{"id": "a0000000-0000-4000-8000-000000000004", "kind": "lesson", "title": "Percent drill",
                                                   "due_date": "2026-11-26"}');
 select tutor_plan_by_token(pg_temp.pat(), 'a0000000-0000-4000-8000-000000000004', '[{"kind": "milestone", "title": "Percent set 1", "minutes": 10}]', 0, true);
-select test.is((tutor_step_by_token(pg_temp.pat(), pg_temp.sid('Percent set 1'), 'check') -> 'paid'), '20'::jsonb, 'the cap starts again on Monday');
+select test.is((select jsonb_build_object('has_paid', r ? 'paid', 'used_up', r -> 'used_up')
+                from tutor_step_by_token(pg_temp.pat(), pg_temp.sid('Percent set 1'), 'check') r),
+               '{"has_paid": false, "used_up": false}'::jsonb, 'a check from the link: never its points');
+select test.is(pg_temp.pts('Taylor', 'milestone'), 120, 'the cap starts again on Monday: +20');
 rollback;
 :as_owner
 set hub.now = '2026-11-03 16:30 America/New_York';
@@ -1285,12 +1295,12 @@ select test.is(pg_temp.keys(:'kv'::jsonb -> 'now'),
                'answer,assignment,assignment_id,checked,coach,day,done,done_looks_like,from_day,id,kind,minutes,moved,not_yet,question,title,undo,waiting',
                '... a step');
 select test.is(pg_temp.keys(:'kv'::jsonb -> 'assignments' -> 0),
-               'added_by,ai_help,behind,due_date,given_by,horizon,id,kind,minutes_left,next_milestone,no_time,state,status,steps,stretch,subject,time_left,title',
+               'added_by,ai_help,behind,due_date,given_by,horizon,id,kind,minutes_left,next_milestone,no_time,plan_rev,state,status,steps,stretch,subject,time_left,title',
                '... an assignment');
 select test.is(pg_temp.keys(:'kv'::jsonb -> 'points') || ' | ' || pg_temp.keys(:'kv'::jsonb -> 'week') || ' | ' || pg_temp.keys(:'kv'::jsonb -> 'load')
                || ' | ' || pg_temp.keys(:'kv'::jsonb -> 'on_time') || ' | ' || pg_temp.keys(:'kv'::jsonb -> 'rewards' -> 0)
                || ' | ' || pg_temp.keys(:'kv'::jsonb -> 'asks' -> 0) || ' | ' || pg_temp.keys(:'kv'::jsonb -> 'recent' -> 0),
-               'balance,capped,held,today | focused,last_week | free,planned | done,from,until | can_ask,cost,id,title | '
+               'balance,capped,held,today | focused,last_week | free,planned | done,from,points,until | can_ask,cost,id,title | '
                'asked_at,cost,decided_at,id,note,reward_id,status,title | day,delta,kind,note',
                '... points, week, load, on_time, a reward, an ask, a history entry');
 select test.is(pg_temp.strings(:'kv'::jsonb) ~* ('make a poster|rivera|@|alex|morgan|\msam\M|jordan|pat lee|tutor link|my day|' || test.person('Taylor')::text

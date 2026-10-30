@@ -447,21 +447,28 @@ const WEEK = [
         P.answer(null)],
       en: [P.friendly(e("That step isn't on your plan.", '42501'), 'en'), P.friendly(e('Finish the block you started first.'), 'en'), P.friendly(e('This plan was changed since you opened it.'), 'en'),
         P.friendly(e('Plan this one with Pat.', '42501'), 'en', 'Pat'), P.friendly(e("That's too long.", '22023'), 'en'), P.friendly({ message: 'TypeError: Failed to fetch' }, 'en'),
-        P.friendly(e('Something else entirely.', 'XX000'), 'en'), P.friendly(e("That assignment isn't on this link.", '42501'), 'en'), P.friendly(e("Say what's missing.", '22023'), 'en')],
+        P.friendly(e('Something else entirely.', 'XX000'), 'en'), P.friendly(e("That assignment isn't on this link.", '42501'), 'en'), P.friendly(e("Say what's missing.", '22023'), 'en'),
+        P.friendly(e("That step isn't on this link.", '42501'), 'en'), P.friendly(e('This assignment is done or dropped. Open it again first.'), 'en')],
       es: [P.friendly(e("That step isn't on your plan.", '42501'), 'es'), P.friendly(e('Choose 10, 15, 20 or 25 minutes.', '22023'), 'es'), P.friendly(e('Set a homework time first.', '22023'), 'es'),
         P.friendly(e('No homework day before it\'s due has room. Re-plan, make it smaller, or ask Pat.'), 'es', 'Pat'), P.friendly(e('Something else entirely.', 'XX000'), 'es'),
-        P.friendly(e('Not enough points yet.', '42501'), 'es'), P.friendly(e('Points are off.', '42501'), 'es'), P.friendly(e("That's a lot for one day."), 'es')],
+        P.friendly(e('Not enough points yet.', '42501'), 'es'), P.friendly(e('Points are off.', '42501'), 'es'), P.friendly(e("That's a lot for one day."), 'es'),
+        P.friendly(e("That step isn't on this link.", '42501'), 'es'), P.friendly(e("That plan isn't on your list.", '42501'), 'es'),
+        P.friendly(e('This assignment is done or dropped. Open it again first.'), 'es'), P.friendly(e('That plan is too long.', '22023'), 'es'),
+        P.friendly(e("That's too long.", '22023'), 'es')],
     };
   });
   check('answer(): ok, gone (a token function\'s null), not_yet (PGRST202: before 0005), refused, retry (no answer, 5xx)',
     same(said.answer, ['ok', 'gone', 'not_yet', 'refused', 'refused', 'retry', 'retry', 'retry']), JSON.stringify(said.answer));
   check('friendly() in English: the database\'s homework messages in plain words; "Pat" from the link; anything else as it came',
     same(said.en, ["That step isn't on your plan.", 'Finish the block you started first.', 'This plan was changed since you opened it.', 'Plan this one with Pat.', "That's too long.",
-      "Can't reach Home Hub. Check your internet connection and try again.", 'Something else entirely.', "That assignment isn't on this link.", "Say what's missing."]), JSON.stringify(said.en));
+      "Can't reach Home Hub. Check your internet connection and try again.", 'Something else entirely.', "That assignment isn't on this link.", "Say what's missing.",
+      "That step isn't on this link.", 'This assignment is done or dropped. Open it again first.']), JSON.stringify(said.en));
   check('friendly() in Spanish: every homework message has its words; anything else is a general line',
     same(said.es, ['Ese paso no está en tu plan.', 'Elige 10, 15, 20 o 25 minutos.', 'Primero hay que poner un tiempo de tarea.',
       'No queda ningún día de tarea con sitio antes de la entrega. Vuelve a planear, hazlo más pequeño o pregunta a Pat.', 'Algo salió mal. Inténtalo de nuevo.',
-      'Todavía no tienes puntos suficientes.', 'Los puntos están desactivados.', 'Es mucho para un día. Sigue mañana.']), JSON.stringify(said.es));
+      'Todavía no tienes puntos suficientes.', 'Los puntos están desactivados.', 'Es mucho para un día. Sigue mañana.',
+      'Ese paso no está en este enlace.', 'Ese plan no está en tu lista.', 'Este trabajo está terminado o descartado. Vuelve a abrirlo primero.',
+      'Ese plan es demasiado largo.', 'Es demasiado largo.']), JSON.stringify(said.es));
 
   // =====================================================================
   // 8. The plan editor (§9.4): a parent's whole plan, with a fake api in the page
@@ -825,7 +832,7 @@ const WEEK = [
         if (action === 'check' || action === 'not_yet') f.view.to_check = f.view.to_check.filter((x) => x.step_id !== id);
         if (action === 'uncheck') f.view.to_check.push({ step_id: id, assignment: 'Science project', title: 'Outline with 3 main ideas', done_looks_like: null, day: '2026-11-04', done_day: '2026-10-28' });
         if (action === 'answer') f.view.questions.forEach((q) => { if (q.step_id === id) q.answer = textIn; });
-        return ok(Object.assign(viewWith(null), capped && action === 'check' ? { capped: true } : {}));
+        return ok(Object.assign(viewWith(null), action === 'check' ? { used_up: capped } : {}));
       },
     };
     window.pat = f;

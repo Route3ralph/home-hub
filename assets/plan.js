@@ -151,7 +151,7 @@
        ctl.refresh()    read again (on focus and visibilitychange), unless something is being edited
        ctl.stop()
        Calls go one at a time. A null answer draws "This link no longer works…" and calls onGone; PGRST202
-       "This link doesn't work yet."; no connection, "Try again". A check's answer with capped: true says
+       "This link doesn't work yet."; no connection, "Try again". A check's answer with used_up: true says
        this week's milestone points are used up.
    ===================================================================== */
 (function () {
@@ -264,6 +264,8 @@
       block_not_yours: "That block isn't yours.", too_much_today: "That's a lot for one day. Carry on tomorrow.",
       not_enough: 'Not enough points yet.', points_off: 'Points are off.', choose_length: 'Choose 10, 15, 20 or 25 minutes.',
       set_time_first: 'Set a homework time first.', not_on_link: "That assignment isn't on this link.", say_missing: "Say what's missing.",
+      step_not_on_link: "That step isn't on this link.", plan_not_yours: "That plan isn't on your list.",
+      closed: 'This assignment is done or dropped. Open it again first.', plan_too_long: 'That plan is too long.',
     },
     es: {
       homework: 'Tarea', now: 'Ahora', tonight: 'Esta tarde', due_soon: 'Para pronto', start_n: 'Empezar · {n} min',
@@ -351,6 +353,8 @@
       block_not_yours: 'Ese bloque no es tuyo.', too_much_today: 'Es mucho para un día. Sigue mañana.',
       not_enough: 'Todavía no tienes puntos suficientes.', points_off: 'Los puntos están desactivados.', choose_length: 'Elige 10, 15, 20 o 25 minutos.',
       set_time_first: 'Primero hay que poner un tiempo de tarea.', not_on_link: 'Ese trabajo no está en este enlace.', say_missing: 'Di qué falta.',
+      step_not_on_link: 'Ese paso no está en este enlace.', plan_not_yours: 'Ese plan no está en tu lista.',
+      closed: 'Este trabajo está terminado o descartado. Vuelve a abrirlo primero.', plan_too_long: 'Ese plan es demasiado largo.',
     },
   };
 
@@ -450,6 +454,10 @@
     [/Set a homework time first/i, 'set_time_first'],
     [/That's too long/i, 'too_long'],
     [/That assignment isn't on this link/i, 'not_on_link'],
+    [/That step isn't on this link/i, 'step_not_on_link'],
+    [/That plan isn't on your list/i, 'plan_not_yours'],
+    [/is done or dropped/i, 'closed'],
+    [/That plan is too long/i, 'plan_too_long'],
     [/Say what's missing/i, 'say_missing'],
   ];
   const messageOf = (err) => String((err && (err.message || err.error_description)) || err || '');
@@ -1715,7 +1723,7 @@
         try { r = await api.step(step, action, text == null || text === '' ? null : text); } catch (err) { r = { error: err }; }
         if (stopped) return false;
         if (!handle(r)) return false;
-        const capped = r.data && r.data.capped === true;
+        const usedUp = r.data && r.data.used_up === true;
         if (!take(r.data)) {
           let rr;
           try { rr = await api.view(null, 'all'); } catch (err) { rr = { error: err }; }
@@ -1724,7 +1732,7 @@
         note = null;
         draw();
         if (action === 'check') {
-          toast(capped ? w('milestones_used_up') : w('checked_toast', { title: title || '' }),
+          toast(usedUp ? w('milestones_used_up') : w('checked_toast', { title: title || '' }),
             { action: { label: w('undo'), onClick: () => stepWrite(step, 'uncheck', null) } });
         } else if (action === 'not_yet') toast(w('sent_back'));
         else if (action === 'answer') toast(w('answer_sent'));

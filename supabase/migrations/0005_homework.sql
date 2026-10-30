@@ -1857,10 +1857,10 @@ $$;
 -- Jordan's view (homework_by_token, and every answer of his writers):
 --   {language, as_of, today, server_now,
 --    me: {first_name, tutor, cue, if_stuck, length, lengths, points_on},
---    window: {starts, ends} | null, on_time: {from, until, done} | null, session: {…} | null,
+--    window: {starts, ends} | null, on_time: {from, until, done, points} | null, session: {…} | null,
 --    now: step | null, tonight: [step], load: {planned, free}, earlier: [step],
---    assignments: [{id, kind, title, subject, due_date, status, state, added_by, given_by, ai_help, stretch,
---                   behind, minutes_left, time_left, horizon, no_time, next_milestone, steps}],
+--    assignments: [{id, kind, title, subject, due_date, status, state, plan_rev, added_by, given_by, ai_help,
+--                   stretch, behind, minutes_left, time_left, horizon, no_time, next_milestone, steps}],
 --    points: {balance, held, today, capped} | null, rewards | null, asks | null, recent | null,
 --    pace: {ratio, steps} | null, week: {focused, last_week}}
 --   step = {id, assignment_id, assignment, kind, title, done_looks_like, minutes, day, from_day, moved, done,
@@ -1868,7 +1868,9 @@ $$;
 -- No names but his own first name and the tutor's first word, no emails, no ids of people, no
 -- teacher's text, no AI draft, no tokens; coach.by and given_by are roles. Steps only of plans
 -- given to him. Now (and the card's Next) is today's first open step, or, on a day with homework
--- time, the first earlier one; earlier steps are listed only on a day with homework time.
+-- time, the first earlier one; earlier steps are listed only on a day with homework time. plan_rev
+-- is what his own plan save (plan_by_token's p_rev) needs; on_time.points is the on-time value his
+-- words name ("+5").
 create function private.homework_view_kid(p_kid uuid, p_lang text)
 returns jsonb
 language plpgsql
@@ -1975,6 +1977,7 @@ begin
                          when a.ai_state = 'running' or a.ai_draft is not null
                               or exists (select 1 from public.homework_steps s where s.assignment_id = a.id) then 'planning'
                          else 'none' end,
+           'plan_rev', a.plan_rev,
            'added_by', a.added_by,
            'given_by', case when a.given_by is null then null
                             when a.given_by like '% (tutor link)' then 'tutor'
@@ -2034,7 +2037,8 @@ begin
                            'until', to_char(date '2000-01-01' + (v_win ->> 'first_free')::time + interval '10 minutes', 'HH24:MI'),
                            'done', exists (select 1 from public.focus_sessions f
                                            where f.kid_id = p_kid and (f.step_id is not null or f.assignment_id is not null)
-                                             and (f.started_at at time zone v_tz)::date = v_today)) end,
+                                             and (f.started_at at time zone v_tz)::date = v_today),
+                           'points', v_k.pts_on_time) end,
     'session', (select jsonb_build_object('id', f.id, 'step_id', f.step_id, 'assignment_id', f.assignment_id,
                                           'title', coalesce(s.title, a.title), 'minutes', f.minutes,
                                           'started_at', f.started_at, 'ends_at', f.ends_at, 'with', f.with_whom)
@@ -3597,7 +3601,9 @@ begin
     perform private.count_homework(l.id, 'writes', 200);
   end if;
   perform private.homework_trim(l.kid_id);
-  return (r - '_changed') || private.homework_view_tutor(l.id, v_aid, 'all');
+  -- A check's paid is points, which the link never sees; used_up stays ("This week's milestone points
+  -- are used up.").
+  return (r - '_changed' - 'paid') || private.homework_view_tutor(l.id, v_aid, 'all');
 end;
 $$;
 
