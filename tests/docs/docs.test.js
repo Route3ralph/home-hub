@@ -5,7 +5,7 @@
 //     secret hub-jobs reads and every Vault secret supabase/cron.sql needs, and don't call a
 //     required one optional;
 //   • CLAUDE.md and tests/README.md name every suite tests/run.sh runs, and every public page, and
-//     tests/README.md every browser and real-database test file;
+//     tests/README.md every browser and real-database test file, in that suite's section;
 //   • day.html carries the same ?v= as index.html (CLAUDE.md says so); CLAUDE.md names the scripts
 //     index.html and day.html load, in order, and day.html's stylesheets; and every way into day.html
 //     (the ?x= day.js reads) is described in CLAUDE.md and docs/v2-design.md §4;
@@ -131,11 +131,21 @@ check('tests/run.sh: its "Unknown suite" message and header name every suite', O
 const usage = (/tests\/run\.sh fn e2e\s+# only the suites named \(([^)]*)\)/.exec(testsReadme) || [])[1] || '';
 check('tests/README.md: "only the suites named" lists every suite', Object.keys(suites).every((s) => new RegExp(`\\b${s}\\b`).test(usage)), usage);
 // tests/README.md describes every browser and real-database test file (its tables of suites), so a new one
-// (v1.3's homework.test.js and tutor.test.js) is written up when it is added.
+// (v1.3's homework.test.js and tutor.test.js) is written up when it is added. Each is looked for in its
+// own suite's section: e2e/ and realdb/ both have a homework.test.js, so the whole file would find one
+// write-up for two files.
 {
-  const files = ['tests/e2e', 'tests/realdb'].flatMap((d) => fs.readdirSync(path.join(ROOT, d)).filter((f) => f.endsWith('.test.js')).map((f) => `${d}/${f}`));
-  const unnamed = files.filter((f) => !testsReadme.includes(`\`${path.basename(f)}\``)).sort();
-  check(`tests/README.md names every browser and real-database test file (${files.length})`, files.length > 10 && !unnamed.length, `missing ${unnamed.join(', ')}`);
+  const section = (heading) => {
+    const at = testsReadme.indexOf(heading);
+    if (at < 0) return '';
+    const next = testsReadme.indexOf('\n## ', at + heading.length);
+    return testsReadme.slice(at, next < 0 ? undefined : next);
+  };
+  const dirs = { 'tests/e2e': '## Browser tests (`e2e/`)', 'tests/realdb': '## Real-database tests (`realdb/`)' };
+  const files = Object.keys(dirs).flatMap((d) => fs.readdirSync(path.join(ROOT, d)).filter((f) => f.endsWith('.test.js')).map((f) => `${d}/${f}`));
+  const unnamed = files.filter((f) => !section(dirs[path.dirname(f)]).includes(`\`${path.basename(f)}\``)).sort();
+  check(`tests/README.md names every browser and real-database test file in its suite's section (${files.length})`,
+    files.length > 10 && Object.values(dirs).every((h) => section(h)) && !unnamed.length, `missing ${unnamed.join(', ')}`);
 }
 const optionalSuites = Object.keys(suites).filter((s) => !defaults.includes(s));
 for (const s of optionalSuites) {
