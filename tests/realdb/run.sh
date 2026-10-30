@@ -9,8 +9,9 @@
 # 2. Builds the template database "realdb_t": the Supabase stand-ins, schema.sql, a v1-era household
 #    (seed_v1.sql), supabase/migrations/*.sql in order, then the v2 household (seed_v2.sql);
 #    "realdb_v1t", the v1 database as it is live before v2 (no migrations); "realdb_v2t", the v2
-#    database before v1.1 (migration 0002 only, then seed_v2.sql); and "realdb_v3t", the database as
-#    it is live before v1.2 (migrations 0002 and 0003, then seed_v2.sql).
+#    database before v1.1 (migration 0002 only, then seed_v2.sql); "realdb_v3t", the database as it
+#    is live before v1.2 (migrations 0002 and 0003, then seed_v2.sql); and "realdb_v4t", the database
+#    before v1.3 (migrations 0002 to 0004, then seed_v2.sql).
 # 3. Exports the older site versions for the v1-on-v2 checks, into tests/.tmp/: b980d4c (the v1 site
 #    that is live until the v2 deploy: main before v2) and bcf296a (the core/module split, PR A). Fixed
 #    commits, not a branch: once v2 is merged, main is the v2 site. A commit git can't find (a shallow
@@ -68,6 +69,17 @@ for f in tests/db/standins.sql supabase/schema.sql tests/realdb/seed_v1.sql supa
   fi
 done
 
+# The database before v1.3 (migrations 0002 to 0004, then the v2 household): the new site goes live
+# before migration 0005 is applied (docs/v1.3-homework.md §16.1), so it must work on it, and
+# v4db.test.js applies 0005 to a copy of it while the hub is running.
+if ! sql -d postgres -c 'create database realdb_v4t' >/dev/null; then echo "FAIL  realdb: create the v4 template database"; exit 1; fi
+for f in tests/db/standins.sql supabase/schema.sql tests/realdb/seed_v1.sql supabase/migrations/0002_home_hub_v2.sql \
+         supabase/migrations/0003_google_calendar.sql supabase/migrations/0004_meals_and_shopping.sql tests/realdb/seed_v2.sql; do
+  if ! quiet -d realdb_v4t -v kitchen="$(cat supabase/kitchen-renovation.json)" -f "$f" >"$dir/load.log" 2>&1; then
+    echo "FAIL  realdb: load $f into the v4 database  ($(tail -n 1 "$dir/load.log"))"; exit 1
+  fi
+done
+
 # The older sites, for the v1-on-v2 checks.
 mkdir -p tests/.tmp
 export REALDB_V1_ROOT="" REALDB_V1A_ROOT=""
@@ -83,7 +95,7 @@ for pair in "b980d4c:realdb-v1:REALDB_V1_ROOT" "bcf296a:realdb-v1a:REALDB_V1A_RO
   else echo "SKIP  realdb: git commit $ref isn't in this clone, so its v1-on-v2 checks are skipped"; rm -rf "$out"; fi
 done
 
-export REALDB_SOCKET="$dir" REALDB_PORT="$port" REALDB_TEMPLATE=realdb_t REALDB_V1_TEMPLATE=realdb_v1t REALDB_V2_TEMPLATE=realdb_v2t REALDB_V3_TEMPLATE=realdb_v3t REALDB_PG_BIN="$PG_BIN"
+export REALDB_SOCKET="$dir" REALDB_PORT="$port" REALDB_TEMPLATE=realdb_t REALDB_V1_TEMPLATE=realdb_v1t REALDB_V2_TEMPLATE=realdb_v2t REALDB_V3_TEMPLATE=realdb_v3t REALDB_V4_TEMPLATE=realdb_v4t REALDB_PG_BIN="$PG_BIN"
 status=0
 files=()
 if [[ $# -gt 0 ]]; then for n in "$@"; do files+=("tests/realdb/$n.test.js"); done
