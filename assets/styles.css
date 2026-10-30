@@ -592,10 +592,11 @@ body.has-bottombar .tabs a { display: inline-flex; align-items: center; min-heig
 .topbar-end .btn { min-height: 44px; }
 .topbar-end .btn svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; }
 .bottombar { display: none; }
-/* Tablets: the seven tabs get their own row under the brand and buttons, so none scroll out of sight. */
+/* Tablets: the tabs get their own row under the brand and buttons, so none scroll out of sight; with
+   schema 5's nine tabs on a narrow tablet, the row wraps onto a second line. */
 @media (min-width: 641px) and (max-width: 960px) {
   body.has-bottombar .topbar-inner { flex-wrap: wrap; row-gap: 4px; }
-  body.has-bottombar .topbar .tabs { order: 3; flex: 1 1 100%; margin: 0 -4px; }
+  body.has-bottombar .topbar .tabs { order: 3; flex: 1 1 100%; flex-wrap: wrap; margin: 0 -4px; }
 }
 @media (max-width: 640px) {
   body.has-bottombar .topbar .tabs, body.has-bottombar .topbar-end { display: none; }

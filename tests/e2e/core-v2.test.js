@@ -3,7 +3,8 @@
 // sheets, the phone bottom bar) and the projects' task_dates (sent with every schedule save in v2,
 // never in v1, and filled back in when the database marked them stale). Schema 4 (v1.2): the Food tab
 // in a six-cell bottom bar, Shopping in the Add sheet (through use('food').openListAdd), and signing
-// out forgetting the Food page's saved list (homehub.shop.hub).
+// out forgetting the Food page's saved list (homehub.shop.hub). Schema 5 (v1.3): Homework under More, the
+// bottom bar still six cells.
 //
 // The fake RPCs answer with the shapes in supabase/migrations/0002_home_hub_v2.sql. The v2 pages are
 // replaced by small stub modules (served in place of assets/modules/<page>.js), so this file tests the
@@ -20,7 +21,7 @@ const results = [];
 const check = (name, ok, detail) => results.push(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? `  (${String(detail).slice(0, 200)})` : ''}`);
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const CORS = { 'access-control-allow-origin': '*', 'access-control-allow-headers': '*', 'access-control-allow-methods': 'GET,POST,PATCH,DELETE,OPTIONS', 'access-control-expose-headers': '*' };
-const V = '20261028a';
+const V = '20261030a';
 
 // ---- Fixtures (fictional people only)
 const T = '2026-10-24T16:00:00.000000+00:00';
@@ -70,6 +71,8 @@ const STUBS = {
   settings: { nav: { label: 'Settings', order: 70 } },
   // Food comes with schema 4 (assets/modules/food.js); its openListAdd is the Add sheet's Shopping.
   food: { nav: { label: 'Food', order: 35, primary: true }, provides: 'openListAdd', min: 4 },
+  // Homework comes with schema 5 (assets/modules/homework.js): a tab, not a primary page.
+  homework: { nav: { label: 'Homework', order: 37 }, min: 5 },
 };
 const stubModule = (name, s) => `;(function () {
   var core = HomeHub.core;
@@ -157,6 +160,8 @@ const emailOf = (req) => {
     if (!opts.v1) await page.route('**/assets/modules/projects.js*', (route) => route.fulfill({ contentType: 'application/javascript', body: stubModule('projects', STUBS.projects) }));
     // Food (schema 4 only), with openListAdd unless opts.food says otherwise.
     await page.route('**/assets/modules/food.js*', (route) => route.fulfill({ contentType: 'application/javascript', body: opts.v1 ? '// not under test' : stubModule('food', opts.food || STUBS.food) }));
+    // Homework (schema 5 only).
+    await page.route('**/assets/modules/homework.js*', (route) => route.fulfill({ contentType: 'application/javascript', body: opts.v1 ? '// not under test' : stubModule('homework', STUBS.homework) }));
     await page.goto(BASE + (opts.path || '/'));
     await page.waitForTimeout(opts.wait || 600);
     return { page, db, log, context };
@@ -185,13 +190,16 @@ const emailOf = (req) => {
   const order = head.scripts.map((s) => s.src.replace(/\?.*$/, '').replace(/^https:\/\/cdn\.jsdelivr\.net\/.*\/supabase\.js$/, 'supabase-js'));
   const v1Mods = ['home', 'projects', 'contractors', 'family'].map((m) => `assets/modules/${m}.js`);
   const v2Mods = V2_PAGES.map((m) => `assets/modules/${m}.js`);
-  check('index.html: core first, then shoplist.js, the v1 modules, the v2 modules and Food, in order',
-    same(order, ['config.js', 'supabase-js', 'assets/gantt.js', 'assets/hub.js', 'assets/shoplist.js', ...v1Mods, ...v2Mods, 'assets/modules/food.js']), order.join(', '));
+  // v1.3 adds plan.js after shoplist.js and homework.js after food.js (on purpose).
+  check('index.html: core first, then shoplist.js and plan.js, the v1 modules, the v2 modules, Food and Homework, in order',
+    same(order, ['config.js', 'supabase-js', 'assets/gantt.js', 'assets/hub.js', 'assets/shoplist.js', 'assets/plan.js', ...v1Mods, ...v2Mods,
+      'assets/modules/food.js', 'assets/modules/homework.js']), order.join(', '));
   check('index.html: no script is async or deferred', head.scripts.every((s) => !s.async));
   // Then projects.css: the Projects page is a v1 page and a v2 page; its styles apply to the v2 one only.
-  // Then food.css (schema 4).
+  // Then food.css (schema 4), and plan.css and homework.css (schema 5).
   check('index.html: page styles load after styles.css, in order',
-    same(head.styles.map((h) => h.replace(/\?.*$/, '')), ['assets/styles.css', ...V2_PAGES.map((m) => `assets/css/${m}.css`), 'assets/css/projects.css', 'assets/css/food.css']), head.styles.join(', '));
+    same(head.styles.map((h) => h.replace(/\?.*$/, '')), ['assets/styles.css', ...V2_PAGES.map((m) => `assets/css/${m}.css`), 'assets/css/projects.css', 'assets/css/food.css',
+      'assets/css/plan.css', 'assets/css/homework.css']), head.styles.join(', '));
   const vers = new Set([...head.scripts.map((s) => s.src), ...head.styles].map((u) => (u.match(/[?&]v=([^&]+)/) || [])[1]));
   check(`index.html: every script and stylesheet carries ?v=${V}`, vers.size === 1 && vers.has(V), [...vers].join(', '));
   check('index.html: manifest, apple-touch-icon, theme-color and iPhone web-app tags',
@@ -510,6 +518,42 @@ const emailOf = (req) => {
   await page.waitForTimeout(150);
   check('schema 4 without openListAdd: the Add sheet is Event | Task', same(await page.$$eval('#sheet [data-add]', (b) => b.map((x) => x.dataset.add)), ['event', 'task'])
     && (await page.getAttribute('.bb-add', 'aria-label')) === 'Add an event or task');
+  await page.context().close();
+
+  // schema 5 (v1.3): Homework is a tab, not a primary page: the bar stays Today · Calendar · ＋ · Tasks · Food · More,
+  // and Homework is in the More sheet; a tablet shows nine top tabs, Homework after Food.
+  const v5 = { hub_schema_version: () => 5 };
+  ({ page } = await open({ label: 'v5-phone', ctx: phone, rpc: v5 }));
+  const bar5 = await barOf(page);
+  check('schema 5 phone: the bottom bar stays Today · Calendar · ＋ · Tasks · Food · More (six cells)',
+    same(bar5.map((b) => b.tab || b.label || b.text), ['today', 'calendar', 'Add an event, a task or shopping', 'tasks', 'food', 'More'])
+    && bar5.every((b) => b.w >= 44 && b.h >= 44 && b.fits) && await noSideScroll(page), JSON.stringify(bar5.map((b) => b.tab || b.label || b.text)));
+  await page.click('.bb-more');
+  await page.waitForTimeout(200);
+  check('schema 5 phone: More lists Homework with the other pages', same(await page.$$eval('#sheet .sheet-list a', (as) => as.map((a) => a.textContent)),
+    ['Homework', 'Projects', 'Directory', 'Family', 'Settings']), JSON.stringify(await page.$$eval('#sheet .sheet-list a', (as) => as.map((a) => a.textContent))));
+  await page.click('#sheet .sheet-list a[data-tab="homework"]');
+  await page.waitForTimeout(300);
+  check('schema 5 phone: Homework from More opens it, and More is current', (await text(page, '#probe')).startsWith('homework')
+    && (await page.$eval('.bb-more', (b) => b.classList.contains('is-current'))));
+  await page.screenshot({ path: SHOTS + 'v5-phone.png' });
+  await page.context().close();
+  ({ page } = await open({ label: 'v5-tablet', rpc: v5, ctx: { viewport: { width: 700, height: 1000 }, hasTouch: true } }));
+  const tablet5 = await page.evaluate(() => ({
+    tabs: [...document.querySelectorAll('.tabs a')].map((a) => [a.textContent, a.getBoundingClientRect().height]),
+    tabsFit: [...document.querySelectorAll('.tabs a')].every((a) => a.getBoundingClientRect().right <= document.querySelector('.tabs').getBoundingClientRect().right + 1),
+  }));
+  check('schema 5 tablet: nine top tabs (Homework after Food), each at least 44px, all on screen',
+    same(tablet5.tabs.map((t) => t[0]), ['Today', 'Calendar', 'Tasks', 'Food', 'Homework', 'Projects', 'Directory', 'Family', 'Settings']) && tablet5.tabs.every((t) => t[1] >= 44)
+    && tablet5.tabsFit && await noSideScroll(page), JSON.stringify(tablet5));
+  await page.screenshot({ path: SHOTS + 'v5-tablet.png' });
+  await page.setViewportSize({ width: 641, height: 1000 });
+  await page.waitForTimeout(150);
+  const narrow5 = await page.evaluate(() => [...document.querySelectorAll('.tabs a')].every((a) => {
+    const r = a.getBoundingClientRect();
+    return r.height >= 44 && r.right <= document.querySelector('.tabs').getBoundingClientRect().right + 1;
+  }));
+  check('schema 5 tablet at 641px: the tabs wrap onto a second line rather than scroll out of sight; no sideways scroll', narrow5 && await noSideScroll(page));
   await page.context().close();
 
   // schema 3: the five-cell bar and Event | Task, as on 2; the Food page (made for 4) isn't there
