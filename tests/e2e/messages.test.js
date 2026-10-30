@@ -1,13 +1,16 @@
-// Playwright tests for the message composer (text / WhatsApp / email / send via hub).
+// Playwright tests for the message composer (text / WhatsApp / Share / email / send via hub).
+// Share is there only where the browser has Web Share (navigator.share): this Chromium has none, so
+// the Share checks give the page stubShare's fake.
 // Run alone with: node tests/e2e/messages.test.js
 const { chromium } = require('playwright');
-const { makeDb, install, signIn } = require('./mock');
+const { makeDb, install, signIn, stubShare } = require('./mock');
 const { serve } = require('./server');
 
 let BASE = '';
 const SHOTS = __dirname + '/shots/';
 const results = [];
 const check = (name, ok, detail) => results.push(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? `  (${String(detail).slice(0, 160)})` : ''}`);
+const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
 (async () => {
   require('fs').mkdirSync(SHOTS, { recursive: true });
@@ -23,6 +26,7 @@ const check = (name, ok, detail) => results.push(`${ok ? 'PASS' : 'FAIL'}  ${nam
     page.on('pageerror', (e) => errors.push(`${opts.label}: ${e.message}`));
     page.on('dialog', (d) => d.accept());
     await install(page, db, [], opts);
+    if (opts.share) await stubShare(page);
     await page.goto(BASE + (opts.path || '/'));
     await page.waitForTimeout(500);
     return { page, db };
@@ -43,6 +47,8 @@ const check = (name, ok, detail) => results.push(`${ok ? 'PASS' : 'FAIL'}  ${nam
   check('Text opens Messages with US number + body', sms.startsWith('sms:+12015550100?&body=') && dec(sms.split('body=')[1]) === body, sms.slice(0, 60));
   const wa = await href(page, 'whatsapp');
   check('WhatsApp opens wa.me with number + text', wa.startsWith('https://wa.me/12015550100?text=') && dec(wa.split('text=')[1]) === body, wa.slice(0, 60));
+  check('no Share without Web Share (navigator.share, which most desktop browsers lack)', !(await page.$('#formDialog [data-share]'))
+    && same(await page.$$eval('#formDialog .msg-actions > *', (es) => es.map((e) => e.textContent)), ['Text', 'WhatsApp', 'Open in my email']));
   const mail = await href(page, 'mail');
   check('Email opens mail app with subject + body', mail.startsWith('mailto:pat@leeelectric.example?subject=') && dec(mail).includes('Kitchen Renovation: your schedule'), mail.slice(0, 70));
   check('no "Send email now" until hub email is set up', !(await page.$('#formDialog [data-send]')));
@@ -105,12 +111,61 @@ const check = (name, ok, detail) => results.push(`${ok ? 'PASS' : 'FAIL'}  ${nam
   check('send failure explained, dialog stays open', err.includes('50 emails') && (await page.$eval('#formDialog', (d) => d.open)), err);
   await page.screenshot({ path: SHOTS + 'message-send.png' });
 
-  // 7. Phone layout
-  const m = await open({ label: 'phone', path: '/#/projects/p-kitchen', ctx: { viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true } });
+  // 7. Share (Web Share): beside WhatsApp, with the message as it stands
+  const sh = await open({ label: 'share', path: '/#/projects/p-kitchen', share: true });
+  const shares = () => sh.page.evaluate(() => window.__shares);
+  const formErr = () => sh.page.$eval('#formDialog .form-error', (e) => (e.hidden ? '' : e.innerText));
+  const toastCount = () => sh.page.$$eval('.toast', (ts) => ts.length);
+  const dialogOpen = () => sh.page.$eval('#formDialog', (d) => d.open);
+  await sh.page.click('.member [data-msg="electrician"]');
+  await sh.page.waitForTimeout(200);
+  const acts = await sh.page.$$eval('#formDialog .msg-actions > *', (es) => es.map((e) => [e.textContent, e.tagName, e.getAttribute('type'), e.getAttribute('aria-label')]));
+  check('Share sits beside WhatsApp when the browser has navigator.share', same(acts.map((a) => a[0]), ['Text', 'WhatsApp', 'Share', 'Open in my email'])
+    && same(acts[2].slice(1), ['BUTTON', 'button', 'Share the message with another app']), JSON.stringify(acts));
+  check('the sharing tip says which Share turns on the live link (the project page\'s, not this one)',
+    (await sh.page.$eval('#formDialog', (d) => d.innerText)).includes('Tip: turn on sharing (the Share button on the project page) to include a link to the live schedule.'));
+  await sh.page.fill('#formDialog [name=body]', 'Hi Pat, can you come Tuesday instead?\n\nThanks,\nAlex');
+  await sh.page.click('#formDialog [data-share]');
+  await sh.page.waitForTimeout(200);
+  let got = await shares();
+  const waNow = dec((await href(sh.page, 'whatsapp')).split('text=')[1]);
+  check('Share hands the message as edited to the share sheet: exactly the WhatsApp text, and nothing else', got.length === 1
+    && same(got[0].data, { text: 'Hi Pat, can you come Tuesday instead?\n\nThanks,\nAlex' }) && got[0].data.text === waNow, JSON.stringify(got));
+  check('Share is called from the tap itself (Safari needs the tap)', got.length === 1 && got[0].event === 'click', JSON.stringify(got));
+  check('after a share the dialog stays open, with no error and no toast', (await dialogOpen()) && !(await formErr()) && (await toastCount()) === 0);
+  await sh.page.evaluate(() => { window.__shareAnswer = 'AbortError'; });
+  await sh.page.click('#formDialog [data-share]');
+  await sh.page.waitForTimeout(300);
+  check('closing the share sheet (AbortError) shows nothing', (await shares()).length === 2 && !(await formErr()) && (await toastCount()) === 0 && (await dialogOpen()));
+  await sh.page.evaluate(() => { window.__shareAnswer = 'NotAllowedError'; });
+  await sh.page.click('#formDialog [data-share]');
+  await sh.page.waitForTimeout(300);
+  check('another error says so in the dialog (a toast would be behind it); the dialog stays open',
+    (await formErr()) === 'Couldn\'t open the share menu. Try again, or use WhatsApp or Text.' && (await dialogOpen()), await formErr());
+  await sh.page.screenshot({ path: SHOTS + 'message-share-error.png' });
+  await sh.page.evaluate(() => { window.__shareAnswer = undefined; });
+  await sh.page.click('#formDialog [data-share]');
+  await sh.page.waitForTimeout(200);
+  check('the next Share clears the error', (await shares()).length === 4 && !(await formErr()));
+  await sh.page.keyboard.press('Escape');
+  await sh.page.goto(BASE + '/#/contractors');
+  await sh.page.waitForTimeout(500);
+  await sh.page.click('.ccard:has-text("Maria Gomez") [data-message]');
+  await sh.page.waitForTimeout(200);
+  check('phone-only contractor: Text, WhatsApp and Share', same(await sh.page.$$eval('#formDialog .msg-actions > *', (es) => es.map((e) => e.textContent)), ['Text', 'WhatsApp', 'Share']));
+  await sh.page.click('#formDialog [data-share]');
+  await sh.page.waitForTimeout(200);
+  got = await shares();
+  check('her Share has her draft, the same text as her WhatsApp', got.length === 5 && got[4].data.text === dec((await href(sh.page, 'whatsapp')).split('text=')[1])
+    && got[4].data.text.startsWith('Hi Maria,'), JSON.stringify(got[4]));
+  await sh.page.context().close();
+
+  // 8. Phone layout (with Share, as on a phone)
+  const m = await open({ label: 'phone', path: '/#/projects/p-kitchen', share: true, ctx: { viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true } });
   await m.page.evaluate(() => document.querySelector('.member [data-msg]').scrollIntoView());
   await m.page.click('.member [data-msg="electrician"]');
   await m.page.waitForTimeout(200);
-  check('phone: composer fits without sideways scroll', !(await m.page.evaluate(() => document.documentElement.scrollWidth > 390)));
+  check('phone: composer fits without sideways scroll, Share included', !!(await m.page.$('#formDialog [data-share]')) && !(await m.page.evaluate(() => document.documentElement.scrollWidth > 390)));
   await m.page.screenshot({ path: SHOTS + 'm-message.png' });
 
   console.log(results.join('\n'));

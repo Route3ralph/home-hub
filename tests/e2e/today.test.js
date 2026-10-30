@@ -1,6 +1,6 @@
 // Browser tests for the v2 Today page (assets/modules/today.js): person chips, one person's day,
-// ticking tasks off with Undo, Late, Heads-up, "Nobody's on it", "Send <name> their day", the
-// project lines, the first-run checklist and "Which one is you?". On schema 3 (migration 0003): events
+// ticking tasks off with Undo, Late, Heads-up, "Nobody's on it", "Send <name> their day" (with Share
+// where the browser has Web Share), the project lines, the first-run checklist and "Which one is you?". On schema 3 (migration 0003): events
 // read from Google Calendar (google_items) in each person's day and under Everyone, in time order, never
 // in Late, Heads-up or Nobody's on it; the line when they can't be loaded; the one-time notice after the
 // first Start copying (docs/v1.1-google-calendar.md §5.4). On schema 4 (migration 0004): tonight's
@@ -17,7 +17,7 @@
 // Run alone with: node tests/e2e/today.test.js
 const { chromium } = require('playwright');
 const { randomUUID, createHash } = require('crypto');
-const { makeDb, install, signIn, SUPA, withCalendars, calendarRow, googleEventRow, calendarRpc, withFood, mealRow } = require('./mock');
+const { makeDb, install, signIn, SUPA, withCalendars, calendarRow, googleEventRow, calendarRpc, withFood, mealRow, stubShare } = require('./mock');
 const { serve } = require('./server');
 
 let BASE = '';
@@ -270,6 +270,8 @@ const emailOf = (req) => {
     for (const [name, s] of Object.entries(STUBS)) {
       await page.route(`**/assets/modules/${name}.js*`, (route) => route.fulfill({ contentType: 'application/javascript', body: opts.v1 ? '// not under test' : stubModule(name, s) }));
     }
+    // Web Share: this Chromium has none; opts.share gives the page stubShare's fake.
+    if (opts.share) await stubShare(page);
     await page.goto(BASE + (opts.path || '/'));
     await page.waitForTimeout(opts.wait || 700);
     return { page, db, log, context };
@@ -365,6 +367,8 @@ const emailOf = (req) => {
     && same(calls(db, 'day_text').map((c) => c.body), [{ p_person: ID.taylor, p_day: TODAY }]), JSON.stringify(send[0]).slice(0, 200));
   await page.click('.today-preview summary');
   check('send: the message can be previewed', (await text(page, '.today-preview pre')) === msg);
+  check('send: no Share without Web Share (navigator.share, which most desktop browsers lack)', !(await page.$('.today-send [data-share]'))
+    && same(await page.$$eval('.today-send-btns > *', (es) => es.map((e) => e.textContent)), ['WhatsApp', 'Text']));
   const proj = await projectLines(page);
   check('projects: one line per active project with work today (not done tasks, not an idea project): counts, then the job starting today',
     same(proj, [['Kitchen Renovation: 1 starting today · 1 in progress', 'Rough-in plumbing', '#/projects/p-kitchen', ['tel:2015550100']]]), JSON.stringify(proj));
@@ -594,6 +598,35 @@ const emailOf = (req) => {
   await rowFor(page, 'day', 'Heartworm pill').locator('.irow-main').click();
   await page.waitForTimeout(300);
   check('open a done task: its Done entry on the Tasks page (where "Not done after all" is)', (await page.evaluate(() => location.hash)) === `#/tasks/${plumbingDone}/done`, await page.evaluate(() => location.hash));
+  await page.context().close();
+
+  // =====================================================================
+  // 6d. Send their day with Share, on a phone with Web Share: beside WhatsApp, the same message
+  // =====================================================================
+  ({ page, db } = await open({ label: 'share', share: true, ctx: phone }));
+  const shares = () => page.evaluate(() => window.__shares);
+  const btns = await page.$$eval('.today-send-btns > *', (es) => es.map((e) => [e.textContent, e.tagName, e.getAttribute('aria-label')]));
+  check('share: WhatsApp, Share, Text; Share labelled like its neighbours', same(btns, [['WhatsApp', 'A', 'Send Taylor their day by WhatsApp'], ['Share', 'BUTTON', 'Share Taylor\'s day with another app'],
+    ['Text', 'A', 'Send Taylor their day by text']]), JSON.stringify(btns));
+  await page.click('.today-send [data-share]');
+  await page.waitForTimeout(300);
+  let got = await shares();
+  const waDay = decodeURIComponent((await page.getAttribute('.today-send [data-via="whatsapp"]', 'href')).split('?text=')[1]);
+  check('share: the share sheet gets exactly the WhatsApp message (day_text), from the tap', got.length === 1 && same(got[0].data, { text: msg }) && waDay === msg
+    && got[0].event === 'click', JSON.stringify(got));
+  check('share: no toast when it went through', (await texts(page, '.toasts .toast')).length === 0);
+  await page.evaluate(() => { window.__shareAnswer = 'AbortError'; });
+  await page.click('.today-send [data-share]');
+  await page.waitForTimeout(300);
+  check('share: closing the share sheet (AbortError) shows nothing', (await shares()).length === 2 && (await texts(page, '.toasts .toast')).length === 0, JSON.stringify(await texts(page, '.toasts .toast')));
+  await page.evaluate(() => { window.__shareAnswer = 'NotAllowedError'; });
+  await page.click('.today-send [data-share]');
+  await page.waitForTimeout(300);
+  check('share: another error says so in a red toast', (await shares()).length === 3 && (await lastToast(page)) === 'Couldn\'t open the share menu. Try again, or use WhatsApp or Text.'
+    && (await page.$$('.toasts .toast-error')).length === 1, await lastToast(page));
+  const shareBox = await page.$eval('.today-send [data-share]', (b) => { const r = b.getBoundingClientRect(); return [Math.round(r.width), Math.round(r.height)]; });
+  check('share: a 44px target; no sideways scroll', shareBox[0] >= 44 && shareBox[1] >= 44 && await noSideScroll(page), JSON.stringify(shareBox));
+  await page.screenshot({ path: SHOTS + 'today-share-phone.png', fullPage: true });
   await page.context().close();
 
   // =====================================================================

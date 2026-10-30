@@ -27,7 +27,7 @@
 
   const HomeHub = window.HomeHub;
   const { core } = HomeHub;
-  const { q, toast, friendly, firstName, smsHref, whatsappHref, wireFormDialog, formDialog, detailDialog } = core;
+  const { q, toast, friendly, firstName, smsHref, whatsappHref, canShare, shareText, wireFormDialog, formDialog, detailDialog } = core;
   const { esc, plural } = core.G;
   const { v2 } = core;
   const { call, fmt, dates, ui } = v2;
@@ -838,6 +838,7 @@
       : `Hi ${name}, here's the household's shopping list on Home Hub. Tap to see it and tick off what you buy:\n${link}`;
   }
 
+  // WhatsApp, Share (where the browser has it; it carries the same message) and Text.
   function drawSend(st) {
     const box = st.main.querySelector('[data-ref="send"]');
     if (!box) return;
@@ -850,6 +851,7 @@
         return `<li data-send="${esc(p.id)}"><div class="food-send-who">${ui.personDot(p)}<b>Send ${esc(name)} the list</b></div>
           <div class="food-send-btns">
             <a class="btn" data-via="whatsapp" href="${esc(whatsappHref(p.phone, msg))}" target="_blank" rel="noopener" aria-label="Send ${esc(name)} the list by WhatsApp">WhatsApp</a>
+            ${canShare() ? `<button type="button" class="btn" data-act="share" data-share="${esc(msg)}" aria-label="Share the list for ${esc(name)} with another app">Share</button>` : ''}
             <a class="btn" data-via="sms" href="${esc(smsHref(p.phone, msg))}" aria-label="Send ${esc(name)} the list by text">Text</a>
           </div></li>`;
       }).join('')}</ul>` : '';
@@ -995,6 +997,7 @@
         case 'aisle': toggleAisle(st, rowEl); break;
         case 'set-aisle': setAisle(st, act.dataset.for, act.dataset.aisle, act); break;
         case 'buy-again': toggleAgain(st, act); break;
+        case 'share': shareText(act.dataset.share); break;
         case 'retry': st.box.kick(); poll(st); loadItems(st); break;
         case 'unfold': st.unfold = true; drawWeek(st); { const first = main.querySelector('.food-day'); if (first) first.focus(); } break;
         case 'day': openDinner(st, act.dataset.day).catch((err) => toast(friendly(err), { error: true })); break;

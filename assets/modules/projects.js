@@ -115,7 +115,8 @@
     return { subject: `${project.name}: ${r.task.name}`, body: lines.concat(signOff()).join('\n') };
   }
 
-  const sharingHint = (project) => (project.sharing_enabled ? '' : 'Tip: turn on sharing (Share button) to include a link to the live schedule.');
+  // "on the project page": the message dialog has a Share button of its own (the phone's share sheet).
+  const sharingHint = (project) => (project.sharing_enabled ? '' : 'Tip: turn on sharing (the Share button on the project page) to include a link to the live schedule.');
 
   // ============================================
   // PROJECT CARDS (also on the Home page)

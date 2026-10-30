@@ -955,5 +955,25 @@ async function signIn(context, email) {
   await context.addInitScript((s) => { try { localStorage.setItem('sb-test-auth-token', s); } catch (e) {} }, session);
 }
 
+// Web Share for the Share buttons. Chromium on Linux has no navigator.share, so a page has none unless
+// the test gives it this fake (before page.goto). Each call goes in window.__shares as { data, event }:
+// event is the type of the event being handled when it was called ('click' when it's called from the
+// tap itself, which a share needs; null after an await). window.__shareAnswer says how the next call ends:
+// unset, it shares; otherwise it fails with an error of that name ('AbortError' when the person closes
+// the share sheet, 'NotAllowedError', ...).
+function stubShare(page) {
+  return page.addInitScript(() => {
+    window.__shares = [];
+    Object.defineProperty(navigator, 'share', {
+      configurable: true,
+      value: (data) => {
+        window.__shares.push({ data: JSON.parse(JSON.stringify(data)), event: window.event ? window.event.type : null });
+        const name = window.__shareAnswer;
+        return name ? Promise.reject(new DOMException('The share did not happen', name)) : Promise.resolve();
+      },
+    });
+  });
+}
+
 module.exports = { makeDb, install, signIn, expectedConsoleError, SUPA, withCalendars, calendarRow, linkRow, googleEventRow, calendarRpc, md5uuid,
-  withFood, mealRow, shopItem, foodRpc, personDayFood, foodStamp };
+  withFood, mealRow, shopItem, foodRpc, personDayFood, foodStamp, stubShare };

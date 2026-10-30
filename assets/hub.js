@@ -358,8 +358,8 @@
 
   // ============================================
   // MESSAGES
-  // Text, WhatsApp and "Open in my email" hand a ready-to-send message to the
-  // phone's own apps, so it comes from you and replies come back to you.
+  // Text, WhatsApp, Share and "Open in my email" hand a ready-to-send message to
+  // the phone's own apps, so it comes from you and replies come back to you.
   // "Send email now" goes through the send-email function (Resend).
   // ============================================
   function phoneDigits(phone) {
@@ -370,6 +370,24 @@
   const whatsappHref = (phone, body) => `https://wa.me/${phoneDigits(phone)}?text=${encodeURIComponent(body)}`;
   const mailtoHref = (email, subject, body) => `mailto:${email}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
 
+  // Share opens the phone's share sheet (Web Share) with the same message, for WhatsApp Business or
+  // any other app: on an iPhone with both WhatsApps a wa.me link always opens the plain one. Only
+  // where the browser has it (phones do, most desktop browsers don't), and called from the tap itself
+  // (a share needs the tap's user activation, which Safari keeps only briefly). Closing the share
+  // sheet is no error; anything else says so in a toast, or through fail(message) from a dialog,
+  // which would cover the toast.
+  const canShare = () => typeof navigator.share === 'function';
+  async function shareText(text, fail) {
+    try {
+      await navigator.share({ text });
+    } catch (err) {
+      if (err && err.name === 'AbortError') return;
+      const msg = 'Couldn\'t open the share menu. Try again, or use WhatsApp or Text.';
+      if (fail) fail(msg);
+      else toast(msg, { error: true });
+    }
+  }
+
   const signOff = () => ['', 'Thanks,', firstName(me.name)];
 
   function messageDialog(contractor, draft, hint) {
@@ -377,6 +395,7 @@
     if (detailDialog.open) detailDialog.close();
     const c = contractor;
     const viaHub = !!(cfg.emailSending && c.email);
+    const withShare = !!c.phone && canShare(); // beside WhatsApp
     formDialog.innerHTML = `<div class="form d-inner">
       <div class="d-top"><h3>Message ${esc(c.name)}</h3><button type="button" class="d-close" data-close aria-label="Close">×</button></div>
       <p class="meta">${[c.company, c.phone, c.email].filter(Boolean).map(esc).join(' · ')}</p>
@@ -385,11 +404,12 @@
       ${hint ? `<p class="meta">${hint}</p>` : ''}
       <div class="msg-actions">
         ${c.phone ? '<a class="btn" data-link="sms">Text</a><a class="btn" data-link="whatsapp" target="_blank" rel="noopener">WhatsApp</a>' : ''}
+        ${withShare ? '<button type="button" class="btn" data-share aria-label="Share the message with another app">Share</button>' : ''}
         ${c.email ? '<a class="btn" data-link="mail">Open in my email</a>' : ''}
         ${viaHub ? '<button type="button" class="btn btn-primary" data-send>Send email now</button>' : ''}
       </div>
       <p class="form-error" hidden></p>
-      <p class="meta">Text, WhatsApp and email open your own apps, so the message comes from you and replies come straight back.${viaHub ? ' "Send email now" sends it from the Home Hub, with your address for replies.' : ''}</p>
+      <p class="meta">Text, WhatsApp${withShare ? ', Share' : ''} and email open your own apps, so the message comes from you and replies come straight back.${viaHub ? ' "Send email now" sends it from the Home Hub, with your address for replies.' : ''}</p>
     </div>`;
     const body = formDialog.querySelector('[name="body"]');
     const subject = formDialog.querySelector('[name="subject"]');
@@ -403,6 +423,13 @@
     };
     refresh();
     formDialog.querySelector('.form').addEventListener('input', refresh);
+    const share = formDialog.querySelector('[data-share]');
+    if (share) {
+      share.addEventListener('click', () => {
+        errBox.hidden = true;
+        shareText(body.value, (message) => { errBox.textContent = message; errBox.hidden = false; });
+      });
+    }
     const send = formDialog.querySelector('[data-send]');
     if (send) {
       send.addEventListener('click', async () => {
@@ -1291,7 +1318,7 @@
       $, clone, firstName, slug, uniqueKey, allTasks, stamp, webHref, telHref, nextMonday, randomToken, toast, friendly,
       resolvedSchedule, contractorFor, reachable, contactFor, shareLink, safeModel,
       openForm, wireFormDialog,
-      phoneDigits, smsHref, whatsappHref, mailtoHref, signOff, messageDialog,
+      phoneDigits, smsHref, whatsappHref, mailtoHref, canShare, shareText, signOff, messageDialog,
       route, stale, use,
       // v2 (schemaVersion >= 2): caches, formatting, dates and shared pieces; the Add sheet.
       v2, openAdd, taskDates,
