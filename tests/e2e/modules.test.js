@@ -1,10 +1,10 @@
 // Browser tests for the core's module system: script order, which pages register in v1 and v2 mode
-// (and for schema versions 3 and 4: Food shows on 4 only), tab order, and the page context (ctx.params, ctx.signal, ctx.stale). A "probe" page module is
+// (and for schema versions 3, 4 and 5: Food shows on 4 and up, Homework on 5 only, under More on phones), tab order, and the page context (ctx.params, ctx.signal, ctx.stale). A "probe" page module is
 // appended to the last module script, so it registers through the same HomeHub.register() contract
 // as the real pages, and nothing test-only ships in the site.
 // Run alone with: node tests/e2e/modules.test.js
 const { chromium } = require('playwright');
-const { makeDb, install, signIn, expectedConsoleError, withFood, foodRpc } = require('./mock');
+const { makeDb, install, signIn, expectedConsoleError, withFood, foodRpc, withHomework, homeworkRpc } = require('./mock');
 const { serve } = require('./server');
 
 let BASE = '';
@@ -60,7 +60,7 @@ const probeModule = ({ name = 'probe', min = 1, max = 1, nav = null, root = fals
     }
     if (opts.noV2Pages) {
       // 'all' also blanks projects.js, which is a v1 page and a v2 page (schema 1..99).
-      for (const m of ['today', 'calendar', 'tasks', 'directory', 'people', 'settings', 'food'].concat(opts.noV2Pages === 'all' ? ['projects'] : [])) {
+      for (const m of ['today', 'calendar', 'tasks', 'directory', 'people', 'settings', 'food', 'homework'].concat(opts.noV2Pages === 'all' ? ['projects'] : [])) {
         await page.route(`**/assets/modules/${m}.js*`, (route) => route.fulfill({ contentType: 'application/javascript', body: '' }));
       }
     }
@@ -84,10 +84,11 @@ const probeModule = ({ name = 'probe', min = 1, max = 1, nav = null, root = fals
   let { page, db } = await open({ label: 'scripts' });
   const scripts = await page.$$eval('script[src]', (s) => s.map((x) => ({ src: x.getAttribute('src'), async: x.async || x.defer })));
   const order = scripts.map((s) => s.src.replace(/\?.*$/, '').replace(/^https:\/\/cdn\.jsdelivr\.net\/.*\/supabase\.js$/, 'supabase-js'));
-  // shoplist.js (the shopping list's shared pieces, schema 4) right after the core; Food after the other pages.
-  const expected = ['config.js', 'supabase-js', 'assets/gantt.js', 'assets/hub.js', 'assets/shoplist.js',
+  // shoplist.js (the shopping list's shared pieces, schema 4) and plan.js (homework's, schema 5) right after the
+  // core; Food, then Homework, after the other pages. (v1.3 adds plan.js and homework.js, on purpose.)
+  const expected = ['config.js', 'supabase-js', 'assets/gantt.js', 'assets/hub.js', 'assets/shoplist.js', 'assets/plan.js',
     'assets/modules/home.js', 'assets/modules/projects.js', 'assets/modules/contractors.js', 'assets/modules/family.js',
-    ...['today', 'calendar', 'tasks', 'directory', 'people', 'settings', 'food'].map((m) => `assets/modules/${m}.js`)];
+    ...['today', 'calendar', 'tasks', 'directory', 'people', 'settings', 'food', 'homework'].map((m) => `assets/modules/${m}.js`)];
   check('scripts load core first, then each module, in a fixed order', JSON.stringify(order) === JSON.stringify(expected), order.join(', '));
   check('no script is async or deferred', scripts.every((s) => !s.async));
   const versions = new Set(scripts.concat(await page.$$eval('link[rel=stylesheet]', (l) => l.map((x) => ({ src: x.getAttribute('href') }))))
@@ -223,6 +224,34 @@ const probeModule = ({ name = 'probe', min = 1, max = 1, nav = null, root = fals
   check('version 4: #/food opens the Food page, with the Food tab current', (await text(page, '#main h1')) === 'Food' && (await page.getAttribute('.tabs a[data-tab="food"]', 'aria-current')) === 'page', await text(page, '#main'));
   await go(page, '#/food/2026-11-03');
   check('version 4: #/food/<date> is the Food page too', (await text(page, '#main h1')) === 'Food' && (await page.getAttribute('.tabs a[data-tab="food"]', 'aria-current')) === 'page');
+  check('version 4: no Homework page (no tab, and use(\'homework\') finds nothing), and no homework request', !(await page.$('.tabs a[data-tab="homework"]'))
+    && (await page.evaluate(() => { try { HomeHub.core.use('homework'); return 'found'; } catch (e) { return 'none'; } })) === 'none'
+    && !(db.rpcCalls || []).some((c) => c.name === 'homework_week'));
+
+  // 15. Schema version 5 (migration 0005, homework): the version-4 tabs plus Homework, between Food and Projects;
+  // not a primary page, so on a phone it is under More and the bottom bar stays as on 4.
+  const V5_TABS = V4_TABS.slice(0, 4).concat([['Homework', '#/homework', 'homework']], V4_TABS.slice(4));
+  const probe25 = probeModule({ name: 'probe', min: 2, max: 5 });
+  const v5Db = () => {
+    const d = withHomework(v2Db());
+    d.people.push({ id: 'p-jordan', name: 'Jordan Example', role: 'kid', active: true, color: '#16a34a', language: 'en', sort_order: 1 });
+    return d;
+  };
+  ({ page, db } = await open({ label: 'v5-tabs', rpc: Object.assign({}, v2, foodRpc, homeworkRpc, { hub_schema_version: () => 5 }), db: v5Db(), path: '/#/probe', probes: [probe25] }));
+  const tabs5 = await tabs(page);
+  check('hub_schema_version 5 is read as 5, and is v2 mode', (await page.evaluate(() => HomeHub.core.schemaVersion)) === 5 && !!(await page.$('.bottombar')));
+  check('version 5 shows the version-4 tabs plus Homework, between Food and Projects', JSON.stringify(tabs5) === JSON.stringify(V5_TABS), JSON.stringify(tabs5));
+  check('version 5: Homework isn\'t in the phone bottom bar (it is under More)', !(await page.$('.bottombar a[data-tab="homework"]')));
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.click('.bb-more');
+  await page.waitForTimeout(200);
+  check('version 5: the More sheet lists Homework', (await page.$$eval('#sheet .sheet-list a', (as) => as.map((a) => a.dataset.tab))).includes('homework'));
+  await page.keyboard.press('Escape');
+  await page.setViewportSize({ width: 1366, height: 900 });
+  await go(page, '#/homework');
+  check('version 5: #/homework opens the Homework page, with its tab current', (await text(page, '#main h1')) === 'Homework' && (await page.getAttribute('.tabs a[data-tab="homework"]', 'aria-current')) === 'page',
+    await text(page, '#main'));
+  check('version 5: use(\'homework\') finds the page', (await page.evaluate(() => { try { HomeHub.core.use('homework'); return 'found'; } catch (e) { return 'none'; } })) === 'found');
 
   console.log(results.join('\n'));
   console.log(`\n${results.filter((r) => r.startsWith('PASS')).length}/${results.length} passed`);

@@ -130,3 +130,17 @@ section.today-who { padding: 14px 16px 16px; }
   display: inline-flex; min-height: 44px; padding: 0 2px; border: 0; background: none;
   color: var(--accent); font-size: 14px; font-weight: 600;
 }
+
+/* ---------- Homework (schema 5, the parents): a kid's ask with Yes · Not now; what waits to be checked ---------- */
+.today-hw { display: grid; gap: 6px; margin: 4px 0 6px; max-width: 760px; }
+.today-hw-ask {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; padding: 8px 12px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow);
+}
+.today-hw-line { flex: 1 1 260px; margin: 0; font-size: 15px; overflow-wrap: anywhere; }
+.today-hw-btns { display: flex; gap: 8px; }
+.today-hw-btns .btn { min-height: 44px; min-width: 44px; justify-content: center; }
+.today-hw-count {
+  display: inline-flex; align-items: center; gap: 6px; min-height: 44px; padding: 0 2px; justify-self: start;
+  color: var(--accent); font-size: 15px; font-weight: 650; text-decoration: none;
+}

@@ -424,9 +424,14 @@ const SQL = {
   add_to_list_by_token: foodRpc.add_to_list_by_token,
   buy_item_by_token: foodRpc.buy_item_by_token,
 };
-// What anon (the signed-out My day page) may execute; everything else needs a member.
+// What anon (the signed-out My day page and, from v1.3, the tutor's link) may execute; everything else needs
+// a member. v1.3 (migration 0005) adds Jordan's seven homework functions and the tutor link's four, on purpose.
 const ANON = new Set(['get_person_day', 'complete_by_token', 'undo_by_token', 'confirm_digest', 'stop_digest',
-  'get_list_by_token', 'add_to_list_by_token', 'buy_item_by_token']);
+  'get_list_by_token', 'add_to_list_by_token', 'buy_item_by_token',
+  'homework_by_token', 'step_by_token', 'plan_by_token', 'focus_by_token', 'reward_by_token', 'assignment_by_token', 'homework_prefs_by_token',
+  'tutor_view_by_token', 'tutor_assignment_by_token', 'tutor_plan_by_token', 'tutor_step_by_token']);
+// My day's day view and its homework (not the email confirmation's two): any other /rest/v1/ request is a mistake.
+const MY_DAY_CALLS = new RegExp(`/rest/v1/(?!rpc/(${[...ANON].filter((f) => f !== 'confirm_digest' && f !== 'stop_digest').join('|')})$)`);
 
 // Table defaults and triggers for inserts (tasks_defaults, events_weekdays), so rows look as the database keeps them.
 const TASK_DEFAULTS = { notes: null, category: 'other', responsible_id: null, due_date: null, due_time: null, lead_days: 0, project_id: null, contractor_id: null,
@@ -913,7 +918,7 @@ async function installHub(page, db, log, opts = {}) {
   check('(f) Undo: undo_by_token with her token and the log id; the pill is due today again and open', same(calls('undo_by_token')[0].body, { p_token: taylor.day_token, p_log_id: calls('undo_by_token')[0].body.p_log_id })
     && pill.due_date === TODAY && !db.task_log.length && (await myPill.locator('.day-check').getAttribute('aria-checked')) === 'false');
   check('(f) My day fits at 390px', await noSideScroll(page));
-  check('(f) My day never loads the hub, and its database calls are only the token functions', !log.some((l) => /\/rest\/v1\/(?!rpc\/(get_person_day|complete_by_token|undo_by_token|get_list_by_token|add_to_list_by_token|buy_item_by_token)$)/.test(l.split('?')[0])), log.join(' | '));
+  check('(f) My day never loads the hub, and its database calls are only the token functions', !log.some((l) => MY_DAY_CALLS.test(l.split('?')[0])), log.join(' | '));
   await shot(page, 'my-day-phone-dark');
   await page.context().close();
 
