@@ -1,7 +1,7 @@
 -- Who can see and change what: seeding, whoami, the catalog-wide rules, and the
 -- role matrix (anon; signed-in stranger; removed member with a parent row; adult; admin;
--- service_role) for every new table and every new function (migrations 0002, 0003 and 0004),
--- and the table and column privileges of 0003's and 0004's tables.
+-- service_role) for every new table and every new function (migrations 0002 to 0005),
+-- and the table and column privileges of 0003's, 0004's and 0005's tables.
 \ir roles.sql
 \ir fixtures.sql
 
@@ -30,8 +30,10 @@ select test.is((whoami() -> 'person') - 'id', '{"name": "Alex", "role": "parent"
 select test.is((whoami() -> 'person' ->> 'id')::uuid, test.person('Alex'), 'whoami person id');
 -- Migration 0003 (Google Calendar) changed the version on purpose: the v1.1 client shows its
 -- Google card, and asks for Google events, only on 3. Migration 0004 (Food) changes it on purpose
--- again: the v1.2 client shows Food, and asks for meals and the shopping list, only on 4.
-select test.is(hub_schema_version(), 4, 'hub_schema_version is 4');
+-- again: the v1.2 client shows Food, and asks for meals and the shopping list, only on 4. Migration
+-- 0005 (Homework) changes it on purpose once more: the v1.3 client shows Homework, and asks for
+-- anything of it (Today's lines, Jordan's card, the tutor link), only on 5.
+select test.is(hub_schema_version(), 5, 'hub_schema_version is 5');
 :as_removed
 select test.is(whoami(), null, 'removed member: whoami is null even with a person row');
 :as_stranger
@@ -65,25 +67,50 @@ select test.is((select string_agg(c.relname, ', ' order by c.relname) from pg_cl
                'food_pairs, list_done', '... (the private tables: food_pairs, list_done)');
 select test.is((select string_agg(p.proname, ', ' order by p.proname) from pg_proc p
                 where p.pronamespace = 'public'::regnamespace and has_function_privilege('anon', p.oid, 'execute')),
-               'add_to_list_by_token, buy_item_by_token, complete_by_token, confirm_digest, get_list_by_token, get_person_day, '
-               'get_shared_project, stop_digest, undo_by_token',
-               'anon can execute only get_shared_project and the eight token functions (0004 adds the three for the list)');
+               'add_to_list_by_token, assignment_by_token, buy_item_by_token, complete_by_token, confirm_digest, focus_by_token, '
+               'get_list_by_token, get_person_day, get_shared_project, homework_by_token, homework_prefs_by_token, plan_by_token, '
+               'reward_by_token, step_by_token, stop_digest, tutor_assignment_by_token, tutor_plan_by_token, tutor_step_by_token, '
+               'tutor_view_by_token, undo_by_token',
+               'anon can execute only get_shared_project and the nineteen token functions (0004 adds the three for the list, 0005 '
+               'Jordan''s seven and the tutor link''s four)');
 select test.is(has_schema_privilege('anon', 'private', 'usage'), false, 'anon cannot use the private schema');
 select test.is((select string_agg(n.nspname || '.' || p.proname, ', ') from pg_proc p join pg_namespace n on n.oid = p.pronamespace
                 where n.nspname in ('public', 'private') and not coalesce(p.proconfig, '{}') @> '{"search_path=\"\""}'),
                null, 'every function sets search_path = ''''');
 select test.is((select string_agg(p.proname, ', ' order by p.proname) from pg_proc p
                 where p.pronamespace = 'public'::regnamespace and p.prosecdef),
-               'add_to_list, add_to_list_by_token, buy_item, buy_item_by_token, complete_by_token, complete_task, confirm_digest, '
-               'get_list_by_token, get_person_day, get_shared_project, hook_family_only_signup, '
-               'mark_signed_in, remove_person, rotate_day_token, save_person, skip_task, stop_digest, undo_by_token, undo_task',
-               'the only definer functions in public are the RPCs that check membership, admin or a token');
+               'add_to_list, add_to_list_by_token, assignment_by_token, buy_item, buy_item_by_token, complete_by_token, complete_task, '
+               'confirm_digest, decide_reward, erase_homework, focus_by_token, get_list_by_token, get_person_day, get_shared_project, '
+               'give_points, homework_ai_finish, homework_ai_preview, homework_ai_start, homework_by_token, homework_prefs_by_token, '
+               'homework_step, hook_family_only_signup, mark_signed_in, new_tutor_token, plan_by_token, remove_person, reward_by_token, '
+               'rotate_day_token, save_homework_kid, save_homework_plan, save_person, save_tutor_link, skip_task, step_by_token, '
+               'stop_digest, tutor_assignment_by_token, tutor_plan_by_token, tutor_step_by_token, tutor_view_by_token, undo_by_token, '
+               'undo_task, void_points',
+               'the only definer functions in public are the RPCs that check membership, admin, a token or the service key '
+               '(0005: the parents'' homework actions, the eleven token functions and hub-jobs'' two AI functions; add_homework_time '
+               'and homework_week run as the caller)');
 select test.is((select string_agg(p.proname, ', ' order by p.proname) from pg_proc p
                 where p.pronamespace = 'private'::regnamespace and has_function_privilege('authenticated', p.oid, 'execute')
                   and p.proname in ('complete_task', 'undo_task', 'roll_task', 'person_by_token', 'my_day_item', 'digest_item', 'people_confirm_sync',
                                     'count_my_day', 'food_words', 'guess_aisle', 'list_add', 'list_buy', 'list_for_helper',
-                                    'list_claim', 'list_add_once', 'list_buy_once')),
+                                    'list_claim', 'list_add_once', 'list_buy_once',
+                                    -- 0005: every homework helper but free_minutes, clean_block, homework_word and the triggers
+                                    'homework_kid_by_token', 'tutor_link_by_token', 'count_homework', 'place_steps', 'plan_check',
+                                    'plan_save', 'step_act', 'award', 'points_balance', 'homework_pace', 'focus_act', 'ai_sweep',
+                                    'homework_trim', 'homework_view_kid', 'homework_card', 'homework_view_tutor', 'scrub', 'ai_input')),
                null, 'members cannot call the private helpers that act for someone else');
+-- What 0005 grants members in private: free_minutes (homework_week runs as the member), and clean_block
+-- and homework_word (the tidy triggers and add_homework_time run as the parent who saves).
+select test.is((select string_agg(p.proname, ', ' order by p.proname) from pg_proc p
+                where p.pronamespace = 'private'::regnamespace and has_function_privilege('authenticated', p.oid, 'execute')
+                  and p.proname in ('free_minutes', 'clean_block', 'homework_word', 'homework_kid_by_token', 'tutor_link_by_token',
+                                    'count_homework', 'place_steps', 'plan_check', 'plan_save', 'step_act', 'award', 'points_balance',
+                                    'homework_pace', 'focus_act', 'ai_sweep', 'homework_trim', 'homework_view_kid', 'homework_card',
+                                    'homework_view_tutor', 'scrub', 'ai_input')),
+               'clean_block, free_minutes, homework_word', '0005''s private functions members may call: free_minutes, clean_block, homework_word');
+select test.is((select string_agg(p.proname, ', ' order by p.proname) from pg_proc p
+                where p.pronamespace = 'private'::regnamespace and has_function_privilege('anon', p.oid, 'execute')),
+               null, 'anon can call nothing in private');
 select test.is((select string_agg(r, ', ' order by r) from unnest(array['anon', 'authenticated', 'service_role']) r
                 where has_table_privilege(r, 'public.people_confirm', 'insert, update, delete, truncate, references, trigger')),
                null, 'nobody but the owner can write confirmation secrets');
@@ -159,6 +186,67 @@ select test.is((select string_agg(t, ', ' order by t) from unnest(array['meals',
                 where not has_table_privilege('service_role', 'public.' || t, 'select, insert, update, delete')),
                null, 'service_role keeps its privileges on meals and shopping_items (the email and the calendar job read them)');
 
+-- Migration 0005's tables: anon gets nothing; members read (row-level security decides: tutor_links and
+-- ai_runs are the parents' only); the parents write only the columns the Homework page sets (never
+-- given_*, plan_rev, done_at, cue, added_by, the AI's columns or the audit columns), and steps, blocks,
+-- asks, points and AI runs have no write grant at all (their functions write). homework_use is its
+-- owner's alone: only private.count_homework writes it.
+select test.is((select string_agg(t, ', ' order by t)
+                from unnest(array['homework_kids', 'homework_times', 'tutor_links', 'assignments', 'homework_steps', 'focus_sessions',
+                                  'rewards', 'reward_asks', 'points_ledger', 'homework_use', 'ai_runs']) t
+                where has_table_privilege('anon', 'public.' || t, 'select, insert, update, delete, truncate, references, trigger')
+                   or has_any_column_privilege('anon', 'public.' || t, 'select, insert, update, references')),
+               null, 'anon has no privilege on any of 0005''s eleven tables');
+select test.is((select string_agg(t, ', ' order by t)
+                from unnest(array['homework_kids', 'homework_times', 'tutor_links', 'assignments', 'homework_steps', 'focus_sessions',
+                                  'rewards', 'reward_asks', 'points_ledger', 'homework_use', 'ai_runs']) t
+                where has_table_privilege('authenticated', 'public.' || t, 'truncate, references, trigger')),
+               null, 'signed-in users cannot truncate, reference or put triggers on 0005''s tables');
+select test.is((select string_agg(r, ', ' order by r) from unnest(array['anon', 'authenticated', 'service_role']) r
+                where has_table_privilege(r, 'public.homework_use', 'select, insert, update, delete, truncate, references, trigger')
+                   or has_any_column_privilege(r, 'public.homework_use', 'select, insert, update, references')),
+               null, 'homework_use: no privilege for anyone but its owner');
+select test.is((select string_agg(t || ' ' || x, ', ' order by t, x)
+                from unnest(array['homework_kids', 'homework_times', 'tutor_links', 'assignments', 'homework_steps', 'focus_sessions',
+                                  'rewards', 'reward_asks', 'points_ledger', 'ai_runs']) t
+                cross join unnest(array['select', 'insert', 'update', 'delete']) x
+                where has_table_privilege('authenticated', 'public.' || t, x)),
+               'ai_runs select, assignments delete, assignments select, focus_sessions select, homework_kids select, homework_steps select, '
+               'homework_times delete, homework_times select, points_ledger select, reward_asks select, rewards delete, rewards select, '
+               'tutor_links select',
+               '0005''s tables: signed-in users select (row-level security decides), and delete homework time, assignments and rewards; no table-wide insert or update');
+select test.is((select string_agg(c.relname || '.' || a.attname, ', ' order by c.relname, a.attname)
+                from pg_class c join pg_attribute a on a.attrelid = c.oid
+                where c.relnamespace = 'public'::regnamespace and a.attnum > 0 and not a.attisdropped
+                  and c.relname in ('homework_kids', 'homework_times', 'tutor_links', 'assignments', 'homework_steps', 'focus_sessions',
+                                    'rewards', 'reward_asks', 'points_ledger', 'ai_runs')
+                  and has_column_privilege('authenticated', c.oid, a.attname, 'insert')),
+               'assignments.details, assignments.due_date, assignments.kid_id, assignments.kind, assignments.status, assignments.stretch, '
+               'assignments.subject, assignments.title, homework_times.event_id, homework_times.kid_id, rewards.active, rewards.cost, '
+               'rewards.kid_id, rewards.sort_order, rewards.title',
+               '0005''s tables: the columns signed-in users may insert (assignments without added_by, given_* or the AI''s; homework_times; rewards)');
+select test.is((select string_agg(c.relname || '.' || a.attname, ', ' order by c.relname, a.attname)
+                from pg_class c join pg_attribute a on a.attrelid = c.oid
+                where c.relnamespace = 'public'::regnamespace and a.attnum > 0 and not a.attisdropped
+                  and c.relname in ('homework_kids', 'homework_times', 'tutor_links', 'assignments', 'homework_steps', 'focus_sessions',
+                                    'rewards', 'reward_asks', 'points_ledger', 'ai_runs')
+                  and has_column_privilege('authenticated', c.oid, a.attname, 'update')),
+               'assignments.details, assignments.due_date, assignments.kind, assignments.status, assignments.stretch, assignments.subject, '
+               'assignments.title, homework_kids.active, homework_kids.focus_minutes, homework_kids.points_on, homework_kids.pts_day_cap, '
+               'homework_kids.pts_focus, homework_kids.pts_milestone, homework_kids.pts_milestone_week, homework_kids.pts_on_time, '
+               'rewards.active, rewards.cost, rewards.sort_order, rewards.title',
+               '0005''s tables: the columns signed-in users may update (never cue, if_stuck, given_*, plan_rev, done_at or added_by)');
+select test.is((select string_agg(t, ', ' order by t)
+                from unnest(array['homework_kids', 'homework_times', 'tutor_links', 'assignments', 'homework_steps', 'focus_sessions',
+                                  'rewards', 'reward_asks', 'points_ledger', 'ai_runs']) t
+                where not has_table_privilege('service_role', 'public.' || t, 'select, insert, update, delete')),
+               null, 'service_role keeps its privileges on the rest of 0005''s tables');
+select test.is((select string_agg(a.attname, ', ' order by a.attname) from pg_attribute a
+                where a.attrelid = 'public.household'::regclass and a.attname like 'homework%'
+                  and has_column_privilege('authenticated', 'public.household', a.attname, 'update')),
+               'homework_ai, homework_ai_month, homework_never_send',
+               'household: the three new columns follow its grants (row-level security: admins update)');
+
 -- ---------------------------------------------------------------------
 -- Tables: what each role can do (rows seen or changed, or denied)
 -- ---------------------------------------------------------------------
@@ -182,6 +270,21 @@ values ((select id from calendars), 'hub-taylor@group.calendar.google.com', 'g1'
 insert into meals (day, kind, title, cook_id) values ('2026-11-02', 'cook', 'Tacos', test.person('Morgan'));
 insert into shopping_items (name, added_by) values ('Milk', test.person('Alex'));
 insert into my_day_use (person_id, day, changes) values (test.person('Morgan'), '2026-11-02', 1);
+-- 0005: one row in each homework table.
+insert into homework_kids (kid_id) values (test.person('Taylor'));
+insert into homework_times (event_id, kid_id) values (test.event('Piano'), test.person('Taylor'));
+insert into tutor_links (kid_id, label, expires_on) values (test.person('Taylor'), 'Pat Lee, tutor', '2027-04-30');
+insert into assignments (kid_id, title, due_date) values (test.person('Taylor'), 'Worksheet 5', '2026-11-06');
+insert into homework_steps (assignment_id, pos, title, minutes, day) select id, 1, 'Do the worksheet', 20, '2026-11-03' from assignments;
+insert into focus_sessions (id, kid_id, minutes, started_at, ends_at, ended_at, result, seen_minutes)
+values (gen_random_uuid(), test.person('Taylor'), 20, '2026-11-02 21:00+00', '2026-11-02 21:20+00', '2026-11-02 21:20+00', 'done', 20);
+insert into rewards (kid_id, title, cost) values (test.person('Taylor'), 'Choose Friday''s dinner', 60);
+insert into reward_asks (kid_id, reward_id, title, cost, asked_at) select kid_id, id, title, cost, '2026-11-02 22:00+00' from rewards;
+insert into points_ledger (kid_id, at, day, kind, delta, note, who)
+values (test.person('Taylor'), '2026-11-02 21:20+00', '2026-11-02', 'given', 70, 'Great week', 'alex@example.com');
+insert into homework_use (actor_id, day, what, n) values (test.person('Taylor'), '2026-11-02', 'writes', 1);
+insert into ai_runs (kind, asked_by, key, status, started_at, lease_until)
+values ('test', 'alex@example.com', gen_random_uuid(), 'ready', '2026-11-02 21:00+00', '2026-11-02 21:06+00');
 
 insert into test.samples (tbl, ins, upd) values
   ('household',          $$insert into public.household (id) values (true)$$,
@@ -223,7 +326,35 @@ insert into test.samples (tbl, ins, upd) values
   ('shopping_items',     $$insert into public.shopping_items (name) values ('Eggs')$$,
                          $$update public.shopping_items set note = note$$),
   ('my_day_use',         $$insert into public.my_day_use (person_id, day) values (test.person('Morgan'), '2026-11-03')$$,
-                         $$update public.my_day_use set ticks = ticks$$);
+                         $$update public.my_day_use set ticks = ticks$$),
+  ('homework_kids',      $$insert into public.homework_kids (kid_id) values (test.person('Morgan'))$$,
+                         $$update public.homework_kids set points_on = points_on$$),
+  ('homework_times',     $$with e as (insert into public.events (title, start_date, start_time, end_time, responsible_id)
+                                     values ('Homework', '2026-11-03', '16:30', '17:15', test.person('Taylor')) returning id)
+                           insert into public.homework_times (event_id, kid_id) select id, test.person('Taylor') from e$$,
+                         $$update public.homework_times set kid_id = kid_id$$),
+  ('tutor_links',        $$insert into public.tutor_links (kid_id, label, expires_on) values (test.person('Taylor'), 'Casey, tutor', '2027-01-01')$$,
+                         $$update public.tutor_links set label = label$$),
+  ('assignments',        $$insert into public.assignments (kid_id, title, due_date) values (test.person('Taylor'), 'Worksheet 6', '2026-11-20')$$,
+                         $$update public.assignments set title = title$$),
+  ('homework_steps',     $$insert into public.homework_steps (assignment_id, pos, title, minutes, day)
+                           select id, 2, 'Check the answers', 10, '2026-11-04' from public.assignments$$,
+                         $$update public.homework_steps set title = title$$),
+  ('focus_sessions',     $$insert into public.focus_sessions (id, kid_id, minutes, started_at, ends_at)
+                           values (gen_random_uuid(), test.person('Taylor'), 10, now(), now() + interval '10 minutes')$$,
+                         $$update public.focus_sessions set note = note$$),
+  ('rewards',            $$insert into public.rewards (kid_id, title, cost) values (test.person('Taylor'), 'Movie night', 100)$$,
+                         $$update public.rewards set title = title$$),
+  ('reward_asks',        $$insert into public.reward_asks (kid_id, title, cost, asked_at) values (test.person('Taylor'), 'Movie night', 100, now())$$,
+                         $$update public.reward_asks set note = note$$),
+  ('points_ledger',      $$insert into public.points_ledger (kid_id, at, day, kind, delta, who)
+                           values (test.person('Taylor'), now(), '2026-11-02', 'given', 5, 'alex@example.com')$$,
+                         $$update public.points_ledger set note = note$$),
+  ('homework_use',       $$insert into public.homework_use (actor_id, day, what) values (test.person('Taylor'), '2026-11-03', 'writes')$$,
+                         $$update public.homework_use set n = n$$),
+  ('ai_runs',            $$insert into public.ai_runs (kind, asked_by, key, started_at, lease_until)
+                           values ('test', 'alex@example.com', gen_random_uuid(), now(), now() + interval '6 minutes')$$,
+                         $$update public.ai_runs set stop = stop$$);
 
 --                         table                 select    insert    update    delete
 :as_anon
@@ -246,6 +377,17 @@ select test.matrix('anon', 'calendar_sync',      'denied', 'denied', 'denied', '
 select test.matrix('anon', 'meals',              'denied', 'denied', 'denied', 'denied');
 select test.matrix('anon', 'shopping_items',     'denied', 'denied', 'denied', 'denied');
 select test.matrix('anon', 'my_day_use',         'denied', 'denied', 'denied', 'denied');
+select test.matrix('anon', 'homework_kids',     'denied', 'denied', 'denied', 'denied');
+select test.matrix('anon', 'homework_times',    'denied', 'denied', 'denied', 'denied');
+select test.matrix('anon', 'tutor_links',       'denied', 'denied', 'denied', 'denied');
+select test.matrix('anon', 'assignments',       'denied', 'denied', 'denied', 'denied');
+select test.matrix('anon', 'homework_steps',    'denied', 'denied', 'denied', 'denied');
+select test.matrix('anon', 'focus_sessions',    'denied', 'denied', 'denied', 'denied');
+select test.matrix('anon', 'rewards',           'denied', 'denied', 'denied', 'denied');
+select test.matrix('anon', 'reward_asks',       'denied', 'denied', 'denied', 'denied');
+select test.matrix('anon', 'points_ledger',     'denied', 'denied', 'denied', 'denied');
+select test.matrix('anon', 'homework_use',      'denied', 'denied', 'denied', 'denied');
+select test.matrix('anon', 'ai_runs',           'denied', 'denied', 'denied', 'denied');
 
 :as_stranger
 select test.matrix('stranger', 'household',          'rows:0', 'denied', 'rows:0', 'rows:0');
@@ -267,6 +409,17 @@ select test.matrix('stranger', 'calendar_sync',      'rows:0', 'denied', 'denied
 select test.matrix('stranger', 'meals',              'rows:0', 'denied', 'rows:0', 'rows:0');
 select test.matrix('stranger', 'shopping_items',     'rows:0', 'denied', 'rows:0', 'rows:0');
 select test.matrix('stranger', 'my_day_use',         'denied', 'denied', 'denied', 'denied');
+select test.matrix('stranger', 'homework_kids', 'rows:0', 'denied', 'rows:0', 'denied');
+select test.matrix('stranger', 'homework_times', 'rows:0', 'denied', 'denied', 'rows:0');
+select test.matrix('stranger', 'tutor_links',   'rows:0', 'denied', 'denied', 'denied');
+select test.matrix('stranger', 'assignments',   'rows:0', 'denied', 'rows:0', 'rows:0');
+select test.matrix('stranger', 'homework_steps', 'rows:0', 'denied', 'denied', 'denied');
+select test.matrix('stranger', 'focus_sessions', 'rows:0', 'denied', 'denied', 'denied');
+select test.matrix('stranger', 'rewards',       'rows:0', 'denied', 'rows:0', 'rows:0');
+select test.matrix('stranger', 'reward_asks',   'rows:0', 'denied', 'denied', 'denied');
+select test.matrix('stranger', 'points_ledger', 'rows:0', 'denied', 'denied', 'denied');
+select test.matrix('stranger', 'homework_use',  'denied', 'denied', 'denied', 'denied');
+select test.matrix('stranger', 'ai_runs',       'rows:0', 'denied', 'denied', 'denied');
 
 :as_removed
 select test.matrix('removed', 'household',          'rows:0', 'denied', 'rows:0', 'rows:0');
@@ -288,6 +441,17 @@ select test.matrix('removed', 'calendar_sync',      'rows:0', 'denied', 'denied'
 select test.matrix('removed', 'meals',              'rows:0', 'denied', 'rows:0', 'rows:0');
 select test.matrix('removed', 'shopping_items',     'rows:0', 'denied', 'rows:0', 'rows:0');
 select test.matrix('removed', 'my_day_use',         'denied', 'denied', 'denied', 'denied');
+select test.matrix('removed', 'homework_kids',  'rows:0', 'denied', 'rows:0', 'denied');
+select test.matrix('removed', 'homework_times', 'rows:0', 'denied', 'denied', 'rows:0');
+select test.matrix('removed', 'tutor_links',    'rows:0', 'denied', 'denied', 'denied');
+select test.matrix('removed', 'assignments',    'rows:0', 'denied', 'rows:0', 'rows:0');
+select test.matrix('removed', 'homework_steps', 'rows:0', 'denied', 'denied', 'denied');
+select test.matrix('removed', 'focus_sessions', 'rows:0', 'denied', 'denied', 'denied');
+select test.matrix('removed', 'rewards',        'rows:0', 'denied', 'rows:0', 'rows:0');
+select test.matrix('removed', 'reward_asks',    'rows:0', 'denied', 'denied', 'denied');
+select test.matrix('removed', 'points_ledger',  'rows:0', 'denied', 'denied', 'denied');
+select test.matrix('removed', 'homework_use',   'denied', 'denied', 'denied', 'denied');
+select test.matrix('removed', 'ai_runs',        'rows:0', 'denied', 'denied', 'denied');
 
 -- City Water has an account number, so only an admin can change or remove it: a statement
 -- by anyone else that touches it is refused (with a reason), not quietly skipped.
@@ -311,6 +475,17 @@ select test.matrix('adult', 'calendar_sync',      'rows:1', 'denied', 'denied', 
 select test.matrix('adult', 'meals',              'rows:1', 'rows:1', 'rows:1', 'rows:1');
 select test.matrix('adult', 'shopping_items',     'rows:1', 'denied', 'rows:1', 'rows:1');
 select test.matrix('adult', 'my_day_use',         'denied', 'denied', 'denied', 'denied');
+select test.matrix('adult', 'homework_kids',    'rows:1', 'denied', 'rows:0', 'denied');
+select test.matrix('adult', 'homework_times',   'rows:1', 'denied', 'denied', 'rows:0');
+select test.matrix('adult', 'tutor_links',      'rows:0', 'denied', 'denied', 'denied');
+select test.matrix('adult', 'assignments',      'rows:1', 'denied', 'rows:0', 'rows:0');
+select test.matrix('adult', 'homework_steps',   'rows:1', 'denied', 'denied', 'denied');
+select test.matrix('adult', 'focus_sessions',   'rows:1', 'denied', 'denied', 'denied');
+select test.matrix('adult', 'rewards',          'rows:1', 'denied', 'rows:0', 'rows:0');
+select test.matrix('adult', 'reward_asks',      'rows:1', 'denied', 'denied', 'denied');
+select test.matrix('adult', 'points_ledger',    'rows:1', 'denied', 'denied', 'denied');
+select test.matrix('adult', 'homework_use',     'denied', 'denied', 'denied', 'denied');
+select test.matrix('adult', 'ai_runs',          'rows:0', 'denied', 'denied', 'denied');
 
 :as_admin
 select test.matrix('admin', 'household',          'rows:1', 'denied', 'rows:1', 'rows:0');
@@ -332,6 +507,17 @@ select test.matrix('admin', 'calendar_sync',      'rows:1', 'denied', 'denied', 
 select test.matrix('admin', 'meals',              'rows:1', 'rows:1', 'rows:1', 'rows:1');
 select test.matrix('admin', 'shopping_items',     'rows:1', 'denied', 'rows:1', 'rows:1');
 select test.matrix('admin', 'my_day_use',         'denied', 'denied', 'denied', 'denied');
+select test.matrix('admin', 'homework_kids',    'rows:1', 'denied', 'rows:1', 'denied');
+select test.matrix('admin', 'homework_times',   'rows:1', 'rows:1', 'denied', 'rows:1');
+select test.matrix('admin', 'tutor_links',      'rows:1', 'denied', 'denied', 'denied');
+select test.matrix('admin', 'assignments',      'rows:1', 'rows:1', 'rows:1', 'rows:1');
+select test.matrix('admin', 'homework_steps',   'rows:1', 'denied', 'denied', 'denied');
+select test.matrix('admin', 'focus_sessions',   'rows:1', 'denied', 'denied', 'denied');
+select test.matrix('admin', 'rewards',          'rows:1', 'rows:1', 'rows:1', 'rows:1');
+select test.matrix('admin', 'reward_asks',      'rows:1', 'denied', 'denied', 'denied');
+select test.matrix('admin', 'points_ledger',    'rows:1', 'denied', 'denied', 'denied');
+select test.matrix('admin', 'homework_use',     'denied', 'denied', 'denied', 'denied');
+select test.matrix('admin', 'ai_runs',          'rows:1', 'denied', 'denied', 'denied');
 -- Admins set a calendar's setting columns only; what Google said about it is hub-jobs' to write.
 select test.is(test.try($$update public.calendars set copy_approved_at = now(), label = 'Taylor', for_kids = false$$), 'rows:1',
                'admin: can change a calendar''s setting columns (and Start copying)');
@@ -360,6 +546,17 @@ select test.matrix('service', 'calendar_sync',      'rows:1', 'rows:0', 'rows:1'
 select test.matrix('service', 'meals',              'rows:1', 'rows:1', 'rows:1', 'rows:1');
 select test.matrix('service', 'shopping_items',     'rows:1', 'rows:1', 'rows:1', 'rows:1');
 select test.matrix('service', 'my_day_use',         'denied', 'denied', 'denied', 'denied');
+select test.matrix('service', 'homework_kids',  'rows:1', 'rows:1', 'rows:1', 'rows:1');
+select test.matrix('service', 'homework_times', 'rows:1', 'rows:1', 'rows:1', 'rows:1');
+select test.matrix('service', 'tutor_links',    'rows:1', 'rows:1', 'rows:1', 'rows:1');
+select test.matrix('service', 'assignments',    'rows:1', 'rows:1', 'rows:1', 'rows:1');
+select test.matrix('service', 'homework_steps', 'rows:1', 'rows:1', 'rows:1', 'rows:1');
+select test.matrix('service', 'focus_sessions', 'rows:1', 'rows:1', 'rows:1', 'rows:1');
+select test.matrix('service', 'rewards',        'rows:1', 'rows:1', 'rows:1', 'rows:1');
+select test.matrix('service', 'reward_asks',    'rows:1', 'rows:1', 'rows:1', 'rows:1');
+select test.matrix('service', 'points_ledger',  'rows:1', 'rows:1', 'rows:1', 'rows:1');
+select test.matrix('service', 'homework_use',   'denied', 'denied', 'denied', 'denied');
+select test.matrix('service', 'ai_runs',        'rows:1', 'rows:1', 'rows:1', 'rows:1');
 select test.is(test.try('select * from public.people'), 'rows:5', 'service select people');
 select test.is(test.try('select * from public.tasks'), 'rows:2', 'service select tasks');
 
@@ -417,7 +614,37 @@ insert into rpc values
   ('buy_item',           $$select buy_item(gen_random_uuid(), true, now())$$,                              'denied', 'denied', 'denied', 'ok',     'ok',     'denied'),
   ('get_list_by_token',  $$select get_list_by_token(test.token('Morgan'))$$,                                'ok',     'ok',     'ok',     'ok',     'ok',     'denied'),
   ('add_to_list_by_token', $$select add_to_list_by_token(test.token('Morgan'), 'Bread')$$,                  'ok',     'ok',     'ok',     'ok',     'ok',     'denied'),
-  ('buy_item_by_token',  $$select buy_item_by_token(test.token('Morgan'), gen_random_uuid(), true, now())$$, 'ok',   'ok',     'ok',     'ok',     'ok',     'denied');
+  ('buy_item_by_token',  $$select buy_item_by_token(test.token('Morgan'), gen_random_uuid(), true, now())$$, 'ok',   'ok',     'ok',     'ok',     'ok',     'denied'),
+  -- Migration 0005: the week strip for members (row-level security decides); the parents' actions; Jordan's
+  -- seven and the tutor link's four for their tokens (an unknown token answers null); hub-jobs' two AI functions.
+  ('homework_week',      $$select homework_week(test.person('Taylor'), '2026-11-02')$$,                     'denied', 'ok',     'ok',     'ok',     'ok',     'ok'),
+  ('save_homework_kid',  $$select save_homework_kid(test.person('Taylor'), true)$$,                         'denied', 'denied', 'denied', 'denied', 'ok',     'denied'),
+  ('add_homework_time',  $$select add_homework_time(test.person('Taylor'), '{1}', '16:30', '17:00')$$,       'denied', 'denied', 'denied', 'denied', 'ok',     'denied'),
+  ('save_homework_plan', $$select save_homework_plan((select id from assignments limit 1), '[]', 0)$$,      'denied', 'denied', 'denied', 'denied', 'ok',     'denied'),
+  ('homework_step',      $$select homework_step((select id from homework_steps limit 1), 'done')$$,         'denied', 'denied', 'denied', 'denied', 'ok',     'denied'),
+  ('decide_reward',      $$select decide_reward((select id from reward_asks limit 1), true)$$,              'denied', 'denied', 'denied', 'denied', 'ok',     'denied'),
+  ('give_points',        $$select give_points(test.person('Taylor'), 5, 'Good work', gen_random_uuid())$$,  'denied', 'denied', 'denied', 'denied', 'ok',     'denied'),
+  ('void_points',        $$select void_points((select id from points_ledger limit 1), 'A mistake')$$,       'denied', 'denied', 'denied', 'denied', 'ok',     'denied'),
+  ('save_tutor_link',    $$select save_tutor_link(null, test.person('Taylor'), 'Casey, tutor', 'en', null, true, true)$$,
+                                                                                                            'denied', 'denied', 'denied', 'denied', 'ok',     'denied'),
+  ('new_tutor_token',    $$select new_tutor_token((select id from tutor_links limit 1))$$,                  'denied', 'denied', 'denied', 'denied', 'ok',     'denied'),
+  ('homework_ai_preview',$$select homework_ai_preview((select id from assignments limit 1))$$,             'denied', 'denied', 'denied', 'denied', 'ok',     'denied'),
+  ('erase_homework',     $$select erase_homework(test.person('Taylor'), 'ERASE')$$,                         'denied', 'denied', 'denied', 'denied', 'ok',     'denied'),
+  ('homework_by_token',  $$select homework_by_token(test.token('Taylor'))$$,                                'ok',     'ok',     'ok',     'ok',     'ok',     'denied'),
+  ('step_by_token',      $$select step_by_token(repeat('0', 32), gen_random_uuid(), 'done')$$,             'ok',     'ok',     'ok',     'ok',     'ok',     'denied'),
+  ('plan_by_token',      $$select plan_by_token(repeat('0', 32), gen_random_uuid(), '[]', 0)$$,            'ok',     'ok',     'ok',     'ok',     'ok',     'denied'),
+  ('focus_by_token',     $$select focus_by_token(repeat('0', 32), 'start', gen_random_uuid(), 20)$$,       'ok',     'ok',     'ok',     'ok',     'ok',     'denied'),
+  ('reward_by_token',    $$select reward_by_token(repeat('0', 32), 'ask', gen_random_uuid())$$,            'ok',     'ok',     'ok',     'ok',     'ok',     'denied'),
+  ('assignment_by_token',$$select assignment_by_token(repeat('0', 32), 'add', gen_random_uuid(), 'Worksheet 7')$$,
+                                                                                                            'ok',     'ok',     'ok',     'ok',     'ok',     'denied'),
+  ('homework_prefs_by_token', $$select homework_prefs_by_token(repeat('0', 32), null, null, 20)$$,          'ok',     'ok',     'ok',     'ok',     'ok',     'denied'),
+  ('tutor_view_by_token',$$select tutor_view_by_token(repeat('0', 32))$$,                                   'ok',     'ok',     'ok',     'ok',     'ok',     'denied'),
+  ('tutor_assignment_by_token', $$select tutor_assignment_by_token(repeat('0', 32), '{}')$$,                'ok',     'ok',     'ok',     'ok',     'ok',     'denied'),
+  ('tutor_plan_by_token',$$select tutor_plan_by_token(repeat('0', 32), gen_random_uuid(), '[]', 0)$$,       'ok',     'ok',     'ok',     'ok',     'ok',     'denied'),
+  ('tutor_step_by_token',$$select tutor_step_by_token(repeat('0', 32), gen_random_uuid(), 'check')$$,       'ok',     'ok',     'ok',     'ok',     'ok',     'denied'),
+  ('homework_ai_start',  $$select homework_ai_start(repeat('0', 32), null, gen_random_uuid(), 'plan', null, null, gen_random_uuid())$$,
+                                                                                                            'denied', 'denied', 'denied', 'denied', 'denied', 'ok'),
+  ('homework_ai_finish', $$select homework_ai_finish(gen_random_uuid(), 'error', null, null, null)$$,      'denied', 'denied', 'denied', 'denied', 'denied', 'ok');
 
 :as_anon
 select test.is(test.can(call), anon, 'anon → ' || fn) from rpc order by fn;

@@ -24,6 +24,10 @@ This is the build contract for Home Hub v2. It replaces the first draft after fo
 - A new Food page (`#/food`): this week's dinners, and one shared shopping list, which the helper can also use from her My day link (in Spanish, with no sign-in). Dinner also shows on Today, My day, the morning email, texts and the wall's Family column. No Edge Function change and no `cron.sql` change.
 - The build contract is `docs/v1.2-kitchen.md`. Its database part is migration `0004_meals_and_shopping.sql`, summarised in §9 below.
 
+**v1.3 — Homework (the site goes live first; then the migration, after 0004)**
+- A Homework page (`#/homework`) for the parents; on a kid's My day, his homework in small steps, a focus timer, points and rewards; and a tutor link (`day.html?h=<token>`) that shows one kid's homework and nothing else. A later PR adds the AI planner (a `hub-jobs` change, no migration).
+- The build contract is `docs/v1.3-homework.md`. Its database part is migration `0005_homework.sql`, summarised in §10 below.
+
 Later: web push, Twilio SMS.
 
 ## 1. Item model — two kinds
@@ -43,7 +47,7 @@ The Add sheet starts with an Event | Task switch and the help line *"Piano, pick
 - An email address is confirmed before any morning email goes to it: by the button on the page the confirmation email opens (`confirm_digest`, §3), or by signing in with a code sent to it (the core calls `mark_signed_in()` after every sign-in).
 - The migration seeds one person per existing member (admin → parent; member → adult), one `household` row, and colours.
 - Account numbers (`contractor_secrets`) are **admins only**. Revoked from `anon` and `service_role` too.
-- Invariant: every policy is `private.is_member()`-gated (full members = everyone who can sign in in v2), except the anonymous token functions, which check the token: My day's `get_person_day`, `complete_by_token`, `undo_by_token` and `stop_digest`, the confirmation email's `confirm_digest`, and (v1.2, §9) the helper's shopping list, `get_list_by_token`, `add_to_list_by_token` and `buy_item_by_token`.
+- Invariant: every policy is `private.is_member()`-gated (full members = everyone who can sign in in v2), except the anonymous token functions, which check the token: My day's `get_person_day`, `complete_by_token`, `undo_by_token` and `stop_digest`, the confirmation email's `confirm_digest`, (v1.2, §9) the helper's shopping list, `get_list_by_token`, `add_to_list_by_token` and `buy_item_by_token`; (v1.3, §10) a kid's homework on My day, `homework_by_token`, `step_by_token`, `plan_by_token`, `focus_by_token`, `reward_by_token`, `assignment_by_token` and `homework_prefs_by_token`; and v1.3's tutor link, whose four functions find one kid's homework by its token: `tutor_view_by_token`, `tutor_assignment_by_token`, `tutor_plan_by_token` and `tutor_step_by_token`.
 
 ## 3. Database (migration 0002; schema.sql stays the v1 baseline)
 
@@ -202,7 +206,7 @@ day_note text   -- an event's note for this one day (event_changes.note), for wh
 `day_text(p_person uuid, p_day date) returns text` — the message for one person's day in their language (used by the Today page "Send their day" buttons and the digest; covered by SQL tests). Lines: timed events in order, all-day events, tasks due, then up to 3 late tasks ("+N more"). People are named by first name (`private.short_name`: the whole name only when another active person has the same first name): the person in charge's copy reads "Piano · with Jordan"; the copy for someone along reads "Piano · Taylor". Linked directory entries add their phone; a changed day's own note comes last. Never the event's or task's notes, never account numbers; private items read "Private item". (v1.2 adds the line of a meal the person is on, before the late tasks: §9.)
 
 ### Anonymous token functions (My day page; `grant execute to anon, authenticated`)
-A secret is the only key: the person's My day token (`people.day_token`) for seven of them, the confirmation secret (`people_confirm.token`) for `confirm_digest`. These eight are the only new functions anon can call (v1's `get_shared_project` is the other one): 0002 adds the first five, and migration 0004 (v1.2, §9) the last three, for the helper's shopping list.
+A secret is the only key: the person's My day token (`people.day_token`) for fourteen of them, the confirmation secret (`people_confirm.token`) for `confirm_digest`, and a tutor link's token (`tutor_links.token`) for the tutor link's four. These nineteen are the only new functions anon can call (v1's `get_shared_project` is the other one): 0002 adds the first five, migration 0004 (v1.2, §9) the next three, for the helper's shopping list, and migration 0005 (v1.3, §10) the last eleven, seven for a kid's homework on his My day and four for the tutor link. A tutor token is never a My day token: the My day functions look up `people.day_token` only, and the tutor link's four `tutor_links.token` only.
 - `get_person_day(p_token text) returns jsonb` → `{person:{name, language, digest_enabled, email_confirmed}, today: date, days:[{day, items:[…]}], late:[…]}` for today and tomorrow; only that person's items (responsible or participant); item fields: kind, item_id, occurrence, day, end_day, title, all_day, start_time, end_time, time_label, location, contractor_name, contractor_phone, note (a changed day's own note), status, mine (a task they're in charge of). No notes, no other people's details; private items read "Private item". Returns null for an unknown token or inactive person. (v1.2 adds `meals` to a day that has any, and `list` for a helper; both are left out when empty: §9.)
 - `complete_by_token(p_token text, p_task_id uuid, p_occurrence date) returns uuid` (log id, for Undo) → only tasks where that person is responsible; a repeating task needs `p_occurrence` (a page left open overnight can't tick off the next date); otherwise the same rules as complete_task. Logged as done by "<name> (My day)".
 - `undo_by_token(p_token text, p_log_id uuid) returns uuid` (task id) → the toast's Undo on My day: only a `done` entry that person made on My day, on a task they're in charge of, that is still the task's latest entry, within 15 minutes.
@@ -211,7 +215,19 @@ A secret is the only key: the person's My day token (`people.day_token`) for sev
 - `get_list_by_token(p_token text) returns jsonb` (v1.2) → the shopping list on a helper's My day: `{language, as_of, can_add, items, bought, suggest}`, unlocked lines only, with no person's name or id. Null for anyone but a helper, and while `household.helper_list` is `'off'`.
 - `add_to_list_by_token(p_token text, p_name text, p_key uuid default null) returns jsonb` (v1.2) → her add, while `helper_list` is `'add'`: `{result, item_id, name, seen}` (`seen`: the line's `added_at`) and her list. Only ever finds or makes an unlocked line; anything over 200 characters is refused before any work; counted (30 changes a day) and capped (150 things to buy). `p_key` is her phone's key for the add: a second try gets the first answer, changes nothing and isn't counted again (§9, `private.list_done`).
 - `buy_item_by_token(p_token text, p_item uuid, p_bought boolean, p_seen timestamptz, p_key uuid default null) returns jsonb` (v1.2) → her tick, or the Undo of her own tick within 15 minutes: `{changed, seen}` (`seen`: the one it gave the line, when it changed it) and her list. `p_seen` is the row's state as her phone saw it, so a tick that waited offline never buys a line put back since; a locked line's id answers as an unknown id (`false`); counted (100 ticks a day). `p_key` as for her add.
-Tokens and secrets are 32 hex characters; `rotate_day_token(p_person uuid)` (admin) replaces a My day token, and the old link stops working at once.
+- `homework_by_token(p_token text) returns jsonb` (v1.3) → a kid's homework view (`docs/v1.3-homework.md` §3.4): his steps, his homework time, the block running, his points and rewards, with no name but his own first name and the tutor's first word, no teacher's text and no AI draft. Null for an unknown token, an inactive person, anyone who isn't a kid, or a kid whose homework is off; the same for each of the seven.
+- `step_by_token(p_token text, p_step uuid, p_action text, p_text text default null, p_day date default null, p_key uuid default null) returns jsonb` (v1.3) → his tick, Undo (his own, 15 minutes), Not today, Ask and Make it smaller on one step of a plan given to him; any other step is 42501 "That step isn't on your plan.".
+- `plan_by_token(p_token text, p_assignment uuid, p_steps jsonb, p_rev int) returns jsonb` (v1.3) → his own changes to a plan given to him (milestones and the turn-in stay as they are); `p_steps` null is Re-plan.
+- `focus_by_token(p_token text, p_action text, p_session uuid, p_minutes int default null, p_step uuid default null, p_assignment uuid default null, p_with text default null, p_result text default null, p_note text default null) returns jsonb` (v1.3) → the timer: start, switch and end a block; only the database's clock counts, and the points follow from it.
+- `reward_by_token(p_token text, p_action text, p_reward uuid default null, p_text text default null, p_key uuid default null) returns jsonb` (v1.3) → ask for a reward, cancel his own ask, or suggest one.
+- `assignment_by_token(p_token text, p_action text, p_assignment uuid, p_title text default null, p_subject text default null, p_due_date date default null, p_minutes int default null) returns jsonb` (v1.3) → homework he writes down himself: add, Quick (one step, given at once), drop.
+- `homework_prefs_by_token(p_token text, p_cue text, p_if_stuck text, p_minutes int) returns jsonb` (v1.3) → his start cue, his if-stuck line and his first length.
+- `tutor_view_by_token(p_token text, p_assignment uuid default null, p_part text default 'all') returns jsonb` (v1.3) → the tutor's view of one kid's homework: plans, steps to check, questions, his free minutes (no titles) and a 14-day record of finished blocks; never a block running now, points, rewards, other people, family event titles or any token. Null for an unknown or replaced token, a link that is off or past its end date, or a kid whose homework is off or who is no longer active; the same for each of the four.
+- `tutor_assignment_by_token(p_token text, p_fields jsonb) returns jsonb` (v1.3) → adds or changes an assignment or lesson of the link's kid; any other is 42501 "That assignment isn't on this link.".
+- `tutor_plan_by_token(p_token text, p_assignment uuid, p_steps jsonb, p_rev int, p_give boolean default false) returns jsonb` (v1.3) → a plan saved from the link, given to him with `p_give`.
+- `tutor_step_by_token(p_token text, p_step uuid, p_action text, p_text text default null) returns jsonb` (v1.3) → checks a milestone (Not yet, and taking a check back within 15 minutes), and answers his question.
+Each v1.3 writer is counted (150 writes and 20 Starts a day for his link, 200 writes a day for a tutor link: P0001 "That's a lot for one day.") and answers with the view, so the page redraws without a second read (§10).
+Tokens and secrets are 32 hex characters; `rotate_day_token(p_person uuid)` (admin) replaces a My day token, and the old link stops working at once; `new_tutor_token(p_link uuid)` (admin, v1.3) replaces a tutor link's.
 
 ### Jobs support (service_role only)
 - `email_budget_left() returns int` = 60 − (email_log rows + notification_log rows with status in ('sending','sent') claimed) since 00:00 UTC, never below 0. (Resend free allows 100/day shared with sign-in codes; this leaves 40 for sign-in.)
@@ -224,7 +240,7 @@ Tokens and secrets are 32 hex characters; `rotate_day_token(p_person uuid)` (adm
 - `digest_for(p_person uuid, p_local_date date) returns jsonb` — everything the email needs, computed in SQL (see §5): subject, today, late, heads_up, projects; for parents also people, nobody and, on Mondays, inbox_count; `empty` = a non-parent with nothing to say (send nothing). Null for an inactive person. (v1.2 wraps it to add the day's meals: §9.)
 
 ### Schema version, whoami and sign-in
-`hub_schema_version()` returns 2 (authenticated); migration 0003 makes it 3 (§8), and migration 0004 makes it 4 (§9). `whoami()` gains `person` (id, name, role, language, color) when a person row matches the caller's email; existing keys unchanged. `mark_signed_in()` (authenticated; the core calls it after every sign-in): signing in with a code sent to an address proves it works, so the caller's own person row gets email_verified_at (the first time only). The confirmation secret stays, so the button in a confirmation email sent earlier says "confirmed" too. Does nothing for anyone who isn't a member.
+`hub_schema_version()` returns 2 (authenticated); migration 0003 makes it 3 (§8), migration 0004 makes it 4 (§9), and migration 0005 makes it 5 (§10). `whoami()` gains `person` (id, name, role, language, color) when a person row matches the caller's email; existing keys unchanged. `mark_signed_in()` (authenticated; the core calls it after every sign-in): signing in with a code sent to an address proves it works, so the caller's own person row gets email_verified_at (the first time only). The confirmation secret stays, so the button in a confirmation email sent earlier says "confirmed" too. Does nothing for anyone who isn't a member.
 
 ## 4. Client
 
@@ -510,3 +526,305 @@ New in private:
 "Nobody" means revoked from public, anon and authenticated: only the definer functions above call them. day_text runs as a member (Today's "Send their day") and as service_role (inside the email), the wall as an admin (the preview) and as service_role, and `shopping_list()` as the member who calls it, so what those reach is granted to both.
 
 One grant changes: `private.clean_text(p_text, p_max)` is also granted to authenticated (before, service_role only). It is a pure function, and the two tidy triggers run as the member who saves a meal or renames an item.
+
+## 10. v1.3: Homework
+
+The build contract is `docs/v1.3-homework.md`; this section lists what its migration, `supabase/migrations/0005_homework.sql`, adds to the database, so the docs check can hold the two together. Fresh install = `schema.sql`, then `0002`, `0003`, `0004` and `0005`. It is one transaction and additive (the v2 pages work the same on 4 and 5), every rule in §3 applies, and it seeds no rows: with homework off for everyone (no `homework_kids` row on, whatever else is stored), the email, the texts, My day and the wall come out byte for byte as on 4 (check 5d in `tests/db/run.sh`). It opens with guards, each of which changes nothing: without `hub_schema_version()` it raises "Home Hub v2 (migration 0002) isn't installed"; below 4, "Meals and shopping (migration 0004) isn't installed"; at 5 or more, "Homework (migration 0005) is already installed"; with `homework_kids` there but the version set back to 4 (`docs/v1.3-homework.md` §16.3), "… set back to 4"; and unless `get_person_day(text)`, `private.digest_for_v3(uuid, date)` and `shopping_items` are as 0004 left them, "This database isn't as migration 0004 left it". It ends by making `hub_schema_version()` return 5. No Edge Function change and no `cron.sql` change, so the site goes live first, then the owner applies 0005 (`docs/v1.3-homework.md` §16.1). **0005 touches neither wrapper**: `digest_for`, `private.digest_for_v3`, `calendar_desired`, `private.calendar_desired_v3`, `day_text`, `calendar_plan`, `agenda` and `person_items` are as 0004 left them. Eleven new functions for anon (§3 "Anonymous token functions"): seven for a kid's homework on his My day and four for the tutor link.
+
+### Tables
+```sql
+-- Homework is on for this kid: one row per kid, made by a parent (save_homework_kid).
+create table public.homework_kids (
+  kid_id             uuid primary key references public.people (id) on delete cascade,
+  active             boolean not null default true,     -- off: no card on his My day, his tutor links answer null, the AI refuses; nothing deleted
+  points_on          boolean not null default true,     -- off: nothing earned; points, rewards and asks hidden on My day
+  focus_minutes      int not null default 20 check (focus_minutes in (10, 15, 20, 25)),   -- the length offered first
+  cue                text check (cue is null or char_length(cue) between 1 and 120),           -- his start cue, in his words
+  if_stuck           text check (if_stuck is null or char_length(if_stuck) between 1 and 120), -- his if-then line
+  pts_focus          int not null default 1 check (pts_focus between 0 and 5),                -- per 5 minutes of a block
+  pts_on_time        int not null default 5 check (pts_on_time between 0 and 50),
+  pts_milestone      int not null default 20 check (pts_milestone between 0 and 100),
+  pts_day_cap        int not null default 20 check (pts_day_cap between 0 and 300),           -- focus and on-time points a day
+  pts_milestone_week int not null default 80 check (pts_milestone_week between 0 and 400),    -- milestone points a household week (Mon–Sun)
+  created_at         timestamptz not null default now(),
+  created_by         text,
+  updated_at         timestamptz not null default now(),
+  updated_by         text
+);
+
+-- Which repeating events are a kid's homework time. The event itself is changed on the Calendar
+-- page, as any event; deleting it removes the link.
+create table public.homework_times (
+  event_id uuid primary key references public.events (id) on delete cascade,
+  kid_id   uuid not null references public.homework_kids (kid_id) on delete cascade
+);
+create index homework_times_kid on public.homework_times (kid_id);
+
+-- A tutor's way in: one kid's homework and nothing else; at most 3 per kid. Never a person.
+create table public.tutor_links (
+  id           uuid primary key default gen_random_uuid(),
+  kid_id       uuid not null references public.homework_kids (kid_id) on delete cascade,
+  token        text not null unique default encode(extensions.gen_random_bytes(16), 'hex') check (token ~ '^[0-9a-f]{32}$'),
+  label        text not null check (char_length(label) between 1 and 60),   -- "Pat Lee, tutor"
+  language     text not null default 'en' check (language in ('en', 'es')),
+  active       boolean not null default true,     -- Off: the link answers null at once
+  expires_on   date not null,                     -- today + 180 unless a parent sets it; at most today + 400
+  can_ai       boolean not null default true,     -- may send an assignment to Claude (while household.homework_ai is on)
+  last_used_at timestamptz,                       -- the last call through the link, to the minute
+  created_at   timestamptz not null default now(),
+  created_by   text,
+  updated_at   timestamptz not null default now(),
+  updated_by   text
+);
+create index tutor_links_kid on public.tutor_links (kid_id);
+
+-- An assignment from school, or a lesson a parent or the tutor plans.
+create table public.assignments (
+  id         uuid primary key default gen_random_uuid(),   -- made by the page for adds from Jordan's and the tutor's links
+  kid_id     uuid not null references public.homework_kids (kid_id) on delete cascade,
+  kind       text not null default 'assignment' check (kind in ('assignment', 'lesson')),
+  added_by   text not null default 'family' check (added_by in ('family', 'tutor', 'kid')),   -- "added by Jordan"
+  title      text not null check (char_length(title) between 1 and 120),
+  subject    text check (subject is null or char_length(subject) between 1 and 40),   -- "Science"
+  due_date   date not null,                     -- a lesson's "do by" day
+  details    text check (details is null or char_length(details) between 1 and 4000),
+             -- the teacher's text, pasted, line breaks kept: what the AI reads; emptied 30 days after due_date
+  stretch    text check (stretch is null or char_length(stretch) between 1 and 160),
+             -- an optional "interesting angle" question for him; earns nothing and is never a step
+  status     text not null default 'open' check (status in ('open', 'done', 'dropped')),
+  done_at    timestamptz,                       -- set by the tidy trigger when status becomes 'done'
+  given_at   timestamptz,                       -- the plan is on his My day since
+  given_by   text,                              -- by: an email, "<label> (tutor link)", or "<name> (My day)" for Quick
+  plan_rev   int not null default 0,            -- +1 on every change to its steps (his ticks and moves too)
+  ai_state   text check (ai_state in ('running', 'ready', 'failed')),
+  ai_stop    text,                              -- the last run's fixed code when it failed
+  ai_draft   jsonb,                             -- the last AI draft, checked and placed; never the plan
+  ai_prev    jsonb,                             -- the draft before it (one Undo)
+  ai_at      timestamptz,                       -- when ai_draft was written; both cleared 30 days after
+  created_at timestamptz not null default now(),
+  created_by text,
+  updated_at timestamptz not null default now(),
+  updated_by text,
+  check ((status = 'done') = (done_at is not null)),
+  check ((given_at is null) = (given_by is null))
+);
+create index assignments_kid on public.assignments (kid_id, status, due_date);
+
+-- An assignment's plan: its steps in order. Only plans people saved: an AI draft is never here.
+-- No unique index on pos: a save rewrites positions in one go; reads order by pos, id.
+create table public.homework_steps (
+  id              uuid primary key default gen_random_uuid(),   -- Make it smaller: the phone's key
+  assignment_id   uuid not null references public.assignments (id) on delete cascade,
+  pos             int not null check (pos between 1 and 20),
+  kind            text not null default 'step' check (kind in ('start', 'step', 'milestone', 'check', 'turn_in')),
+  title           text not null check (char_length(title) between 3 and 80),
+  done_looks_like text check (done_looks_like is null or char_length(done_looks_like) between 1 and 160),
+  minutes         int not null check (minutes between 5 and 60),
+  day             date not null,                 -- the day it's planned for
+  moved_from      date,                          -- the day before his last "Not today"
+  source          text not null default 'typed' check (source in ('typed', 'template', 'ai')),
+                                                 -- 'typed' once a person changes it: a revision keeps it ("locked")
+  done_at         timestamptz,
+  done_by         text,                          -- "<name> (My day)", "<label> (tutor link)", an email
+  checked_at      timestamptz,
+  checked_by      text,                          -- a milestone the tutor or a parent looked at: its points are paid then
+  not_yet_at      timestamptz,                   -- Not yet; cleared by his next tick
+  coach_note      text check (coach_note is null or char_length(coach_note) between 1 and 160),
+  coach_note_by   text check (coach_note_by in ('tutor', 'family')),
+  coach_note_at   timestamptz,
+  question        text check (question is null or char_length(question) between 1 and 200),   -- Ask Pat
+  question_at     timestamptz,
+  answer          text check (answer is null or char_length(answer) between 1 and 200),
+  answer_by       text,                          -- the writer's label: an email, or "<label> (tutor link)"
+  answer_at       timestamptz,
+  qa_log          jsonb not null default '[]',   -- earlier questions, answers and notes on this step (at most 10)
+  updated_at      timestamptz not null default now(),
+  updated_by      text,                          -- set by plan_save and step_act; no stamp trigger
+  check ((done_at is null) = (done_by is null)),
+  check ((checked_at is null) = (checked_by is null)),
+  check (checked_at is null or (kind = 'milestone' and done_at is not null)),
+  check ((coach_note is null) = (coach_note_at is null) and (coach_note is null) = (coach_note_by is null))
+);
+create index homework_steps_assignment on public.homework_steps (assignment_id, pos);
+create index homework_steps_open_day on public.homework_steps (day) where done_at is null;
+
+-- One focus block on the timer. Only the database's clock counts.
+create table public.focus_sessions (
+  id            uuid primary key,                -- made by the phone, so a resent Start finds it (only its kid's)
+  kid_id        uuid not null references public.homework_kids (kid_id) on delete cascade,
+  assignment_id uuid references public.assignments (id) on delete set null,
+  step_id       uuid references public.homework_steps (id) on delete set null,
+  minutes       int not null check (minutes in (10, 15, 20, 25)),   -- the length chosen
+  with_whom     text not null default 'alone' check (with_whom in ('alone', 'tutor', 'parent')),   -- recorded, not rewarded
+  started_at    timestamptz not null,            -- private.now()
+  ends_at       timestamptz not null,            -- started_at + minutes
+  ended_at      timestamptz,
+  result        text check (result in ('done', 'more', 'stopped', 'expired')),
+  seen_minutes  int check (seen_minutes is null or seen_minutes between 0 and 25),   -- whole minutes the server saw
+  on_time       boolean not null default false,  -- the day's first block, started in the on-time window
+  points        int not null default 0,          -- what it earned (focus and on-time), for the record
+  note          text check (note is null or char_length(note) between 1 and 120),   -- "what I got done"
+  check ((ended_at is null) = (result is null)),
+  check (ends_at = started_at + make_interval(mins => minutes))
+);
+create unique index focus_sessions_open on public.focus_sessions (kid_id) where ended_at is null;
+create index focus_sessions_kid on public.focus_sessions (kid_id, started_at desc);
+
+-- What points buy: the parents' list, and his suggestions.
+create table public.rewards (
+  id         uuid primary key default gen_random_uuid(),   -- a suggestion: the phone's key
+  kid_id     uuid not null references public.homework_kids (kid_id) on delete cascade,
+  title      text not null check (char_length(title) between 1 and 60),   -- "Choose Friday's dinner"
+  cost       int check (cost is null or cost between 1 and 10000),         -- null: a suggestion nobody has priced yet
+  active     boolean not null default true,
+  suggested  boolean not null default false,     -- he suggested it
+  sort_order int not null default 0,
+  created_at timestamptz not null default now(),
+  created_by text,
+  updated_at timestamptz not null default now(),
+  updated_by text,
+  check (cost is not null or not active)
+);
+
+-- His trades: each asked by him, decided by a parent.
+create table public.reward_asks (
+  id         uuid primary key default gen_random_uuid(),   -- the phone's key
+  kid_id     uuid not null references public.homework_kids (kid_id) on delete cascade,
+  reward_id  uuid references public.rewards (id) on delete set null,
+  title      text not null,                     -- copied when asked, so a later edit doesn't change a trade
+  cost       int not null,
+  status     text not null default 'waiting' check (status in ('waiting', 'approved', 'declined', 'cancelled')),
+  asked_at   timestamptz not null,
+  decided_at timestamptz,
+  decided_by text,
+  note       text check (note is null or char_length(note) between 1 and 120)   -- a parent's word with a decline
+);
+create unique index reward_asks_waiting on public.reward_asks (kid_id, reward_id) where status = 'waiting';
+create index reward_asks_kid on public.reward_asks (kid_id, asked_at desc);
+
+-- Every point earned, given, voided and traded. Rows are never changed; the only delete is a
+-- milestone check taken back within 15 minutes (a mis-tap).
+create table public.points_ledger (
+  id         uuid primary key default gen_random_uuid(),   -- given points: the parent's page's key
+  kid_id     uuid not null references public.homework_kids (kid_id) on delete cascade,
+  at         timestamptz not null,              -- private.now()
+  day        date not null,                     -- the household's day it counts for: a block's start day for focus and on_time
+  kind       text not null check (kind in ('focus', 'on_time', 'milestone', 'given', 'void', 'trade')),
+  delta      int not null check (delta <> 0 and delta between -10000 and 1000),
+  session_id uuid references public.focus_sessions (id) on delete set null,
+  step_id    uuid references public.homework_steps (id) on delete set null,
+  ask_id     uuid references public.reward_asks (id) on delete set null,
+  void_of    uuid references public.points_ledger (id) on delete set null,   -- the entry a 'void' cancels
+  note       text check (note is null or char_length(note) between 1 and 120),   -- the step's or reward's title, a parent's reason
+  who        text not null,                     -- "<name> (My day)", "<label> (tutor link)", a parent's email
+  check ((kind in ('void', 'trade')) = (delta < 0))
+);
+create unique index points_focus_once on public.points_ledger (session_id) where kind = 'focus';
+create unique index points_on_time_once on public.points_ledger (kid_id, day) where kind = 'on_time';
+create unique index points_milestone_once on public.points_ledger (step_id) where kind = 'milestone';
+create unique index points_void_once on public.points_ledger (void_of) where kind = 'void';
+create index points_ledger_kid on public.points_ledger (kid_id, at desc);
+
+-- What each link did to homework today (the caps in §13.1). Only private.count_homework, a
+-- definer function, writes and reads it.
+create table public.homework_use (
+  actor_id uuid,                                -- the kid (his My day) or the tutor link
+  day      date,                                -- the household's day
+  what     text check (what in ('writes', 'starts')),
+  n        int not null default 0,
+  primary key (actor_id, day, what)
+);
+
+-- One row per AI request: who, when, what it cost; never the prompt or the answer.
+create table public.ai_runs (
+  id                 uuid primary key default gen_random_uuid(),
+  kid_id             uuid references public.homework_kids (kid_id) on delete cascade,   -- null for Test the AI planner
+  assignment_id      uuid references public.assignments (id) on delete set null,
+  link_id            uuid references public.tutor_links (id) on delete set null,
+  kind               text not null check (kind in ('plan', 'revise', 'test')),
+  asked_by           text not null,             -- a parent's email, or "<label> (tutor link)"
+  key                uuid not null unique,      -- the page's key: a resend gets this run
+  status             text not null default 'running' check (status in ('running', 'ready', 'failed')),
+  stop               text,                      -- a fixed code (§6.9)
+  model              text,                      -- the model that answered (a fallback names its own)
+  started_at         timestamptz not null,
+  lease_until        timestamptz not null,
+  finished_at        timestamptz,
+  input_tokens       int,
+  cache_read_tokens  int,
+  cache_write_tokens int,
+  output_tokens      int,
+  cents              numeric(8, 2)              -- an estimate, from fixed prices in homework.ts
+);
+create index ai_runs_started on public.ai_runs (started_at);
+create index ai_runs_assignment on public.ai_runs (assignment_id, started_at);
+
+-- Three switches for parents (household's policies: members read, admins update).
+alter table public.household
+  add column homework_ai         boolean not null default false,   -- the AI planner; off until a parent turns it on
+  add column homework_ai_month   int not null default 150 check (homework_ai_month between 0 and 500),   -- AI runs a month, at most
+  add column homework_never_send text[] not null default '{}' check (cardinality(homework_never_send) <= 20);
+                                 -- words the AI must never see (the school's name, teachers' names)
+```
+- `homework_kids`: one row per kid with homework on, made by `save_homework_kid`, removed (with everything that cascades from it) by `erase_homework`. Triggers `homework_kids_stamp` (`private.stamp()`) and `homework_kids_tidy` (`private.homework_kids_tidy()`: his cue and if-stuck line through `private.clean_text`, one line, at most 120 characters, `''` becomes null). RLS: members select, admins update.
+- `homework_times`: which repeating events are a kid's homework time (made by `add_homework_time`; the event itself is changed on the Calendar page, and deleting it removes the link). Index `homework_times_kid` on `(kid_id)`. RLS: members select, admins insert and delete.
+- `tutor_links`: index `tutor_links_kid` on `(kid_id)`. Triggers `tutor_links_stamp` (insert) and `tutor_links_stamp_change` (an update that changes anything but `last_used_at`), both `private.stamp()`, so a read through the link never changes `updated_at`; and `tutor_links_tidy` (the label on one line, at most 60). RLS: admins select (the token is the link); writes go through `save_tutor_link` and `new_tutor_token`.
+- `assignments`: index `assignments_kid` on `(kid_id, status, due_date)`. Triggers `assignments_stamp` and `assignments_tidy` (title and class on one line, the teacher's text through `private.clean_block`, which keeps its line breaks, the stretch question on one line, `''` becomes null; `done_at` follows `status`). RLS: members select, admins insert, update and delete.
+- `homework_steps`: indexes `homework_steps_assignment` on `(assignment_id, pos)` and `homework_steps_open_day` on `(day)` where it is not done. No stamp trigger: `private.plan_save` and `private.step_act` set `updated_at` and `updated_by`. RLS: members select; no write policy.
+- `focus_sessions`: the unique index `focus_sessions_open` on `(kid_id)` where it is still open (one block at a time), and `focus_sessions_kid` on `(kid_id, started_at desc)`. RLS: members select; no write policy.
+- `rewards`: triggers `rewards_stamp` and `rewards_tidy` (the title on one line, at most 60). RLS: members select, admins insert, update and delete.
+- `reward_asks`: the unique index `reward_asks_waiting` on `(kid_id, reward_id)` while waiting, and `reward_asks_kid` on `(kid_id, asked_at desc)`. RLS: members select; no write policy.
+- `points_ledger`: each focus block, each day's on-time start, each milestone and each void is paid once (unique indexes `points_focus_once`, `points_on_time_once`, `points_milestone_once`, `points_void_once`), and `points_ledger_kid` on `(kid_id, at desc)`. Rows are never changed; the only delete is a milestone check taken back within 15 minutes. RLS: members select; no write policy.
+- `homework_use`: RLS on, no policies and no privileges (`revoke all … from public, anon, authenticated, service_role`): only `private.count_homework` (a definer function) writes and reads it, as `my_day_use` (§9).
+- `ai_runs`: one row per AI request, never the prompt or the answer. Indexes `ai_runs_started` on `(started_at)` and `ai_runs_assignment` on `(assignment_id, started_at)`. RLS: admins select; `homework_ai_start` and `homework_ai_finish` write.
+- `household`'s three columns follow its policies (members read, admins update). The trigger `household_homework_check` (`private.household_homework_check()`, plain SQL and no other function, as it runs as the parent who saves) refuses a never-send word that isn't 2 to 40 characters on one line (22023 "Words never to send: each 2 to 40 characters, one line.") and the AI turned on with no such word (22023 "Add the school's name to Words never to send first.").
+- Grants: all eleven start from `revoke all … from public, anon, authenticated`. Signed-in users then get select on all but `homework_use` (row-level security decides: `tutor_links` and `ai_runs` are the parents' only); update of `active, points_on, focus_minutes, pts_focus, pts_on_time, pts_milestone, pts_day_cap, pts_milestone_week` on `homework_kids` (never `cue` or `if_stuck`, which are his); insert of `event_id, kid_id` and delete on `homework_times`; insert of `kid_id, kind, title, subject, due_date, details, stretch, status`, update of the same less `kid_id`, and delete on `assignments` (never `added_by`, `given_*`, `plan_rev`, `done_at`, the AI's columns or the audit columns); and insert of `kid_id, title, cost, active, sort_order`, update of the same less `kid_id`, and delete on `rewards`. Steps, blocks, asks, points and AI runs have no write grant at all. Anon has no privilege on any of them. service_role keeps the defaults on all but `homework_use`.
+
+### Functions
+Page read (`authenticated`; STABLE, SECURITY INVOKER, so row-level security decides and a non-member gets empty days):
+- `homework_week(p_kid uuid, p_from date, p_days int default 14)` returns jsonb: `p_days` days (1 to 56) from `p_from`, `[{day, window: {starts, ends} | null, busy: [{starts, ends, title}], free, planned, over}]` (`docs/v1.3-homework.md` §5): the day's homework time, what blocks it, its free minutes, the minutes of not-done steps planned on it in his open assignments, and how much planned is more than free. Busy titles are the members' own events, which they can read anyway.
+
+Signed-in actions (`authenticated` only; SECURITY DEFINER unless said, in `public` because the page calls them; each raises 42501 "Only a parent can change homework." unless `private.is_admin()`, so an adult's page is read-only):
+- `save_homework_kid(p_kid uuid, p_active boolean)` returns void: makes the row for an active person with role kid (22023 "Homework is for kids." otherwise), or turns it on or off. Off deletes nothing.
+- `add_homework_time(p_kid uuid, p_weekdays int[], p_start time, p_end time)` returns uuid (the event's id): SECURITY INVOKER. One weekly event in his name, titled `private.homework_word('homework', <his language>)`, on the ISO weekdays `p_weekdays` (1 = Monday to 7 = Sunday, as `events.repeat_weekdays`), from `p_start` to `p_end` (after it, at most 4 hours), skipping days off, starting on the first day from today on one of those weekdays; and its `homework_times` row.
+- `save_homework_plan(p_assignment uuid, p_steps jsonb, p_rev int, p_give boolean default false)` returns jsonb → `private.plan_save` as the family. `p_rev` is required (0 for a first plan).
+- `homework_step(p_step uuid, p_action text, p_text text default null)` returns jsonb → `private.step_act` as the family: `'check'`, `'not_yet'`, `'uncheck'`, `'answer'`, `'clear'`, `'done'`, `'undo'`.
+- `decide_reward(p_ask uuid, p_approve boolean, p_note text default null)` returns jsonb `{ask, balance}`: Yes checks his free points again and writes a `'trade'` of −cost; Not now takes nothing and can carry a word he sees (at most 120). An ask already decided answers as it is.
+- `give_points(p_kid uuid, p_points int, p_note text, p_key uuid)` returns jsonb: 1 to 200, with a note he sees; `p_key` is the ledger row's id, so a resend writes nothing more. Refused while points are off.
+- `void_points(p_entry uuid, p_note text)` returns jsonb: one `focus`, `on_time`, `milestone` or `given` entry gets a `'void'` of the same size with a reason he sees; refused when it would take his balance below zero ("Those points are already spent.").
+- `save_tutor_link(p_link uuid, p_kid uuid, p_label text, p_language text, p_expires_on date, p_can_ai boolean, p_active boolean)` returns uuid: makes (`p_link` null) or changes a link. At most 3 per kid; the end date from today to today + 400, null meaning today + 180.
+- `new_tutor_token(p_link uuid)` returns void: a new token; the old link stops at once.
+- `homework_ai_preview(p_assignment uuid, p_kind text default 'plan', p_request text default null, p_answers text[] default null)` returns text: exactly the message the AI would get (`private.ai_input`'s `message`, as a parent asks), the same text `homework_ai_start` hands `hub-jobs`; no run, nothing counted.
+- `erase_homework(p_kid uuid, p_confirm text)` returns jsonb: with `p_confirm = 'ERASE'`, deletes his `homework_kids` row and so everything that cascades from it (assignments, steps, blocks, points, rewards, asks, tutor links, AI run records, the homework-time links), and his and his links' counts. The homework-time events stay on the calendar. Answers the counts.
+
+My day and the tutor link (`anon`, `authenticated`; SECURITY DEFINER): the seven `homework_by_token`, `step_by_token`, `plan_by_token`, `focus_by_token`, `reward_by_token`, `assignment_by_token`, `homework_prefs_by_token`, and the tutor link's four `tutor_view_by_token`, `tutor_assignment_by_token`, `tutor_plan_by_token`, `tutor_step_by_token`, with their signatures in §3 "Anonymous token functions". The seven start from `private.homework_kid_by_token(p_token)` and the four from `private.tutor_link_by_token(p_token)`: no match is null. Every writer then counts the call (`private.count_homework`), trims (`private.homework_trim`), writes as "<name> (My day)" or "<label> (tutor link)", and answers its own keys merged into the view (`private.homework_view_kid` or `private.homework_view_tutor`). Text over its limit is refused with 22023 before anything is counted, and a resend (a write that finds its own earlier work) changes nothing and isn't counted.
+
+`hub-jobs` (`service_role` only; SECURITY DEFINER; nothing calls them until the AI planner's PR):
+- `homework_ai_start(p_token text, p_email text, p_assignment uuid, p_kind text, p_request text, p_answers text[], p_key uuid)` returns jsonb: who first (the tutor link's token with `can_ai`, or an admin's email, never both; anyone else `{stop: 'not_found'}`), then, with the household row locked, the sweep, a resend's run, the switch, a run still open (`busy`), the caps (`cap`, `month`), and the new run: `{run_id, input}` (`docs/v1.3-homework.md` §6.3).
+- `homework_ai_finish(p_run uuid, p_stop text, p_draft jsonb, p_usage jsonb, p_model text)` returns jsonb: only a run still running inside its lease (else `{stop: 'late'}`); a failure's fixed code, or the draft checked again in SQL, placed, and stored as the assignment's `ai_draft` (the one before it in `ai_prev`) (§6.8 there).
+
+Replaced, with the same signatures (`create or replace`, so they keep their grants):
+- `hub_schema_version()` returns 5.
+- `get_person_day(p_token text)`: 0004's body plus one top-level key, `homework`, left out unless the person is a kid with homework on, so with homework off for everyone it is exactly 0004's answer: the card from `private.homework_card` (the next step, today's steps and minutes, his homework time, a block running, his points). Its lines are marked "v1.3" in the body.
+
+New in private (revoked from public and anon; "nobody" means also from authenticated, so only the definer functions above call them):
+- `private.homework_word(p_key text, p_lang text)`: v1.3's fixed words ("Homework" / "Tarea", "Turn it in" / "Entregarlo"), falling back to `private.food_word`, and so to `calendar_word` and `word`, all unchanged. IMMUTABLE. Authenticated, service_role (`add_homework_time` runs as the parent).
+- `private.clean_block(p_text text, p_max int)`: as `private.clean_text(p_text, p_max)`, but keeps line breaks (each line cleaned on its own, never two blank lines in a row, at most 60 lines). IMMUTABLE. Authenticated, service_role (the tidy trigger runs as the parent who saves).
+- `private.homework_kid_by_token(p_token text)` returns `public.people`: `private.person_by_token`, plus role kid and an active `homework_kids` row; else a null row. STABLE, definer. Nobody.
+- `private.tutor_link_by_token(p_token text)` returns `public.tutor_links`: the link that is on, not past its end date, whose kid is active, a kid and has homework on; else a null row. Sets `last_used_at` (to the minute) when it is older than a minute. Definer. Nobody.
+- `private.count_homework(p_actor uuid, p_what text, p_max int)` returns void: one more `'writes'` or `'starts'` for the kid or the link today in `homework_use` (an upsert, whose row lock queues parallel calls, so the count is exact); past `p_max`, P0001 "That's a lot for one day.". Rows older than 2 days go. Definer. Nobody.
+- `private.free_minutes(p_kid uuid, p_from date, p_to date, p_except uuid)` returns table `(day date, starts time, ends time, window_minutes int, free int, planned int, busy jsonb, first_free time)`: his homework time per day (`p_to` cut to `p_from + 55`, inside `agenda`'s 62 days) less what blocks it (his timed events and tasks, the Google events on his day, 15 minutes after one that ends inside it; all-day items and the homework-time events don't block), the minutes planned in his other open assignments (all but `p_except`), and the first free minute (the on-time window is around it). STABLE, with the caller's rights. Authenticated, service_role (`homework_week` runs as the member).
+- `private.place_steps(p_kid uuid, p_assignment uuid, p_due date, p_steps jsonb)` returns jsonb: the one placement rule (`docs/v1.3-homework.md` §5.4), `{steps, fits, over, horizon, minutes_left, time_left}`, or `{fits: false, no_time: true}` with no homework time. STABLE. Nobody.
+- `private.plan_check(p_steps jsonb, p_due date, p_ai boolean)` returns jsonb: a plan's shape (§4.2 there), every text through `clean_text`; 22023 with a fixed message, or the cleaned steps. IMMUTABLE. Nobody.
+- `private.plan_save(p_assignment uuid, p_steps jsonb, p_give boolean, p_rev int, p_role text, p_who text)` returns jsonb: the one save rule for parents, the tutor and the kid, and Re-plan (`p_steps` null); P0001 "This plan was changed since you opened it." on an old `p_rev`. Nobody.
+- `private.step_act(p_step uuid, p_action text, p_text text, p_day date, p_key uuid, p_role text, p_who text)` returns jsonb: the one step rule: ticks, Undo, Not today, checks with notes, Not yet, questions, answers, Make it smaller, and milestone points. Nobody.
+- `private.award(p_kid uuid, p_kind text, p_delta int, p_day date, p_session uuid, p_step uuid, p_ask uuid, p_void_of uuid, p_note text, p_who text)` returns int: one ledger row, paid once, within the day's cap (`focus` and `on_time`) or the week's (`milestone`); nothing earned or given while points are off. Answers the points written. Nobody.
+- `private.points_balance(p_kid uuid, out balance int, out held int)`: his balance and what his waiting asks hold. STABLE. Nobody.
+- `private.homework_pace(p_kid uuid)` returns numeric: the median of worked ÷ planned minutes over his last 10 done steps with blocks, 0.5 to 3; null with fewer than 5. STABLE. Nobody.
+- `private.focus_act(p_kid uuid, p_action text, p_session uuid, p_minutes int, p_step uuid, p_assignment uuid, p_with text, p_result text, p_note text)` returns jsonb: the timer's rules and their points (§7.1 and §8.1 there). Nobody.
+- `private.ai_sweep()` returns void: every AI run still running past its lease becomes failed (`timeout`). Nobody.
+- `private.homework_trim(p_kid uuid)` returns void: the retention rules (§13.3 there), done at writes, and `ai_sweep`. Nobody.
+- `private.homework_view_kid(p_kid uuid, p_lang text)`, `private.homework_card(p_kid uuid, p_lang text)` and `private.homework_view_tutor(p_link uuid, p_assignment uuid, p_part text)` return jsonb: his view, his card and the tutor's view (§3.4 there). STABLE; the card never raises. Nobody.
+- `private.scrub(p_text text, p_kid uuid)` returns text: links, emails, phone numbers, ids, titled names, the family's names, the tutor links' labels and the never-send words out, and `<` `>` replaced. STABLE. Nobody.
+- `private.ai_input(p_assignment uuid, p_kind text, p_request text, p_answers text[], p_from text)` returns jsonb `{fields, message}`: the AI's input built from the database, and the one user message, which is also the preview; `p_from` (`'tutor'` or `'parent'`) is the role the request is wrapped with, never a name. STABLE. Nobody.
+- `private.homework_kids_tidy()`, `private.assignments_tidy()`, `private.rewards_tidy()`, `private.tutor_links_tidy()` and `private.household_homework_check()`: the triggers above.
