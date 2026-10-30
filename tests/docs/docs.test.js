@@ -4,8 +4,11 @@
 //   • deploy steps 4 and 5 (CLAUDE.md, docs/v2-design.md §7, README "Upgrading to v2") name every
 //     secret hub-jobs reads and every Vault secret supabase/cron.sql needs, and don't call a
 //     required one optional;
-//   • CLAUDE.md and tests/README.md name every suite tests/run.sh runs, and every public page;
-//   • day.html carries the same ?v= as index.html (CLAUDE.md says so);
+//   • CLAUDE.md and tests/README.md name every suite tests/run.sh runs, and every public page, and
+//     tests/README.md every browser and real-database test file;
+//   • day.html carries the same ?v= as index.html (CLAUDE.md says so); CLAUDE.md names the scripts
+//     index.html and day.html load, in order, and day.html's stylesheets; and every way into day.html
+//     (the ?x= day.js reads) is described in CLAUDE.md and docs/v2-design.md §4;
 //   • docs/v2-design.md names every table, column, function and anon-callable function the
 //     migrations add, and every signature it, docs/v1.1-google-calendar.md, docs/v1.2-kitchen.md or
 //     docs/v1.3-homework.md writes out has the migration's parameter names;
@@ -13,7 +16,9 @@
 //     and constraint as the migration has it (in ```sql blocks), the signature of every public
 //     function, every private function, and every function a migration renames;
 //   • anon can call exactly the token functions the design counts;
-//   • docs/v1.2-kitchen.md §2 counts the public and private functions migration 0004 adds;
+//   • docs/v1.2-kitchen.md §2 counts the public and private functions migration 0004 adds, and
+//     docs/v1.3-homework.md §2.1 what 0005 adds (tables by name, household columns, functions) and §3.6
+//     the token functions anon can call;
 //   • example phone numbers are in the fictional 555-0100 to 555-0199 range.
 // Reads files only: no database, no browser. Run alone with: node tests/docs/docs.test.js
 const fs = require('fs');
@@ -125,6 +130,13 @@ check('tests/run.sh: its "Unknown suite" message and header name every suite', O
   && Object.values(suites).every((p) => runSh.split('set -u')[0].includes(p)), unknown);
 const usage = (/tests\/run\.sh fn e2e\s+# only the suites named \(([^)]*)\)/.exec(testsReadme) || [])[1] || '';
 check('tests/README.md: "only the suites named" lists every suite', Object.keys(suites).every((s) => new RegExp(`\\b${s}\\b`).test(usage)), usage);
+// tests/README.md describes every browser and real-database test file (its tables of suites), so a new one
+// (v1.3's homework.test.js and tutor.test.js) is written up when it is added.
+{
+  const files = ['tests/e2e', 'tests/realdb'].flatMap((d) => fs.readdirSync(path.join(ROOT, d)).filter((f) => f.endsWith('.test.js')).map((f) => `${d}/${f}`));
+  const unnamed = files.filter((f) => !testsReadme.includes(`\`${path.basename(f)}\``)).sort();
+  check(`tests/README.md names every browser and real-database test file (${files.length})`, files.length > 10 && !unnamed.length, `missing ${unnamed.join(', ')}`);
+}
 const optionalSuites = Object.keys(suites).filter((s) => !defaults.includes(s));
 for (const s of optionalSuites) {
   check(`CLAUDE.md and tests/README.md say the ${s} suite isn't in the default run`,
@@ -146,6 +158,51 @@ for (const page of ['index.html', 'day.html']) {
 const all = new Set(Object.values(versions).flat());
 check('index.html and day.html carry one and the same ?v= (CLAUDE.md: bump them together)', all.size === 1 && !all.has(''), versions);
 check('CLAUDE.md says day.html carries the same ?v= as index.html', /day\.html[^\n]*\?v=|\?v=[^\n]*day\.html/.test(clientSec));
+
+// CLAUDE.md "Client code" says what index.html and day.html load, in order: each script either page loads
+// (index.html's page modules aside: "then the module files") is named in that page's line, in the page's order,
+// and day.html's line names each of its stylesheets. So a script added to a page (v1.3's plan.js) is added there too.
+{
+  // The page's line, from "loads `" (its list of files) to the end of that sentence.
+  const line = (re) => {
+    const l = clientSec.split('\n').find((x) => re.test(x)) || '';
+    const at = l.search(/\bloads `/);
+    const s = at < 0 ? '' : l.slice(at);
+    const end = s.search(/\.\s+[A-Z]/);
+    return s.slice(0, end < 0 ? undefined : end + 1);
+  };
+  const loads = { 'index.html': line(/^- `index\.html` loads/), 'day.html': line(/^- `day\.html` is/) };
+  for (const [page, text] of Object.entries(loads)) {
+    const html = read(page).replace(/<!--[\s\S]*?-->/g, '');
+    const srcs = [...html.matchAll(/<script\s+src="([^"?]+)/g)].map((m) => m[1]).filter((s) => !/^assets\/modules\//.test(s));
+    // Where the line names a script, at or after `from` (the line may name one earlier too, in passing).
+    const at = (src, from) => {
+      const re = /supabase-js/.test(src) ? /supabase-js/g : new RegExp(`\`(?:assets/)?${path.basename(src).replace('.', '\\.')}\``, 'g');
+      re.lastIndex = from;
+      const m = re.exec(text);
+      return m ? m.index : -1;
+    };
+    const missing = srcs.filter((s) => at(s, 0) < 0);
+    let from = 0;
+    const outOfOrder = srcs.filter((s) => { const p = at(s, from); if (p < 0) return true; from = p + 1; return false; });
+    check(`CLAUDE.md "Client code" names the scripts ${page} loads, in its order (${srcs.map((s) => path.basename(s)).join(', ')})`,
+      !!text && !missing.length && !outOfOrder.length, missing.length ? `missing ${missing.join(', ')}` : `out of order from ${outOfOrder.join(', ')}: ${text.slice(0, 300)}`);
+    if (page !== 'day.html') continue;
+    const css = [...html.matchAll(/<link\s+rel="stylesheet"\s+href="([^"?]+)/g)].map((m) => path.basename(m[1]));
+    const missingCss = css.filter((c) => !text.includes(`${c}\``));
+    check(`CLAUDE.md "Client code" names the stylesheets day.html loads (${css.join(', ')})`, css.length > 0 && !missingCss.length, `missing ${missingCss.join(', ')}`);
+  }
+}
+// Each way into day.html (the ?x= its script reads: t, the My day link; c, the confirmation email; from v1.3 h,
+// the tutor link) is described in CLAUDE.md "Client code" and in docs/v2-design.md §4 "Client".
+{
+  const dayJs = read('assets/day.js');
+  const params = [...new Set([...dayJs.matchAll(/\bquery\.(?:get|has)\('([a-z]+)'\)/g)].map((m) => m[1]))].sort();
+  const client = section(read('docs/v2-design.md'), /^## 4\. Client/);
+  const undescribed = params.filter((k) => !clientSec.includes(`day.html?${k}=`) || !client.includes(`day.html?${k}=`));
+  check(`CLAUDE.md "Client code" and docs/v2-design.md §4 describe every way into day.html (${params.map((k) => `?${k}=`).join(', ')})`,
+    params.length >= 2 && !undescribed.length, `missing ${undescribed.map((k) => `day.html?${k}=`).join(', ')}`);
+}
 
 // ---------------------------------------------------------------------
 // docs/v2-design.md and the migrations
@@ -286,6 +343,36 @@ check(`docs/v2-design.md "Anonymous token functions" counts them right ("These $
   const said = /(\w+) new public and (\w+) new private functions/.exec(section(read('docs/v1.2-kitchen.md'), /^## 2\. What ships/)) || [];
   check(`docs/v1.2-kitchen.md §2 counts the functions 0004 adds ("${said[1]} new public and ${said[2]} new private": ${count('public')} and ${count('private')})`,
     N[String(said[1]).toLowerCase()] === count('public') && N[String(said[2]).toLowerCase()] === count('private'), said[0]);
+}
+
+// docs/v1.3-homework.md §2.1 counts what 0005 adds ("Eleven tables (`homework_kids`, …); three `household`
+// columns; twenty-five new public functions (…) and twenty-six new private ones"), and names its tables.
+{
+  const ONES = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9 };
+  const TENS = { twenty: 20, thirty: 30, forty: 40, fifty: 50 };
+  const num = (w) => {   // "eleven" → 11, "twenty-five" → 25
+    const s = String(w).toLowerCase();
+    if (ONES[s] || NUMBER[s]) return ONES[s] || NUMBER[s];
+    const [t, o] = s.split('-');
+    return TENS[t] && (o === undefined || ONES[o]) ? TENS[t] + (o ? ONES[o] : 0) : NaN;
+  };
+  const earlier = sqlNoComments([read('supabase/schema.sql'), ...migrationFiles.filter((f) => f < '0005').map((f) => read(`supabase/migrations/${f}`))].join('\n'));
+  const old = new Set(functions(earlier).map((f) => `${f.schema}.${f.name}`));
+  const m0005 = sqlNoComments(read(`supabase/migrations/${migrationFiles.find((f) => f.startsWith('0005'))}`));
+  const added = functions(m0005).filter((f) => !old.has(`${f.schema}.${f.name}`));
+  const count = (schema) => new Set(added.filter((f) => f.schema === schema).map((f) => f.name)).size;
+  const made = [...m0005.matchAll(/create\s+table\s+public\.(\w+)\s*\(/gi)].map((m) => m[1]).sort();
+  const householdCols = [...((/alter\s+table\s+public\.household\s+((?:\s*add\s+column\s+[^,;]+[,;])+)/i.exec(m0005) || [])[1] || '').matchAll(/add\s+column\s+(\w+)/gi)].length;
+  const row = section(read('docs/v1.3-homework.md'), /^## 2\. What ships/).split('\n').find((l) => l.includes('`supabase/migrations/0005_homework.sql`')) || '';
+  const said = /(\w+) tables \(([^)]*)\); (\w+) `household` columns; ([\w-]+) new public functions \([^)]*\) and ([\w-]+) new private ones/.exec(row) || [];
+  const named = [...String(said[2]).matchAll(/`(\w+)`/g)].map((m) => m[1]).sort();
+  check(`docs/v1.3-homework.md §2.1 counts what 0005 adds ("${said[1]} tables; ${said[3]} household columns; ${said[4]} new public and ${said[5]} new private functions": `
+    + `${made.length}; ${householdCols}; ${count('public')} and ${count('private')})`,
+  num(said[1]) === made.length && num(said[3]) === householdCols && num(said[4]) === count('public') && num(said[5]) === count('private'), row.slice(0, 300));
+  check('docs/v1.3-homework.md §2.1 names the tables 0005 makes', made.length > 0 && named.join() === made.join(), `says ${named.join(', ')}; makes ${made.join(', ')}`);
+  // §3.6: "anon can call **nineteen** token functions".
+  const anonSaid = (/anon can call \*\*(\w+)\*\* token functions/.exec(read('docs/v1.3-homework.md')) || [])[1];
+  check(`docs/v1.3-homework.md §3.6 counts the token functions anon can call ("${anonSaid}": ${anon.size})`, num(anonSaid) === anon.size, anonSaid);
 }
 
 // Every table, column and agenda_item field the migrations add is in the design (tables in private too).
