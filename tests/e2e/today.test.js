@@ -367,7 +367,7 @@ const emailOf = (req) => {
     && same(calls(db, 'day_text').map((c) => c.body), [{ p_person: ID.taylor, p_day: TODAY }]), JSON.stringify(send[0]).slice(0, 200));
   await page.click('.today-preview summary');
   check('send: the message can be previewed', (await text(page, '.today-preview pre')) === msg);
-  check('send: no Share without Web Share (navigator.share, which most desktop browsers lack)', !(await page.$('.today-send [data-share]'))
+  check('send: no Share without Web Share (navigator.share, which many desktop browsers lack)', !(await page.$('.today-send [data-share]'))
     && same(await page.$$eval('.today-send-btns > *', (es) => es.map((e) => e.textContent)), ['WhatsApp', 'Text']));
   const proj = await projectLines(page);
   check('projects: one line per active project with work today (not done tasks, not an idea project): counts, then the job starting today',

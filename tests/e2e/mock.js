@@ -960,16 +960,22 @@ async function signIn(context, email) {
 // event is the type of the event being handled when it was called ('click' when it's called from the
 // tap itself, which a share needs; null after an await). window.__shareAnswer says how the next call ends:
 // unset, it shares; otherwise it fails with an error of that name ('AbortError' when the person closes
-// the share sheet, 'NotAllowedError', ...).
+// the share sheet, 'NotAllowedError', ...). While window.__shareHold is set, a share stays open (the
+// sheet is up, the person still choosing) until window.__shareFinish() ends it as __shareAnswer says; a
+// call while one is open fails with InvalidStateError, as Web Share has it (a double tap).
 function stubShare(page) {
   return page.addInitScript(() => {
     window.__shares = [];
+    let open = null;
     Object.defineProperty(navigator, 'share', {
       configurable: true,
       value: (data) => {
         window.__shares.push({ data: JSON.parse(JSON.stringify(data)), event: window.event ? window.event.type : null });
-        const name = window.__shareAnswer;
-        return name ? Promise.reject(new DOMException('The share did not happen', name)) : Promise.resolve();
+        if (open) return Promise.reject(new DOMException('An earlier share has not yet completed.', 'InvalidStateError'));
+        const end = () => { const name = window.__shareAnswer; if (name) throw new DOMException('The share did not happen', name); };
+        if (!window.__shareHold) return new Promise((resolve) => resolve(end()));
+        open = new Promise((resolve) => { window.__shareFinish = () => { open = null; resolve(); }; }).then(end);
+        return open;
       },
     });
   });

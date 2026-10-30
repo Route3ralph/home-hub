@@ -1231,7 +1231,7 @@ const emailOf = (req) => {
     && sendA[0][1].startsWith('https://wa.me/12015550104?text=') && decodeURIComponent(sendA[0][1].split('text=')[1]).includes(link)
     && /^Hola Taylor/.test(decodeURIComponent(sendA[0][1].split('text=')[1])) && sendA[0][2].startsWith('sms:+12015550104?&body=') && decodeURIComponent(sendA[0][2].split('body=')[1]).includes(link),
   JSON.stringify(sendA));
-  check('Send Taylor the list: no Share without Web Share (navigator.share, which most desktop browsers lack)', !(await page.$('[data-ref="send"] [data-share]'))
+  check('Send Taylor the list: no Share without Web Share (navigator.share, which many desktop browsers lack)', !(await page.$('[data-ref="send"] [data-share]'))
     && same(await page.$$eval('.food-send-btns > *', (es) => es.map((e) => e.textContent)), ['WhatsApp', 'Text']));
   await page.click('.food-seg-btn[data-value="see"]');
   await sleep(400);

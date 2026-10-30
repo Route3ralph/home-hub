@@ -372,12 +372,16 @@
 
   // Share opens the phone's share sheet (Web Share) with the same message, for WhatsApp Business or
   // any other app: on an iPhone with both WhatsApps a wa.me link always opens the plain one. Only
-  // where the browser has it (phones do, most desktop browsers don't), and called from the tap itself
-  // (a share needs the tap's user activation, which Safari keeps only briefly). Closing the share
-  // sheet is no error; anything else says so in a toast, or through fail(message) from a dialog,
-  // which would cover the toast.
+  // where the browser has it (phones, and some desktop browsers), and called from the tap itself
+  // (a share needs the tap's user activation, which Safari keeps only briefly). One at a time: the
+  // browser turns down a second share while the sheet is up (InvalidStateError), so a double tap's
+  // second tap does nothing. Closing the share sheet is no error; anything else says so in a toast,
+  // or through fail(message) from a dialog, which would cover the toast.
   const canShare = () => typeof navigator.share === 'function';
+  let sharing = false; // a share sheet is up (set before the call, which stays inside the tap)
   async function shareText(text, fail) {
+    if (sharing) return;
+    sharing = true;
     try {
       await navigator.share({ text });
     } catch (err) {
@@ -385,6 +389,8 @@
       const msg = 'Couldn\'t open the share menu. Try again, or use WhatsApp or Text.';
       if (fail) fail(msg);
       else toast(msg, { error: true });
+    } finally {
+      sharing = false;
     }
   }
 

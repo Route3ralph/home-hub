@@ -47,7 +47,7 @@ const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
   check('Text opens Messages with US number + body', sms.startsWith('sms:+12015550100?&body=') && dec(sms.split('body=')[1]) === body, sms.slice(0, 60));
   const wa = await href(page, 'whatsapp');
   check('WhatsApp opens wa.me with number + text', wa.startsWith('https://wa.me/12015550100?text=') && dec(wa.split('text=')[1]) === body, wa.slice(0, 60));
-  check('no Share without Web Share (navigator.share, which most desktop browsers lack)', !(await page.$('#formDialog [data-share]'))
+  check('no Share without Web Share (navigator.share, which many desktop browsers lack)', !(await page.$('#formDialog [data-share]'))
     && same(await page.$$eval('#formDialog .msg-actions > *', (es) => es.map((e) => e.textContent)), ['Text', 'WhatsApp', 'Open in my email']));
   const mail = await href(page, 'mail');
   check('Email opens mail app with subject + body', mail.startsWith('mailto:pat@leeelectric.example?subject=') && dec(mail).includes('Kitchen Renovation: your schedule'), mail.slice(0, 70));
@@ -158,6 +158,20 @@ const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
   got = await shares();
   check('her Share has her draft, the same text as her WhatsApp', got.length === 5 && got[4].data.text === dec((await href(sh.page, 'whatsapp')).split('text=')[1])
     && got[4].data.text.startsWith('Hi Maria,'), JSON.stringify(got[4]));
+  // A double tap while the share sheet comes up: Web Share turns down a second share while one is open
+  // (InvalidStateError), and that is no reason to say the share failed.
+  await sh.page.evaluate(() => { window.__shareHold = true; });
+  await sh.page.dblclick('#formDialog [data-share]');
+  await sh.page.waitForTimeout(300);
+  got = await shares();
+  check('a double tap on Share opens one share sheet and shows no error', got.length === 6 && !(await formErr()) && (await toastCount()) === 0,
+    JSON.stringify([got.length, await formErr()]));
+  await sh.page.evaluate(() => { window.__shareHold = false; window.__shareFinish(); });
+  await sh.page.waitForTimeout(300);
+  check('...nor when that share goes through', !(await formErr()) && (await toastCount()) === 0 && (await dialogOpen()), await formErr());
+  await sh.page.click('#formDialog [data-share]');
+  await sh.page.waitForTimeout(200);
+  check('...and the next tap shares again', (await shares()).length === 7 && !(await formErr()), JSON.stringify((await shares()).length));
   await sh.page.context().close();
 
   // 8. Phone layout (with Share, as on a phone)
