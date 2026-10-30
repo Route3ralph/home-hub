@@ -15,7 +15,7 @@
 
   const HomeHub = window.HomeHub;
   const { core } = HomeHub;
-  const { esc, api, toast, friendly, firstName, telHref, smsHref, whatsappHref, formDialog, detailDialog, wireFormDialog } = core;
+  const { esc, api, toast, friendly, firstName, telHref, smsHref, whatsappHref, canShare, shareText, formDialog, detailDialog, wireFormDialog } = core;
   const { v2 } = core;
   const { call, fmt, ui } = v2;
 
@@ -179,6 +179,8 @@
         if (p) copyLink(p, view.tokens);
         return;
       }
+      const share = e.target.closest('[data-share]');
+      if (share) { shareText(share.dataset.share); return; }
       const rotate = e.target.closest('[data-rotate]');
       if (rotate) {
         const p = byId(rotate.dataset.rotate);
@@ -227,7 +229,8 @@
     </article>`;
   }
 
-  // Copy, WhatsApp and Text (the core's message helpers), and New link for admins.
+  // Copy, WhatsApp, Share (where the browser has it) and Text (the core's message helpers), and New
+  // link for admins. Share carries the WhatsApp message itself.
   function dayLinkHTML(p, admin, view) {
     const name = firstName(p.name);
     const msg = dayMessage(p, dayLink(p, view.tokens));
@@ -237,6 +240,7 @@
       <div class="ppl-day-actions">
         <button type="button" class="btn ppl-btn" data-copy="${esc(p.id)}" aria-label="Copy ${esc(name)}'s My day link">Copy</button>
         ${send ? `<a class="btn ppl-btn" data-via="whatsapp" href="${esc(whatsappHref(p.phone, msg))}" target="_blank" rel="noopener" aria-label="Send ${esc(name)} their My day link by WhatsApp">WhatsApp</a>
+        ${canShare() ? `<button type="button" class="btn ppl-btn" data-share="${esc(msg)}" aria-label="Share ${esc(name)}'s My day link with another app">Share</button>` : ''}
         <a class="btn ppl-btn" data-via="sms" href="${esc(smsHref(p.phone, msg))}" aria-label="Send ${esc(name)} their My day link by text">Text</a>` : ''}
         ${admin ? `<button type="button" class="btn ppl-btn" data-rotate="${esc(p.id)}" aria-label="Make a new My day link for ${esc(name)}">New link</button>` : ''}
       </div>

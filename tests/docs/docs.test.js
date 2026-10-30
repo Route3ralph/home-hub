@@ -6,6 +6,7 @@
 //     required one optional;
 //   • CLAUDE.md and tests/README.md name every suite tests/run.sh runs, and every public page;
 //   • day.html carries the same ?v= as index.html (CLAUDE.md says so);
+//   • the README says Share shows wherever the browser has Web Share (hub.js canShare), not phones only;
 //   • docs/v2-design.md names every table, column, function and anon-callable function the
 //     migrations add, and every signature it, docs/v1.1-google-calendar.md or docs/v1.2-kitchen.md
 //     writes out has the migration's parameter names;
@@ -146,6 +147,17 @@ for (const page of ['index.html', 'day.html']) {
 const all = new Set(Object.values(versions).flat());
 check('index.html and day.html carry one and the same ?v= (CLAUDE.md: bump them together)', all.size === 1 && !all.has(''), versions);
 check('CLAUDE.md says day.html carries the same ?v= as index.html', /day\.html[^\n]*\?v=|\?v=[^\n]*day\.html/.test(clientSec));
+
+// ---------------------------------------------------------------------
+// Share (Web Share) shows wherever the browser has navigator.share, not only on phones
+// ---------------------------------------------------------------------
+// hub.js canShare() asks the browser only. Safari on a Mac and Chrome and Edge on Windows have Web Share
+// too, so the README's line on Share mustn't promise phones only.
+const canShareSrc = (/const canShare = \(\) => ([^;\n]+);/.exec(read('assets/hub.js')) || [])[1];
+const shareLine = (/^- \*\*Share\*\*.*$/m.exec(read('README.md')) || [''])[0];
+check('README: Share shows wherever the browser has a share menu (hub.js canShare), some desktops too, not phones only',
+  canShareSrc === 'typeof navigator.share === \'function\'' && !!shareLine && !/phones? only|only on (a |your )?phones?/i.test(shareLine) && /desktop/i.test(shareLine),
+  [canShareSrc, shareLine]);
 
 // ---------------------------------------------------------------------
 // docs/v2-design.md and the migrations

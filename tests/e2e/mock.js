@@ -955,5 +955,31 @@ async function signIn(context, email) {
   await context.addInitScript((s) => { try { localStorage.setItem('sb-test-auth-token', s); } catch (e) {} }, session);
 }
 
+// Web Share for the Share buttons. Chromium on Linux has no navigator.share, so a page has none unless
+// the test gives it this fake (before page.goto). Each call goes in window.__shares as { data, event }:
+// event is the type of the event being handled when it was called ('click' when it's called from the
+// tap itself, which a share needs; null after an await). window.__shareAnswer says how the next call ends:
+// unset, it shares; otherwise it fails with an error of that name ('AbortError' when the person closes
+// the share sheet, 'NotAllowedError', ...). While window.__shareHold is set, a share stays open (the
+// sheet is up, the person still choosing) until window.__shareFinish() ends it as __shareAnswer says; a
+// call while one is open fails with InvalidStateError, as Web Share has it (a double tap).
+function stubShare(page) {
+  return page.addInitScript(() => {
+    window.__shares = [];
+    let open = null;
+    Object.defineProperty(navigator, 'share', {
+      configurable: true,
+      value: (data) => {
+        window.__shares.push({ data: JSON.parse(JSON.stringify(data)), event: window.event ? window.event.type : null });
+        if (open) return Promise.reject(new DOMException('An earlier share has not yet completed.', 'InvalidStateError'));
+        const end = () => { const name = window.__shareAnswer; if (name) throw new DOMException('The share did not happen', name); };
+        if (!window.__shareHold) return new Promise((resolve) => resolve(end()));
+        open = new Promise((resolve) => { window.__shareFinish = () => { open = null; resolve(); }; }).then(end);
+        return open;
+      },
+    });
+  });
+}
+
 module.exports = { makeDb, install, signIn, expectedConsoleError, SUPA, withCalendars, calendarRow, linkRow, googleEventRow, calendarRpc, md5uuid,
-  withFood, mealRow, shopItem, foodRpc, personDayFood, foodStamp };
+  withFood, mealRow, shopItem, foodRpc, personDayFood, foodStamp, stubShare };
