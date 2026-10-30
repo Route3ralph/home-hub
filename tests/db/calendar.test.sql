@@ -2,7 +2,8 @@
 -- which events Google should have (routing, titles, descriptions, ids, bodies, daylight saving,
 -- the window), the plan and what Google answered, storing a read and putting back changes made in
 -- Google, Google events on the pages, My day, day_text and the email, the preview, and the run's
--- lease. The household is calendar_fixtures.sql's (Taylor is the Spanish-speaking helper).
+-- lease; and meals on the wall (migration 0004, docs/v1.2-kitchen.md §10). The household is
+-- calendar_fixtures.sql's (Taylor is the Spanish-speaking helper).
 \ir roles.sql
 \ir calendar_fixtures.sql
 
@@ -1348,4 +1349,170 @@ select calendar_record((select jsonb_agg(to_jsonb(p) || '{"ok": false, "forget":
 select test.is((select count(*) from calendar_links where google_calendar = 'hub-family@group.calendar.google.com'), 0::bigint,
                '... and when Google refuses (forget), the links are forgotten at once');
 select test.is((select status from calendars where label = 'Family'), 'new', '... while the calendar itself is left as it is (no "can''t reach it")');
+rollback;
+
+-- ---------------------------------------------------------------------
+-- Meals on the wall (migration 0004, docs/v1.2-kitchen.md §10): one all-day event per meal on
+-- Hub – Family, and the plan keeps past dinners as history.
+-- ---------------------------------------------------------------------
+:as_service
+select pg_temp.sync();
+:as_owner
+insert into meals (day, slot, kind, title, cook_id, note, link, private) values
+  ('2026-10-25', 'dinner', 'cook', 'Pancakes', test.person('Alex'), null, null, false),     -- before the window
+  ('2026-10-26', 'dinner', 'cook', 'Chili', test.person('Alex'), null, null, false),        -- yesterday: the window's first day
+  ('2026-10-27', 'dinner', 'cook', 'Tacos', test.person('Sam'), 'Chicken is in the freezer', 'https://cooking.example.com/tacos', false),
+  ('2026-10-28', 'dinner', 'takeout', null, test.person('Taylor'), 'Menu in the drawer', null, false),
+  ('2026-10-29', 'dinner', 'cook', 'Surprise cake', test.person('Sam'), 'Hide the box', null, true),
+  ('2026-10-30', 'dinner', 'fend', null, null, null, null, false),
+  ('2026-12-26', 'dinner', 'cook', 'Roast', null, null, null, false),                       -- today + 60: its last day
+  ('2026-12-27', 'dinner', 'cook', 'Stew', null, null, null, false);                        -- after the window
+create function pg_temp.meal(p_day date) returns uuid language sql as $$ select id from public.meals where day = p_day and slot = 'dinner' $$;
+
+select test.is((select string_agg(cal || ' ' || to_char(day, 'MM-DD') || ' ' || title, ' | ' order by day) from pg_temp.d() where item_kind = 'meal'),
+               'Family 10-26 Dinner: Chili (Alex) | Family 10-27 Dinner: Tacos (Sam) | Family 10-28 Dinner: Takeout (Taylor) | '
+               'Family 10-29 Dinner: Private item | Family 10-30 Dinner: Fend for yourself | Family 12-26 Dinner: Roast',
+               'meals: one row per meal in the window (yesterday to 60 days ahead), on Family only: "Dinner: Tacos (Sam)"');
+select test.is(pg_temp.body('Family', 'Dinner: Tacos (Sam)', '2026-10-27') - 'id' #- '{extendedProperties,private,homehub_base}' #- '{extendedProperties,private,homehub_item}',
+               jsonb_build_object(
+                 'status', 'confirmed', 'summary', 'Dinner: Tacos (Sam)',
+                 'description', E'Made by Home Hub: changes made here are undone. Change it in Home Hub.\nSam cooks\nOpen in Home Hub: https://hub.example.com/#/food',
+                 'start', jsonb_build_object('date', '2026-10-27'), 'end', jsonb_build_object('date', '2026-10-28'),
+                 'transparency', 'transparent', 'visibility', 'default',
+                 'extendedProperties', jsonb_build_object('private', jsonb_build_object('homehub', '1', 'homehub_kind', 'meal',
+                                                                                        'homehub_occurrence', '2026-10-27'))),
+               '... all day (to the next day), transparent, no place; the description: made by the hub, who cooks, the link to #/food');
+select test.is((select (base_id = 'hh' || md5('meal|' || pg_temp.meal('2026-10-27') || '|2026-10-27|hub-family@group.calendar.google.com|'))::text
+                       || ' ' || (body ->> 'id' = base_id) || ' ' || (body -> 'extendedProperties' -> 'private' ->> 'homehub_base' = base_id)
+                       || ' ' || (body -> 'extendedProperties' -> 'private' ->> 'homehub_item' = pg_temp.meal('2026-10-27')::text)
+                       || ' ' || (item_id = pg_temp.meal('2026-10-27')) || ' ' || to_char(end_day, 'MM-DD') || ' [' || part || '] ' || coalesce(job_id, '-')
+                from pg_temp.d() where item_kind = 'meal' and day = '2026-10-27'),
+               'true true true true true 10-27 [] -', '... a stable hh id from meal|<id>|<day>|<calendar>|, with the meal''s id; one day');
+select test.is((select count(*) from pg_temp.d() where item_kind = 'meal'
+                and (body::text like '%freezer%' or body::text like '%cooking.example.com%' or body::text like '%drawer%' or body::text like '%Hide the box%')),
+               0::bigint, '... never the note or the recipe link');
+select test.is(pg_temp.desc_of('Family', 'Dinner: Takeout (Taylor)', '2026-10-28'),
+               E'Made by Home Hub: changes made here are undone. Change it in Home Hub.\nTaylor''s on dinner\nOpen in Home Hub: https://hub.example.com/#/food',
+               'takeout: who''s on dinner');
+select test.is((select concat_ws(' | ', title, private, body ->> 'visibility', body ->> 'description') from pg_temp.d() where item_kind = 'meal' and day = '2026-10-29'),
+               E'Dinner: Private item | t | private | Made by Home Hub: changes made here are undone. Change it in Home Hub.\nOpen in Home Hub: https://hub.example.com/#/food',
+               'a locked meal: "Dinner: Private item", private, with no name');
+select test.is((select body ->> 'description' from pg_temp.d(null) where item_kind = 'meal' and day = '2026-10-27'),
+               E'Made by Home Hub: changes made here are undone. Change it in Home Hub.\nSam cooks', 'without a site, no link');
+begin;
+update people set active = false where name = 'Sam';
+select test.is((select title || ' | ' || (body ->> 'description') from pg_temp.d(null) where item_kind = 'meal' and day = '2026-10-27'),
+               E'Dinner: Tacos | Made by Home Hub: changes made here are undone. Change it in Home Hub.', 'a cook off the family list is left out');
+rollback;
+begin;
+update household set meals_on_wall = false;
+select test.is((select count(*) from pg_temp.d() where item_kind = 'meal'), 0::bigint, '"Dinners on the kitchen wall" off: no meal rows');
+rollback;
+begin;
+delete from calendars where label = 'Family';
+select test.is((select count(*) from private.meal_events('2026-10-26', '2026-12-26', null)), 0::bigint, 'no writing Family calendar: no meal rows');
+rollback;
+:as_admin
+select test.is((select string_agg(concat_ws(' ', to_char(day, 'MM-DD'), title, private, coalesce(details, '-')), ' | ' order by day)
+                from calendar_preview(pg_temp.cal('Family')) where item_kind = 'meal'),
+               '10-26 Dinner: Chili (Alex) f Alex cooks | 10-27 Dinner: Tacos (Sam) f Sam cooks | 10-28 Dinner: Takeout (Taylor) f Taylor''s on dinner | '
+               '10-29 Dinner: Private item t - | 10-30 Dinner: Fend for yourself f - | 12-26 Dinner: Roast f -',
+               'calendar_preview lists the meal rows (Family''s preview, before Start copying)');
+
+-- The plan.
+:as_service
+select test.is(pg_temp.plan(),
+               'insert Dinner: Chili (Alex) 10-26 | insert Dinner: Tacos (Sam) 10-27 | insert Dinner: Takeout (Taylor) 10-28 | '
+               'insert Dinner: Private item 10-29 | insert Dinner: Fend for yourself 10-30 | insert Dinner: Roast 12-26',
+               'plan: each new meal is one insert');
+select test.is(pg_temp.sync(), 6, '... written');
+select test.is((select string_agg(to_char(day, 'MM-DD') || ' ' || item_kind || ' ' || (item_id = pg_temp.meal(day)) || ' ' || occurrence, ' | ' order by day)
+                from calendar_links where item_kind = 'meal'),
+               '10-26 meal true 2026-10-26 | 10-27 meal true 2026-10-27 | 10-28 meal true 2026-10-28 | 10-29 meal true 2026-10-29 | '
+               '10-30 meal true 2026-10-30 | 12-26 meal true 2026-12-26',
+               '... and calendar_links keeps them (item_kind ''meal'')');
+
+-- Turning the switch off takes yesterday's and later dinners off; older ones stay.
+begin;
+:as_owner
+set hub.now = '2026-10-28 09:00 America/New_York';
+update household set meals_on_wall = false;
+:as_service
+select test.is((select string_agg(op || ' ' || title || ' ' || to_char(day, 'MM-DD'), ' | ' order by day) from calendar_plan('https://hub.example.com/', 1000)
+                where item_kind = 'meal'),
+               'delete Dinner: Tacos (Sam) 10-27 | delete Dinner: Takeout (Taylor) 10-28 | delete Dinner: Private item 10-29 | '
+               'delete Dinner: Fend for yourself 10-30 | delete Dinner: Roast 12-26',
+               'the wall switch off: yesterday''s dinner and later ones are deleted; the one from two days before (Chili) is kept');
+rollback;
+
+:as_owner
+update meals set title = 'Fish tacos' where day = '2026-10-27';
+:as_service
+select test.is(pg_temp.plan(), 'update Dinner: Fish tacos (Sam) 10-27', 'a changed title: one update (same id)');
+select pg_temp.sync();
+:as_owner
+update meals set private = true where day = '2026-10-27';
+update meals set kind = 'out' where day = '2026-10-30';
+:as_service
+select test.is(pg_temp.plan(), 'update Dinner: Private item 10-27 | update Dinner: Eating out 10-30',
+               'locking a meal: one update to private, first in order');
+select test.is((select body ->> 'visibility' from calendar_plan('https://hub.example.com/', 1) p), 'private', '... with visibility private');
+select pg_temp.sync();
+:as_owner
+delete from meals where day = '2026-10-30';
+:as_service
+select test.is(pg_temp.plan(), 'delete Dinner: Eating out 10-30', 'a cleared day: a delete');
+select pg_temp.sync();
+:as_owner
+update meals set day = '2026-10-31' where day = '2026-10-28';
+:as_service
+select test.is(pg_temp.plan(), 'delete Dinner: Takeout (Taylor) 10-28 | insert Dinner: Takeout (Taylor) 10-31',
+               'a moved dinner: a delete and an insert');
+select pg_temp.sync();
+
+-- Past dinners stay on Google as history, unless deleted, moved or locked (as a past event's copies).
+:as_owner
+set hub.now = '2026-11-20 09:00 America/New_York';
+:as_service
+select test.is((select count(*) from calendar_plan('https://hub.example.com/', 1000) where item_kind = 'meal' and day in ('2026-10-26', '2026-10-31')),
+               0::bigint, 'three weeks on: the past dinners'' events stay (Chili, Takeout)');
+:as_owner
+delete from meals where day = '2026-10-26';
+update meals set day = '2026-10-20' where day = '2026-10-31';
+:as_service
+select test.is((select string_agg(op || ' ' || title || ' ' || to_char(day, 'MM-DD'), ' | ' order by n)
+                from (select p.*, row_number() over () as n from calendar_plan('https://hub.example.com/', 1000) p) x where item_kind = 'meal'),
+               'delete Dinner: Private item 10-27 | delete Dinner: Private item 10-29 | insert Dinner: Stew 12-27 | '
+               'delete Dinner: Chili (Alex) 10-26 | delete Dinner: Takeout (Taylor) 10-31',
+               '... locked ones come off first, with the deletes that hide something (10-27 locked later, 10-29 from the start); '
+               'a deleted or moved past dinner''s event comes off last, with the other past deletes');
+select pg_temp.sync();
+select test.is((select string_agg(to_char(day, 'MM-DD'), ' ' order by day) from calendar_links where item_kind = 'meal'), '12-26 12-27',
+               '... and then nothing else changes');
+
+-- An orphan meal event (a run died between Google and calendar_record) is adopted.
+begin;
+:as_owner
+set hub.now = '2026-10-27 09:00 America/New_York';
+insert into meals (day, kind, title) values ('2026-11-05', 'cook', 'Soup');
+:as_service
+select test.is(pg_temp.store('Family', '[]',
+                 (select jsonb_agg(jsonb_build_object(
+                           'id', event_id, 'status', 'confirmed', 'title', title,
+                           'start', jsonb_build_object('date', to_char(day, 'YYYY-MM-DD')), 'end', jsonb_build_object('date', to_char(end_day + 1, 'YYYY-MM-DD')),
+                           'updated', '2026-10-27T13:00:00Z', 'hash', google_hash, 'organizer_self', true,
+                           'props', jsonb_build_object('homehub', '1', 'homehub_base', base_id, 'homehub_kind', item_kind)))
+                  from calendar_links where google_calendar = 'hub-family@group.calendar.google.com')
+                 || jsonb_build_array(jsonb_build_object(
+                      'id', d.base_id, 'status', 'confirmed', 'title', d.title, 'start', '{"date": "2026-11-05"}'::jsonb, 'end', '{"date": "2026-11-06"}'::jsonb,
+                      'organizer_self', true, 'updated', '2026-10-27T12:00:00Z', 'hash', 'o1',
+                      'props', jsonb_build_object('homehub', '1', 'homehub_base', d.base_id, 'homehub_kind', 'meal',
+                                                  'homehub_item', pg_temp.meal('2026-11-05')::text, 'homehub_occurrence', '2026-11-05'))))
+               ->> 'adopted', '1', 'calendar_store_events adopts a hub event of kind ''meal'' without a link')
+from pg_temp.d() d where d.item_kind = 'meal' and d.day = '2026-11-05';
+select test.is((select concat_ws(' ', item_kind, item_id = pg_temp.meal('2026-11-05'), occurrence, hash) from calendar_links
+                where google_calendar = 'hub-family@group.calendar.google.com' and day = '2026-11-05'), 'meal t 2026-11-05',
+               '... as its meal, with hash null');
+select test.is((select string_agg(op || ' ' || title, ' | ') from calendar_plan('https://hub.example.com/', 1000) where item_kind = 'meal' and day = '2026-11-05'),
+               'update Dinner: Soup', '... so the next plan updates it rather than inserting a second one');
 rollback;

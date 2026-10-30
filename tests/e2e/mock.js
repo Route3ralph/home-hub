@@ -205,7 +205,8 @@ function googleItems(db, b) {
 // calendar_preview(p_calendar): admins only. The rows come from db.previewRows[calendar id or its
 // Google ID] (what calendar_desired would give for the job's window, yesterday to 60 days ahead:
 // { day, title, private, item_kind, item_id, place, details }); an event or task that is private now
-// reads "Private item", without place or details, so Make private shows in the next read.
+// reads "Private item", without place or details, so Make private shows in the next read (a dinner keeps
+// its title: a locked one is "Dinner: Private item" already).
 function calendarPreview(db, b, email) {
   (db.previewCalls = db.previewCalls || []).push(b);
   const m = db.members.find((x) => x.email === email);
@@ -215,7 +216,8 @@ function calendarPreview(db, b, email) {
   return rows.map((r) => {
     const src = r.item_kind === 'event' ? (db.events || []).find((x) => x.id === r.item_id) : r.item_kind === 'task' ? (db.tasks || []).find((x) => x.id === r.item_id) : null;
     const priv = !!(r.private || (src && src.private));
-    return { day: r.day, title: priv ? 'Private item' : r.title, private: priv, item_kind: r.item_kind, item_id: r.item_id,
+    // A locked dinner (schema 4) is already "Dinner: Private item" in what the wall gets, as the real one says.
+    return { day: r.day, title: priv && r.item_kind !== 'meal' ? 'Private item' : r.title, private: priv, item_kind: r.item_kind, item_id: r.item_id,
       place: priv ? null : r.place || null, details: priv ? null : r.details || null };
   });
 }
@@ -253,6 +255,525 @@ function calendarJob(db, body, email) {
   const r = db.syncReply || { read: 2, stored: 5, skipped: 0, repaired: 0, inserted: 3, updated: 1, deleted: 0, failed: 0, pending: 0, hiding: 0, stop: null };
   if (r.__status) return { status: r.__status, body: r.body };
   return { status: 200, body: r };
+}
+
+// ---- Schema 4 (supabase/migrations/0004_meals_and_shopping.sql, docs/v1.2-kitchen.md §3–§4): dinners
+// and the shopping list. withFood(db, { now, helperList, mealsOnWall }) adds the two tables, as a
+// database with 0004 has them (makeDb() leaves them out, so on schema 2 or 3 a stray read answers 404
+// and a stray call of a list function 404 PGRST202, as live), the household's meals_on_wall and
+// helper_list, and my_day_use (the My day caps), and 0003's calendar tables when the database doesn't
+// have them yet (withCalendars). Use it only for a schema-4 database.
+//   meals           members read, plan, change and clear (insert and update only the page's columns,
+//                   upsert on (day, slot)), with the table's checks and its tidy trigger
+//   shopping_items  members read, change name / note / aisle / private, and forget (delete); no insert
+//                   (adds go through add_to_list); a rename or lock clash is 23505
+//   household       admins change it (members get no rows back, as row-level security answers)
+// foodRpc has the functions, with the migration's shapes and rules (§3.4, §4.1, §4.2, and §8's keys:
+// a change sent again with its p_key gets the first answer, db.list_done): shopping_list,
+// add_to_list, buy_item (signed in), and get_list_by_token, add_to_list_by_token, buy_item_by_token
+// (My day: mock.js answers RPCs for members only, so a My day test routes these itself, as day.test.js
+// does for the other token functions). personDayFood(db, person, answer) adds get_person_day's meals
+// and list keys to an answer. Times: db.foodNow (ms; from opts.now, else db.clock's household date and
+// time, else Tue 2026-10-27 09:42 in New York) is "now"; every write is stamped a little after it, with
+// microseconds, as Postgres keeps them (to_jsonb writes them as text: a page that turns seen into a
+// Date loses them, and its ticks no longer match). Move the clock with db.foodNow += 16 * 60e3.
+const FOOD_TABLES = ['meals', 'shopping_items'];
+const AISLE_KEYS = ['produce', 'bakery', 'pantry', 'drinks', 'household', 'personal', 'meat', 'dairy', 'frozen', 'other'];
+const MEAL_COLUMNS = ['day', 'slot', 'kind', 'title', 'cook_id', 'note', 'link', 'private'];
+const ITEM_COLUMNS = ['name', 'note', 'aisle', 'private'];
+const SLOTS = ['breakfast', 'lunch', 'dinner'];
+// A small stand-in for private.food_words(): English / Spanish pairs and their aisle.
+const FOOD_WORDS = [
+  ['milk', 'leche', 'dairy'], ['eggs', 'huevos', 'dairy'], ['butter', 'mantequilla', 'dairy'], ['cheese', 'queso', 'dairy'], ['yogurt', 'yogur', 'dairy'],
+  ['apples', 'manzanas', 'produce'], ['bananas', 'plátanos', 'produce'], ['onions', 'cebollas', 'produce'], ['tomatoes', 'tomates', 'produce'],
+  ['potatoes', 'papas', 'produce'], ['lemons', 'limones', 'produce'], ['cilantro', 'cilantro', 'produce'], ['lettuce', 'lechuga', 'produce'],
+  ['tortillas', 'tortillas', 'bakery'], ['bagels', 'bagels', 'bakery'], ['rice', 'arroz', 'pantry'], ['beans', 'frijoles', 'pantry'], ['flour', 'harina', 'pantry'],
+  ['sugar', 'azúcar', 'pantry'], ['coffee', 'café', 'drinks'], ['juice', 'jugo', 'drinks'], ['water', 'agua', 'drinks'],
+  ['chicken', 'pollo', 'meat'], ['beef', 'carne de res', 'meat'], ['fish', 'pescado', 'meat'],
+  ['detergent', 'detergente', 'household'], ['soap', 'jabón', 'household'], ['paper towels', 'toallas de papel', 'household'],
+  ['shampoo', 'champú', 'personal'], ['toothpaste', 'pasta de dientes', 'personal'], ['ice cream', 'helado', 'frozen'],
+];
+const FOOD_SAY = {
+  en: { breakfast: 'Breakfast', lunch: 'Lunch', dinner: 'Dinner', leftovers: 'Leftovers', out: 'Eating out', takeout: 'Takeout', fend: 'Fend for yourself',
+    cooks: '{name} cooks', you_cook: 'You cook', on_dinner: "{name}'s on dinner", you_on_dinner: "You're on dinner", private_item: 'Private item' },
+  es: { breakfast: 'Desayuno', lunch: 'Almuerzo', dinner: 'Cena', leftovers: 'Sobras', out: 'Comemos fuera', takeout: 'Comida para llevar', fend: 'Cada uno se arregla',
+    cooks: 'Cocina {name}', you_cook: 'Cocinas tú', on_dinner: '{name} se encarga de la cena', you_on_dinner: 'Te encargas tú', private_item: 'Asunto privado' },
+};
+const foodWord = (key, lang, name) => String(FOOD_SAY[lang === 'es' ? 'es' : 'en'][key] || key).replace('{name}', name || '');
+// The amount in front of a name (§4.1, step 1), the database's regular expression written for JavaScript.
+const FOOD_AMOUNT = /^([0-9]{1,3})(?:\s*x)?\s+(?:(lbs?|oz|kg|g|dozen|packs?|bags?|cans?|bottles?|box(?:es)?|jars?|gallons?|bunch(?:es)?|libras?|kilos?|docenas?|paquetes?|bolsas?|latas?|botellas?|cajas?)\s+(?:(?:of|de)\s+)?)?(\p{L}.{2,})$/iu;
+
+// private.clean_text(p_text, p_max)
+function cleanText(text, max) {
+  if (text == null) return null;
+  const s = String(text)
+    .replace(/[\u0001-\u001f\u007f-\u009f\u2028\u2029]/g, ' ')
+    .replace(/[\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]/g, '')
+    .replace(/[\s\u00a0\u1680\u2000-\u200a\u202f\u205f\u3000]+/g, ' ')
+    .trim();
+  return Array.from(s).slice(0, Math.max(max, 0)).join('').trimEnd();
+}
+const plain = (s) => String(s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+const wordsOf = (s) => plain(s).split(/[^a-z0-9ñ]+/).filter(Boolean);
+// private.guess_aisle: the whole name, then each word from the last, with a trailing s or es also tried.
+function guessAisle(name) {
+  const known = new Map();
+  FOOD_WORDS.forEach(([en, es, aisle]) => { known.set(plain(en), aisle); known.set(plain(es), aisle); });
+  const whole = plain(name).trim();
+  if (known.has(whole)) return known.get(whole);
+  for (const w of wordsOf(name).reverse()) {
+    for (const x of [w, `${w}s`, `${w}es`, w.replace(/e?s$/, '')]) if (known.has(x)) return known.get(x);
+  }
+  return 'other';
+}
+// private.food_other(p_name, p_lang): the same thing in p_lang, when the whole name is a word in the other one.
+function foodOther(name, lang) {
+  const n = plain(cleanText(name, 60));
+  const pair = FOOD_WORDS.find(([en, es]) => plain(lang === 'es' ? en : es) === n);
+  if (!pair) return null;
+  const word = lang === 'es' ? pair[1] : pair[0];
+  return plain(word) === n ? null : word;
+}
+
+// Instants with microseconds, as Postgres writes a timestamptz ('2026-10-27T13:42:00.001001+00:00').
+function micros(s) {
+  const m = /^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.(\d{1,6}))?(Z|[+-]\d\d(?::?\d\d)?)$/.exec(String(s == null ? '' : s).replace(' ', 'T'));
+  if (!m) return null;
+  const tz = m[3] === 'Z' ? 'Z' : m[3].length === 3 ? `${m[3]}:00` : m[3].replace(/^([+-]\d\d)(\d\d)$/, '$1:$2');
+  return Date.parse(`${m[1]}${tz}`) * 1000 + Number((m[2] || '').padEnd(6, '0'));
+}
+const fromMicros = (us) => `${new Date(Math.floor(us / 1000)).toISOString().slice(0, 19)}.${String(us % 1000000).padStart(6, '0')}+00:00`;
+const sameInstant = (a, b) => a != null && b != null && micros(a) !== null && micros(a) === micros(b);
+function foodStamp(db) {
+  db.foodTick = (db.foodTick || 0) + 1;
+  return fromMicros(db.foodNow * 1000 + db.foodTick * 1001);
+}
+const foodTz = (db) => ((db.household && db.household[0]) || {}).tz || 'America/New_York';
+function localOf(ms, tz) {
+  const o = {};
+  new Intl.DateTimeFormat('en-US', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
+    .formatToParts(new Date(ms)).forEach((p) => { o[p.type] = p.value; });
+  return { date: `${o.year}-${o.month}-${o.day}`, time: `${o.hour === '24' ? '00' : o.hour}:${o.minute}` };
+}
+// The instant of a wall-clock date and time ('09:15:00') in a zone.
+function instantOf(date, time, tz) {
+  const [h, m, sec] = String(time || '00:00:00').split(':').map((x) => Number(x) || 0);
+  const guess = Date.UTC(+date.slice(0, 4), +date.slice(5, 7) - 1, +date.slice(8, 10), h, m);
+  let t = guess;
+  for (let i = 0; i < 3; i++) {
+    const l = localOf(t, tz);
+    t += guess - Date.parse(`${l.date}T${l.time}:00Z`);
+  }
+  return t + sec * 1000;
+}
+
+function withFood(db, opts) {
+  const o = opts || {};
+  const hh = (db.household && db.household[0]) || null;
+  if (hh) Object.assign(hh, { meals_on_wall: o.mealsOnWall === undefined ? true : o.mealsOnWall, helper_list: o.helperList || 'add' });
+  const tz = foodTz(db);
+  db.foodNow = o.now ? Date.parse(o.now)
+    : db.clock && db.clock.local_date ? instantOf(db.clock.local_date, db.clock.local_time || '09:00:00', tz)
+      : Date.parse('2026-10-27T13:42:00Z');
+  // A schema-4 database has 0003's tables too (the Food page asks whether there is a Family calendar).
+  if (!db.calendars) withCalendars(db);
+  return Object.assign(db, { meals: [], shopping_items: [], my_day_use: [], list_done: [] });
+}
+// A meals row and a shopping_items row with the tables' defaults.
+const mealRow = (o) => Object.assign({
+  id: uuid(), day: null, slot: 'dinner', kind: 'cook', title: null, cook_id: null, note: null, link: null, private: false,
+  created_at: now(), created_by: null, updated_at: now(), updated_by: null,
+}, o);
+const shopItem = (o) => {
+  const r = Object.assign({
+    id: uuid(), name: '', note: null, aisle: 'other', private: false, added_at: now(), added_by: null, bought_at: null, bought_by: null,
+    updated_at: now(), updated_by: null,
+  }, o);
+  r.name_key = String(r.name).toLowerCase();
+  return r;
+};
+
+class Raise extends Error {
+  constructor(code, message) { super(message); this.code = code; }
+}
+const FOOD_STATUS = { 42501: 403, 22023: 400, P0001: 400, 54000: 413, 23505: 409, 23514: 400, 23503: 409, PGRST202: 404 };
+const raised = (e, anon) => ({ __status: e.code === '42501' && anon ? 401 : FOOD_STATUS[e.code] || 400, body: { code: e.code, message: e.message, details: null, hint: null } });
+const tableErr = (e) => { const r = raised(e); return { status: r.__status, body: r.body }; };
+const foodCheck = (table, name) => new Raise('23514', `new row for relation "${table}" violates check constraint "${name}"`);
+
+// meals: the table's checks (after its tidy trigger), on one row.
+function mealProblem(r, others, people) {
+  if (!r.day || !/^\d{4}-\d{2}-\d{2}$/.test(r.day)) return new Raise('22007', `invalid input syntax for type date: "${r.day}"`);
+  if (!SLOTS.includes(r.slot)) return foodCheck('meals', 'meals_slot_check');
+  if (!['cook', 'leftovers', 'out', 'takeout', 'fend'].includes(r.kind)) return foodCheck('meals', 'meals_kind_check');
+  if (r.link != null && !/^https:\/\/[!#-;=?-~]{4,500}$/.test(r.link)) return foodCheck('meals', 'meals_link_check');
+  if ((r.kind === 'cook') !== (r.title != null)) return foodCheck('meals', 'meals_check');
+  if (r.kind !== 'cook' && r.link != null) return foodCheck('meals', 'meals_check1');
+  if (['out', 'fend'].includes(r.kind) && r.cook_id != null) return foodCheck('meals', 'meals_check2');
+  if (r.cook_id != null && !people.some((p) => p.id === r.cook_id)) {
+    return new Raise('23503', 'insert or update on table "meals" violates foreign key constraint "meals_cook_id_fkey"');
+  }
+  if (others.some((x) => x.day === r.day && x.slot === r.slot)) return new Raise('23505', 'duplicate key value violates unique constraint "meals_day_slot_key"');
+  return null;
+}
+// meals_tidy: title and note cleaned to one line of at most 80 and 300 characters; '' becomes null.
+function tidyMeal(r) {
+  const t = Object.assign({}, r);
+  if ('title' in t) t.title = cleanText(t.title, 80) || null;
+  if ('note' in t) t.note = cleanText(t.note, 300) || null;
+  return t;
+}
+// shopping_items: checks and the unique (name_key, private) index, on one row.
+function itemProblem(r, others) {
+  if (!(r.name.length >= 1 && Array.from(r.name).length <= 60)) return foodCheck('shopping_items', 'shopping_items_name_check');
+  if (!AISLE_KEYS.includes(r.aisle)) return foodCheck('shopping_items', 'shopping_items_aisle_check');
+  if (others.some((x) => x.name_key === r.name_key && !!x.private === !!r.private)) {
+    return new Raise('23505', 'duplicate key value violates unique constraint "shopping_items_name_key"');
+  }
+  return null;
+}
+
+// The food tables' row-level security, grants, checks and triggers. Returns { status, body, rows } or null.
+function foodTables(db, table, method, body, member, rows, req) {
+  if (table === 'household' && db.shopping_items && method === 'PATCH') {
+    if (member.role !== 'admin') return { status: 200, rows: [] };
+    if ('helper_list' in (body || {}) && !['off', 'see', 'add'].includes(body.helper_list)) return tableErr(foodCheck('household', 'household_helper_list_check'));
+    return null;
+  }
+  if (!FOOD_TABLES.includes(table) || !db[table]) return null;
+  const denied = tableErr(new Raise('42501', `permission denied for table ${table}`));
+  const email = member.email;
+  try {
+    if (method === 'GET') return { rows };
+    if (method === 'DELETE') {
+      const gone = new Set(rows.map((r) => r.id));
+      db[table].splice(0, db[table].length, ...db[table].filter((r) => !gone.has(r.id)));
+      return { status: 204, rows };
+    }
+    if (table === 'shopping_items') {
+      if (method !== 'PATCH' || Object.keys(body || {}).some((k) => !ITEM_COLUMNS.includes(k))) return denied;
+      const patch = Object.assign({}, body);
+      if ('name' in patch) patch.name = cleanText(patch.name, 60) || '';
+      if ('note' in patch) patch.note = cleanText(patch.note, 80) || null;
+      const next = rows.map((r) => {
+        const n = Object.assign({}, r, patch, { updated_at: foodStamp(db), updated_by: email });
+        n.name_key = n.name.toLowerCase();
+        return n;
+      });
+      for (const n of next) {
+        const bad = itemProblem(n, db.shopping_items.filter((x) => x.id !== n.id));
+        if (bad) throw bad;
+      }
+      rows.forEach((r, i) => Object.assign(r, next[i]));
+      return { status: 200, rows };
+    }
+    // meals
+    const people = db.people || [];
+    if (method === 'POST') {
+      const items = Array.isArray(body) ? body : [body];
+      if (items.some((r) => Object.keys(r).some((k) => !MEAL_COLUMNS.includes(k)))) return denied;
+      const upsert = /resolution=merge-duplicates/.test(req.prefer || '');
+      const made = [];
+      for (const r of items) {
+        const t = tidyMeal(r);
+        const old = upsert ? db.meals.find((x) => x.day === (t.day || null) && x.slot === (t.slot || 'dinner')) : null;
+        const row = old
+          ? Object.assign({}, old, t, { updated_at: foodStamp(db), updated_by: email })
+          : mealRow(Object.assign({}, t, { created_at: foodStamp(db), created_by: email, updated_at: foodStamp(db), updated_by: email }));
+        const bad = mealProblem(row, db.meals.filter((x) => x !== old).concat(made), people);
+        if (bad) throw bad;
+        if (old) Object.assign(old, row);
+        made.push(old || row);
+      }
+      made.forEach((r) => { if (!db.meals.includes(r)) db.meals.push(r); });
+      return { status: 201, rows: made };
+    }
+    if (method === 'PATCH') {
+      if (Object.keys(body || {}).some((k) => !MEAL_COLUMNS.includes(k))) return denied;
+      const next = rows.map((r) => Object.assign({}, r, tidyMeal(body), { updated_at: foodStamp(db), updated_by: email }));
+      for (const n of next) {
+        const bad = mealProblem(n, db.meals.filter((x) => x.id !== n.id), people);
+        if (bad) throw bad;
+      }
+      rows.forEach((r, i) => Object.assign(r, next[i]));
+      return { status: 200, rows };
+    }
+    return denied;
+  } catch (e) {
+    if (e instanceof Raise) return tableErr(e);
+    throw e;
+  }
+}
+
+// ---- The functions (§3.4)
+const nowLocal = (db) => localOf(db.foodNow, foodTz(db));
+const asOf = (db) => { const l = nowLocal(db); return `${l.date}T${l.time}`; };
+const byNameKey = (a, b) => (a.name_key < b.name_key ? -1 : a.name_key > b.name_key ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+const byBought = (a, b) => (micros(b.bought_at) - micros(a.bought_at)) || byNameKey(a, b);
+const boughtToday = (db, r) => r.bought_at != null && localOf(micros(r.bought_at) / 1000, foodTz(db)).date === nowLocal(db).date;
+const within = (db, at, ms) => at != null && db.foodNow * 1000 - micros(at) < ms * 1000;
+const UNDO_US = 15 * 60e3;
+const activePerson = (db, id) => (db.people || []).find((p) => p.id === id && p.active !== false) || null;
+const byTokenFood = (db, token) => (/^[0-9a-f]{32}$/.test(String(token || '')) && (db.people || []).find((p) => p.day_token === token && p.active !== false)) || null;
+const shopWho = (db, email) => (db.people || []).find((p) => p.active !== false && p.email && p.email.toLowerCase() === String(email || '').toLowerCase()) || null;
+const helperList = (db) => ((db.household && db.household[0]) || {}).helper_list || 'add';
+const withOtherWord = (o, name, lang) => { const w = foodOther(name, lang); if (w) o.other = w; return o; };
+
+// shopping_list(): what to buy, and today's buys and the reader's own ticks of the last 15 minutes (§3.4;
+// for a member with no person, the ticks with no bought_by, as the database records theirs).
+function shoppingList(db, email) {
+  const who = shopWho(db, email) || {};
+  const lang = who.language === 'es' ? 'es' : 'en';
+  const member = (db.members || []).some((m) => m.email === email);
+  const mineNow = (r) => member && (r.bought_by == null ? null : r.bought_by) === (who.id == null ? null : who.id) && within(db, r.bought_at, UNDO_US);
+  const items = db.shopping_items;
+  return {
+    as_of: asOf(db),
+    to_buy: items.filter((r) => r.bought_at == null).sort(byNameKey).map((r) => withOtherWord({
+      id: r.id, name: r.name, note: r.note, aisle: r.aisle, private: r.private, added_by: r.added_by, seen: r.added_at }, r.name, lang)),
+    bought: items.filter((r) => r.bought_at != null && (boughtToday(db, r) || mineNow(r))).sort(byBought).map((r) => ({
+      id: r.id, name: r.name, note: r.note, aisle: r.aisle, private: r.private, bought_by: r.bought_by, seen: r.bought_at })),
+  };
+}
+
+// private.list_for_helper(p_person): My day's list. Nothing locked, no people.
+function listForHelper(db, me) {
+  const lang = me.language === 'es' ? 'es' : 'en';
+  const canAdd = helperList(db) === 'add';
+  const open = db.shopping_items.filter((r) => !r.private);
+  const mineNow = (r) => r.bought_by === me.id && within(db, r.bought_at, UNDO_US);
+  const out = {
+    language: lang,
+    as_of: asOf(db),
+    can_add: canAdd,
+    items: open.filter((r) => r.bought_at == null).sort(byNameKey).map((r) => withOtherWord({ id: r.id, name: r.name, note: r.note, aisle: r.aisle, seen: r.added_at }, r.name, lang)),
+    bought: open.filter((r) => r.bought_at != null && (boughtToday(db, r) || mineNow(r))).sort(byBought)
+      .map((r) => ({ id: r.id, name: r.name, note: r.note, aisle: r.aisle, seen: r.bought_at, undo: mineNow(r) })),
+  };
+  if (canAdd) {
+    // With the aisle, as the migration has it, so Comprar otra vez can group them.
+    out.suggest = open.filter((r) => r.bought_at != null && within(db, r.bought_at, 30 * 864e5)).sort(byBought).slice(0, 60)
+      .map((r) => withOtherWord({ name: r.name, aisle: r.aisle }, r.name, lang));
+  }
+  return out;
+}
+
+// private.count_my_day(p_person, p_what): one more change or tick for her today; past 30 / 100, refused.
+function countMyDay(db, person, what) {
+  const day = nowLocal(db).date;
+  let row = db.my_day_use.find((r) => r.person_id === person && r.day === day);
+  if (!row) db.my_day_use.push(row = { person_id: person, day, changes: 0, ticks: 0 });
+  if (what === 'changes' && row.changes >= 30) throw new Raise('P0001', 'Too many changes from My day today.');
+  if (what === 'ticks' && row.ticks >= 100) throw new Raise('P0001', 'Too many ticks from My day today.');
+  row[what]++;
+}
+
+// private.list_add(p_name, p_private, p_by, p_my_day) (§4.1).
+function listAdd(db, pName, pPrivate, by, myDay, stamp) {
+  const s = cleanText(Array.from(String(pName)).slice(0, 200).join(''), 100);
+  const m = FOOD_AMOUNT.exec(s);
+  let name = s;
+  let note = null;
+  if (m) { name = m[3]; note = m[2] ? `${m[1]} ${m[2]}` : m[1]; }
+  else if (s.includes(':')) { name = s.slice(0, s.indexOf(':')); note = s.slice(s.indexOf(':') + 1); }
+  name = cleanText(name, 60);
+  note = cleanText(note, 80) || null;
+  if (!name) throw new Raise('22023', 'Type what to buy.');
+  const priv = !myDay && !!pPrivate;
+  const items = db.shopping_items;
+  const find = (key, lock, open) => items.find((r) => r.name_key === key && !!r.private === lock && (!open || r.bought_at == null));
+  // Where it may look: My day, only unlocked lines; signed in, this lock first, then the other.
+  const look = (key, open) => (myDay ? find(key, false, open) : find(key, priv, open) || find(key, !priv, open));
+  const key = name.toLowerCase();
+  let line = look(key, false);
+  if (!line) {
+    const twin = foodOther(name, 'en') || foodOther(name, 'es');
+    if (twin) line = look(twin.toLowerCase(), true);
+  }
+  const lockChange = !!line && priv && !line.private;
+  // The note a line to buy will have: one already in its note (the whole note, or a run of its " · "
+  // parts) isn't joined again; otherwise it joins after " · ", at most 80 characters.
+  const hasNote = !note || (line && line.note != null && ` · ${line.note} · `.includes(` · ${note} · `));
+  const newNote = !line || line.bought_at != null ? note : hasNote ? line.note : cleanText(line.note ? `${line.note} · ${note}` : note, 80);
+  if (line && line.bought_at == null && !lockChange && newNote === line.note) return { result: 'already', item_id: line.id, name: line.name };
+  if (myDay) countMyDay(db, by, 'changes');
+  const toBuy = items.filter((r) => r.bought_at == null).length;
+  const full = () => { if (toBuy >= (myDay ? 150 : 200)) throw new Raise('54000', 'The list is full.'); };
+  let result;
+  if (!line) {
+    full();
+    line = { id: uuid(), name, name_key: key, note, aisle: guessAisle(name), private: priv, added_at: stamp, added_by: by, bought_at: null, bought_by: null };
+    items.push(line);
+    result = 'added';
+  } else if (line.bought_at == null) {
+    line.note = newNote;
+    result = 'already';
+  } else {
+    full();
+    Object.assign(line, { bought_at: null, bought_by: null, note, added_at: stamp, added_by: by });
+    result = 'back';
+  }
+  if (priv) line.private = true;
+  return { result, item_id: line.id, name: line.name };
+}
+
+// private.list_buy(p_item, p_bought, p_seen, p_by, p_my_day) (§4.2). True when something changed.
+function listBuy(db, item, bought, seen, by, myDay, stamp) {
+  if (bought == null) throw new Raise('22023', 'Choose bought or not.');
+  if (seen == null) throw new Raise('22023', 'Reload the list to see it as it is now.');
+  const row = db.shopping_items.find((r) => r.id === item && !(myDay && r.private));
+  if (!row) return false;
+  if (bought) {
+    if (row.bought_at != null || !sameInstant(row.added_at, seen)) return false;
+    if (myDay) countMyDay(db, by, 'ticks');
+    Object.assign(row, { bought_at: stamp, bought_by: by });
+    return true;
+  }
+  if (row.bought_at == null || !sameInstant(row.bought_at, seen)) return false;
+  const recent = within(db, row.bought_at, UNDO_US);
+  if (myDay && !(row.bought_by === by && recent)) throw new Raise('42501', 'Only your own tick can be undone, for 15 minutes.');
+  if (myDay) countMyDay(db, by, 'ticks');
+  // Every un-tick gives the line a new seen (added_at); an Undo (within 15 minutes) keeps added_by.
+  Object.assign(row, { bought_at: null, bought_by: null, added_at: stamp });
+  if (!recent) row.added_by = by;
+  return true;
+}
+
+// list_add_once's answer: list_add's, with seen, the line's added_at once the add is done.
+function addAnswer(db, name, priv, by, myDay) {
+  const r = listAdd(db, name, priv, by, myDay, foodStamp(db));
+  const row = db.shopping_items.find((x) => x.id === r.item_id);
+  return Object.assign(r, { seen: row ? row.added_at : null });
+}
+// list_buy_once's answer: {changed, seen}, seen the one it gave the line when it changed it (a tick's
+// bought_at, an un-tick's new added_at), else null.
+function buyAnswer(db, item, bought, seen, by, myDay) {
+  const changed = listBuy(db, item, bought, seen, by, myDay, foodStamp(db));
+  const row = changed ? db.shopping_items.find((x) => x.id === item) : null;
+  return { changed, seen: row ? (bought ? row.bought_at : row.added_at) : null };
+}
+
+// private.list_claim with list_add_once and list_buy_once (§8): a change sent with a key (p_key) is done
+// once; a second try gets the first answer (seen and all) and changes nothing. A key is its sender's (who,
+// and from My day or signed in) and that change's (ask: an add's name and lock, a tick's line and
+// direction, whatever its seen); any other counts as no key.
+function listOnce(db, key, by, myDay, ask, run) {
+  if (key == null) return run();
+  db.list_done = db.list_done || [];
+  const d = db.list_done.find((x) => x.key === key);
+  if (d) return d.by_id === by && d.my_day === myDay && d.ask === ask ? JSON.parse(JSON.stringify(d.answer)) : run();
+  const answer = run();
+  db.list_done.push({ key, by_id: by, my_day: myDay, ask, answer: JSON.parse(JSON.stringify(answer)), at: db.foodNow });
+  return answer;
+}
+const addAsk = (name, priv, myDay) => `add ${!!priv && !myDay} ${String(name)}`;
+const buyAsk = (item, bought) => `buy ${item} ${bought}`;
+
+// PostgREST finds a function by the names of the arguments sent: every one must be known and every
+// one without a default sent, or it answers 404 PGRST202.
+function foodCall(name, args, defaults, run) {
+  return (db, b, email) => {
+    const sent = Object.keys(b || {});
+    if (!db.shopping_items || sent.some((k) => !args.includes(k) && !defaults.includes(k)) || args.some((k) => !sent.includes(k))) {
+      return { __status: 404, body: { code: 'PGRST202', message: `Could not find the function public.${name}(${sent.sort().join(', ')}) in the schema cache`, details: null, hint: null } };
+    }
+    const anon = name.endsWith('_by_token');
+    const saved = JSON.stringify({ items: db.shopping_items, use: db.my_day_use, done: db.list_done || [] });
+    try {
+      return run(db, b, email);
+    } catch (e) {
+      if (!(e instanceof Raise)) throw e;
+      // The call is one transaction: whatever it changed is undone.
+      const back = JSON.parse(saved);
+      db.shopping_items.splice(0, db.shopping_items.length, ...back.items);
+      db.my_day_use.splice(0, db.my_day_use.length, ...back.use);
+      db.list_done = back.done;
+      return raised(e, anon);
+    }
+  };
+}
+const MEMBERS_ONLY = 'Only the family can change the shopping list.';
+const NOT_ON_MY_DAY = "The shopping list isn't on your My day.";
+// A write stamps updated_at / updated_by as the triggers do: the email signed in, or "<name> (My day)".
+function stampChanged(db, before, by) {
+  const was = new Map(JSON.parse(before).map((r) => [r.id, JSON.stringify(r)]));
+  const at = foodStamp(db);
+  db.shopping_items.forEach((r) => { if (was.get(r.id) !== JSON.stringify(r)) Object.assign(r, { updated_at: at, updated_by: by }); });
+}
+const foodRpc = {
+  shopping_list: foodCall('shopping_list', [], [], (db, b, email) => shoppingList(db, email)),
+  add_to_list: foodCall('add_to_list', ['p_name'], ['p_private', 'p_key'], (db, b, email) => {
+    if (!db.members.some((m) => m.email === email)) throw new Raise('42501', MEMBERS_ONLY);
+    const before = JSON.stringify(db.shopping_items);
+    const by = (shopWho(db, email) || {}).id || null;
+    const r = listOnce(db, b.p_key, by, false, addAsk(b.p_name, b.p_private, false), () => addAnswer(db, b.p_name, b.p_private, by, false));
+    stampChanged(db, before, email);
+    return Object.assign(r, shoppingList(db, email));
+  }),
+  buy_item: foodCall('buy_item', ['p_item', 'p_bought', 'p_seen'], ['p_key'], (db, b, email) => {
+    if (!db.members.some((m) => m.email === email)) throw new Raise('42501', MEMBERS_ONLY);
+    const before = JSON.stringify(db.shopping_items);
+    const by = (shopWho(db, email) || {}).id || null;
+    const r = listOnce(db, b.p_key, by, false, buyAsk(b.p_item, b.p_bought), () => buyAnswer(db, b.p_item, b.p_bought, b.p_seen, by, false));
+    stampChanged(db, before, email);
+    return Object.assign(r, shoppingList(db, email));
+  }),
+  get_list_by_token: foodCall('get_list_by_token', ['p_token'], [], (db, b) => {
+    const me = byTokenFood(db, b.p_token);
+    if (!me || me.role !== 'helper' || helperList(db) === 'off') return null;
+    return listForHelper(db, me);
+  }),
+  add_to_list_by_token: foodCall('add_to_list_by_token', ['p_token', 'p_name'], ['p_key'], (db, b) => {
+    const me = byTokenFood(db, b.p_token);
+    if (!me) return null;
+    if (me.role !== 'helper' || helperList(db) === 'off') throw new Raise('42501', NOT_ON_MY_DAY);
+    if (helperList(db) === 'see') throw new Raise('42501', "You can't add to the list from My day.");
+    if (b.p_name == null) throw new Raise('22023', 'Type what to buy.');
+    if (Array.from(String(b.p_name)).length > 200) throw new Raise('22023', "That's too long to add.");
+    const before = JSON.stringify(db.shopping_items);
+    const r = listOnce(db, b.p_key, me.id, true, addAsk(b.p_name, false, true), () => addAnswer(db, b.p_name, false, me.id, true));
+    stampChanged(db, before, `${me.name} (My day)`);
+    return Object.assign(r, listForHelper(db, me));
+  }),
+  buy_item_by_token: foodCall('buy_item_by_token', ['p_token', 'p_item', 'p_bought', 'p_seen'], ['p_key'], (db, b) => {
+    const me = byTokenFood(db, b.p_token);
+    if (!me) return null;
+    if (me.role !== 'helper' || helperList(db) === 'off') throw new Raise('42501', NOT_ON_MY_DAY);
+    const before = JSON.stringify(db.shopping_items);
+    const r = listOnce(db, b.p_key, me.id, true, buyAsk(b.p_item, b.p_bought), () => buyAnswer(db, b.p_item, b.p_bought, b.p_seen, me.id, true));
+    stampChanged(db, before, `${me.name} (My day)`);
+    return Object.assign(r, listForHelper(db, me));
+  }),
+};
+
+// get_person_day's v1.2 keys (§3.4), added to an answer for `person` (a people row): each day's meals
+// (left out on a day without one) and, for a helper with the list on and a list started, list.
+function personDayFood(db, person, answer) {
+  const lang = person.language === 'es' ? 'es' : 'en';
+  const shortName = (p) => {
+    const first = String(p.name).split(' ')[0];
+    return (db.people || []).some((o) => o.id !== p.id && o.active !== false && String(o.name).split(' ')[0] === first) ? p.name : first;
+  };
+  (answer.days || []).forEach((d) => {
+    const meals = (db.meals || []).filter((m) => m.day === d.day).sort((a, b) => SLOTS.indexOf(a.slot) - SLOTS.indexOf(b.slot)).map((m) => {
+      const cook = m.cook_id ? activePerson(db, m.cook_id) : null;
+      const mine = !!cook && cook.id === person.id;
+      const kindWord = m.kind === 'cook' ? m.title : foodWord(m.kind, lang);
+      let cookWord = null;
+      if (cook && m.kind === 'cook') cookWord = mine ? foodWord('you_cook', lang) : foodWord('cooks', lang, shortName(cook));
+      else if (cook && ['leftovers', 'takeout'].includes(m.kind)) cookWord = mine ? foodWord('you_on_dinner', lang) : foodWord('on_dinner', lang, shortName(cook));
+      const row = { slot: m.slot, label: foodWord(m.slot, lang), title: m.private && !mine ? foodWord('private_item', lang) : kindWord,
+        cook: cook ? shortName(cook) : null, cook_word: cookWord, mine };
+      if (mine && m.note) row.note = m.note;
+      if (mine && m.link) row.link = m.link;
+      return row;
+    });
+    if (meals.length) d.meals = meals;
+  });
+  if (person.role === 'helper' && helperList(db) !== 'off' && (db.shopping_items || []).length) {
+    answer.list = { to_buy: db.shopping_items.filter((r) => !r.private && r.bought_at == null).length };
+  }
+  return answer;
 }
 
 function emailFrom(req) {
@@ -371,8 +892,10 @@ async function install(page, db, log, opts = {}) {
       if (rows.length !== 1) return reply(406, { code: 'PGRST116', message: 'JSON object requested, multiple (or no) rows returned' });
       return reply(status, rows[0]);
     };
-    // Schema 3's calendar tables: their own row-level security and grants (calendarTables above).
-    const cal = calendarTables(db, table, method, body, member, db[table].filter(match));
+    // Schema 3's calendar tables and schema 4's food tables: their own row-level security and grants
+    // (calendarTables and foodTables above).
+    const cal = calendarTables(db, table, method, body, member, db[table].filter(match))
+      || foodTables(db, table, method, body, member, db[table].filter(match), { prefer: req.headers()['prefer'] || '' });
     if (cal && cal.body) return reply(cal.status, cal.body);
     if (cal && method === 'DELETE') return route.fulfill({ status: 204, headers: CORS });
     if (cal && method !== 'GET') return out(cal.rows, cal.status);
@@ -432,4 +955,5 @@ async function signIn(context, email) {
   await context.addInitScript((s) => { try { localStorage.setItem('sb-test-auth-token', s); } catch (e) {} }, session);
 }
 
-module.exports = { makeDb, install, signIn, expectedConsoleError, SUPA, withCalendars, calendarRow, linkRow, googleEventRow, calendarRpc, md5uuid };
+module.exports = { makeDb, install, signIn, expectedConsoleError, SUPA, withCalendars, calendarRow, linkRow, googleEventRow, calendarRpc, md5uuid,
+  withFood, mealRow, shopItem, foodRpc, personDayFood, foodStamp };

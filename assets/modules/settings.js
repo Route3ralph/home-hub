@@ -1002,8 +1002,10 @@
         const canHide = !r.private && (r.item_kind === 'event' || r.item_kind === 'task') && r.item_id;
         const meta = [r.place, r.details].filter((x) => typeof x === 'string' && x.trim()).join(' · ');
         // What can't be made private here, and where it can be kept off instead.
-        const hint = r.private ? '' : r.item_kind === 'project' ? 'To keep a project\'s jobs off the wall, untick "Show in Home Hub calendar" on the project.'
-          : r.item_kind === 'late' ? 'To hide a task on this line, make the task private on the Tasks page.' : '';
+        // A dinner (schema 4) comes from the Food page: it is locked or taken off the wall there.
+        const hint = r.item_kind === 'meal' ? 'Dinners come from the Food page. Lock a dinner there to keep its title off the wall, or turn off \'Dinners on the kitchen wall\'.'
+          : r.private ? '' : r.item_kind === 'project' ? 'To keep a project\'s jobs off the wall, untick "Show in Home Hub calendar" on the project.'
+            : r.item_kind === 'late' ? 'To hide a task on this line, make the task private on the Tasks page.' : '';
         return `${day}<li class="set-pv-row"><span class="set-pv-what"><span class="set-pv-title">${esc(r.title)}</span>${meta ? `<small class="set-pv-meta">${esc(meta)}</small>` : ''}${hint
           ? `<small class="set-pv-hint">${esc(hint)}</small>` : ''}</span>${r.private ? '<span class="badge">Private</span>' : ''}${canHide
           ? `<button type="button" class="btn set-btn" data-gprivate="${esc(r.item_kind)}|${esc(r.item_id)}" aria-label="Make private: ${esc(r.title)}">Make private</button>` : ''}</li>`;

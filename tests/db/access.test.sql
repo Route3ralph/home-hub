@@ -1,7 +1,7 @@
 -- Who can see and change what: seeding, whoami, the catalog-wide rules, and the
 -- role matrix (anon; signed-in stranger; removed member with a parent row; adult; admin;
--- service_role) for every new table and every new function (migrations 0002 and 0003),
--- and the table and column privileges of 0003's tables.
+-- service_role) for every new table and every new function (migrations 0002, 0003 and 0004),
+-- and the table and column privileges of 0003's and 0004's tables.
 \ir roles.sql
 \ir fixtures.sql
 
@@ -28,9 +28,10 @@ select test.is(whoami() - 'created_at' - 'person', '{"email": "alex@example.com"
 select test.is((whoami() -> 'person') - 'id', '{"name": "Alex", "role": "parent", "language": "en", "color": "#9333ea"}'::jsonb,
                'whoami adds the caller''s person');
 select test.is((whoami() -> 'person' ->> 'id')::uuid, test.person('Alex'), 'whoami person id');
--- Migration 0003 (Google Calendar) changes the version on purpose: the v1.1 client shows its
--- Google card, and asks for Google events, only on 3.
-select test.is(hub_schema_version(), 3, 'hub_schema_version is 3');
+-- Migration 0003 (Google Calendar) changed the version on purpose: the v1.1 client shows its
+-- Google card, and asks for Google events, only on 3. Migration 0004 (Food) changes it on purpose
+-- again: the v1.2 client shows Food, and asks for meals and the shopping list, only on 4.
+select test.is(hub_schema_version(), 4, 'hub_schema_version is 4');
 :as_removed
 select test.is(whoami(), null, 'removed member: whoami is null even with a person row');
 :as_stranger
@@ -49,22 +50,39 @@ delete from members where email = 'casey@example.com';
 select test.is((select string_agg(c.relname, ', ') from pg_class c
                 where c.relnamespace = 'public'::regnamespace and c.relkind in ('r', 'p') and not c.relrowsecurity),
                null, 'every public table has row-level security');
+-- Tables in private (0004's food_pairs and list_done) are read only by definer functions: row-level security on,
+-- no policies, and no privilege at all for anon, signed-in users or service_role.
+select test.is((select string_agg(c.relname, ', ' order by c.relname) from pg_class c
+                where c.relnamespace = 'private'::regnamespace and c.relkind in ('r', 'p')
+                  and (not c.relrowsecurity
+                       or exists (select 1 from pg_policy y where y.polrelid = c.oid)
+                       or exists (select 1 from unnest(array['anon', 'authenticated', 'service_role']) r
+                                  where has_table_privilege(r, c.oid, 'select, insert, update, delete, truncate, references, trigger')
+                                     or has_any_column_privilege(r, c.oid, 'select, insert, update, references')))),
+               null, 'every private table has row-level security, no policies and no privilege for anon, authenticated or service_role');
+select test.is((select string_agg(c.relname, ', ' order by c.relname) from pg_class c
+                where c.relnamespace = 'private'::regnamespace and c.relkind in ('r', 'p')),
+               'food_pairs, list_done', '... (the private tables: food_pairs, list_done)');
 select test.is((select string_agg(p.proname, ', ' order by p.proname) from pg_proc p
                 where p.pronamespace = 'public'::regnamespace and has_function_privilege('anon', p.oid, 'execute')),
-               'complete_by_token, confirm_digest, get_person_day, get_shared_project, stop_digest, undo_by_token',
-               'anon can execute only get_shared_project and the five token functions');
+               'add_to_list_by_token, buy_item_by_token, complete_by_token, confirm_digest, get_list_by_token, get_person_day, '
+               'get_shared_project, stop_digest, undo_by_token',
+               'anon can execute only get_shared_project and the eight token functions (0004 adds the three for the list)');
 select test.is(has_schema_privilege('anon', 'private', 'usage'), false, 'anon cannot use the private schema');
 select test.is((select string_agg(n.nspname || '.' || p.proname, ', ') from pg_proc p join pg_namespace n on n.oid = p.pronamespace
                 where n.nspname in ('public', 'private') and not coalesce(p.proconfig, '{}') @> '{"search_path=\"\""}'),
                null, 'every function sets search_path = ''''');
 select test.is((select string_agg(p.proname, ', ' order by p.proname) from pg_proc p
                 where p.pronamespace = 'public'::regnamespace and p.prosecdef),
-               'complete_by_token, complete_task, confirm_digest, get_person_day, get_shared_project, hook_family_only_signup, '
+               'add_to_list, add_to_list_by_token, buy_item, buy_item_by_token, complete_by_token, complete_task, confirm_digest, '
+               'get_list_by_token, get_person_day, get_shared_project, hook_family_only_signup, '
                'mark_signed_in, remove_person, rotate_day_token, save_person, skip_task, stop_digest, undo_by_token, undo_task',
                'the only definer functions in public are the RPCs that check membership, admin or a token');
 select test.is((select string_agg(p.proname, ', ' order by p.proname) from pg_proc p
                 where p.pronamespace = 'private'::regnamespace and has_function_privilege('authenticated', p.oid, 'execute')
-                  and p.proname in ('complete_task', 'undo_task', 'roll_task', 'person_by_token', 'my_day_item', 'digest_item', 'people_confirm_sync')),
+                  and p.proname in ('complete_task', 'undo_task', 'roll_task', 'person_by_token', 'my_day_item', 'digest_item', 'people_confirm_sync',
+                                    'count_my_day', 'food_words', 'guess_aisle', 'list_add', 'list_buy', 'list_for_helper',
+                                    'list_claim', 'list_add_once', 'list_buy_once')),
                null, 'members cannot call the private helpers that act for someone else');
 select test.is((select string_agg(r, ', ' order by r) from unnest(array['anon', 'authenticated', 'service_role']) r
                 where has_table_privilege(r, 'public.people_confirm', 'insert, update, delete, truncate, references, trigger')),
@@ -103,6 +121,44 @@ select test.is((select string_agg(p.oid::regprocedure::text, ', ' order by p.pro
                   and (has_function_privilege('authenticated', p.oid, 'execute') or has_function_privilege('anon', p.oid, 'execute'))),
                'calendar_preview(uuid)', 'of the calendar_* functions, signed-in users may call only calendar_preview (the rest are hub-jobs'')');
 
+-- Migration 0004's tables: anon gets nothing; members read meals and the list (row-level security
+-- decides), write a meal's own columns, and on the list change only name, note, aisle and the lock
+-- (adds, buys and puts back go through the functions, so added_* and bought_* are never written
+-- directly). my_day_use is its owner's alone: only private.count_my_day writes it.
+select test.is((select string_agg(t, ', ' order by t) from unnest(array['meals', 'shopping_items', 'my_day_use']) t
+                where has_table_privilege('anon', 'public.' || t, 'select, insert, update, delete, truncate, references, trigger')
+                   or has_any_column_privilege('anon', 'public.' || t, 'select, insert, update, references')),
+               null, 'anon has no privilege on meals, shopping_items or my_day_use');
+select test.is((select string_agg(t, ', ' order by t) from unnest(array['meals', 'shopping_items', 'my_day_use']) t
+                where has_table_privilege('authenticated', 'public.' || t, 'truncate, references, trigger')),
+               null, 'signed-in users cannot truncate, reference or put triggers on meals, shopping_items or my_day_use');
+select test.is((select string_agg(r, ', ' order by r) from unnest(array['anon', 'authenticated', 'service_role']) r
+                where has_table_privilege(r, 'public.my_day_use', 'select, insert, update, delete, truncate, references, trigger')
+                   or has_any_column_privilege(r, 'public.my_day_use', 'select, insert, update, references')),
+               null, 'my_day_use: no privilege for anyone but its owner');
+select test.is((select string_agg(t || ' ' || x, ', ' order by t, x) from unnest(array['meals', 'shopping_items']) t
+                cross join unnest(array['select', 'insert', 'update', 'delete']) x
+                where has_table_privilege('authenticated', 'public.' || t, x)),
+               'meals delete, meals select, shopping_items delete, shopping_items select',
+               'meals and shopping_items: signed-in users may select and delete (row-level security decides), no table-wide insert or update');
+select test.is((select string_agg(a.attname, ', ' order by a.attname) from pg_attribute a
+                where a.attrelid = 'public.meals'::regclass and a.attnum > 0 and not a.attisdropped
+                  and has_column_privilege('authenticated', 'public.meals', a.attname, 'insert')),
+               'cook_id, day, kind, link, note, private, slot, title', 'meals: the columns signed-in users may insert');
+select test.is((select string_agg(a.attname, ', ' order by a.attname) from pg_attribute a
+                where a.attrelid = 'public.meals'::regclass and a.attnum > 0 and not a.attisdropped
+                  and has_column_privilege('authenticated', 'public.meals', a.attname, 'update')),
+               'cook_id, day, kind, link, note, private, slot, title', 'meals: the columns signed-in users may update (the page upserts on day and slot)');
+select test.is(has_any_column_privilege('authenticated', 'public.shopping_items', 'insert'), false,
+               'shopping_items: signed-in users cannot insert (add_to_list does)');
+select test.is((select string_agg(a.attname, ', ' order by a.attname) from pg_attribute a
+                where a.attrelid = 'public.shopping_items'::regclass and a.attnum > 0 and not a.attisdropped
+                  and has_column_privilege('authenticated', 'public.shopping_items', a.attname, 'update')),
+               'aisle, name, note, private', 'shopping_items: the columns signed-in users may update (never added_* or bought_*)');
+select test.is((select string_agg(t, ', ' order by t) from unnest(array['meals', 'shopping_items']) t
+                where not has_table_privilege('service_role', 'public.' || t, 'select, insert, update, delete')),
+               null, 'service_role keeps its privileges on meals and shopping_items (the email and the calendar job read them)');
+
 -- ---------------------------------------------------------------------
 -- Tables: what each role can do (rows seen or changed, or denied)
 -- ---------------------------------------------------------------------
@@ -123,6 +179,9 @@ values ('hub-taylor@group.calendar.google.com', 'hh' || repeat('0', 32), 'hh' ||
         'event', '2026-11-02', '2026-11-02');
 insert into google_events (calendar_id, google_calendar, event_id, title, all_day, start_day, end_day, read_at)
 values ((select id from calendars), 'hub-taylor@group.calendar.google.com', 'g1', 'Dentist', true, '2026-11-02', '2026-11-02', now());
+insert into meals (day, kind, title, cook_id) values ('2026-11-02', 'cook', 'Tacos', test.person('Morgan'));
+insert into shopping_items (name, added_by) values ('Milk', test.person('Alex'));
+insert into my_day_use (person_id, day, changes) values (test.person('Morgan'), '2026-11-02', 1);
 
 insert into test.samples (tbl, ins, upd) values
   ('household',          $$insert into public.household (id) values (true)$$,
@@ -158,7 +217,13 @@ insert into test.samples (tbl, ins, upd) values
                            select id, google_id, 'g2', 'Swim meet', true, '2026-11-04', '2026-11-04', now() from public.calendars$$,
                          $$update public.google_events set title = title$$),
   ('calendar_sync',      $$insert into public.calendar_sync (id) values (true) on conflict (id) do nothing$$,
-                         $$update public.calendar_sync set last_error = last_error$$);
+                         $$update public.calendar_sync set last_error = last_error$$),
+  ('meals',              $$insert into public.meals (day, kind, title) values ('2026-11-03', 'cook', 'Soup')$$,
+                         $$update public.meals set title = title$$),
+  ('shopping_items',     $$insert into public.shopping_items (name) values ('Eggs')$$,
+                         $$update public.shopping_items set note = note$$),
+  ('my_day_use',         $$insert into public.my_day_use (person_id, day) values (test.person('Morgan'), '2026-11-03')$$,
+                         $$update public.my_day_use set ticks = ticks$$);
 
 --                         table                 select    insert    update    delete
 :as_anon
@@ -178,6 +243,9 @@ select test.matrix('anon', 'calendars',          'denied', 'denied', 'denied', '
 select test.matrix('anon', 'calendar_links',     'denied', 'denied', 'denied', 'denied');
 select test.matrix('anon', 'google_events',      'denied', 'denied', 'denied', 'denied');
 select test.matrix('anon', 'calendar_sync',      'denied', 'denied', 'denied', 'denied');
+select test.matrix('anon', 'meals',              'denied', 'denied', 'denied', 'denied');
+select test.matrix('anon', 'shopping_items',     'denied', 'denied', 'denied', 'denied');
+select test.matrix('anon', 'my_day_use',         'denied', 'denied', 'denied', 'denied');
 
 :as_stranger
 select test.matrix('stranger', 'household',          'rows:0', 'denied', 'rows:0', 'rows:0');
@@ -196,6 +264,9 @@ select test.matrix('stranger', 'calendars',          'rows:0', 'denied', 'rows:0
 select test.matrix('stranger', 'calendar_links',     'rows:0', 'denied', 'denied', 'denied');
 select test.matrix('stranger', 'google_events',      'rows:0', 'denied', 'denied', 'denied');
 select test.matrix('stranger', 'calendar_sync',      'rows:0', 'denied', 'denied', 'denied');
+select test.matrix('stranger', 'meals',              'rows:0', 'denied', 'rows:0', 'rows:0');
+select test.matrix('stranger', 'shopping_items',     'rows:0', 'denied', 'rows:0', 'rows:0');
+select test.matrix('stranger', 'my_day_use',         'denied', 'denied', 'denied', 'denied');
 
 :as_removed
 select test.matrix('removed', 'household',          'rows:0', 'denied', 'rows:0', 'rows:0');
@@ -214,6 +285,9 @@ select test.matrix('removed', 'calendars',          'rows:0', 'denied', 'rows:0'
 select test.matrix('removed', 'calendar_links',     'rows:0', 'denied', 'denied', 'denied');
 select test.matrix('removed', 'google_events',      'rows:0', 'denied', 'denied', 'denied');
 select test.matrix('removed', 'calendar_sync',      'rows:0', 'denied', 'denied', 'denied');
+select test.matrix('removed', 'meals',              'rows:0', 'denied', 'rows:0', 'rows:0');
+select test.matrix('removed', 'shopping_items',     'rows:0', 'denied', 'rows:0', 'rows:0');
+select test.matrix('removed', 'my_day_use',         'denied', 'denied', 'denied', 'denied');
 
 -- City Water has an account number, so only an admin can change or remove it: a statement
 -- by anyone else that touches it is refused (with a reason), not quietly skipped.
@@ -234,6 +308,9 @@ select test.matrix('adult', 'calendars',          'rows:1', 'denied', 'rows:0', 
 select test.matrix('adult', 'calendar_links',     'rows:0', 'denied', 'denied', 'denied');
 select test.matrix('adult', 'google_events',      'rows:1', 'denied', 'denied', 'denied');
 select test.matrix('adult', 'calendar_sync',      'rows:1', 'denied', 'denied', 'denied');
+select test.matrix('adult', 'meals',              'rows:1', 'rows:1', 'rows:1', 'rows:1');
+select test.matrix('adult', 'shopping_items',     'rows:1', 'denied', 'rows:1', 'rows:1');
+select test.matrix('adult', 'my_day_use',         'denied', 'denied', 'denied', 'denied');
 
 :as_admin
 select test.matrix('admin', 'household',          'rows:1', 'denied', 'rows:1', 'rows:0');
@@ -252,6 +329,9 @@ select test.matrix('admin', 'calendars',          'rows:1', 'rows:1', 'rows:1', 
 select test.matrix('admin', 'calendar_links',     'rows:1', 'denied', 'denied', 'denied');
 select test.matrix('admin', 'google_events',      'rows:1', 'denied', 'denied', 'denied');
 select test.matrix('admin', 'calendar_sync',      'rows:1', 'denied', 'denied', 'denied');
+select test.matrix('admin', 'meals',              'rows:1', 'rows:1', 'rows:1', 'rows:1');
+select test.matrix('admin', 'shopping_items',     'rows:1', 'denied', 'rows:1', 'rows:1');
+select test.matrix('admin', 'my_day_use',         'denied', 'denied', 'denied', 'denied');
 -- Admins set a calendar's setting columns only; what Google said about it is hub-jobs' to write.
 select test.is(test.try($$update public.calendars set copy_approved_at = now(), label = 'Taylor', for_kids = false$$), 'rows:1',
                'admin: can change a calendar''s setting columns (and Start copying)');
@@ -277,6 +357,9 @@ select test.matrix('service', 'calendars',          'rows:1', 'rows:1', 'rows:1'
 select test.matrix('service', 'calendar_links',     'rows:1', 'rows:1', 'rows:1', 'rows:1');
 select test.matrix('service', 'google_events',      'rows:1', 'rows:1', 'rows:1', 'rows:1');
 select test.matrix('service', 'calendar_sync',      'rows:1', 'rows:0', 'rows:1', 'rows:1');
+select test.matrix('service', 'meals',              'rows:1', 'rows:1', 'rows:1', 'rows:1');
+select test.matrix('service', 'shopping_items',     'rows:1', 'rows:1', 'rows:1', 'rows:1');
+select test.matrix('service', 'my_day_use',         'denied', 'denied', 'denied', 'denied');
 select test.is(test.try('select * from public.people'), 'rows:5', 'service select people');
 select test.is(test.try('select * from public.tasks'), 'rows:2', 'service select tasks');
 
@@ -327,7 +410,14 @@ insert into rpc values
   ('calendar_mark',      $$select calendar_mark(gen_random_uuid(), 'hub-taylor@group.calendar.google.com', 'ok')$$, 'denied', 'denied', 'denied', 'denied', 'denied', 'ok'),
   ('calendar_plan',      'select * from calendar_plan()',                                                   'denied', 'denied', 'denied', 'denied', 'denied', 'ok'),
   ('calendar_record',    $$select calendar_record('[]')$$,                                                  'denied', 'denied', 'denied', 'denied', 'denied', 'ok'),
-  ('calendar_finish',    $$select calendar_finish(gen_random_uuid(), '{}')$$,                               'denied', 'denied', 'denied', 'denied', 'denied', 'ok');
+  ('calendar_finish',    $$select calendar_finish(gen_random_uuid(), '{}')$$,                               'denied', 'denied', 'denied', 'denied', 'denied', 'ok'),
+  -- Migration 0004: the list for the Food page; its actions for members; My day's three for the token.
+  ('shopping_list',      'select shopping_list()',                                                          'denied', 'ok',     'ok',     'ok',     'ok',     'ok'),
+  ('add_to_list',        $$select add_to_list('Bread')$$,                                                   'denied', 'denied', 'denied', 'ok',     'ok',     'denied'),
+  ('buy_item',           $$select buy_item(gen_random_uuid(), true, now())$$,                              'denied', 'denied', 'denied', 'ok',     'ok',     'denied'),
+  ('get_list_by_token',  $$select get_list_by_token(test.token('Morgan'))$$,                                'ok',     'ok',     'ok',     'ok',     'ok',     'denied'),
+  ('add_to_list_by_token', $$select add_to_list_by_token(test.token('Morgan'), 'Bread')$$,                  'ok',     'ok',     'ok',     'ok',     'ok',     'denied'),
+  ('buy_item_by_token',  $$select buy_item_by_token(test.token('Morgan'), gen_random_uuid(), true, now())$$, 'ok',   'ok',     'ok',     'ok',     'ok',     'denied');
 
 :as_anon
 select test.is(test.can(call), anon, 'anon → ' || fn) from rpc order by fn;

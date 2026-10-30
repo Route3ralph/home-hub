@@ -24,6 +24,9 @@
 //
 // Test-only endpoints (the server listens on 127.0.0.1 only):
 //   POST /__test/sql    { sql }           run SQL as the database owner; → { rows: [{col: text}], error }
+//   POST /__test/migrate { sql }          run a migration file in its own session, as the owner does in
+//                                         the SQL editor, then read the schema again (Supabase's PostgREST
+//                                         reloads its schema cache after DDL); → { error, notices }
 //   GET  /__test/clock                    → { now }          POST /__test/clock { now }: move the clock
 //   GET  /__test/requests?after=N         → every API request after the Nth: method, path, status, error
 //   GET  /__test/mail                     → the sign-in codes "sent"
@@ -269,7 +272,7 @@ function parsePrefer(h) {
 // ---------------------------------------------------------------------
 async function start(opts = {}) {
   const db = await connect({ socketDir: opts.socket, port: opts.port, database: opts.db });
-  const cache = await loadCache(db);
+  let cache = await loadCache(db);
   const roots = Object.assign({ '/': REPO }, opts.roots || {});
   let clockBase = Date.parse(opts.now || '2026-10-27T13:00:00Z');
   let clockStart = Date.now();
@@ -573,6 +576,21 @@ async function start(opts = {}) {
       });
       const rows = (r.rows || []).map((row) => Object.fromEntries(r.fields.map((f, i) => [f.name, row[i]])));
       return { status: 200, body: JSON.stringify({ rows, error: r.error || null }) };
+    }
+    if (p === '/migrate' && req.method === 'POST') {
+      // Between two API transactions, so the migration waits for nothing; the API's own session sees
+      // the change at its next transaction, as PostgREST's pooled sessions do.
+      const { sql } = JSON.parse(bodyText || '{}');
+      const r = await serial(async () => {
+        const own = await connect({ socketDir: opts.socket, port: opts.port, database: opts.db });
+        try {
+          return await own.query(sql);
+        } finally {
+          await own.close();
+        }
+      });
+      if (!r.error) cache = await serial(() => loadCache(db));
+      return { status: 200, body: JSON.stringify({ error: r.error || null, notices: (r.notices || []).map((n) => n.message) }) };
     }
     if (p === '/clock' && req.method === 'GET') return { status: 200, body: JSON.stringify({ now: hubNow() }) };
     if (p === '/clock' && req.method === 'POST') {

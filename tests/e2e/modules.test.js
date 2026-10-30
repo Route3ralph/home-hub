@@ -1,10 +1,10 @@
-// Browser tests for the core's module system: script order, which pages register in v1 and v2 mode,
-// tab order, and the page context (ctx.params, ctx.signal, ctx.stale). A "probe" page module is
+// Browser tests for the core's module system: script order, which pages register in v1 and v2 mode
+// (and for schema versions 3 and 4: Food shows on 4 only), tab order, and the page context (ctx.params, ctx.signal, ctx.stale). A "probe" page module is
 // appended to the last module script, so it registers through the same HomeHub.register() contract
 // as the real pages, and nothing test-only ships in the site.
 // Run alone with: node tests/e2e/modules.test.js
 const { chromium } = require('playwright');
-const { makeDb, install, signIn, expectedConsoleError } = require('./mock');
+const { makeDb, install, signIn, expectedConsoleError, withFood, foodRpc } = require('./mock');
 const { serve } = require('./server');
 
 let BASE = '';
@@ -60,7 +60,7 @@ const probeModule = ({ name = 'probe', min = 1, max = 1, nav = null, root = fals
     }
     if (opts.noV2Pages) {
       // 'all' also blanks projects.js, which is a v1 page and a v2 page (schema 1..99).
-      for (const m of ['today', 'calendar', 'tasks', 'directory', 'people', 'settings'].concat(opts.noV2Pages === 'all' ? ['projects'] : [])) {
+      for (const m of ['today', 'calendar', 'tasks', 'directory', 'people', 'settings', 'food'].concat(opts.noV2Pages === 'all' ? ['projects'] : [])) {
         await page.route(`**/assets/modules/${m}.js*`, (route) => route.fulfill({ contentType: 'application/javascript', body: '' }));
       }
     }
@@ -84,8 +84,10 @@ const probeModule = ({ name = 'probe', min = 1, max = 1, nav = null, root = fals
   let { page, db } = await open({ label: 'scripts' });
   const scripts = await page.$$eval('script[src]', (s) => s.map((x) => ({ src: x.getAttribute('src'), async: x.async || x.defer })));
   const order = scripts.map((s) => s.src.replace(/\?.*$/, '').replace(/^https:\/\/cdn\.jsdelivr\.net\/.*\/supabase\.js$/, 'supabase-js'));
-  const expected = ['config.js', 'supabase-js', 'assets/gantt.js', 'assets/hub.js', 'assets/modules/home.js', 'assets/modules/projects.js', 'assets/modules/contractors.js', 'assets/modules/family.js',
-    ...['today', 'calendar', 'tasks', 'directory', 'people', 'settings'].map((m) => `assets/modules/${m}.js`)];
+  // shoplist.js (the shopping list's shared pieces, schema 4) right after the core; Food after the other pages.
+  const expected = ['config.js', 'supabase-js', 'assets/gantt.js', 'assets/hub.js', 'assets/shoplist.js',
+    'assets/modules/home.js', 'assets/modules/projects.js', 'assets/modules/contractors.js', 'assets/modules/family.js',
+    ...['today', 'calendar', 'tasks', 'directory', 'people', 'settings', 'food'].map((m) => `assets/modules/${m}.js`)];
   check('scripts load core first, then each module, in a fixed order', JSON.stringify(order) === JSON.stringify(expected), order.join(', '));
   check('no script is async or deferred', scripts.every((s) => !s.async));
   const versions = new Set(scripts.concat(await page.$$eval('link[rel=stylesheet]', (l) => l.map((x) => ({ src: x.getAttribute('href') }))))
@@ -205,6 +207,22 @@ const probeModule = ({ name = 'probe', min = 1, max = 1, nav = null, root = fals
   check('hub_schema_version 3 is read as 3, and is v2 mode (the bottom bar)', (await page.evaluate(() => HomeHub.core.schemaVersion)) === 3 && !!(await page.$('.bottombar')));
   check('version 3 shows the v2 tabs, the same as version 2', JSON.stringify(tabs3) === JSON.stringify(V2_TABS) && JSON.stringify(tabs2) === JSON.stringify(V2_TABS), JSON.stringify([tabs2, tabs3]));
   check('version 3: a page made for 2..3 serves its address', (await text(page, '#probe')).trim() === 'probe');
+  check('version 3: no Food page (no tab, and use(\'food\') finds nothing)', !(await page.$('.tabs a[data-tab="food"]')) && !(await page.$('.bottombar a[data-tab="food"]'))
+    && (await page.evaluate(() => { try { HomeHub.core.use('food'); return 'found'; } catch (e) { return 'none'; } })) === 'none');
+
+  // 14. Schema version 4 (migration 0004, dinners and the shopping list): the v2 tabs plus Food, after Tasks
+  const V4_TABS = V2_TABS.slice(0, 3).concat([['Food', '#/food', 'food']], V2_TABS.slice(3));
+  const probe24 = probeModule({ name: 'probe', min: 2, max: 4 });
+  // A schema-4 database has the food tables and functions (mock.js withFood, foodRpc), so the real Food page has what it reads.
+  ({ page, db } = await open({ label: 'v4-tabs', rpc: Object.assign({}, v2, foodRpc, { hub_schema_version: () => 4 }), db: withFood(v2Db()), path: '/#/probe', probes: [probe24] }));
+  const tabs4 = await tabs(page);
+  check('hub_schema_version 4 is read as 4, and is v2 mode (the bottom bar)', (await page.evaluate(() => HomeHub.core.schemaVersion)) === 4 && !!(await page.$('.bottombar')));
+  check('version 4 shows the v2 tabs plus Food, between Tasks and Projects', JSON.stringify(tabs4) === JSON.stringify(V4_TABS), JSON.stringify(tabs4));
+  check('version 4: Food is in the phone bottom bar (a primary page)', !!(await page.$('.bottombar a[data-tab="food"]')));
+  await go(page, '#/food');
+  check('version 4: #/food opens the Food page, with the Food tab current', (await text(page, '#main h1')) === 'Food' && (await page.getAttribute('.tabs a[data-tab="food"]', 'aria-current')) === 'page', await text(page, '#main'));
+  await go(page, '#/food/2026-11-03');
+  check('version 4: #/food/<date> is the Food page too', (await text(page, '#main h1')) === 'Food' && (await page.getAttribute('.tabs a[data-tab="food"]', 'aria-current')) === 'page');
 
   console.log(results.join('\n'));
   console.log(`\n${results.filter((r) => r.startsWith('PASS')).length}/${results.length} passed`);

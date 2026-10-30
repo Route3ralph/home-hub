@@ -2,9 +2,10 @@
 # Database tests. Starts a throwaway Postgres, loads the Supabase stand-ins, supabase/schema.sql,
 # a v1-era household (v1_data.sql) and supabase/migrations/*.sql in order, then runs each
 # tests/db/*.test.sql against its own fresh copy of that database.
-# Before that: preflight.sql's checks, each migration's refusal to run twice (or too early), and
-# that migration 0003 leaves the email, day_text and My day exactly as 0002 made them while no
-# Google calendar is set up (same_output.sql).
+# Before that: preflight.sql's checks, each migration's refusal to run twice (or too early), that
+# migration 0003 leaves the email, day_text and My day exactly as 0002 made them while no Google
+# calendar is set up (same_output.sql), and that migration 0004 leaves every event on the wall as
+# 0003 made it while no meal is planned (step 5c).
 # Prints one "PASS  name" or "FAIL  name  (detail)" line per check, then the totals,
 # and exits non-zero if anything failed.
 # Needs the PostgreSQL 16 server binaries (PG_BIN overrides where they are); cluster.sh starts
@@ -60,12 +61,37 @@ out=$(quiet -d hub_v1_again -f supabase/migrations/0003_google_calendar.sql 2>&1
 if [[ $out == *"isn't installed"* ]] && [[ -z $(quiet -d hub_v1_again -A -t -c "select to_regclass('public.calendars')") ]]; then
   report "PASS  migration 0003 refuses to run on a v1 database (0002 isn't installed), and changes nothing"
 else report "FAIL  migration 0003 refuses to run on a v1 database  (${out:0:200})"; fi
+out=$(quiet -d hub_again -f supabase/migrations/0004_meals_and_shopping.sql 2>&1)
+if [[ $out == *"already installed"* ]]; then report "PASS  migration 0004 refuses to run twice"
+else report "FAIL  migration 0004 refuses to run twice  (${out:0:200})"; fi
+out=$(quiet -d hub_v1_again -f supabase/migrations/0004_meals_and_shopping.sql 2>&1)
+if [[ $out == *"isn't installed"* ]] && [[ -z $(quiet -d hub_v1_again -A -t -c "select to_regclass('public.meals')") ]]; then
+  report "PASS  migration 0004 refuses to run on a v1 database (0002 isn't installed), and changes nothing"
+else report "FAIL  migration 0004 refuses to run on a v1 database  (${out:0:200})"; fi
+# A database where the owner turned v1.2 off as docs/v1.2-kitchen.md §15 says (both switches
+# off, hub_schema_version() set back to 3): running 0004 again says so, and changes nothing.
+sql -d postgres -c 'create database hub_set_back template hub'
+quiet -d hub_set_back >/dev/null <<'SQL'
+update public.household set helper_list = 'off', meals_on_wall = false;
+create or replace function public.hub_schema_version() returns int language sql immutable set search_path = '' as $$ select 3 $$;
+SQL
+out=$(quiet -d hub_set_back -f supabase/migrations/0004_meals_and_shopping.sql 2>&1)
+got=$(quiet -d hub_set_back -A -t -c "select public.hub_schema_version() || ' ' || (select count(*) from pg_proc where proname in ('digest_for_v3', 'calendar_desired_v3'))")
+if [[ $out == *"set back to 3"* && $got == "3 2" ]]; then
+  report "PASS  migration 0004 on a database set back to 3: says so (\"set back to 3\"), and changes nothing"
+else report "FAIL  migration 0004 on a database set back to 3  (${out:0:200}; version and _v3 functions: $got)"; fi
 
 # The database with migration 0002 only, as it is live before 0003 (steps 5 and 5b).
 sql -d postgres -c 'create database hub_02 template hub_v1'
 if ! quiet -d hub_02 -f supabase/migrations/0002_home_hub_v2.sql >"$dir/load.log" 2>&1; then
   report "FAIL  migration 0002 applies to hub_02  ($(tail -n 1 "$dir/load.log"))"; exit 1
 fi
+# Migration 0004 refuses a database without 0003 ("Google Calendar (migration 0003) isn't installed").
+sql -d postgres -c 'create database hub_02_again template hub_02'
+out=$(quiet -d hub_02_again -f supabase/migrations/0004_meals_and_shopping.sql 2>&1)
+if [[ $out == *"isn't installed"* ]] && [[ -z $(quiet -d hub_02_again -A -t -c "select to_regclass('public.meals')") ]]; then
+  report "PASS  migration 0004 refuses to run without 0003, and changes nothing"
+else report "FAIL  migration 0004 refuses to run without 0003  (${out:0:200})"; fi
 
 # 5. preflight.sql's promise, "nothing migration 0002 creates exists yet", covers everything the
 #    migration creates that a live database could already have under the same name (which would
@@ -184,6 +210,99 @@ SQL
     report "FAIL  same output: with no Google calendar, 0003 leaves digest_for, day_text and get_person_day as 0002 made them  ($rows results; first difference: $(diff "$dir/same_02.txt" "$dir/same_later.txt" | head -n 3 | cut -c 1-300 | tr '\n' ' '))"
   fi
 fi
+
+# 5c. Migration 0004 wraps private.calendar_desired (0003's body is now calendar_desired_v3) and
+#     replaces calendar_plan. With no meal planned, every event on the wall must come out exactly
+#     as before ("same wall"): calendar_fixtures.sql's household (with a writing Family calendar)
+#     goes into a database at 0003, a copy of it gets 0004 and later, and both give the same
+#     calendar_desired, calendar_plan and calendar_preview for every calendar at three times
+#     (Oct 27, and 07:00 and 23:30 on Nov 1, the clock change), column by column with nothing
+#     stripped; the first plan is recorded as written in between, so the later plans weigh links
+#     too. Then a dinner added to the copy gives exactly one more desired row, of kind 'meal', on
+#     the Family calendar.
+sql -d postgres -c 'create database hub_03 template hub_v1'
+ok=1
+for m in supabase/migrations/*.sql; do
+  [[ $(basename "$m") < 0004 ]] || continue
+  if ! quiet -d hub_03 -f "$m" >"$dir/load.log" 2>&1; then
+    report "FAIL  same wall: migration $(basename "$m") applies  ($(tail -n 1 "$dir/load.log"))"; ok=0
+  fi
+done
+quiet -d hub_03 -f tests/db/lib.sql >/dev/null
+if ! (cd tests/db && quiet -d hub_03 -f roles.sql -f calendar_fixtures.sql) >"$dir/load.log" 2>&1; then
+  report "FAIL  same wall: loading calendar_fixtures.sql  ($(tail -n 1 "$dir/load.log"))"; ok=0
+fi
+sql -d postgres -c 'create database hub_03_later template hub_03'
+for m in supabase/migrations/*.sql; do
+  [[ $(basename "$m") < 0004 ]] && continue
+  if ! quiet -d hub_03_later -f "$m" >"$dir/load.log" 2>&1; then
+    report "FAIL  same wall: migration $(basename "$m") applies to a database with calendars  ($(tail -n 1 "$dir/load.log"))"; ok=0
+  fi
+done
+same_wall() { # one line per row of each function at each time, sorted
+  quiet -d "$1" -A -t <<'SQL'
+create temp table same_wall (k text, v text);
+do $$
+declare
+  t text;
+begin
+  foreach t in array array['2026-10-27 09:00 America/New_York', '2026-11-01 07:00 America/New_York',
+                           '2026-11-01 23:30 America/New_York'] loop
+    perform set_config('hub.now', t, false);
+    insert into same_wall
+    select t || ' desired ' || d.google_calendar || ' ' || d.base_id, d::text
+    from private.calendar_desired(public.today_local() - 1, public.today_local() + 60, 'https://hub.example.com/') d;
+    insert into same_wall
+    select t || ' plan ' || lpad(p.ordinality::text, 4, '0'), p::text
+    from public.calendar_plan('https://hub.example.com/', 1000) with ordinality p;
+    perform set_config('request.jwt.claims', '{"role": "authenticated", "email": "alex@example.com"}', false);
+    insert into same_wall
+    select t || ' preview ' || c.label || ' ' || lpad(v.ordinality::text, 4, '0'), v::text
+    from public.calendars c
+    cross join lateral public.calendar_preview(c.id) with ordinality v;
+    perform set_config('request.jwt.claims', '', false);
+    -- Google took everything the first plan offered (as hub-jobs records it).
+    if t like '2026-10-27%' then
+      perform public.calendar_record((select jsonb_agg(to_jsonb(p) || jsonb_build_object(
+                                        'ok', true, 'google_hash', 'g-' || p.event_id, 'google_updated', '2026-10-27T13:00:00Z'))
+                                      from public.calendar_plan('https://hub.example.com/', 1000) p));
+    end if;
+  end loop;
+end;
+$$;
+select k || ' = ' || coalesce(v, 'null') from same_wall order by k;
+SQL
+}
+same_wall hub_03 >"$dir/wall_03.txt" 2>&1
+same_wall hub_03_later >"$dir/wall_later.txt" 2>&1
+rows=$(grep -c ' = ' "$dir/wall_03.txt")
+kinds=$(grep -c -E ' (desired|plan|preview) ' "$dir/wall_03.txt")
+if [[ $ok -eq 1 && $rows -gt 100 && $rows -eq $kinds ]] && grep -q ' plan ' "$dir/wall_03.txt" && grep -q ' preview ' "$dir/wall_03.txt" \
+   && cmp -s "$dir/wall_03.txt" "$dir/wall_later.txt"; then
+  report "PASS  same wall: with no meal, 0004 leaves calendar_desired, calendar_plan and calendar_preview as 0003 made them ($rows results)"
+else
+  report "FAIL  same wall: with no meal, 0004 leaves calendar_desired, calendar_plan and calendar_preview as 0003 made them  ($rows results; first difference: $(diff "$dir/wall_03.txt" "$dir/wall_later.txt" | head -n 3 | cut -c 1-300 | tr '\n' ' '))"
+fi
+got=$(quiet -d hub_03_later -A -t <<'SQL' 2>&1
+set hub.now = '2026-10-27 09:00 America/New_York';
+create temp table before as
+  select * from private.calendar_desired(public.today_local() - 1, public.today_local() + 60, 'https://hub.example.com/');
+insert into public.meals (day, kind, title, cook_id) values ('2026-10-28', 'cook', 'Tacos', (select id from public.people where name = 'Sam'));
+select (select count(*) from private.calendar_desired(public.today_local() - 1, public.today_local() + 60, 'https://hub.example.com/'))
+         - (select count(*) from before)
+       || ' ' || (select string_agg(c.label || ' ' || d.item_kind || ' ' || d.title, ', ')
+                  from private.calendar_desired(public.today_local() - 1, public.today_local() + 60, 'https://hub.example.com/') d
+                  join public.calendars c on c.id = d.calendar_id
+                  where (d.google_calendar, d.base_id) not in (select b.google_calendar, b.base_id from before b))
+       || ' ' || (select count(*) from before b
+                  where not exists (select 1 from private.calendar_desired(public.today_local() - 1, public.today_local() + 60,
+                                                                           'https://hub.example.com/') d
+                                    where d::text = b::text));
+SQL
+)
+if [[ $got == "1 Family meal Dinner: Tacos (Sam) 0" ]]; then
+  report "PASS  same wall: a dinner adds exactly one desired row, of kind 'meal', on the Family calendar"
+else report "FAIL  same wall: a dinner adds exactly one desired row, of kind 'meal', on the Family calendar  (got ${got:0:300})"; fi
 
 # 7. Each test file gets a fresh copy, with the helpers in schema "test".
 quiet -d hub -f tests/db/lib.sql >/dev/null

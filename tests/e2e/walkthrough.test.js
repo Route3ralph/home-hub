@@ -19,7 +19,7 @@
 const fs = require('fs');
 const crypto = require('crypto');
 const { chromium } = require('playwright');
-const { makeDb, install, signIn, expectedConsoleError } = require('./mock');
+const { makeDb, install, signIn, expectedConsoleError, foodRpc } = require('./mock');
 const { serve } = require('./server');
 
 let BASE = '';
@@ -418,9 +418,15 @@ const SQL = {
     const me = byToken(db, b.p_token);
     return me ? undoTask(db, b.p_log_id, me.id, `${me.name} (My day)`) : null;
   },
+  // v1.2 (migration 0004): My day's shopping list, as mock.js fakes it. This household's database is on
+  // schema 2, without the food tables, so they answer 404 PGRST202, as they would there.
+  get_list_by_token: foodRpc.get_list_by_token,
+  add_to_list_by_token: foodRpc.add_to_list_by_token,
+  buy_item_by_token: foodRpc.buy_item_by_token,
 };
 // What anon (the signed-out My day page) may execute; everything else needs a member.
-const ANON = new Set(['get_person_day', 'complete_by_token', 'undo_by_token', 'confirm_digest', 'stop_digest']);
+const ANON = new Set(['get_person_day', 'complete_by_token', 'undo_by_token', 'confirm_digest', 'stop_digest',
+  'get_list_by_token', 'add_to_list_by_token', 'buy_item_by_token']);
 
 // Table defaults and triggers for inserts (tasks_defaults, events_weekdays), so rows look as the database keeps them.
 const TASK_DEFAULTS = { notes: null, category: 'other', responsible_id: null, due_date: null, due_time: null, lead_days: 0, project_id: null, contractor_id: null,
@@ -463,6 +469,7 @@ async function installHub(page, db, log, opts = {}) {
     if (!ANON.has(name) && !db.members.some((m) => m.email === email)) return reply(route, 401, { code: '42501', message: 'permission denied for function ' + name });
     try {
       const out = SQL[name](db, body, email);
+      if (out && out.__status) return reply(route, out.__status, out.body);   // mock.js's answer for an error
       return reply(route, 200, out === undefined ? null : out);
     } catch (e) {
       if (!(e instanceof Raise)) throw e;
@@ -906,7 +913,7 @@ async function installHub(page, db, log, opts = {}) {
   check('(f) Undo: undo_by_token with her token and the log id; the pill is due today again and open', same(calls('undo_by_token')[0].body, { p_token: taylor.day_token, p_log_id: calls('undo_by_token')[0].body.p_log_id })
     && pill.due_date === TODAY && !db.task_log.length && (await myPill.locator('.day-check').getAttribute('aria-checked')) === 'false');
   check('(f) My day fits at 390px', await noSideScroll(page));
-  check('(f) My day never loads the hub, and its database calls are only the token functions', !log.some((l) => /\/rest\/v1\/(?!rpc\/(get_person_day|complete_by_token|undo_by_token))/.test(l)), log.join(' | '));
+  check('(f) My day never loads the hub, and its database calls are only the token functions', !log.some((l) => /\/rest\/v1\/(?!rpc\/(get_person_day|complete_by_token|undo_by_token|get_list_by_token|add_to_list_by_token|buy_item_by_token)$)/.test(l.split('?')[0])), log.join(' | '));
   await shot(page, 'my-day-phone-dark');
   await page.context().close();
 

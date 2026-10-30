@@ -1,13 +1,15 @@
 // The site and hub-jobs as they are now, on the v2 database before v1.1 (schema.sql, the v1 household,
 // migration 0002 only, then the v2 household): both go live before migration 0003 is applied
 // (docs/v1.1-google-calendar.md §8.3), so on schema 2 they must work as before. The pages make no
-// failing request and never ask for google_items, a calendar_* function or a calendar table;
-// Settings' Google card says it is waiting for the database update; hub-jobs answers the calendar
+// failing request and never ask for google_items, a calendar_* function or a calendar table, nor for
+// v1.2's dinners and shopping list (migration 0004: meals, shopping_items, my_day_use and their
+// functions); Settings' Google card says it is waiting for the database update; hub-jobs answers the calendar
 // job, Sync now and Test with 503 no_schema without calling Google, and sends the morning email as before.
 // Run through tests/realdb/run.sh (its own copy of the v2 template database).
 const { setup } = require('./lib');
 
 const CALENDAR_CALLS = /\/rpc\/(google_items|calendar_\w+)$|\/rest\/v1\/(calendars|calendar_links|google_events|calendar_sync)$/;
+const FOOD_CALLS = /\/rpc\/(shopping_list|add_to_list|buy_item|get_list_by_token|add_to_list_by_token|buy_item_by_token)$|\/rest\/v1\/(meals|shopping_items|my_day_use)$/;
 
 (async () => {
   const h = await setup('v2db', { v2: true });
@@ -31,6 +33,9 @@ const CALENDAR_CALLS = /\/rpc\/(google_items|calendar_\w+)$|\/rest\/v1\/(calenda
     const reqs = await h.requests();
     const cal = reqs.filter((r) => CALENDAR_CALLS.test(r.path));
     check('v2 db: no google_items, calendar_* or calendar table request from Today, Calendar, Tasks or Settings', !cal.length, cal.map((r) => r.path));
+    const food = reqs.filter((r) => FOOD_CALLS.test(r.path));
+    check('v2 db: no meals, shopping_items or shopping list request either (no Food tab on schema 2)', !food.length
+      && !(await page.$('.tabs a[data-tab="food"], .bottombar a[data-tab="food"]')), food.map((r) => r.path));
     check('v2 db: the pages read the agenda as before', reqs.some((r) => r.path === '/rest/v1/rpc/agenda'), reqs.map((r) => r.path));
     const f = await failures();
     check('v2 db: no API request failed', !f.length, f);

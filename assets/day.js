@@ -16,7 +16,19 @@
    Fixed words come in English or Spanish (the person's language); titles
    stay as typed. Dates and times come from the database, in the
    household's time zone; the device's clock and zone are never used.
-   Loads config.js and supabase-js only, never the hub.
+   One request at a time: every call to the database waits for the one
+   before it.
+   v1.2 (docs/v1.2-kitchen.md §7, §8): each day's meals are its last rows
+   (days[i].meals), with the note and recipe link for the person on it.
+   A helper whose answer has `list` gets a "Shopping list · 7 ›" button
+   that opens #list: the household's list from get_list_by_token, to tick
+   off (buy_item_by_token, with Undo for 15 minutes) and add to
+   (add_to_list_by_token), read again every 10 seconds while it is on
+   screen. Every change goes through the outbox in assets/shoplist.js,
+   which keeps the queue and the last list on the phone under a hash of
+   the token (never the token), so the list read at home still shows in
+   the store when the signal doesn't reach Home Hub.
+   Loads config.js, supabase-js and shoplist.js only, never the hub.
    ===================================================================== */
 (function () {
   'use strict';
@@ -32,6 +44,7 @@
   const UNDO_MS = 15 * 60 * 1000;         // undo_by_token takes back a tick for 15 minutes
   const HINT_KEY = 'homehub.myday.hint-off';
   const dayHref = `?t=${encodeURIComponent(token)}`;  // this page, without the hash or the confirmation code
+  const shop = window.HomeShop || null;   // assets/shoplist.js: the list's aisles, outbox and hold
 
   // ============================================
   // HELPERS
@@ -85,6 +98,17 @@
       hint_label: 'Tip',
       hint_ios: 'Keep this page handy: tap the Share button, then "Add to Home Screen".',
       hint_android: 'Keep this page handy: tap the ⋮ menu, then "Add to Home screen".',
+      // v1.2: meals and the shopping list (docs/v1.2-kitchen.md §7.4)
+      shopping_list: 'Shopping list', back_to_day: '‹ My day', add_placeholder: 'Add something…', add: 'Add',
+      bought_today: 'Bought today', buy_again: 'Buy again', bought_toast: 'Bought: {title}', add_again: 'Add it again?',
+      already_on_list: 'Already on the list', already_as: 'Already on the list as {name}', back_on_list: 'Back on the list',
+      changed_elsewhere: 'Changed on another phone', nothing_to_buy: 'Nothing to buy', not_sent: 'not sent yet',
+      n_not_sent: "{n} changes not sent yet. They'll go when there's signal; keep this page open.",
+      saved_list: 'No connection: this is the list from {when}.',
+      n_expired: '{n} changes waited more than a day and were not sent.',
+      you_cook: 'You cook', recipe: 'Recipe', type_item: 'Type what to buy.',
+      too_many_today: "That's a lot for one day. Ask the family to add the rest.",
+      list_full: 'The list is full.', no_list: "The shopping list isn't on your My day.",
     },
     es: {
       my_day: 'Mi día', hi: 'Hola, {name}', today: 'Hoy', tomorrow: 'Mañana', yesterday: 'Ayer', late: 'Atrasado',
@@ -122,6 +146,16 @@
       hint_label: 'Consejo',
       hint_ios: 'Tenla a mano: toca el botón Compartir y luego "Agregar a inicio".',
       hint_android: 'Tenla a mano: toca el menú ⋮ y luego "Agregar a la pantalla principal".',
+      shopping_list: 'Lista de compras', back_to_day: '‹ Mi día', add_placeholder: 'Añadir algo…', add: 'Añadir',
+      bought_today: 'Comprado hoy', buy_again: 'Comprar otra vez', bought_toast: 'Comprado: {title}', add_again: '¿Añadir otra vez?',
+      already_on_list: 'Ya está en la lista', already_as: 'Ya está en la lista como {name}', back_on_list: 'Otra vez en la lista',
+      changed_elsewhere: 'Cambiado en otro teléfono', nothing_to_buy: 'Nada por comprar', not_sent: 'sin enviar',
+      n_not_sent: '{n} cambios sin enviar. Se enviarán cuando haya señal; no cierres esta página.',
+      saved_list: 'Sin conexión: esta es la lista de las {when}.',
+      n_expired: '{n} cambios esperaron más de un día y no se enviaron.',
+      you_cook: 'Cocinas tú', recipe: 'Receta', type_item: 'Escribe qué comprar.',
+      too_many_today: 'Es mucho para un día. Pide a la familia que añada el resto.',
+      list_full: 'La lista está llena.', no_list: 'La lista de compras no está en tu Mi día.',
     },
   };
   // Until the person is known (or when the link doesn't work), the device's language is a guess.
@@ -191,6 +225,15 @@
       const h = Number(m[1]) % 24;
       return lang === 'es' ? `${h}:${m[2]}` : `${h % 12 || 12}:${m[2]}${h < 12 ? 'am' : 'pm'}`;
     },
+    // A list's as_of ('2026-10-25T15:42', the household's date and time when it was read) →
+    // '3:42pm' / '15:42', with the weekday in front ('Sun 3:42pm' / 'dom 15:42') when it isn't
+    // today, or when today isn't known (the day didn't load).
+    when(asOf) {
+      const m = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})/.exec(String(asOf || ''));
+      const p = m && dateParts(m[1]);
+      if (!p) return '';
+      return state && state.today === m[1] ? fmt.time(m[2]) : `${DAYS[lang][p.weekday].slice(0, 3)} ${fmt.time(m[2])}`;
+    },
   };
 
   // ============================================
@@ -203,6 +246,12 @@
     if (/^already (done|completed)$/.test(msg)) return t('already');
     if (/paused/i.test(msg)) return t('paused');
     if (/can't be undone|nothing to undo|latest change|only something you ticked off/i.test(msg)) return t('too_late_undo');
+    // The shopping list's (v1.2), before the 42501 line below: several of them are 42501 too.
+    if (/Type what to buy/i.test(msg)) return t('type_item');
+    if (/Too many (changes|ticks)/i.test(msg)) return t('too_many_today');
+    if (/The list is full/i.test(msg)) return t('list_full');
+    if (/isn't on your My day|can't add to the list/i.test(msg)) return t('no_list');
+    if (/Only your own tick/i.test(msg)) return t('too_late_undo');
     if ((err && err.code === '42501') || /isn't on your list/i.test(msg)) return t('not_yours');
     return lang === 'en' && msg ? msg : t('error_generic');
   }
@@ -229,11 +278,20 @@
     return data;
   }
 
+  // One request at a time: one(() => sb.rpc(…)) starts the call once the one before it has its
+  // answer, and resolves to what supabase-js gives back ({ data, error, status }).
+  let line = Promise.resolve();
+  function one(start) {
+    const p = line.then(start);
+    line = p.then(() => {}, () => {});
+    return p;
+  }
+
   // One get_person_day request at a time; a second caller shares the one in flight.
   // Resolves to the answer (null for a link that doesn't work).
   function fetchDay() {
     if (!loading) {
-      loading = rpc(sb.rpc('get_person_day', { p_token: token }))
+      loading = rpc(one(() => sb.rpc('get_person_day', { p_token: token })))
         .then((day) => { lastLoad = Date.now(); return day && typeof day === 'object' ? day : null; })
         .finally(() => { loading = null; });
     }
@@ -242,11 +300,11 @@
 
   function accept(day) {
     state = day;
-    const person = day.person || {};
-    lang = person.language === 'es' ? 'es' : 'en';
+    lang = (day.person || {}).language === 'es' ? 'es' : 'en';
     document.documentElement.lang = lang;
-    document.title = `${firstName(person.name) || t('my_day')} · ${t('my_day')}`;
+    dayTitle();
   }
+  const dayTitle = () => { document.title = `${firstName((state.person || {}).name) || t('my_day')} · ${t('my_day')}`; };
 
   // Load again and redraw the day view if anything changed. A failure keeps what's on screen
   // and says so above it; the next refresh tries again.
@@ -259,26 +317,39 @@
       if (view === 'day' && state) { notice = friendly(err) === t('offline') ? t('refresh_failed') : friendly(err); renderDay(true); }
       return;
     }
-    if (!day) { showProblem('bad_link'); return; }
+    if (!day) { linkGone(); return; }
     const hadNotice = !!notice;
     notice = '';
     accept(day);
     if (view === 'day') renderDay(hadNotice);
+    afterDay(day);
   }
 
-  // Focus, coming back into view and the 5-minute timer. Skipped while a tick or undo is in
-  // flight (it refreshes when it's done) and right after another load.
+  // Focus, coming back into view, coming back online and the 5-minute timer. On #list: send what
+  // waits and read the list. Otherwise skipped while a tick or undo is in flight (it refreshes when
+  // it's done) and right after another load.
   function refreshSoon() {
-    if (document.visibilityState === 'hidden' || busy) return;
+    if (document.visibilityState === 'hidden') return;
+    if (outbox) outbox.kick();
+    if (view === 'list') { pollList(); return; }
+    if (busy) return;
     if (view === 'problem' && root.querySelector('[data-act="retry"]')) { start(); return; }
     if (view !== 'day' || !state || Date.now() - lastLoad < 1000) return;
     refresh();
   }
 
+  // The link no longer works (a token function answered null): forget the list saved for it.
+  function linkGone() {
+    if (outbox) outbox.forget();
+    if (state) delete state.list;
+    showProblem('bad_link');
+  }
+
   // ============================================
   // TOASTS (the shared .toasts styles from styles.css)
   // toast(msg) for a few seconds; { error: true } in red; { action: { label, onClick }, ms } adds
-  // a button and a close button, and replaces an older toast with a button.
+  // a button and a close button, and replaces an older toast with a button. Returns the toast
+  // (el.closeToast() closes it).
   // ============================================
   function toast(msg, opts) {
     const o = opts || {};
@@ -316,6 +387,7 @@
     el.closeToast = close;
     host.appendChild(el);
     timer = setTimeout(close, o.ms || (o.error ? 6000 : 3000));
+    return el;
   }
 
   // ============================================
@@ -332,8 +404,8 @@
     let reload = true;
     try {
       // p_occurrence is the date the page showed, so a page left open can't tick off the next one.
-      const logId = await rpc(sb.rpc('complete_by_token', { p_token: token, p_task_id: it.item_id, p_occurrence: it.occurrence }));
-      if (!logId) { showProblem('bad_link'); return; }
+      const logId = await rpc(one(() => sb.rpc('complete_by_token', { p_token: token, p_task_id: it.item_id, p_occurrence: it.occurrence })));
+      if (!logId) { linkGone(); return; }
       toast(t('ticked', { title: it.title }), { ms: UNDO_MS, action: { label: t('undo'), onClick: () => undo(logId) } });
     } catch (err) {
       box.disabled = false;
@@ -351,8 +423,8 @@
     busy++;
     let reload = true;
     try {
-      const taskId = await rpc(sb.rpc('undo_by_token', { p_token: token, p_log_id: logId }));
-      if (!taskId) { showProblem('bad_link'); return; }
+      const taskId = await rpc(one(() => sb.rpc('undo_by_token', { p_token: token, p_log_id: logId })));
+      if (!taskId) { linkGone(); return; }
       toast(t('undone'));
     } catch (err) {
       toast(friendly(err), { error: true });
@@ -442,12 +514,39 @@
   // A key for an item, to keep the focus on it when the list is redrawn.
   const itemKey = (it, where) => `${where}|${it.kind}|${it.item_id}|${it.occurrence}`;
 
+  // A meal (v1.2, get_person_day's days[i].meals), the day's last row: the slot's word where the time
+  // goes ("Cena"), the title ("Private item" for a locked meal they aren't on), who's on it ("Cocina
+  // Sam", "Cocinas tú"), all worded by the database. Never a box. For the person on it, the note and
+  // the recipe link (its host name shown, so the real address can't hide).
+  function mealHTML(m, day) {
+    const host = m.mine ? linkHost(m.link) : null;
+    const more = [
+      m.cook_word ? `<span class="irow-sub">${esc(m.cook_word)}</span>` : '',
+      m.mine && m.note ? `<span class="meal-note">${esc(m.note)}</span>` : '',
+      host ? `<a class="meal-recipe" href="${esc(host.href)}" target="_blank" rel="noopener noreferrer">${esc(t('recipe'))} · ${esc(host.name)}</a>` : '',
+    ].join('');
+    return `<div class="irow k-meal${m.mine ? ' is-mine' : ''}" data-key="meal|${esc(day)}|${esc(m.slot)}">
+      <div class="irow-time untimed"><span>${esc(m.label)}</span></div>
+      <div class="irow-main"><span class="irow-title">${esc(m.title)}</span>${more}</div>
+    </div>`;
+  }
+  // A recipe link's address and host name ('cooking.example.com'), or null for anything but https.
+  function linkHost(link) {
+    try {
+      const u = new URL(String(link || ''));
+      return u.protocol === 'https:' && u.hostname ? { href: u.href, name: u.hostname } : null;
+    } catch (e) { return null; }
+  }
+
   // The day view. force: redraw even if the answer is the same as the one on screen.
   function renderDay(force) {
+    stopList();
     view = 'day';
-    const json = JSON.stringify(state);
+    const count = listCount();
+    const json = JSON.stringify([state, count]);
     if (!force && json === drawn && root.querySelector('.day-sec')) return;
     drawn = json;
+    dayTitle();
 
     const focused = document.activeElement && document.activeElement.closest && document.activeElement.closest('.irow');
     const focusKey = focused && root.contains(focused) ? focused.dataset.key : null;
@@ -455,12 +554,13 @@
 
     rows = [];
     const keys = [];
-    const list = (items, where, emptyText) => {
+    // A day's items, then its meals; "Nothing planned" only when it has neither.
+    const list = (items, where, emptyText, meals, day) => {
       const html = (Array.isArray(items) ? items : []).map((it) => {
         rows.push(it);
         keys.push(itemKey(it, where));
         return rowHTML(it, rows.length - 1, where === 'late');
-      }).join('');
+      }).join('') + (Array.isArray(meals) ? meals : []).map((m) => mealHTML(m, day)).join('');
       return `<div class="day-list irows">${html || `<p class="empty-line">${esc(emptyText)}</p>`}</div>`;
     };
     const days = Array.isArray(state.days) ? state.days : [];
@@ -473,15 +573,19 @@
     const today = days[0] || { day: state.today, items: [] };
     const tomorrow = days[1] || null;
     const parts = [
-      section('day-today', fmt.rel(today.day, state.today), fmt.day(today.day), list(today.items, 'today', t('nothing_today'))),
+      section('day-today', fmt.rel(today.day, state.today), fmt.day(today.day), list(today.items, 'today', t('nothing_today'), today.meals, today.day)),
       late.length ? section('day-late', t('late'), '', list(late, 'late', ''), ' is-late') : '',
-      tomorrow ? section('day-tomorrow', fmt.rel(tomorrow.day, state.today), fmt.day(tomorrow.day), list(tomorrow.items, 'tomorrow', t('nothing_tomorrow'))) : '',
+      tomorrow ? section('day-tomorrow', fmt.rel(tomorrow.day, state.today), fmt.day(tomorrow.day),
+        list(tomorrow.items, 'tomorrow', t('nothing_tomorrow'), tomorrow.meals, tomorrow.day)) : '',
     ];
-    root.innerHTML = `${headerHTML()}${hintHTML()}
+    // v1.2: a helper with the list on her My day gets its button under the greeting.
+    const listButton = count == null ? ''
+      : `<p class="day-actions day-shop"><a class="btn day-big day-list-btn" href="#list">${esc(t('shopping_list'))} · ${count} ›</a></p>`;
+    root.innerHTML = `${headerHTML()}${listButton}${hintHTML()}
       ${notice ? `<p class="banner banner-warn day-notice" role="status">${esc(notice)}</p>` : ''}
       ${parts.join('')}
       ${footerHTML()}`;
-    root.querySelectorAll('.irow').forEach((r) => { r.dataset.key = keys[Number(r.dataset.i)]; });
+    root.querySelectorAll('.irow[data-i]').forEach((r) => { r.dataset.key = keys[Number(r.dataset.i)]; });
 
     if (focusKey) {
       const again = [...root.querySelectorAll('.irow')].find((r) => r.dataset.key === focusKey);
@@ -492,6 +596,7 @@
 
   // #confirm and #stop: one question, one button. Nothing changes until it is pressed.
   function renderAsk(kind) {
+    stopList();
     view = kind;
     const person = state.person || {};
     let body;
@@ -524,8 +629,8 @@
     let ok;
     try {
       ok = kind === 'confirm'
-        ? await rpc(sb.rpc('confirm_digest', { p_confirm: confirmCode }))
-        : await rpc(sb.rpc('stop_digest', { p_token: token }));
+        ? await rpc(one(() => sb.rpc('confirm_digest', { p_confirm: confirmCode })))
+        : await rpc(one(() => sb.rpc('stop_digest', { p_token: token })));
     } catch (err) {
       btn.disabled = false;
       btn.textContent = t(`${kind}_yes`);
@@ -585,18 +690,22 @@
   }
 
   // A link that doesn't work, a site that isn't set up, or a first load that failed. Before the
-  // person is known the message is shown in both languages, the device's first.
-  function showProblem(key, retry) {
+  // person is known the message is shown in both languages, the device's first (or the language of
+  // the list saved for this link). withList: a list is saved for this link, so a button opens it.
+  function showProblem(key, retry, withList) {
+    stopList();
     view = 'problem';
     const other = lang === 'es' ? 'en' : 'es';
     const message = typeof key === 'function' ? key : () => t(key);
     const both = !state;
+    const buttons = (retry ? `<button type="button" class="btn btn-primary day-big" data-act="retry">${esc(t('try_again'))}</button>` : '')
+      + (withList ? `<a class="btn day-big day-list-btn" href="#list">${esc(t('shopping_list'))}</a>` : '');
     root.innerHTML = `<header class="day-head"><p class="eyebrow">${esc(t('my_day'))}</p></header>
       <div class="banner banner-error day-problem" role="alert">
         <p lang="${lang}">${esc(message(lang))}</p>
         ${both ? `<p class="day-alt" lang="${other}">${esc(withLang(other, () => message(other)))}</p>` : ''}
       </div>
-      ${retry ? `<p class="day-actions"><button type="button" class="btn btn-primary day-big" data-act="retry">${esc(t('try_again'))}</button></p>` : ''}`;
+      ${buttons ? `<p class="day-actions">${buttons}</p>` : ''}`;
   }
   function withLang(l, fn) {
     const was = lang;
@@ -605,17 +714,141 @@
   }
 
   // ============================================
-  // START
+  // THE SHOPPING LIST (#list, v1.2: a helper's, while the family has it on her My day)
+  // get_list_by_token(p_token) → { language, as_of, can_add, items: [{ id, name, note, aisle, seen,
+  // other? }], bought: [{ id, name, note, aisle, seen, undo }], suggest?: [{ name, aisle, other? }] },
+  // or null (the link no longer works, or the list isn't on her My day). Nothing locked, no people.
+  // Every tap goes through the outbox (shoplist.js, docs/v1.2-kitchen.md §8): it shows at once, is
+  // sent one at a time, waits on the phone ("sin enviar") while nothing gets through, and is saved
+  // with the last list under the first 16 hex characters of the token's SHA-256. No row moves under
+  // a finger: a tick shows where the row is, and the list is drawn again only 3 seconds after the
+  // last tap on it (hold); a read's change waits the same way.
   // ============================================
-  const viewFromHash = () => ({ '#confirm': 'confirm', '#stop': 'stop' }[location.hash] || 'day');
+  let outbox = null;          // made once the token's hash is known (outboxReady, below)
+  let listOffline = false;    // the last read of the list got no answer: the list shown is the one saved
+  let listReading = false;    // a get_list_by_token request is on its way
+  let listTimer = null;       // the 10-second read while #list is on screen
+  let listDrawn = '';         // what the list view shows, as JSON, so an unchanged answer doesn't redraw
+  let listRows = [];          // the rows on screen, by data-i: { row, where: 'buy' | 'bought' }
+  let againRows = [];         // Comprar otra vez's names, by data-again
+  let sugRows = [];           // the add box's suggestions, by data-sug
+  let sugNote = null;         // and the amount typed with them ("2 hue" → Huevos: 2)
+  let againOpen = false;      // Comprar otra vez is unfolded
+  let patched = false;        // a tap changed a row in place since the list was last drawn
+  let fromDay = false;        // #list was opened from this page, so ‹ My day is the browser's Back
+  let tickToast = null;       // { id, el }: the latest tick's Undo toast
+  const hold = shop ? shop.hold(shop.HOLD_MS, () => drawList()) : null;
 
-  function render() {
-    const v = viewFromHash();
-    if (v === 'day') renderDay(true);
-    else renderAsk(v);
+  const readList = () => rpc(one(() => sb.rpc('get_list_by_token', { p_token: token })));
+  // The outbox's send(): one change, answered with what supabase-js gives back.
+  function sendList(op) {
+    return one(() => (op.op === 'add'
+      ? sb.rpc('add_to_list_by_token', { p_token: token, p_name: op.name, p_key: op.key })
+      : sb.rpc('buy_item_by_token', { p_token: token, p_item: op.item, p_bought: op.op === 'buy', p_seen: op.seen, p_key: op.key })));
   }
 
-  async function start() {
+  function makeOutbox() {
+    if (!shop) return Promise.resolve();
+    return shop.tokenOwner(token).then((owner) => {
+      outbox = shop.outbox({
+        key: shop.KEYS.day, owner, send: sendList, mine: (r) => !!r.undo,
+        onChange: listChanged,
+        onReply: listReply,
+        onRefused: (op, err) => { toast(friendly(err), { error: true }); pollList(); },
+        onGone: linkGone,
+        onExpired: (n) => toast(t('n_expired', { n }), { ms: 6000 }),
+      });
+    }).catch((err) => { console.error(err); });
+  }
+
+  // The list button's count: the list as this phone has it once it has been read, else
+  // get_person_day's. null: no button (no list on this My day).
+  function listCount() {
+    if (!state || !state.list || !outbox) return null;
+    const v = outbox.state().fresh ? outbox.view() : null;
+    return v ? (v.items || []).length : Number(state.list.to_buy) || 0;
+  }
+  // #list can show: the day says the list is on her My day, or (no answer at the start) one is saved.
+  const canList = () => !!outbox && (state ? !!state.list : !!outbox.view());
+
+  function stopList() {
+    clearInterval(listTimer);
+    listTimer = null;
+    if (hold) hold.cancel();
+  }
+
+  // After a day is drawn: with the list on her My day, send what waits and, from the day view, keep
+  // the list on the phone; without it (a kid, the switch Off), forget any list saved for this link.
+  function afterDay(day) {
+    if (!outbox) return;
+    if (!day.list) { outbox.forget(); return; }
+    outbox.kick();
+    if (view === 'day') saveList(day.list.to_buy);
+  }
+
+  // The day view reads the list once in the background, after the day's own request, so it is on the
+  // phone before she reaches the store; again when the day brings a different count.
+  async function saveList(count) {
+    const v = outbox.view();
+    if (listReading || (outbox.state().fresh && v && (v.items || []).length === Number(count))) return;
+    listReading = true;
+    const ticket = outbox.ticket();
+    let snap;
+    try {
+      snap = await readList();
+    } catch (err) {
+      return;   // the day view doesn't need it; the next refresh tries again
+    } finally {
+      listReading = false;
+    }
+    if (!snap) {   // the list was turned off a moment ago (or the link replaced: the next refresh says so)
+      outbox.forget();
+      if (state) delete state.list;
+      if (view === 'day') renderDay(true);
+      return;
+    }
+    outbox.take(snap, ticket);
+    listOffline = false;
+    if (view === 'day') renderDay(false);
+    else if (view === 'list') hold.request();
+  }
+
+  // Read the list: every 10 seconds while #list is on screen and the page is visible, at once on
+  // opening it, focus, visibilitychange and online. Not while a change is on its way.
+  async function pollList() {
+    if (view !== 'list' || !outbox || listReading || document.visibilityState === 'hidden' || outbox.state().busy) return;
+    listReading = true;
+    const ticket = outbox.ticket();
+    let snap;
+    try {
+      if (!state) {
+        // The day got no answer at the start: load it first (today's date, and whether the list is
+        // still on her My day).
+        const day = await fetchDay();
+        if (!day) { linkGone(); return; }
+        accept(day);
+        if (!day.list) { listOff(); return; }
+        if (view === 'list') document.title = `${t('shopping_list')} · ${t('my_day')}`;
+      }
+      snap = await readList();
+    } catch (err) {
+      listOffline = true;
+      if (view === 'list') hold.request();
+      return;
+    } finally {
+      listReading = false;
+    }
+    if (!snap) { listNull(); return; }
+    listOffline = false;
+    outbox.take(snap, ticket);
+    if (view === 'list') hold.request();
+  }
+
+  // get_list_by_token answered null: the link no longer works, or the list isn't on her My day any
+  // more (the switch is Off). Either way the list saved for it goes; get_person_day says which.
+  async function listNull() {
+    outbox.forget();
+    stopList();
     root.innerHTML = `<p class="loading">${esc(t('loading'))}</p>`;
     view = 'loading';
     let day;
@@ -625,21 +858,327 @@
       showProblem(() => friendly(err), true);
       return;
     }
-    if (!day) { showProblem('bad_link'); return; }
+    if (!day) { linkGone(); return; }
+    accept(day);
+    listOff();
+  }
+  // The link works, but the list isn't on her My day: the day, and a word about it.
+  function listOff() {
+    outbox.forget();
+    if (state) delete state.list;
+    try { history.replaceState(null, '', dayHref); } catch (e) { /* the hash stays; the day shows all the same */ }
+    renderDay(true);
+    toast(t('no_list'), { error: true });
+  }
+
+  // The outbox's onChange: the list (or the button's count) changed. The day view isn't redrawn in
+  // the middle of a task's tick (its refresh redraws it).
+  function listChanged() {
+    if (view === 'list') hold.request();
+    else if (view === 'day' && state && state.list && !busy) renderDay(false);
+  }
+
+  // A change was answered (§8.4): an add says where it went; a tick that met a newer change says so.
+  function listReply(op, reply, outcome) {
+    listOffline = false;
+    if (op.op === 'add') {
+      if (outcome === 'already') {
+        const typed = shop.parse(op.name).name;
+        toast(shop.nameKey(reply.name) === shop.nameKey(typed) ? t('already_on_list') : t('already_as', { name: reply.name }));
+      } else if (outcome === 'back') {
+        toast(t('back_on_list'));
+      }
+    } else if (outcome === 'changed') {
+      toast(t('changed_elsewhere'));
+    }
+    if (view === 'list') hold.request();
+  }
+
+  // #list: the frame (heading, the add box) once; drawList() fills in the rest.
+  function renderList() {
+    stopList();
+    view = 'list';
+    const v = outbox.view();
+    if (!state && v) lang = v.language === 'es' ? 'es' : 'en';   // the day didn't load: the saved list's language
+    document.documentElement.lang = lang;
+    document.title = `${t('shopping_list')} · ${t('my_day')}`;
+    root.innerHTML = `<header class="day-head list-head">
+        <a class="list-back" href="${esc(dayHref)}" data-act="back">${esc(t('back_to_day'))}</a>
+        <h1>${esc(t('shopping_list'))}</h1>
+      </header>
+      <div class="list-banners"></div>
+      <form class="list-add" hidden>
+        <input type="text" class="list-input" maxlength="100" autocomplete="off" autocapitalize="sentences" enterkeyhint="done"
+          placeholder="${esc(t('add_placeholder'))}" aria-label="${esc(t('add_placeholder'))}">
+        <button type="submit" class="btn btn-primary list-add-btn">${esc(t('add'))}</button>
+        <div class="list-suggest" hidden></div>
+      </form>
+      <div class="list-body"></div>
+      ${footerHTML()}`;
+    listDrawn = '';
+    drawList(true);
+    listTimer = setInterval(pollList, shop.POLL_MS);
+    outbox.kick();
+    pollList();
+  }
+
+  // One row: the whole row is the checkbox. An add that isn't sent yet has no id, so no box.
+  function listRowHTML(r, where, canAdd) {
+    const i = listRows.push({ row: r, where }) - 1;
+    const bought = where === 'bought';
+    const inner = `<span class="lrow-main"><span class="lrow-name">${esc(shop.withOther(r))}</span>${r.note ? ` <small class="lrow-note">${esc(r.note)}</small>` : ''}</span>`
+      + (r.unsent ? `<small class="lrow-unsent">⟳ ${esc(t('not_sent'))}</small>` : '');
+    if (r.id == null) return `<div class="lrow is-new">${inner}</div>`;
+    const inert = bought && !r.undo && !canAdd;   // See and tick: an old tick can't be taken back here
+    return `<button type="button" class="lrow${bought ? ' is-bought' : ''}" role="checkbox" aria-checked="${bought}" data-i="${i}" data-key="${where}|${esc(r.id)}"${inert ? ' aria-disabled="true"' : ''}>`
+      + `<span class="irow-box lrow-box">${ICON.check}</span>${inner}</button>`;
+  }
+
+  // Draw the list as the outbox has it (the last answer with the changes still waiting laid over it).
+  // force: even if it is the same as the one on screen.
+  function drawList(force) {
+    if (view !== 'list' || !outbox) return;
+    const body = root.querySelector('.list-body');
+    if (!body) return;
+    const v = outbox.view();
+    const st = outbox.state();
+    const when = listOffline && v ? fmt.when(v.as_of) : '';
+    const key = JSON.stringify([v && Object.assign({}, v, { as_of: null }), listOffline, when, st.banner, lang]);
+    if (!force && !patched && key === listDrawn) return;
+    listDrawn = key;
+    patched = false;
+
+    const focused = document.activeElement && document.activeElement.closest && document.activeElement.closest('[data-key]');
+    const focusKey = focused && body.contains(focused) ? focused.dataset.key : null;
+
+    root.querySelector('.list-banners').innerHTML = (when
+      ? `<div class="banner banner-warn list-offline" role="status"><p>${esc(t('saved_list', { when }))}</p>
+          <button type="button" class="btn list-retry" data-act="list-retry">${esc(t('try_again'))}</button></div>` : '')
+      + (st.banner ? `<p class="banner banner-warn list-unsent" role="status">${esc(t('n_not_sent', { n: st.banner }))}</p>` : '');
+    const canAdd = !!(v && v.can_add);
+    root.querySelector('.list-add').hidden = !canAdd;
+    listRows = [];
+    if (!v) {
+      body.innerHTML = listOffline
+        ? `<p class="banner banner-error" role="alert">${esc(t('offline'))}</p>
+           <p class="day-actions"><button type="button" class="btn btn-primary day-big" data-act="list-retry">${esc(t('try_again'))}</button></p>`
+        : `<p class="loading">${esc(t('loading'))}</p>`;
+      return;
+    }
+    againRows = canAdd && Array.isArray(v.suggest) ? v.suggest : [];
+    const again = againRows.length ? `<details class="list-again"${againOpen ? ' open' : ''}>
+        <summary>${esc(t('buy_again'))} (${againRows.length}) ›</summary>
+        ${shop.groups(againRows.map((s, i) => Object.assign({ i }, s)), lang).map((g) => `<h3 class="list-aisle">${esc(g.name)}</h3>
+          <div class="list-chips">${g.rows.map((s) => `<button type="button" class="list-chip" data-again="${s.i}" data-key="again|${esc(s.name)}">${esc(shop.withOther(s))}</button>`).join('')}</div>`).join('')}
+      </details>` : '';
+    const toBuy = shop.groups(v.items || [], lang).map((g) => `<h3 class="list-aisle">${esc(g.name)}</h3>
+        <div class="list-rows">${g.rows.map((r) => listRowHTML(r, 'buy', canAdd)).join('')}</div>`).join('');
+    const bought = Array.isArray(v.bought) ? v.bought : [];
+    body.innerHTML = `${again}
+      <section class="list-sec" aria-label="${esc(t('shopping_list'))}">${toBuy || `<p class="empty-line list-empty">${esc(t('nothing_to_buy'))}</p>`}</section>
+      ${bought.length ? `<section class="list-sec list-bought" aria-labelledby="list-bought">
+        <h2 class="sec-head" id="list-bought">${esc(t('bought_today'))} (${bought.length})</h2>
+        <div class="list-rows">${bought.map((r) => listRowHTML(r, 'bought', canAdd)).join('')}</div>
+      </section>` : ''}`;
+    if (focusKey) {
+      const again2 = [...body.querySelectorAll('[data-key]')].find((e) => e.dataset.key === focusKey);
+      if (again2) again2.focus();
+    }
+  }
+
+  const markRow = (el, on) => { el.setAttribute('aria-checked', String(on)); patched = true; };
+  const rowEl = (key) => [...root.querySelectorAll('.lrow[data-key]')].find((e) => e.dataset.key === key);
+
+  // A tap on a row. To buy: ticked where it is, with the 15-minute Undo toast (a second tap before it
+  // moves takes it back). Bought today: her own tick of the last 15 minutes is taken back at once;
+  // an older one offers "Add it again?" when she can add, and does nothing otherwise.
+  // A row not tapped since it was drawn goes with the seen it was shown with. One already changed here
+  // (entry.tapped) goes by id, even when it is back as drawn: the outbox takes its seen from that
+  // change's reply or the list as it is now. Every un-tick gives the line a new seen (§4.2), so the
+  // one it was drawn with would be refused.
+  function tapRow(el) {
+    const entry = listRows[Number(el.dataset.i)];
+    if (!entry || !outbox) return;
+    hold.touch();
+    const r = entry.row;
+    const as = entry.tapped ? r.id : r;
+    const on = el.getAttribute('aria-checked') === 'true';
+    if (!on) {
+      // Not ticked: a row to buy, or a bought one taken back a moment ago that hasn't moved yet (by id).
+      if (!outbox.buy(entry.where === 'buy' ? as : r.id)) return;
+      entry.tapped = true;
+      markRow(el, true);
+      tickToast = { id: r.id, el: toast(t('bought_toast', { title: r.name }), { ms: UNDO_MS, action: { label: t('undo'), onClick: () => undoTick(r.id, r.name) } }) };
+      return;
+    }
+    if (entry.where === 'buy') {   // ticked a moment ago and still here: take it back
+      if (tickToast && tickToast.id === r.id) tickToast.el.closeToast();
+      if (outbox.unbuy(r.id)) { entry.tapped = true; markRow(el, false); } else notTakenBack(r.id);
+      return;
+    }
+    if (r.undo) {
+      if (outbox.unbuy(as)) { entry.tapped = true; markRow(el, false); toast(t('undone')); } else notTakenBack(r.id);
+      return;
+    }
+    const v = outbox.view();
+    if (v && v.can_add) {
+      toast(shop.withOther(r), { ms: 8000, action: { label: t('add_again'), onClick: () => addToList(r.name) } });
+    }
+  }
+
+  // A take-back the outbox didn't queue: the list is drawn as it is now. A line still bought says
+  // "Cambiado en otro teléfono": her tick found it already bought by someone else, so it isn't hers to
+  // undo (§8).
+  function notTakenBack(id) {
+    const v = outbox.view();
+    if (v && (v.bought || []).some((x) => x.id === id)) toast(t('changed_elsewhere'));
+    patched = true;
+    hold.request();
+  }
+
+  // Deshacer on a tick's toast: the outbox takes the seen from the tick's reply (or, if the tick never
+  // left the phone, the two cancel out); not when her tick found it already bought by someone else.
+  // Back on her list is the line itself, or the add still waiting that brings it back ("¿Añadir otra
+  // vez?"): drawn as a new row with no id yet once a read past the household's midnight has taken the
+  // bought line out of the list. Anything else (a line someone else bought, or forgot) has changed.
+  function undoTick(id, name) {
+    tickToast = null;
+    outbox.unbuy(id);
+    const v = outbox.view();
+    const back = (x) => x.id === id || (x.id == null && name != null && shop.nameKey(x.name) === shop.nameKey(shop.parse(name).name));
+    if (v && (v.items || []).some(back)) {
+      toast(t('undone'));
+      // Unticked where it is drawn now: to buy if it hasn't moved yet, under Comprado hoy if it has.
+      // Changed here: a tap on it now goes by id, never with the seen it was drawn with.
+      ['buy', 'bought'].forEach((where) => {
+        const el = rowEl(`${where}|${id}`);
+        if (!el) return;
+        const entry = listRows[Number(el.dataset.i)];
+        if (entry) entry.tapped = true;
+        markRow(el, false);
+      });
+    } else {
+      toast(t('changed_elsewhere'));
+    }
+    hold.request();
+  }
+
+  function addToList(text) {
+    if (!outbox.add(text)) { toast(t('type_item'), { error: true }); return false; }
+    return true;
+  }
+
+  // The add box: Enter (or Añadir) adds; the box clears and keeps the focus for the next one.
+  function submitAdd(form) {
+    const input = form.querySelector('.list-input');
+    if (!input.value.trim()) { input.focus(); return; }
+    if (!addToList(input.value)) return;
+    input.value = '';
+    showSuggest('');
+    input.focus();
+  }
+
+  // Up to 5 names she has bought lately (suggest) that match what she typed, in either language.
+  function showSuggest(text) {
+    const el = root.querySelector('.list-suggest');
+    if (!el) return;
+    const v = outbox && outbox.view();
+    const p = shop.parse(text);
+    sugRows = v && v.can_add && p.name ? shop.matches(v.suggest || [], p.name, 5) : [];
+    sugNote = p.note;
+    el.innerHTML = sugRows.map((s, i) => `<button type="button" class="list-sug" data-sug="${i}">${esc(shop.withOther(s))}</button>`).join('');
+    el.hidden = !sugRows.length;
+  }
+  function pickSuggestion(i) {
+    const s = sugRows[i];
+    const input = root.querySelector('.list-input');
+    if (!s || !addToList(sugNote ? `${s.name}: ${sugNote}` : s.name)) return;
+    if (input) { input.value = ''; input.focus(); }
+    showSuggest('');
+  }
+
+  // ‹ My day: the browser's Back when #list was opened from the day; otherwise the day, in place.
+  function backToDay() {
+    if (fromDay) { history.back(); return; }
+    try { history.replaceState(null, '', dayHref); } catch (e) { /* the hash stays */ }
+    if (state) render();
+    else start();
+  }
+
+  // ============================================
+  // START
+  // ============================================
+  const viewFromHash = () => ({ '#confirm': 'confirm', '#stop': 'stop', '#list': 'list' }[location.hash] || 'day');
+
+  function render() {
+    const v = viewFromHash();
+    if (v === 'list' && canList()) renderList();
+    else if (v === 'day' || v === 'list') renderDay(true);   // #list without the list on her My day: the day
+    else renderAsk(v);
+  }
+
+  async function start() {
+    stopList();
+    root.innerHTML = `<p class="loading">${esc(t('loading'))}</p>`;
+    view = 'loading';
+    await outboxReady;
+    let day;
+    try {
+      day = await fetchDay();
+    } catch (err) {
+      // No answer. A list saved for this link still shows, in its own language (§7.2).
+      const saved = outbox && outbox.view();
+      if (saved) {
+        listOffline = true;
+        lang = saved.language === 'es' ? 'es' : 'en';
+        if (viewFromHash() === 'list') { fromDay = false; renderList(); return; }
+      }
+      showProblem(() => friendly(err), true, !!saved);
+      return;
+    }
+    if (!day) { linkGone(); return; }
     accept(day);
     render();
+    afterDay(day);
   }
 
   root.addEventListener('click', (e) => {
     const box = e.target.closest('.day-check');
     if (box) { tick(box); return; }
+    const row = e.target.closest('.lrow[data-i]');
+    if (row) { tapRow(row); return; }
+    const chip = e.target.closest('[data-again]');
+    if (chip) {
+      // Comprar otra vez: one tap adds it by name.
+      hold.touch();
+      const s = againRows[Number(chip.dataset.again)];
+      if (s && addToList(s.name)) { chip.disabled = true; patched = true; }
+      return;
+    }
+    const sug = e.target.closest('[data-sug]');
+    if (sug) { pickSuggestion(Number(sug.dataset.sug)); return; }
     const act = e.target.closest('[data-act]');
     if (!act) return;
     if (act.dataset.act === 'hint-off') dismissHint();
     else if (act.dataset.act === 'retry') start();
     else if (act.dataset.act === 'confirm' || act.dataset.act === 'stop') answerAsk(act);
     else if (act.dataset.act === 'lang') { lang = lang === 'es' ? 'en' : 'es'; renderConfirmOnly(); }
+    else if (act.dataset.act === 'back') { e.preventDefault(); backToDay(); }
+    else if (act.dataset.act === 'list-retry') { if (outbox) outbox.kick(); pollList(); }
   });
+  // No row moves under a finger: the hold starts when the finger comes down on the list.
+  root.addEventListener('pointerdown', (e) => {
+    if (view === 'list' && hold && e.target.closest('.lrow, .list-chip')) hold.touch();
+  });
+  root.addEventListener('submit', (e) => {
+    const form = e.target.closest('.list-add');
+    if (!form) return;
+    e.preventDefault();
+    submitAdd(form);
+  });
+  root.addEventListener('input', (e) => { if (e.target.classList.contains('list-input')) showSuggest(e.target.value); });
+  // 'toggle' doesn't bubble: listen on the way down.
+  root.addEventListener('toggle', (e) => { if (e.target.classList && e.target.classList.contains('list-again')) againOpen = e.target.open; }, true);
 
   if (confirmOnly) {
     if (!cfg.supabaseUrl || !cfg.supabaseKey) { showProblem('not_setup'); return; }
@@ -659,8 +1198,20 @@
     auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
   });
 
-  window.addEventListener('hashchange', () => { if (state && view !== 'problem') render(); });
+  const outboxReady = makeOutbox();
+
+  window.addEventListener('hashchange', () => {
+    if (view === 'loading') return;   // start() draws what the address says
+    if (viewFromHash() === 'list') {
+      if (canList()) { fromDay = view === 'day' || view === 'problem'; renderList(); }
+      else if (state && view !== 'problem') renderDay(true);
+      return;
+    }
+    if (view === 'list' && !state) { start(); return; }   // back from the saved list: try the day again
+    if (state && view !== 'problem') render();
+  });
   window.addEventListener('focus', refreshSoon);
+  window.addEventListener('online', refreshSoon);
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') refreshSoon(); });
   setInterval(refreshSoon, REFRESH_MS);
   start();

@@ -890,8 +890,8 @@
   // THE TASK FORM
   // openTaskForm(defaults): a new task, or { task: row } / { id } to edit one.
   // defaults for a new one: title, date (or due_date), due_time, responsible_id (or responsibleId),
-  // category, project_id, contractor_id, repeat_mode ('schedule' | 'after_done'); onSaved(row)
-  // instead of redrawing the page.
+  // category, project_id, contractor_id, repeat_mode ('schedule' | 'after_done'), private (ticked, and
+  // More open to show it; a locked dinner's prep reminder); onSaved(row) instead of redrawing the page.
   // What · When · Who's in charge · Repeats · More (category, heads-up, project, contact, notes, private).
   // "When" follows the repeat: a date (or No date) for a one-off, "Next one is due" on set dates,
   // and "When was it last done?" (or Not sure) for a while after it's done, which works out the due date.
@@ -927,7 +927,8 @@
     const category = CATEGORY_LABEL[x.category || d.category] ? x.category || d.category : 'other';
     const projectId = t ? x.project_id : d.project_id;
     const contactId = t ? x.contractor_id : d.contractor_id;
-    const moreOpen = !!(x.notes || x.private || x.lead_days || projectId || contactId);
+    const priv = t ? !!x.private : !!d.private;
+    const moreOpen = !!(x.notes || priv || x.lead_days || projectId || contactId);
     const contactOptions = (contacts || []).map((c) => [c.id, c.company && c.company !== c.name ? `${c.name} (${c.company})` : c.name]);
     if (contactId && !contactOptions.some(([id]) => id === contactId)) contactOptions.unshift([contactId, 'The current contact']);
     const projectOptions = (projects || []).filter((p) => p.status !== 'done' || p.id === projectId).map((p) => [p.id, p.name]);
@@ -977,7 +978,7 @@
           <label class="field"><span>Directory contact</span><select name="contractor_id"><option value="">None</option>${contactOptions.map(([id, l]) => option(id, l, contactId)).join('')}</select>
             <small>${contacts ? 'Their phone number shows on the task, one tap to call.' : "Couldn't load the directory just now. Try again later to pick a contact."}</small></label>
           <label class="field"><span>Notes</span><textarea name="notes" rows="3">${esc(x.notes || '')}</textarea></label>
-          <label class="check tasks-check"><input type="checkbox" name="private"${x.private ? ' checked' : ''}> Private: shows as 'Private item' on the wall, in Google and to kids and helpers</label>
+          <label class="check tasks-check"><input type="checkbox" name="private"${priv ? ' checked' : ''}> Private: shows as 'Private item' on the wall, in Google and to kids and helpers</label>
         </div>
       </details>
       <p class="form-error" role="alert" hidden></p>

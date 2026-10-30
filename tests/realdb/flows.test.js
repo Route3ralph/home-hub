@@ -1,6 +1,7 @@
 // The family's key flows against the REAL database (tests/realdb/run.sh): the real schema, migrations,
 // row-level security and functions, through a PostgREST/Auth stand-in (server.js). Every write is
-// checked in the tables themselves, as the database keeps them.
+// checked in the tables themselves, as the database keeps them. The database has every migration, so
+// it is on schema 4: v1.2's Food page, Taylor's list on her My day and dinners are here too.
 //
 // The household (seed_v1.sql, the migration's own seeding, seed_v2.sql): Alex and Morgan (parents,
 // admins), Sam (adult, member), Jordan (kid), Taylor (helper, Spanish); Pat Lee and Maria Gomez
@@ -11,6 +12,8 @@ const { setup } = require('./lib');
 
 const TODAY = '2026-10-27';
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+// What My day may call: the anon token functions (v1.2 adds the shopping list's three).
+const MY_DAY_FNS = /^\/rest\/v1\/rpc\/(get_person_day|complete_by_token|undo_by_token|confirm_digest|stop_digest|get_list_by_token|add_to_list_by_token|buy_item_by_token)$/;
 
 (async () => {
   const h = await setup('flows');
@@ -43,8 +46,8 @@ const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
     await page.click('#codeForm button[type="submit"]');
     await page.waitForSelector('.today-head', { timeout: 10000 });
     await settle(page, 600);
-    check('sign-in: the code signs Alex in and the v2 Today page shows (schema version 3 from the real database: migration 0003)',
-      (await page.evaluate(() => HomeHub.core.schemaVersion)) === 3 && /Good morning, Alex/.test(await tc(page, '#main h1')), await tc(page, '#main h1'));
+    check('sign-in: the code signs Alex in and the v2 Today page shows (schema version 4 from the real database: migration 0004)',
+      (await page.evaluate(() => HomeHub.core.schemaVersion)) === 4 && /Good morning, Alex/.test(await tc(page, '#main h1')), await tc(page, '#main h1'));
     check('sign-in: Today shows the household\'s date (Tuesday, October 27)', /Tuesday, October 27/.test(await tc(page, '.today-head .eyebrow')), await tc(page, '.today-head .eyebrow'));
     const alex = await one(`select email_verified_at is not null as ok, (select token from people_confirm c where c.person_id = p.id) as secret from people p where email = 'alex@example.com'`);
     const again = alex.secret ? await h.api('/rest/v1/rpc/confirm_digest', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ p_confirm: alex.secret }) }) : null;
@@ -546,11 +549,373 @@ const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
     await until(async () => (await one(`select digest_enabled from people where id = '${P.taylor}'`)).digest_enabled === 'f');
     check('my day: the stop link\'s button turns the morning email off', (await one(`select digest_enabled from people where id = '${P.taylor}'`)).digest_enabled === 'f');
     const reqs = await h.requests();
-    check('my day: only the token functions are called, signed out', reqs.every((r) => r.role === 'anon' && /^\/rest\/v1\/rpc\/(get_person_day|complete_by_token|undo_by_token|confirm_digest|stop_digest)$/.test(r.path)),
+    check('my day: only the token functions are called, signed out', reqs.every((r) => r.role === 'anon' && MY_DAY_FNS.test(r.path)),
       reqs.filter((r) => r.role !== 'anon' || !/token|person_day|digest/.test(r.path)).map((r) => `${r.role} ${r.path}`));
     const f = await failures();
     check('my day: no API request failed', !f.length, f);
     await context.close();
+  });
+
+  // ===================================================================
+  // Food (v1.2, schema 4): Alex and Sam on the shopping list in two browsers; Taylor's list on her
+  // My day, in Spanish, with bad signal; tonight's dinner on Today, in "Send Jordan his day" and on
+  // My day (docs/v1.2-kitchen.md §6–§8)
+  // ===================================================================
+  const line = (key) => one(`select id, name, note, aisle, private, added_at, added_by, bought_at, bought_by, updated_by from shopping_items
+    where name_key = '${key}' and not private`);
+  const foodNames = (page, part) => page.$$eval(`[data-part="${part}"] .food-row .food-name`, (es) => es.map((e) => e.textContent));
+  const foodRow = (page, part, name) => page.locator(`[data-part="${part}"] .food-row`, { has: page.locator('.food-name', { hasText: new RegExp(`^${name}$`) }) });
+  const addOnFood = async (page, text) => {
+    await page.fill('.food-add input[name="what"]', text);
+    await page.press('.food-add input[name="what"]', 'Enter');
+  };
+  const changedOf = (r) => { const m = /"changed":\s*(true|false)/.exec(r.response || ''); return m ? m[1] === 'true' : null; };
+  const myDayUse = () => one(`select changes, ticks from my_day_use where person_id = '${P.taylor}' and day = '${TODAY}'`);
+
+  await flow('food list', async () => {
+    await h.mark();
+    const alex = await open({ email: 'alex@example.com', path: '/#/food', label: 'food-alex' });
+    const sam = await open({ email: 'sam@example.com', phone: true, path: '/#/food', label: 'food-sam' });
+    for (const x of [alex, sam]) await until(async () => !!(await x.page.$('[data-part="buy"]')));
+    check('food: on schema 4 the Food page opens on the real database (a tab, and a cell in the phone\'s bottom bar), with nothing to buy yet',
+      (await tc(alex.page, '#main h1')) === 'Food' && !!(await alex.page.$('.tabs a[data-tab="food"]')) && !!(await sam.page.$('.bottombar a[data-tab="food"]'))
+      && /Nothing to buy/.test(await tc(sam.page, '[data-part="buy"]')), await tc(alex.page, '#main'));
+
+    // Alex adds Milk; Sam's page shows it once its clock moves 10 seconds (the poll).
+    await addOnFood(alex.page, 'Milk');
+    await until(async () => !!(await line('milk')));
+    const milk = await line('milk');
+    check('food: Alex adds "Milk" (add_to_list): one line, in Dairy & eggs, added by Alex, stamped with his email',
+      !!milk && milk.name === 'Milk' && milk.aisle === 'dairy' && milk.added_by === P.alex && milk.bought_at === null && milk.updated_by === 'alex@example.com', milk);
+    await until(async () => (await foodNames(alex.page, 'buy')).includes('Milk'));
+    await sam.page.clock.fastForward(10000);
+    check('food: Sam\'s page shows Milk once its clock moves 10 seconds (shopping_list, read every 10 seconds)',
+      await until(async () => (await foodNames(sam.page, 'buy')).includes('Milk'), 4000), await foodNames(sam.page, 'buy'));
+
+    // Both tap it.
+    await Promise.all([alex, sam].map((x) => foodRow(x.page, 'buy', 'Milk').locator('.food-tick').click()));
+    await until(async () => (await h.requests()).filter((r) => r.path === '/rest/v1/rpc/buy_item' && r.status).length === 2);
+    const bought = await line('milk');
+    const buys = (await h.requests()).filter((r) => r.path === '/rest/v1/rpc/buy_item');
+    check('food: both tap Milk: both calls answer 200, one buys it (whoever was first), the other finds it already bought (changed: false)',
+      !!bought.bought_at && [P.alex, P.sam].includes(bought.bought_by) && buys.length === 2 && buys.every((r) => r.status === 200)
+      && same(buys.map(changedOf).sort(), [false, true]), { bought, buys: buys.map((r) => [r.email, r.status, changedOf(r)]) });
+    const toasts = [await lastToast(alex.page), await lastToast(sam.page)];
+    check('food: ... and neither phone says "Changed on another phone" (Milk is bought, as both wanted)', toasts.every((x) => !/Changed on another phone/.test(x)), toasts);
+    check('food: three seconds after the tap, Milk is under Just bought on both phones', await until(async () => {
+      for (const x of [alex, sam]) if (!(await foodNames(x.page, 'bought')).includes('Milk') || (await foodNames(x.page, 'buy')).includes('Milk')) return false;
+      return true;
+    }, 8000), [await foodNames(alex.page, 'bought'), await foodNames(sam.page, 'bought')]);
+
+    // Sam adds "milk": the bought line comes back, once.
+    await addOnFood(sam.page, 'milk');
+    await until(async () => (await line('milk')).bought_at === null);
+    await until(async () => /Back on the list/.test(await lastToast(sam.page)), 3000);
+    const back = await sql("select name, bought_at, bought_by, added_by from shopping_items where name_key = 'milk'");
+    check('food: Sam adds "milk": the bought line comes back on the list ("Back on the list"), still one line called Milk, now added by Sam',
+      back.length === 1 && same(back[0], { name: 'Milk', bought_at: null, bought_by: null, added_by: P.sam }) && /Back on the list/.test(await lastToast(sam.page)),
+      { back, toast: await lastToast(sam.page) });
+    check('food: ... and Sam\'s list has it once, to buy', await until(async () => same(await foodNames(sam.page, 'buy'), ['Milk']), 5000), await foodNames(sam.page, 'buy'));
+
+    // Buy again: coffee, bought three days ago (its bought_at has microseconds), back on the list with
+    // one tap. Its seen is bought_at as the table read gave it (PostgREST's text), which has to cast back
+    // to the very same instant for buy_item to change the row.
+    await sql(`insert into shopping_items (name, aisle, added_by, added_at, bought_at, bought_by)
+               values ('Coffee', 'pantry', '${P.sam}', private.now() - interval '10 days', private.now() - interval '3 days' + interval '0.123457 seconds', '${P.sam}')`);
+    const was = (await one("select to_json(bought_at) #>> '{}' as t from shopping_items where name_key = 'coffee'")).t;
+    await go(alex.page, '#/food');
+    await until(async () => !!(await alex.page.$('[data-act="buy-again"]')));
+    const againLabel = await tc(alex.page, '[data-act="buy-again"]');
+    await alex.page.click('[data-act="buy-again"]');
+    await foodRow(alex.page, 'again', 'Coffee').locator('[data-act="again"]').click();
+    await until(async () => (await line('coffee')).bought_at === null);
+    const coffee = await line('coffee');
+    const put = (await h.requests()).filter((r) => r.path === '/rest/v1/rpc/buy_item').slice(-1)[0];
+    const seenSent = put ? JSON.parse(put.body).p_seen : null;
+    check('food: Buy again (1) lists Coffee, bought three days ago; one tap puts it back on the list (added by Alex now), with its bought_at as the table read gave it, microseconds and all',
+      /^Buy again \(1\)/.test(againLabel) && coffee.bought_at === null && coffee.added_by === P.alex && !!put && changedOf(put) === true && seenSent === was && /\.\d{6}\+00:00$/.test(was),
+      { againLabel, coffee, seenSent, was });
+    const f = await failures();
+    check('food list: no API request failed', !f.length, f);
+    await alex.context.close();
+    await sam.context.close();
+  });
+
+  await flow('food my day list', async () => {
+    const token = (await one(`select day_token from people where id = '${P.taylor}'`)).day_token;
+    await h.mark();
+    const t = await open({ phone: true, path: `/day.html?t=${token}`, label: 'list-taylor' });
+    await t.page.waitForSelector('.day-head', { timeout: 8000 });
+    await settle(t.page, 300);
+    const btn = await tc(t.page, '.day-list-btn');
+    check('my day list: Taylor\'s day has the "Lista de compras · 2 ›" button (a helper, the switch on, and the family has a list)', btn === 'Lista de compras · 2 ›', btn);
+    await t.page.click('.day-list-btn');
+    await t.page.waitForSelector('.list-head h1');
+    await until(async () => (await texts(t.page, '.list-sec .lrow-name')).length > 0);
+    const view = { lang: await t.page.evaluate(() => document.documentElement.lang), h1: await tc(t.page, '.list-head h1'),
+      aisles: await texts(t.page, '.list-sec .list-aisle'), rows: await texts(t.page, '.list-sec .lrow-name') };
+    check('my day list: #list in Spanish: "Lista de compras", the aisles in store order ("Despensa", then "Lácteos y huevos"), and "Milk · leche" (the word list\'s Spanish word after the name)',
+      same(view, { lang: 'es', h1: 'Lista de compras', aisles: ['Despensa', 'Lácteos y huevos'], rows: ['Coffee · café', 'Milk · leche'] }), view);
+
+    // "Leche" while Milk is to buy: that line.
+    await t.page.fill('.list-input', 'Leche');
+    await t.page.press('.list-input', 'Enter');
+    await until(async () => /Ya está en la lista/.test(await lastToast(t.page)));
+    const lines = await sql("select name from shopping_items where name_key in ('milk', 'leche')");
+    check('my day list: she adds "Leche" while Milk is to buy: "Ya está en la lista como Milk", and still one line',
+      (await lastToast(t.page)) === 'Ya está en la lista como Milk' && same(lines, [{ name: 'Milk' }]), { toast: await lastToast(t.page), lines });
+
+    // Tick it, then Deshacer.
+    await t.page.locator('.lrow', { hasText: 'Milk' }).click();
+    await until(async () => (await line('milk')).bought_at !== null);
+    await settle(t.page, 200);
+    const tm = await line('milk');
+    check('my day list: a tap ticks it (buy_item_by_token): bought by Taylor, "Taylor Example (My day)", and "Comprado: Milk" with Deshacer',
+      tm.bought_by === P.taylor && tm.updated_by === 'Taylor Example (My day)' && /^Comprado: Milk/.test(await lastToast(t.page)) && /Deshacer/.test(await lastToast(t.page)),
+      { tm, toast: await lastToast(t.page) });
+    await t.page.click('.toast-action .toast-btn:not(.toast-x)');
+    await until(async () => (await line('milk')).bought_at === null);
+    const um = await line('milk');
+    check('my day list: Deshacer puts it back (her own tick, within 15 minutes): to buy, still added by Sam', um.bought_at === null && um.bought_by === null && um.added_by === P.sam, um);
+    let use = await myDayUse();
+    check('my day list: my_day_use counts the tick and the Undo (2 ticks), not the add that changed nothing', !!use && same(use, { changes: '0', ticks: '2' }), use);
+
+    // Her own adds.
+    for (const x of ['Cebollas', 'Tortillas', 'Huevos']) {
+      await t.page.fill('.list-input', x);
+      await t.page.press('.list-input', 'Enter');
+    }
+    await until(async () => (await sql(`select 1 from shopping_items where name_key in ('cebollas', 'tortillas', 'huevos') and added_by = '${P.taylor}'`)).length === 3);
+    const hers = await sql("select name, private, added_by, updated_by from shopping_items where name_key in ('cebollas', 'tortillas', 'huevos') order by name");
+    use = await myDayUse();
+    check('my day list: her three adds are three unlocked lines, added by her, "Taylor Example (My day)", each counted as a change',
+      hers.length === 3 && hers.every((x) => x.private === 'f' && x.added_by === P.taylor && x.updated_by === 'Taylor Example (My day)') && same(use, { changes: '3', ticks: '2' }), { hers, use });
+    await until(async () => (await t.page.$$('.lrow[data-key^="buy|"]')).length === 5, 6000);
+
+    // No signal: two ticks wait on the phone, then arrive once.
+    const cebollas = await line('cebollas');
+    const tortillas = await line('tortillas');
+    const sentBefore = (await h.requests()).length;
+    await t.context.setOffline(true);
+    for (const x of ['Cebollas', 'Tortillas']) await t.page.locator('.lrow', { hasText: x }).click();
+    const marked = await until(async () => (await t.page.$$('.lrow-unsent')).length === 2, 10000);
+    const waiting = await sql("select name, bought_at from shopping_items where name_key in ('cebollas', 'tortillas') order by name");
+    check('my day list: with no signal, both ticks show at once, marked "⟳ sin enviar", and nothing reaches the database',
+      marked && same(await texts(t.page, '.lrow-unsent'), ['⟳ sin enviar', '⟳ sin enviar']) && waiting.every((x) => x.bought_at === null)
+      && (await t.page.$$eval('.lrow[aria-checked="true"]', (rs) => rs.length)) === 2, { marked, waiting, unsent: await texts(t.page, '.lrow-unsent') });
+    await t.context.setOffline(false);
+    const arrived = await until(async () => (await sql(`select 1 from shopping_items where name_key in ('cebollas', 'tortillas') and bought_by = '${P.taylor}'`)).length === 2, 20000);
+    await settle(t.page, 500);
+    const calls = (await h.requests()).slice(sentBefore).filter((r) => r.path === '/rest/v1/rpc/buy_item_by_token');
+    const per = (it) => calls.filter((r) => JSON.parse(r.body).p_item === it.id);
+    use = await myDayUse();
+    check('my day list: back online, the two ticks arrive once each (one call each, changed: true) and are counted once',
+      arrived && per(cebollas).length === 1 && per(tortillas).length === 1 && calls.every((r) => r.status === 200 && changedOf(r) === true)
+      && same(use, { changes: '3', ticks: '4' }), { arrived, calls: calls.map((r) => [JSON.parse(r.body).p_item, r.status, changedOf(r)]), use });
+    check('my day list: ... and the "sin enviar" marks are gone', await until(async () => !(await t.page.$('.lrow-unsent')), 6000));
+
+    // A tick that waited with no signal while Alex bought Huevos and put it back on the list: it
+    // was made on the line as she saw it, so it doesn't buy the new need.
+    const huevos0 = await line('huevos');
+    await t.context.setOffline(true);
+    await t.page.locator('.lrow', { hasText: 'Huevos' }).click();
+    await until(async () => (await t.page.$$('.lrow-unsent')).length === 1, 10000);
+    const a = await open({ email: 'alex@example.com', path: '/#/food', label: 'list-alex' });
+    await until(async () => (await foodNames(a.page, 'buy')).includes('Huevos'));
+    await foodRow(a.page, 'buy', 'Huevos').locator('.food-tick').click();
+    await until(async () => (await line('huevos')).bought_by === P.alex);
+    await addOnFood(a.page, 'huevos');
+    await until(async () => (await line('huevos')).bought_at === null);
+    // The database has the line before Alex's page has the answer and its toast: wait for that too.
+    await until(async () => /Back on the list/.test(await lastToast(a.page)), 3000);
+    const huevos1 = await line('huevos');
+    check('my day list: meanwhile Alex buys Huevos on Food and puts it back on the list ("Back on the list"): to buy, added by Alex, a new added_at',
+      huevos1.added_by === P.alex && huevos1.added_at !== huevos0.added_at && /Back on the list/.test(await lastToast(a.page)), { huevos0, huevos1 });
+    use = await myDayUse();
+    await t.context.setOffline(false);
+    const said = await until(async () => /Cambiado en otro teléfono/.test(await lastToast(t.page)), 20000);
+    const huevos2 = await line('huevos');
+    const use2 = await myDayUse();
+    check('my day list: her tick then goes with the line as she saw it: nothing changes (still to buy, Alex\'s), it isn\'t counted, and she sees "Cambiado en otro teléfono"',
+      said && huevos2.bought_at === null && huevos2.added_by === P.alex && huevos2.added_at === huevos1.added_at && same(use2, use), { huevos2, use, use2, toast: await lastToast(t.page) });
+    check('my day list: ... and her list shows Huevos to buy again, unticked', await until(async () => {
+      const el = await t.page.$(`.lrow[data-key="buy|${huevos2.id}"]`);
+      return !!el && (await el.getAttribute('aria-checked')) === 'false' && !(await t.page.$('.lrow-unsent'));
+    }, 8000), await texts(t.page, '.list-sec .lrow'));
+    await shot(t.page, 'mylist-realdb');
+    const reqs = await h.requests();
+    // (Alex's sign-in, by the harness, is anon too: only the API's tables and functions count here.)
+    const mine = reqs.filter((r) => r.role === 'anon' && r.path.startsWith('/rest/v1/'));
+    check('my day list: her page called only the token functions, signed out', mine.length > 0 && mine.every((r) => MY_DAY_FNS.test(r.path))
+      && mine.some((r) => r.path === '/rest/v1/rpc/get_list_by_token'), [...new Set(mine.map((r) => r.path))]);
+    const f = await failures();
+    check('my day list: no API request failed', !f.length, f);
+    await a.context.close();
+    await t.context.close();
+  });
+
+  await flow('food dinner', async () => {
+    await h.mark();
+    const a = await open({ email: 'alex@example.com', path: `/#/food/${TODAY}`, label: 'dinner-alex' });
+    await a.page.waitForSelector('#formDialog .food-dinner', { timeout: 8000 });
+    await a.page.fill('#formDialog input[name="title"]', 'Tacos');
+    await a.page.click(`#formDialog [data-ref="cooks"] .pchip[data-person="${P.sam}"]`);
+    await a.page.click('#formDialog .food-more summary');
+    await a.page.fill('#formDialog textarea[name="note"]', 'Chicken is in the freezer');
+    await a.page.fill('#formDialog input[name="link"]', 'cooking.example.com/tacos');
+    await a.page.click('#formDialog [type="submit"]');
+    await until(async () => !!(await one(`select id from meals where day = '${TODAY}'`)));
+    const meal = await one(`select slot, kind, title, cook_id, note, link, private, created_by, updated_by from meals where day = '${TODAY}'`);
+    // The row is in the table before the page has the answer, so the toast is waited for, not read at once.
+    const savedToast = await until(async () => (await lastToast(a.page)) === 'Dinner tonight: Tacos');
+    check('dinner: tonight\'s Tacos, Sam cooking, saved from Food (an upsert on day and slot, with the real grants), stamped by Alex',
+      same(meal, { slot: 'dinner', kind: 'cook', title: 'Tacos', cook_id: P.sam, note: 'Chicken is in the freezer', link: 'https://cooking.example.com/tacos',
+        private: 'f', created_by: 'alex@example.com', updated_by: 'alex@example.com' }) && savedToast, { meal, toast: await lastToast(a.page) });
+
+    // Today, and "Send Jordan his day".
+    await go(a.page, '#/');
+    const dinnerLine = await tc(a.page, '.today-dinner-line');
+    check('dinner: Today says "Dinner: Tacos · Sam cooks", with the note, and opens tonight on Food', dinnerLine === 'Dinner: Tacos · Sam cooks'
+      && (await tc(a.page, '.today-dinner-note')) === 'Chicken is in the freezer' && (await a.page.getAttribute('.today-dinner', 'href')) === `#/food/${TODAY}`, dinnerLine);
+    const sendText = async (id) => {
+      await go(a.page, '#/');
+      await a.page.click('.today-chips [data-view="me"]');
+      await settle(a.page, 200);
+      const wa = await a.page.getAttribute(`[data-send="${id}"] [data-via="whatsapp"]`, 'href').catch(() => null);
+      return wa ? decodeURIComponent(wa.split('?text=')[1]) : null;
+    };
+    let jText = await sendText(P.jordan);
+    check('dinner: "Send Jordan his day" has no dinner line while Sam cooks (the text is the real day_text)', !!jText && !/Dinner/.test(jText)
+      && jText === (await one(`select public.day_text('${P.jordan}', '${TODAY}') as t`)).t, jText);
+
+    // Taylor's and Jordan's My day.
+    const tokens = Object.fromEntries((await sql(`select id, day_token from people where id in ('${P.taylor}', '${P.jordan}')`)).map((r) => [r.id, r.day_token]));
+    const mealRow = async (page) => page.$$eval('section[aria-labelledby="day-today"] .irow', (rs) => {
+      const last = rs[rs.length - 1];
+      return last && last.classList.contains('k-meal') ? last.innerText.replace(/\s+/g, ' ').trim() : '';
+    });
+    const tay = await open({ phone: true, path: `/day.html?t=${tokens[P.taylor]}`, label: 'dinner-taylor' });
+    await tay.page.waitForSelector('.day-head', { timeout: 8000 });
+    const tMeal = await mealRow(tay.page);
+    check('dinner: Taylor\'s My day ends today with "Cena · Tacos · Cocina Sam", with no note or recipe (she isn\'t on it)',
+      tMeal === 'Cena Tacos Cocina Sam' && !(await tay.page.$('.meal-note, .meal-recipe')) && !!(await tay.page.$('.day-list-btn')), tMeal);
+    await tay.context.close();
+    await h.mark();
+    let jor = await open({ phone: true, path: `/day.html?t=${tokens[P.jordan]}`, label: 'dinner-jordan' });
+    await jor.page.waitForSelector('.day-head', { timeout: 8000 });
+    await settle(jor.page, 500);
+    const jMeal = await mealRow(jor.page);
+    const jReqs = (await h.requests()).filter((r) => r.role === 'anon');
+    check('dinner: Jordan\'s My day (a kid) shows the dinner, "Dinner · Tacos · Sam cooks", and no shopping list button',
+      jMeal === 'Dinner Tacos Sam cooks' && !(await jor.page.$('.day-list-btn')), jMeal);
+    check('dinner: ... and his page never asks for the list (get_person_day only)', jReqs.length > 0 && jReqs.every((r) => r.path === '/rest/v1/rpc/get_person_day'), jReqs.map((r) => r.path));
+    await jor.context.close();
+
+    // Leftovers, with Jordan on dinner: now it's in his text, and his My day has the note.
+    await go(a.page, `#/food/${TODAY}`);
+    await a.page.waitForSelector('#formDialog .food-dinner', { timeout: 8000 });
+    await a.page.click('#formDialog [data-kind="leftovers"]');
+    await a.page.click(`#formDialog [data-ref="cooks"] .pchip[data-person="${P.jordan}"]`);
+    await a.page.click('#formDialog [type="submit"]');
+    await until(async () => (await one(`select kind from meals where day = '${TODAY}'`)).kind === 'leftovers');
+    const left = await one(`select kind, title, cook_id, note, link, (select count(*) from meals) as n from meals where day = '${TODAY}'`);
+    check('dinner: changed to Leftovers with Jordan on dinner: the same row, no title or link, the note kept',
+      same(left, { kind: 'leftovers', title: null, cook_id: P.jordan, note: 'Chicken is in the freezer', link: null, n: '1' }), left);
+    jText = await sendText(P.jordan);
+    check('dinner: now "Send Jordan his day" has "Dinner: Leftovers · You\'re on dinner" (never the note)', !!jText && /\nDinner: Leftovers · You're on dinner(\n|$)/.test(jText)
+      && !/freezer/.test(jText) && jText === (await one(`select public.day_text('${P.jordan}', '${TODAY}') as t`)).t, jText);
+    jor = await open({ phone: true, path: `/day.html?t=${tokens[P.jordan]}`, label: 'dinner-jordan-on' });
+    await jor.page.waitForSelector('.day-head', { timeout: 8000 });
+    const jMeal2 = await mealRow(jor.page);
+    check('dinner: Jordan\'s My day: "Dinner · Leftovers · You\'re on dinner", with the note (he\'s on it), and no recipe link (leftovers have none)',
+      jMeal2 === 'Dinner Leftovers You\'re on dinner Chicken is in the freezer' && (await tc(jor.page, '.k-meal .meal-note')) === 'Chicken is in the freezer'
+      && !(await jor.page.$('.meal-recipe')), jMeal2);
+    await jor.context.close();
+    const f = await failures();
+    check('dinner: no API request failed', !f.length, f);
+    await a.context.close();
+  });
+
+  // A locked dinner's prep reminder (docs/v1.2-kitchen.md §5): Food's button opens the real task form
+  // with Private ticked, and the task it saves is private, so "Prep: <title>" stays off My day, the
+  // texts and the email subject as the dinner's title does. The flow removes what it made.
+  await flow('food prep', async () => {
+    await h.mark();
+    const DAY = '2026-10-28';
+    const SAT = '2026-10-31';
+    let a = null;
+    try {
+      a = await open({ email: 'alex@example.com', path: `/#/food/${DAY}`, label: 'prep-alex' });
+      await a.page.waitForSelector('#formDialog .food-dinner', { timeout: 8000 });
+      await a.page.fill('#formDialog input[name="title"]', 'Birthday cake');
+      await a.page.click(`#formDialog [data-ref="cooks"] .pchip[data-person="${P.sam}"]`);
+      await a.page.click('#formDialog .food-more summary');
+      await a.page.check('#formDialog input[name="private"]');
+      await a.page.click('#formDialog [type="submit"]');
+      await until(async () => !!(await one(`select id from meals where day = '${DAY}'`)));
+      const meal = await one(`select kind, title, cook_id, private from meals where day = '${DAY}'`);
+      check('prep: Wednesday\'s "Birthday cake" saved locked, Sam cooking', same(meal, { kind: 'cook', title: 'Birthday cake', cook_id: P.sam, private: 't' }), meal);
+
+      await go(a.page, `#/food/${DAY}`);
+      await a.page.waitForSelector('#formDialog [data-act="prep"]', { timeout: 8000 });
+      await a.page.click('#formDialog [data-act="prep"]');
+      await a.page.waitForSelector('.tasks-form', { timeout: 8000 });
+      await settle(a.page, 200);
+      const form = await a.page.evaluate(() => {
+        const f = document.querySelector('.tasks-form');
+        return { h: f.querySelector('h3').textContent, title: f.elements.title.value, date: f.elements.when_date.value, category: f.elements.category.value,
+          more: f.querySelector('.tasks-more').open, private: f.elements.private.checked };
+      });
+      check('prep: "Add a prep reminder…" on the locked dinner opens the real task form: "Prep: Birthday cake", due today, family, More open, Private ticked',
+        same(form, { h: 'New task', title: 'Prep: Birthday cake', date: TODAY, category: 'family', more: true, private: true }), form);
+      await a.page.click('.tasks-form [type="submit"]');
+      await until(async () => !!(await one("select id from tasks where title = 'Prep: Birthday cake'")));
+      const task = await one("select id, private, responsible_id, due_date, category, created_by from tasks where title = 'Prep: Birthday cake'");
+      const { id: taskId, ...saved } = task || {};
+      check('prep: the task saved is private, Sam in charge, due today, family, made by Alex',
+        same(saved, { private: 't', responsible_id: P.sam, due_date: TODAY, category: 'family', created_by: 'alex@example.com' }), task);
+      const toastsNow = () => texts(a.page, '.toasts .toast, body > .toast');
+      check('prep: ... and Food comes back with "Prep reminder added"', await until(async () => (await a.page.evaluate(() => location.hash)) === '#/food'
+        && (await toastsNow()).includes('Prep reminder added')), await toastsNow());
+
+      // Sam is in charge: his My day, his text and his email subject say "Private item", never the title.
+      const tok = (await one(`select day_token from people where id = '${P.sam}'`)).day_token;
+      const onMyDay = await one(`select i->>'title' as title from jsonb_array_elements(public.get_person_day('${tok}')->'days'->0->'items') i where i->>'item_id' = '${taskId}'`);
+      check('prep: on Sam\'s My day the task reads "Private item"', !!onMyDay && onMyDay.title === 'Private item', onMyDay);
+      const text = (await one(`select public.day_text('${P.sam}', '${TODAY}') as t`)).t || '';
+      check('prep: Sam\'s day text has "Private item", not the title', /Private item/.test(text) && !/Birthday cake/.test(text), text);
+      const mail = await one(`select public.digest_for('${P.sam}', '${TODAY}') as d`);
+      const subject = mail && mail.d ? JSON.parse(mail.d).subject : null;
+      check('prep: Sam\'s morning email subject never has the title', typeof subject === 'string' && !/Birthday cake/.test(subject), subject);
+
+      // Saturday's "Surprise pie", saved unlocked; Alex ticks the lock and taps "Add a prep reminder…"
+      // without Save. The real task form takes over the dialog (there is no Save to come back to), so
+      // the dialog saves the dinner locked first, and the reminder is private too.
+      await sql(`insert into meals (day, slot, kind, title, cook_id) values ('${SAT}', 'dinner', 'cook', 'Surprise pie', '${P.sam}')`);
+      await go(a.page, `#/food/${SAT}`);
+      await a.page.waitForSelector('#formDialog [data-act="prep"]', { timeout: 8000 });
+      await a.page.click('#formDialog .food-more summary');
+      await a.page.check('#formDialog input[name="private"]');
+      await a.page.click('#formDialog [data-act="prep"]');
+      await a.page.waitForSelector('.tasks-form', { timeout: 8000 });
+      await settle(a.page, 200);
+      const pieForm = await a.page.evaluate(() => ({ title: document.querySelector('.tasks-form').elements.title.value, private: document.querySelector('.tasks-form').elements.private.checked }));
+      const pieMeal = await one(`select private from meals where day = '${SAT}'`);
+      check('prep (lock ticked, not saved): the dinner is saved locked before the task form takes over the dialog, and the form has Private ticked',
+        same(pieForm, { title: 'Prep: Surprise pie', private: true }) && pieMeal && pieMeal.private === 't', [pieForm, pieMeal]);
+      await a.page.click('.tasks-form [type="submit"]');
+      await until(async () => !!(await one("select id from tasks where title = 'Prep: Surprise pie'")));
+      const pieTask = await one("select private from tasks where title = 'Prep: Surprise pie'");
+      check('prep (lock ticked, not saved): the reminder saved is private, and the dinner\'s card has the lock', pieTask && pieTask.private === 't'
+        && await until(async () => (await a.page.evaluate(() => location.hash)) === '#/food'
+          && !!(await a.page.$(`.food-day[data-day="${SAT}"] .food-lockmark`))), pieTask);
+      const f = await failures();
+      check('prep: no API request failed', !f.length, f);
+    } finally {
+      if (a) await a.context.close();
+      await sql("delete from tasks where title in ('Prep: Birthday cake', 'Prep: Surprise pie')");
+      await sql(`delete from meals where day in ('${DAY}', '${SAT}')`);
+    }
   });
 
   // ===================================================================
@@ -961,7 +1326,7 @@ const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
   await flow('screens', async () => {
     for (const phone of [true, false]) {
       const { page, context } = await open({ email: 'alex@example.com', phone, path: '/', label: `screens-${phone ? 'phone' : 'desktop'}` });
-      for (const [name, hash] of [['today', '#/'], ['calendar', '#/calendar'], ['tasks', '#/tasks/everyone'], ['projects', `#/projects/${KITCHEN}`],
+      for (const [name, hash] of [['today', '#/'], ['calendar', '#/calendar'], ['tasks', '#/tasks/everyone'], ['food', '#/food'], ['projects', `#/projects/${KITCHEN}`],
         ['directory', '#/directory'], ['family', '#/people'], ['settings', '#/settings']]) {
         await go(page, hash);
         await settle(page, 400);
@@ -973,6 +1338,9 @@ const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
     const md = await open({ phone: true, path: `/day.html?t=${tok}`, label: 'screens-myday' });
     await settle(md.page, 600);
     await shot(md.page, 'myday-phone');
+    await md.page.click('.day-list-btn').catch(() => {});
+    await settle(md.page, 600);
+    await shot(md.page, 'mylist-phone');
     await md.context.close();
   });
 

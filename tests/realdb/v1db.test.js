@@ -20,8 +20,8 @@ const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
     check('v1 db: the new site signs in, gets 404 for hub_schema_version and runs in v1 mode', same(tabs, ['Home', 'Projects', 'Contractors', 'Family'])
       && (await page.evaluate(() => HomeHub.core.schemaVersion)) === 1 && !(await page.$('.bottombar')), tabs);
     const reqs = await h.requests();
-    const v2reads = reqs.filter((r) => /\/rest\/v1\/(people|household|tasks|events|task_log|contractor_secrets)|rpc\/(clock|agenda|mark_signed_in|late_items|heads_up)/.test(r.path));
-    check('v1 db: no v2 reads or calls', !v2reads.length, v2reads.map((r) => r.path));
+    const v2reads = reqs.filter((r) => /\/rest\/v1\/(people|household|tasks|events|task_log|contractor_secrets|meals|shopping_items|my_day_use)|rpc\/(clock|agenda|mark_signed_in|late_items|heads_up|shopping_list|add_to_list|buy_item|get_list_by_token)/.test(r.path));
+    check('v1 db: no v2 reads or calls (nor v1.2\'s dinners and shopping list)', !v2reads.length, v2reads.map((r) => r.path));
     await go(page, `#/projects/${KITCHEN}`);
     await page.click('.g-label[data-id="design"]');
     await page.waitForTimeout(300);
