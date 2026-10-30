@@ -1,7 +1,9 @@
 // The family's key flows against the REAL database (tests/realdb/run.sh): the real schema, migrations,
 // row-level security and functions, through a PostgREST/Auth stand-in (server.js). Every write is
 // checked in the tables themselves, as the database keeps them. The database has every migration, so
-// it is on schema 4: v1.2's Food page, Taylor's list on her My day and dinners are here too.
+// it is on schema 5: v1.2's Food page, Taylor's list on her My day and dinners are here too, and
+// v1.3's Homework is installed but on for nobody (its flows are in homework.test.js, which moves the
+// household's clock across days).
 //
 // The household (seed_v1.sql, the migration's own seeding, seed_v2.sql): Alex and Morgan (parents,
 // admins), Sam (adult, member), Jordan (kid), Taylor (helper, Spanish); Pat Lee and Maria Gomez
@@ -12,8 +14,11 @@ const { setup } = require('./lib');
 
 const TODAY = '2026-10-27';
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
-// What My day may call: the anon token functions (v1.2 adds the shopping list's three).
-const MY_DAY_FNS = /^\/rest\/v1\/rpc\/(get_person_day|complete_by_token|undo_by_token|confirm_digest|stop_digest|get_list_by_token|add_to_list_by_token|buy_item_by_token)$/;
+// What My day may call: the anon token functions (v1.2 adds the shopping list's three, v1.3 Jordan's
+// seven and the tutor link's four).
+const MY_DAY_FNS = new RegExp(`^/rest/v1/rpc/(get_person_day|complete_by_token|undo_by_token|confirm_digest|stop_digest|get_list_by_token|add_to_list_by_token|buy_item_by_token|${
+  ['homework_by_token', 'step_by_token', 'plan_by_token', 'focus_by_token', 'reward_by_token', 'assignment_by_token', 'homework_prefs_by_token',
+    'tutor_view_by_token', 'tutor_assignment_by_token', 'tutor_plan_by_token', 'tutor_step_by_token'].join('|')})$`);
 
 (async () => {
   const h = await setup('flows');
@@ -46,8 +51,10 @@ const MY_DAY_FNS = /^\/rest\/v1\/rpc\/(get_person_day|complete_by_token|undo_by_
     await page.click('#codeForm button[type="submit"]');
     await page.waitForSelector('.today-head', { timeout: 10000 });
     await settle(page, 600);
-    check('sign-in: the code signs Alex in and the v2 Today page shows (schema version 4 from the real database: migration 0004)',
-      (await page.evaluate(() => HomeHub.core.schemaVersion)) === 4 && /Good morning, Alex/.test(await tc(page, '#main h1')), await tc(page, '#main h1'));
+    // Schema 5 since migration 0005 (v1.3): the template has every migration, so the version this
+    // check reads moves with each release, on purpose (it was 4 with v1.2).
+    check('sign-in: the code signs Alex in and the v2 Today page shows (schema version 5 from the real database: migration 0005)',
+      (await page.evaluate(() => HomeHub.core.schemaVersion)) === 5 && /Good morning, Alex/.test(await tc(page, '#main h1')), await tc(page, '#main h1'));
     check('sign-in: Today shows the household\'s date (Tuesday, October 27)', /Tuesday, October 27/.test(await tc(page, '.today-head .eyebrow')), await tc(page, '.today-head .eyebrow'));
     const alex = await one(`select email_verified_at is not null as ok, (select token from people_confirm c where c.person_id = p.id) as secret from people p where email = 'alex@example.com'`);
     const again = alex.secret ? await h.api('/rest/v1/rpc/confirm_digest', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ p_confirm: alex.secret }) }) : null;
