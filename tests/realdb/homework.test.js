@@ -330,8 +330,11 @@ const PAT_WHO = 'Pat Lee, tutor (tutor link)';
     if (ms.day !== WED) throw new Error(`the milestone is on ${ms.day}, not Wednesday`);
     await page.click(`.hw-tonight .hw-step[data-step="${ms.id}"] .hw-box`);
     await until(async () => !!(await one(`select done_at from homework_steps where id = '${ms.id}'`)).done_at, 4000);
+    // The row is written before the page has the answer, so wait for the toast drawn from it.
+    const msToast = await until(async () => /\+20 when Pat checks it/.test(await lastToast(page)), 4000);
+    const msLedger = await ledger();
     check('milestone: he ticks "Plan it: an outline or a sketch"; the toast says "+20 when Pat checks it" (nothing paid yet)',
-      /\+20 when Pat checks it/.test(await lastToast(page)) && (await ledger()).length === 3, await lastToast(page));
+      msToast && msLedger.length === 3, { toast: await lastToast(page), ledger: msLedger });
     // Ask Pat, from ⋯ on the next step.
     await page.click(`.hw-step[data-step="${later.id}"] [data-act="hw-more"]`);
     await page.click(`.hw-step[data-step="${later.id}"] .hw-menu [data-act="hw-ask"]`);
