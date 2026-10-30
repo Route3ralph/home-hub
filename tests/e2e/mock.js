@@ -2656,23 +2656,7 @@ const homeworkTokenRpc = {
   }),
 };
 
-// day.html with plan.js and plan.css where docs/v1.3-homework.md §2.1 puts them (plan.js after shoplist.js,
-// before day.js; plan.css after day.css), for a test of homework on My day or the tutor link while day.html
-// doesn't load them yet; a day.html that does is served as it is.
-async function dayWithPlan(page) {
-  await page.route(/\/day\.html(\?|#|$)/, (route) => {
-    let html = fs.readFileSync(path.join(REPO, 'day.html'), 'utf8');
-    if (!/assets\/plan\.js/.test(html)) {
-      const v = (/\?v=([^"'&\s>]*)/.exec(html) || [])[1] || '';
-      html = html.replace(/(<link rel="stylesheet" href="assets\/css\/day\.css[^"]*">)/, `$1\n  <link rel="stylesheet" href="assets/css/plan.css?v=${v}">`)
-        .replace(/(<script src="assets\/shoplist\.js[^"]*"><\/script>)/, `$1\n  <script src="assets/plan.js?v=${v}"></script>`);
-    }
-    return route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: html });
-  });
-}
-
 module.exports = { makeDb, install, signIn, expectedConsoleError, SUPA, withCalendars, calendarRow, linkRow, googleEventRow, calendarRpc, md5uuid,
   withFood, mealRow, shopItem, foodRpc, personDayFood, foodStamp,
   withHomework, homeworkRpc, homePlan, hwKidRow, tutorLinkRow, assignmentRow, stepRow, sessionRow, rewardRow, askRow, ledgerRow,
-  withHomeworkTokens, homeworkTokenRpc, personDayHomework, tkKidRow, tkLinkRow, tkAssignmentRow, tkStepRow, tkSessionRow, tkRewardRow, tkLedgerRow,
-  dayWithPlan };
+  withHomeworkTokens, homeworkTokenRpc, personDayHomework, tkKidRow, tkLinkRow, tkAssignmentRow, tkStepRow, tkSessionRow, tkRewardRow, tkLedgerRow };

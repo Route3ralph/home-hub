@@ -292,6 +292,13 @@ const WEEK = [
         bad([st({ day: '2026-11-01' })]), bad([st({ id: 'a', day: '2026-11-01' })], { orig: { a: '2026-11-01' } }), bad([st({ id: 'a' }), st({ id: 'a' })]),
         bad([st({ kind: 'nonsense' })]), bad([st({ done: true, minutes: 2, title: 'x' })]), bad([st({ kind: 'turn_in', minutes: 5, day: '2026-11-13' })]),
         bad([st({ day: null })]), bad([])],
+      // The due date as the database has it: a lesson's do-by day is a work day; a step kept on the due date
+      // (not moved there) stands; a due date today or past takes steps up to today.
+      dueRules: [bad([st({ day: '2026-11-13' })], { kind: 'lesson' }), bad([st({ day: '2026-11-14' })], { kind: 'lesson' }),
+        bad([st({ id: 'a', day: '2026-11-13' })], { orig: { a: '2026-11-13' } }), bad([st({ id: 'a', day: '2026-11-13' })], { orig: { a: '2026-11-12' } }),
+        bad([st({ day: '2026-11-02' })], { due: '2026-11-02' }), bad([st({ day: '2026-11-02' })], { due: '2026-10-30' }), bad([st({ day: '2026-11-03' })], { due: '2026-10-30' })],
+      practiceThu: ((steps) => [steps[steps.length - 1].day, bad(steps, { due: '2026-11-05', kind: 'lesson' }), bad(steps, { due: '2026-11-05', kind: 'assignment' })])(
+        P.starter('practice', { lang: 'en', length: 15, today: '2026-11-02', due: '2026-11-05', asOf: '2026-11-02T16:31', week: WEEK })),
     };
   }, WEEK);
   check('every starter plan, in both languages and at every length, passes plan_check\'s rules: a "done looks like" on every step, minutes cut to his first length (the turn-in stays 5), source template, no days but Practice\'s',
@@ -326,6 +333,10 @@ const WEEK = [
   check('check(): 21 steps, 5 milestones, two turn-ins, a turn-in not last, 4 and 61 and 12.5 minutes, a 2- and an 81-character title, a 161-character "done looks like", a day after the due date, a plain step on it, a new or moved step in the past (a kept past day is fine), one id twice, an unknown kind; done steps as they are; a turn-in on the due date, no day, and no steps are fine',
     same(starters.rules, ['too_many_steps@20', 'too_many_milestones@4', 'one_turn_in@1', 'turn_in_last@0', 'minutes_range@1', 'minutes_range@0', 'minutes_range@0', 'title_len@0', 'title_len@0',
       'dll_len@0', 'after_due@0', 'due_day@0', 'in_past@0', null, 'same_id@1', 'bad_kind@0', null, null, null, null]), JSON.stringify(starters.rules));
+  check('check() and the due date, as plan_check and plan_save have it: a lesson\'s plain step on its do-by day is fine (not after it); a step kept on an assignment\'s due date stands, one moved there doesn\'t; due today or past, steps go up to today',
+    same(starters.dueRules, [null, 'after_due@0', null, 'due_day@0', null, null, 'after_due@0']), JSON.stringify(starters.dueRules));
+  check('Practice for a lesson whose do-by day is a homework day (Thu): its last block on Thu passes check() as a lesson (an assignment due Thu couldn\'t have it)',
+    same(starters.practiceThu, ['2026-11-05', null, 'due_day@3']), JSON.stringify(starters.practiceThu));
 
   // =====================================================================
   // 5. The two bars, the week strip, pace and focused minutes
@@ -709,6 +720,21 @@ const WEEK = [
   text = await edText();
   check('the editor in Spanish', ['Empezar con un plan base', 'Añadir un paso', 'Colocar de nuevo', 'Guardar', 'Darle este plan a Jordan', 'para el vie 13 nov (11 días)', 'Trabajo pendiente',
     'No cabe: añade tiempo de tarea, quita un paso o habla con el profesor.', 'de el vie'].every((x, i) => (i === 8 ? !text.includes(x) : text.includes(x))), text);
+
+  // A lesson whose do-by day is a homework day (Thu): Practice puts its last block on Thu, and the editor saves it
+  // (the database's last work day for a lesson is its do-by day).
+  const LT = { id: 'a-8', kind: 'lesson', title: 'Fractions practice', subject: 'Math', due_date: '2026-11-05', status: 'open', plan_rev: 0, given_at: null, given_by: null,
+    time_left: 120, horizon: null, no_time: false, steps: [] };
+  await ev(({ LT }) => window.mountEditor('edl', 'family', LT), { LT });
+  await page.click('#edl [data-act="starter"]');
+  await page.click('#edl [data-starter="practice"]');
+  await settle();
+  const lc = await ev(() => window.edl.f.calls);
+  const lmsg = await page.$eval('#edl', (b) => (b.querySelector('.plan-msg') || {}).textContent || '');
+  check('editor: Practice for a lesson due Thu saves at once, its last block (the milestone) on Thu, with no "Only the turn-in goes on the due date."',
+    lc.length === 1 && same(lc[0][1].steps.map((s) => [s.day, s.kind]), [['2026-11-02', 'step'], ['2026-11-03', 'step'], ['2026-11-04', 'step'], ['2026-11-05', 'milestone']])
+    && !/due date/.test(lmsg), JSON.stringify([lc, lmsg]));
+  await ev(() => { window.edl.ed.stop(); document.getElementById('edl').remove(); });
 
   // =====================================================================
   // 9. The editor with Jordan's rules (#plan/<id>)

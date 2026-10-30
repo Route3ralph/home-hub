@@ -37,8 +37,8 @@
 // Tonight, From earlier with Re-plan, Due soon with the bars, Behind the plan and the milestone line that opens
 // Ask Pat, the who-sees line), tick and Undo, Not today, Quick and + Homework, his cue; #points (ask, cancel,
 // suggest, decided, the last entries, points off); #plan/<id> in his role; every new word and database message
-// in Spanish; no tutor link; homework off while open; hostile text. plan.js and plan.css are added to day.html by
-// mock.js's dayWithPlan while day.html doesn't load them yet.
+// in Spanish; no tutor link; homework off while open; hostile text; a phone where plan.js didn't load (the day as
+// before, with no card).
 // mock.js answers RPCs for signed-in members only, so the token functions (called signed out) are
 // answered by a route added here; everything else (config.js, supabase-js) comes from mock.js.
 // The browser runs in Pacific/Kiritimati (UTC+14) with its clock set so the device's date is a day
@@ -49,7 +49,7 @@ const crypto = require('crypto');
 const { chromium } = require('playwright');
 const { makeDb, install, signIn, SUPA, withFood, foodRpc, personDayFood, shopItem, mealRow, withHomeworkTokens, homeworkTokenRpc: homeworkRpc,
   personDayHomework, tkKidRow: hwKidRow, tkLinkRow: tutorLinkRow, tkAssignmentRow: assignmentRow, tkStepRow: stepRow, tkSessionRow: sessionRow,
-  tkRewardRow: rewardRow, tkLedgerRow: ledgerRow, dayWithPlan } = require('./mock');
+  tkRewardRow: rewardRow, tkLedgerRow: ledgerRow } = require('./mock');
 const { serve, ROOT } = require('./server');
 
 let BASE = '';
@@ -444,7 +444,8 @@ const HW_STUBS = () => {
     if (opts.init) await context.addInitScript(opts.init);
     const page = await context.newPage();
     await page.clock.install({ time: opts.device || DEVICE_NOW });
-    if (opts.plan) await dayWithPlan(page);
+    // opts.noPlan: plan.js doesn't load (a phone that kept an older day.html, or a failed fetch).
+    if (opts.noPlan) await page.route(/\/assets\/plan\.js/, (route) => route.abort('failed'));
     page.on('pageerror', (e) => errors.push(`${opts.label}: ${e.message}`));
     page.on('console', (m) => {
       if (m.type() !== 'error') return;
@@ -1593,14 +1594,14 @@ const HW_STUBS = () => {
   const hwPause = async (pg) => pg.clock.pauseAt(new Date((await pg.evaluate(() => Date.now())) + 200));
 
   // A helper's My day: no card, no homework request (Taylor has no homework_kids row).
-  ({ page, db, requests } = await open({ label: 'hw-helper', path: `/day.html?t=${TAYLOR}`, db: hwDb(), plan: true, device: HW_DEVICE, init: HW_STUBS }));
+  ({ page, db, requests } = await open({ label: 'hw-helper', path: `/day.html?t=${TAYLOR}`, db: hwDb(), device: HW_DEVICE, init: HW_STUBS }));
   check('homework: no card on a helper\'s My day, and no homework request', !(await page.$('.hw-card')) && !hwCalls(db).length, db.calls.map((c) => c.name).join(','));
   await page.context().close();
   // Schema 4 (no 0005 yet): get_person_day has no homework key; the day draws as before, with no homework request.
   {
     const d4 = hwDb();
     delete d4.homework_kids;
-    ({ page, db } = await open({ label: 'hw-schema4', path: `/day.html?t=${JORDAN}`, db: d4, plan: true, device: HW_DEVICE, init: HW_STUBS }));
+    ({ page, db } = await open({ label: 'hw-schema4', path: `/day.html?t=${JORDAN}`, db: d4, device: HW_DEVICE, init: HW_STUBS }));
     check('homework: on schema 4 there is no card and no homework request; the day is as before',
       !(await page.$('.hw-card')) && !hwCalls(db).length && (await text(page, '.day-head h1')) === 'Hi, Jordan'
       && same((await rowsOf(page, 'today')).map((r) => r.title), ['Homework']), db.calls.map((c) => c.name).join(','));
@@ -1610,21 +1611,21 @@ const HW_STUBS = () => {
   {
     const off = hwDb();
     off.homework_kids[0].active = false;
-    ({ page, db } = await open({ label: 'hw-off', path: `/day.html?t=${JORDAN}`, db: off, plan: true, device: HW_DEVICE, init: HW_STUBS }));
+    ({ page, db } = await open({ label: 'hw-off', path: `/day.html?t=${JORDAN}`, db: off, device: HW_DEVICE, init: HW_STUBS }));
     check('homework: homework off → no card, no homework request', !(await page.$('.hw-card')) && !hwCalls(db).length);
     await page.context().close();
   }
-  // Without plan.js (day.html as it is before it loads it): the day still works, with no card.
+  // Without plan.js (it didn't load: a phone that kept an older day.html, or a failed fetch): the day still works, with no card.
   {
-    ({ page, db } = await open({ label: 'hw-noplan', path: `/day.html?t=${JORDAN}`, db: hwDb(), device: HW_DEVICE, init: HW_STUBS,
-      allowConsole: /plan\.js/ }));
+    ({ page, db } = await open({ label: 'hw-noplan', path: `/day.html?t=${JORDAN}`, db: hwDb(), noPlan: true, device: HW_DEVICE, init: HW_STUBS,
+      allowConsole: /plan\.js|ERR_FAILED/ }));
     const planLoaded = await page.evaluate(() => typeof window.HomePlan);
     check('homework: without plan.js the day draws as before (no card, no homework request)',
-      planLoaded !== 'undefined' || (!(await page.$('.hw-card')) && !hwCalls(db).length && !!(await page.$('.day-sec'))), planLoaded);
+      planLoaded === 'undefined' && !(await page.$('.hw-card')) && !hwCalls(db).length && !!(await page.$('.day-sec')), planLoaded);
     await page.context().close();
   }
 
-  ({ page, db, requests } = await open({ label: 'hw-en', path: `/day.html?t=${JORDAN}`, db: hwDb(), plan: true, device: HW_DEVICE, init: HW_STUBS }));
+  ({ page, db, requests } = await open({ label: 'hw-en', path: `/day.html?t=${JORDAN}`, db: hwDb(), device: HW_DEVICE, init: HW_STUBS }));
   check('homework card: under the greeting, above today\'s items',
     await page.evaluate(() => { const c = document.querySelector('.hw-card'); const h = document.querySelector('.day-head'); const s = document.querySelector('.day-sec');
       return !!(c && h && s && (h.compareDocumentPosition(c) & 4) && (c.compareDocumentPosition(s) & 4)); }));
@@ -1763,7 +1764,7 @@ const HW_STUBS = () => {
   // =====================================================================
   const hwSizes = [['phone', phone(), 390], ['window', { viewport: { width: 420, height: 800 } }, 420], ['desktop', { viewport: { width: 1280, height: 800 } }, 1280]];
   for (const [label, ctx, width] of hwSizes) {
-    ({ page, db } = await open({ label: `hw-${label}`, path: `/day.html?t=${JORDAN}#homework`, db: hwDb(), plan: true, device: HW_DEVICE, init: HW_STUBS, ctx }));
+    ({ page, db } = await open({ label: `hw-${label}`, path: `/day.html?t=${JORDAN}#homework`, db: hwDb(), device: HW_DEVICE, init: HW_STUBS, ctx }));
     await page.waitForSelector('.hw-now-card');
     check(`#homework at ${width}px: no sideways scroll`, await noSideScroll(page));
     await page.screenshot({ path: SHOTS + `day-hw-${label}.png`, fullPage: true });
@@ -1937,7 +1938,7 @@ const HW_STUBS = () => {
   {
     const d = hwDb();
     // A block of his 12 minutes old, still open: the card says how long is left, and #focus shows it.
-    ({ page, db } = await open({ label: 'hw-stop', path: `/day.html?t=${JORDAN}`, db: d, plan: true, device: HW_DEVICE, init: HW_STUBS }));
+    ({ page, db } = await open({ label: 'hw-stop', path: `/day.html?t=${JORDAN}`, db: d, device: HW_DEVICE, init: HW_STUBS }));
     await page.click('.hw-card [data-act="hw-card-start"]');
     await page.waitForSelector('.hw-ring');
     await hwPause(page);
@@ -1964,7 +1965,7 @@ const HW_STUBS = () => {
     const d = hwDb();
     d.focus_sessions.push(sessionRow({ id: hid(99), kid_id: P.jordan, assignment_id: H.math, step_id: H.m1, minutes: 20, started_at: hwStamp(d.hwNow - 8 * 60000),
       ends_at: hwStamp(d.hwNow + 12 * 60000), on_time: true }));
-    ({ page, db } = await open({ label: 'hw-running', path: `/day.html?t=${JORDAN}`, db: d, plan: true, device: HW_DEVICE, init: HW_STUBS, allowConsole: /ERR_INTERNET_DISCONNECTED/ }));
+    ({ page, db } = await open({ label: 'hw-running', path: `/day.html?t=${JORDAN}`, db: d, device: HW_DEVICE, init: HW_STUBS, allowConsole: /ERR_INTERNET_DISCONNECTED/ }));
     check('a block running: the card says "Focus · 12 min left ›" (from ends_in_s), linking to #focus',
       (await hwText(page, '.hw-card a.hw-card-focus')) === 'Focus · 12 min left ›' && (await page.$eval('.hw-card a.hw-card-focus', (a) => a.getAttribute('href'))) === '#focus'
       && !(await page.$('.hw-card [data-act="hw-card-start"]')), await hwText(page, '.hw-card'));
@@ -1988,7 +1989,7 @@ const HW_STUBS = () => {
   }
   {
     // Offline: Start says it needs a connection and calls nothing.
-    ({ page, db } = await open({ label: 'hw-offline', path: `/day.html?t=${JORDAN}#homework`, db: hwDb(), plan: true, device: HW_DEVICE, init: HW_STUBS, allowConsole: /ERR_INTERNET_DISCONNECTED/ }));
+    ({ page, db } = await open({ label: 'hw-offline', path: `/day.html?t=${JORDAN}#homework`, db: hwDb(), device: HW_DEVICE, init: HW_STUBS, allowConsole: /ERR_INTERNET_DISCONNECTED/ }));
     await page.waitForSelector('.hw-now-card');
     await page.context().setOffline(true);
     await page.click('.hw-now-card [data-act="hw-start"]');
@@ -2009,7 +2010,7 @@ const HW_STUBS = () => {
   }
   {
     // A computer: the one-time "Show a notification when a block ends", asked inside the tap.
-    ({ page, db } = await open({ label: 'hw-notify', path: `/day.html?t=${JORDAN}#homework`, db: hwDb(), plan: true, device: HW_DEVICE, init: HW_STUBS }));
+    ({ page, db } = await open({ label: 'hw-notify', path: `/day.html?t=${JORDAN}#homework`, db: hwDb(), device: HW_DEVICE, init: HW_STUBS }));
     await page.waitForSelector('.hw-now-card');
     check('a computer: "Show a notification when a block ends"', (await hwText(page, '[data-act="hw-notify"]')) === 'Show a notification when a block ends');
     await page.click('[data-act="hw-notify"]');
@@ -2024,7 +2025,7 @@ const HW_STUBS = () => {
     const d = hwDb();
     d.points_ledger.push(ledgerRow({ kid_id: P.jordan, at: hwStamp(d.hwNow - 3600000), day: HWT, kind: 'focus', delta: 4, note: 'Do worksheet 4.2', who: 'Jordan (My day)' }),
       ledgerRow({ kid_id: P.jordan, at: hwStamp(d.hwNow - 3500000), day: HWT, kind: 'on_time', delta: 5, note: 'Do worksheet 4.2', who: 'Jordan (My day)' }));
-    ({ page, db } = await open({ label: 'hw-points', path: `/day.html?t=${JORDAN}#points`, db: d, plan: true, device: HW_DEVICE, init: HW_STUBS, ctx: phone() }));
+    ({ page, db } = await open({ label: 'hw-points', path: `/day.html?t=${JORDAN}#points`, db: d, device: HW_DEVICE, init: HW_STUBS, ctx: phone() }));
     await page.waitForSelector('.hw-balance-big');
     check('#points: the balance and "+9 today", with no daily target', (await hwText(page, '.hw-balance-big')) === '★ 127' && (await hwText(page, '.hw-today')) === '+9 today'
       && !/ of /.test(await hwText(page, '.hw-today')), `${await hwText(page, '.hw-balance-big')} ${await hwText(page, '.hw-today')}`);
@@ -2071,7 +2072,7 @@ const HW_STUBS = () => {
   // =====================================================================
   {
     // The stale save below is refused with a 400, which Chrome logs.
-    ({ page, db } = await open({ label: 'hw-plan', path: `/day.html?t=${JORDAN}#plan/${H.sci}`, db: hwDb(), plan: true, device: HW_DEVICE, init: HW_STUBS, allowConsole: /status of 400/ }));
+    ({ page, db } = await open({ label: 'hw-plan', path: `/day.html?t=${JORDAN}#plan/${H.sci}`, db: hwDb(), device: HW_DEVICE, init: HW_STUBS, allowConsole: /status of 400/ }));
     await page.waitForSelector('.plan-editor');
     check('#plan/<id>: the editor in his role, with ‹ Homework', (await page.$eval('.plan-editor', (e) => e.dataset.role)) === 'kid' && (await hwText(page, '.hw-head .list-back')) === '‹ Homework');
     check('#plan/<id>: milestones and the turn-in locked, with "Milestones are checkpoints you set with Pat. Change them together."',
@@ -2104,7 +2105,7 @@ const HW_STUBS = () => {
   // =====================================================================
   {
     // The refusals below come back as 400 and 403, which Chrome logs.
-    ({ page, db } = await open({ label: 'hw-es', path: `/day.html?t=${JORDAN}`, db: hwDb({ lang: 'es', ifStuck: null }), plan: true, device: HW_DEVICE, init: HW_STUBS, ctx: phone(),
+    ({ page, db } = await open({ label: 'hw-es', path: `/day.html?t=${JORDAN}`, db: hwDb({ lang: 'es', ifStuck: null }), device: HW_DEVICE, init: HW_STUBS, ctx: phone(),
       allowConsole: /status of 40[03]/ }));
     check('Spanish card: "Tarea · 16:30 · 3 pasos · 45 min · 2 de antes", "Empezar · 20 min", "Abrir ›"',
       (await hwText(page, '.hw-card-head')) === 'Tarea · 16:30 · 3 pasos · 45 min · 2 de antes' && (await hwText(page, '.hw-card [data-act="hw-card-start"]')) === 'Empezar · 20 min'
@@ -2172,7 +2173,7 @@ const HW_STUBS = () => {
   }
   {
     // No tutor link: "Ask for help", and the words without Pat.
-    ({ page, db } = await open({ label: 'hw-notutor', path: `/day.html?t=${JORDAN}#homework`, db: hwDb({ noTutor: true }), plan: true, device: HW_DEVICE, init: HW_STUBS }));
+    ({ page, db } = await open({ label: 'hw-notutor', path: `/day.html?t=${JORDAN}#homework`, db: hwDb({ noTutor: true }), device: HW_DEVICE, init: HW_STUBS }));
     await page.waitForSelector('.hw-now-card');
     check('no tutor link: "With your tutor" is left out, and the who-sees line names only the family',
       same(await page.$$eval('.hw-now-card select[name="with"] option', (os) => os.map((x) => x.value)), ['alone', 'parent'])
@@ -2184,7 +2185,7 @@ const HW_STUBS = () => {
   {
     // homework_by_token answers null (homework turned off a moment ago) while the day link works: the day, and a word.
     const d = hwDb();
-    ({ page, db } = await open({ label: 'hw-null', path: `/day.html?t=${JORDAN}`, db: d, plan: true, device: HW_DEVICE, init: HW_STUBS }));
+    ({ page, db } = await open({ label: 'hw-null', path: `/day.html?t=${JORDAN}`, db: d, device: HW_DEVICE, init: HW_STUBS }));
     db.homework_kids[0].active = false;
     await page.click('.hw-card a.hw-open');
     check('homework off while open: back to the day, with no card, and "Homework isn\'t on your My day right now."',
@@ -2203,7 +2204,7 @@ const HW_STUBS = () => {
     const d = hwDb();
     d.homework_steps.find((s) => s.id === H.m1).title = '<img src=x onerror="window.__xss=1">';
     d.homework_steps.find((s) => s.id === H.m1).answer = '<b>bold</b>';
-    ({ page, db } = await open({ label: 'hw-xss', path: `/day.html?t=${JORDAN}#homework`, db: d, plan: true, device: HW_DEVICE, init: HW_STUBS }));
+    ({ page, db } = await open({ label: 'hw-xss', path: `/day.html?t=${JORDAN}#homework`, db: d, device: HW_DEVICE, init: HW_STUBS }));
     await page.waitForSelector('.hw-now-card');
     check('a hostile title and answer are drawn as text', (await hwText(page, '.hw-now-title')) === '<img src=x onerror="window.__xss=1">'
       && !(await page.$('.hw-now-card img, .hw-note b')) && !(await page.evaluate(() => window.__xss)));

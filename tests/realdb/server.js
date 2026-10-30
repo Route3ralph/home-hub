@@ -228,13 +228,32 @@ function filterSql(cache, table, qualifier, col, spec) {
   return neg ? `not (${expr})` : expr;
 }
 
+// PostgREST's logical filters: or=(a.eq.1,and(b.is.null,c.not.is.null)) and and=(…), also as not.or= and
+// not.and=; each item is a column's filter written col.op.value (col.not.op.value), or a nested and(…),
+// or(…), not.and(…) or not.or(…). A value in double quotes keeps its commas and parentheses.
+function logicSql(cache, table, qualifier, op, tree) {
+  const m = /^\((.*)\)$/s.exec(tree);
+  if (!m || m[1] === '') throw pgrst(400, 'PGRST100', `"failed to parse logic tree (${tree})" (line 1, column 1)`);
+  const items = splitTopLevel(m[1]).map((item) => {
+    const nested = /^(not\.)?(and|or)(\(.*\))$/s.exec(item);
+    if (nested) return `${nested[1] ? 'not ' : ''}${logicSql(cache, table, qualifier, nested[2], nested[3])}`;
+    const dot = item.indexOf('.');
+    if (dot < 1) throw pgrst(400, 'PGRST100', `"failed to parse logic tree (${tree})" (line 1, column 1)`);
+    const spec = item.slice(dot + 1).replace(/^((?:not\.)?(?:eq|neq|gt|gte|lt|lte|like|ilike|is)\.)"(.*)"$/s, '$1$2');
+    return filterSql(cache, table, qualifier, item.slice(0, dot), spec);
+  });
+  return `(${items.join(` ${op} `)})`;
+}
+
 function whereSql(cache, table, qualifier, params) {
   const conds = [];
   for (const [k, v] of params) {
-    if (RESERVED.has(k)) {
-      if (k === 'and' || k === 'or') throw new Error(`realdb server: logical filters (${k}) aren't supported`);
+    const logic = /^(not\.)?(and|or)$/.exec(k);
+    if (logic) {
+      conds.push(`${logic[1] ? 'not ' : ''}${logicSql(cache, table, qualifier, logic[2], v)}`);
       continue;
     }
+    if (RESERVED.has(k)) continue;
     conds.push(filterSql(cache, table, qualifier, k, v));
   }
   return conds.length ? `where ${conds.join(' and ')}` : '';

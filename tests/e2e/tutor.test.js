@@ -17,7 +17,7 @@
 const fs = require('fs');
 const { chromium } = require('playwright');
 const { makeDb, install, withHomeworkTokens, homeworkTokenRpc: homeworkRpc, tkKidRow: hwKidRow, tkLinkRow: tutorLinkRow, tkAssignmentRow: assignmentRow,
-  tkStepRow: stepRow, tkSessionRow: sessionRow, tkRewardRow: rewardRow, tkLedgerRow: ledgerRow, dayWithPlan } = require('./mock');
+  tkStepRow: stepRow, tkSessionRow: sessionRow, tkRewardRow: rewardRow, tkLedgerRow: ledgerRow } = require('./mock');
 const { serve } = require('./server');
 
 let BASE = '';
@@ -127,7 +127,6 @@ async function tokenRpcs(page, db) {
     const context = await browser.newContext(Object.assign({ viewport: { width: 1280, height: 900 }, timezoneId: 'Pacific/Kiritimati' }, opts.ctx));
     const page = await context.newPage();
     await page.clock.install({ time: DEVICE });
-    await dayWithPlan(page);
     page.on('pageerror', (e) => errors.push(`${opts.label}: ${e.message}`));
     page.on('console', (m) => {
       if (m.type() !== 'error') return;

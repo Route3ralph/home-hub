@@ -82,10 +82,13 @@
                                 block a day on his homework days up to the do-by day (o.today, o.due, o.asOf,
                                 o.week), each with its day, the last a milestone.
      check(steps, o)            null, or { key, i }: the first rule the plan breaks (plan_check's, and
-                                plan_save's "nothing new or moved in the past"): too_many_steps,
-                                too_many_milestones, one_turn_in, turn_in_last, same_id, bad_kind, title_len,
-                                dll_len, minutes_range, after_due, due_day, in_past. o: { due, today, orig:
-                                { <step id>: its saved day } }. Done steps are taken as they are.
+                                plan_save's "nothing new or moved in the past" and "only the turn-in on the
+                                due date"): too_many_steps, too_many_milestones, one_turn_in, turn_in_last,
+                                same_id, bad_kind, title_len, dll_len, minutes_range, after_due, due_day,
+                                in_past. o: { due, today, kind, orig: { <step id>: its saved day } }. As in
+                                the database: after_due is past the later of the due date and today; due_day
+                                is for an assignment due after today (a lesson's do-by day is a work day),
+                                for a step new or moved there. Done steps are taken as they are.
 
    DRAWING (HTML strings; user text escaped)
      bars(work, time, o)        Work left and Homework time left, each to scale against the longer; "Doesn't
@@ -839,10 +842,14 @@
       const m = s.minutes;
       if (!Number.isInteger(m) || m < LIMITS.minutes[0] || m > LIMITS.minutes[1]) return bad('minutes_range', i);
       if (s.day) {
-        if (x.due && s.day > x.due) return bad('after_due', i);
-        if (x.due && s.day === x.due && s.kind !== 'turn_in') return bad('due_day', i);
         const kept = x.orig && s.id != null ? x.orig[s.id] : undefined;
-        if (x.today && s.day < x.today && kept !== s.day) return bad('in_past', i);
+        const moved = kept !== s.day;
+        // plan_check takes the later of the due date and today; plan_save keeps the due date for the
+        // turn-in only on an assignment that is still ahead (a lesson works up to its do-by day).
+        const last = x.due && x.today && x.today > x.due ? x.today : x.due;
+        if (last && s.day > last) return bad('after_due', i);
+        if (moved && x.kind !== 'lesson' && x.due && !(x.today && x.due <= x.today) && s.day === x.due && s.kind !== 'turn_in') return bad('due_day', i);
+        if (x.today && s.day < x.today && moved) return bad('in_past', i);
       }
     }
     return null;
@@ -1243,7 +1250,7 @@
     function save(give, placeAgain) {
       if (!a || !o.api || !o.api.save) return;
       const list = payload(placeAgain);
-      const problem = check(list.map((x, i) => Object.assign({}, x, { done: steps[i].done })), { due: a.due_date, today: o.today, orig: origDays() });
+      const problem = check(list.map((x, i) => Object.assign({}, x, { done: steps[i].done })), { due: a.due_date, today: o.today, kind: a.kind, orig: origDays() });
       if (problem) {
         const n = problem.i + 1;
         msg = { text: problem.i < steps.length ? w('step_n', { n, text: w(`chk_${problem.key}`) }) : w(`chk_${problem.key}`), error: true };

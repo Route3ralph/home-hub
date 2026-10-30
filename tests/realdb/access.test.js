@@ -4,7 +4,8 @@
 // gets nothing from any table, and from the functions only the harmless HARMLESS ones (and empty
 // lists). The Google Calendar tables and functions (migration 0003), and the dinners and the shopping
 // list (migration 0004), are checked again with rows in their tables: anon reaches none of them, and a
-// My day link only what the token functions give it. Run through tests/realdb/run.sh.
+// My day link only what the token functions give it. Last, the stand-in's PostgREST logical filters
+// (or=, and=, nested, not.or=) give the rows the SQL they stand for gives. Run through tests/realdb/run.sh.
 const { setup } = require('./lib');
 
 const TOKEN_FNS = ['get_person_day', 'complete_by_token', 'undo_by_token', 'confirm_digest', 'stop_digest', 'get_shared_project',
@@ -230,6 +231,23 @@ const emptyLists = (b) => !!b && typeof b === 'object' && !Array.isArray(b)
     const after = await sql(`select (select count(*) from meals) as m, (select count(*) from shopping_items) as s, (select count(*) from my_day_use) as u,
       (select string_agg(name || ':' || coalesce(bought_at::text, '-') || ':' || added_at, ',' order by name) from shopping_items) as rows`);
     check('food: nothing was changed (the dinners, the lines and the counter are as they were)', JSON.stringify(after) === JSON.stringify(before), { before, after });
+  });
+
+  // The stand-in's logical filters (PostgREST's or=, and=, nested and(…)/or(…), not.or=, a quoted in.(…)), which
+  // Today's homework read uses: the same rows as the SQL they stand for, read as Alex.
+  await flow('logical filters', async () => {
+    const alex = (await h.sessionFor('alex@example.com')).access_token;
+    const names = async (q) => {
+      const r = await h.api(`/rest/v1/people?select=name${q}&order=name`, { headers: { authorization: `Bearer ${alex}` } });
+      return [r.status, Array.isArray(r.body) ? r.body.map((x) => x.name) : r.body];
+    };
+    const want = async (w) => [200, (await sql(`select name from people where ${w} order by name`)).map((x) => x.name)];
+    const got = [await names('&or=(role.eq.kid,and(role.eq.helper,language.eq.es))'), await names('&and=(role.neq.kid,or(email.is.null,phone.not.is.null))'),
+      await names('&not.or=(role.eq.kid,role.eq.helper)'), await names('&or=(name.in.("Jordan Example","Taylor Example"),name.eq."Alex Example")')];
+    const exp = [await want("role = 'kid' or (role = 'helper' and language = 'es')"), await want("role <> 'kid' and (email is null or phone is not null)"),
+      await want("not (role = 'kid' or role = 'helper')"), await want("name in ('Jordan Example', 'Taylor Example', 'Alex Example')")];
+    check('logical filters: or=, and=, nested, not.or= and quoted values give the rows the SQL gives (and some rows each)',
+      JSON.stringify(got) === JSON.stringify(exp) && exp.every(([, n]) => n.length > 0), { got, exp });
   });
 
   await h.finish();
