@@ -1,0 +1,205 @@
+/* =====================================================================
+   Home Hub v1.3: styles for homework's shared pieces (assets/plan.js):
+   the two bars, the week strip, the timer's ring, the plan editor and
+   Pat's link. Loaded by index.html (the Homework page) and day.html (My
+   day and Pat's link), so it uses only styles.css's tokens and shared
+   pieces (buttons, fields, section heads), never a page's own. Light and
+   dark come from the colour tokens. Every tap target is at least 44px,
+   and nothing scrolls the page sideways at 390px.
+   ===================================================================== */
+
+/* ---------- The two bars: Work left, Homework time left ----------
+   One grid for both, so their tracks start and end together; on a phone, each label and value over its track. */
+.plan-bars {
+  display: grid; grid-template-columns: max-content minmax(40px, 1fr) max-content; align-items: center; gap: 6px 10px;
+  margin: 8px 0 2px; min-width: 0; font-size: 13px;
+}
+.plan-bar { display: contents; }
+.plan-bar-label { color: var(--text-2); font-weight: 600; }
+.plan-bar-track { position: relative; height: 10px; border-radius: 999px; background: var(--surface-2); overflow: hidden; }
+.plan-bar-fill { position: absolute; inset: 0 auto 0 0; border-radius: inherit; background: var(--accent); }
+.plan-bar-time .plan-bar-fill { background: color-mix(in srgb, var(--accent) 45%, var(--surface-2)); }
+.plan-bars.is-over .plan-bar-work .plan-bar-fill { background: var(--warn); }
+.plan-bar-val { color: var(--text); font-weight: 650; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.plan-fit { grid-column: 1 / -1; margin: 2px 0 0; color: var(--text-3); font-size: 13px; }
+.plan-fit.is-over { color: var(--warn); font-weight: 600; }
+.plan-fit.is-ok { color: var(--accent); font-weight: 600; }
+@media (max-width: 420px) {
+  .plan-bars { grid-template-columns: minmax(0, 1fr); }
+  .plan-bar { display: grid; grid-template-columns: 1fr max-content; gap: 2px 10px; }
+  .plan-bar-track { grid-column: 1 / -1; grid-row: 2; }
+}
+
+/* ---------- The week strip: seven days, today first ---------- */
+.plan-week { list-style: none; margin: 6px 0 0; padding: 0; display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 6px; }
+.plan-wday {
+  min-width: 0; display: flex; flex-direction: column; gap: 4px;
+  padding: 8px 10px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); font-size: 13px;
+}
+.plan-wday.is-today { border-color: var(--accent); }
+.plan-wday.is-off { background: transparent; color: var(--text-3); }
+.plan-wday-name { color: var(--text-3); font-size: 12px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; }
+.plan-wday.is-today .plan-wday-name { color: var(--accent); }
+.plan-wday-bar { position: relative; display: block; height: 10px; border-radius: 4px; background: var(--accent-soft); overflow: hidden; }
+.plan-wday-busy-seg {
+  position: absolute; top: 0; bottom: 0;
+  background: repeating-linear-gradient(135deg, var(--text-3) 0 2px, transparent 2px 5px); opacity: 0.55;
+}
+.plan-wday-planned { position: absolute; left: 0; bottom: 0; height: 3px; background: var(--accent); }
+.plan-wday-planned.is-over { background: var(--warn); }
+.plan-wday-text { font-weight: 650; overflow-wrap: anywhere; }
+.plan-wday.is-over .plan-wday-text { color: var(--warn); }
+.plan-wday-busy { color: var(--text-3); font-size: 12px; overflow-wrap: anywhere; }
+/* Phones: one line a day, so the words fit. */
+@media (max-width: 760px) {
+  .plan-week { grid-template-columns: 1fr; gap: 0; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); padding: 2px 12px; }
+  .plan-wday {
+    display: grid; grid-template-columns: 44px 64px 1fr; align-items: center; gap: 2px 10px;
+    min-height: 44px; padding: 6px 0; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: none;
+  }
+  .plan-wday:last-child { border-bottom: 0; }
+  .plan-wday.is-off { background: none; }
+  .plan-wday.is-today { border-color: var(--line); }
+  .plan-wday-busy { grid-column: 3; }
+}
+
+/* ---------- The timer's ring ---------- */
+.plan-ring { display: block; width: min(240px, 64vw); height: auto; }
+.plan-ring circle { fill: none; stroke-width: 7; }
+.plan-ring-track { stroke: var(--surface-2); }
+.plan-ring-left { stroke: var(--accent); stroke-linecap: round; transition: stroke-dashoffset 0.4s linear; }
+.plan-ring.is-done .plan-ring-track { fill: var(--accent-soft); stroke: var(--accent); }
+
+/* ---------- The plan editor ---------- */
+.plan-editor { min-width: 0; }
+.plan-ed-head { margin: 0 0 6px; }
+.plan-ed-title { margin: 0; font-size: 20px; line-height: 1.25; overflow-wrap: anywhere; }
+.plan-ed-due { margin: 2px 0 0; color: var(--text-2); font-size: 14px; }
+.plan-text { margin: 8px 0; }
+.plan-text summary, .plan-done summary, .plan-more-week summary {
+  display: inline-flex; align-items: center; min-height: 44px; color: var(--accent); font-weight: 650; cursor: pointer;
+}
+.plan-text-body {
+  padding: 10px 12px; border-radius: 10px; background: var(--surface-2); color: var(--text-2);
+  font-size: 14px; white-space: pre-line; overflow-wrap: anywhere; max-height: 320px; overflow: auto;
+}
+.plan-tools, .plan-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 10px 0; }
+.plan-tools .btn, .plan-actions .btn { min-height: 44px; }
+.plan-given { flex: 1 1 100%; margin: 0; color: var(--text-3); font-size: 13px; }
+.plan-starter { margin: 0 0 10px; padding: 12px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface-2); }
+.plan-starter-q { margin: 0 0 8px; color: var(--text-2); font-size: 14px; }
+.plan-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.plan-chip {
+  min-height: 44px; padding: 6px 14px; border: 1.5px solid var(--border); border-radius: 999px;
+  background: var(--surface); color: var(--text); font-size: 15px; font-weight: 550; cursor: pointer;
+}
+.plan-chip:hover { border-color: var(--text-3); }
+.plan-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.plan-chip.is-guess { border-color: var(--accent); background: var(--accent-soft); font-weight: 650; }
+.plan-starter-foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin-top: 10px; }
+.plan-parts { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-2); }
+.plan-parts input { width: 72px; min-height: 44px; }
+
+.plan-steps {
+  list-style: none; margin: 0; padding: 0 10px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow);
+}
+.plan-step { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 4px 10px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+.plan-step:last-child { border-bottom: 0; }
+.plan-box {
+  flex: none; display: grid; place-items: center; width: 26px; height: 26px; margin-top: 2px;
+  border: 2px solid var(--text-3); border-radius: 8px; color: var(--surface);
+}
+.plan-box svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
+.plan-box.is-done { background: var(--accent); border-color: var(--accent); }
+.plan-step.k-milestone .plan-box:not(.is-done) { border-color: var(--accent); color: var(--accent); }
+.plan-step.k-milestone .plan-box:not(.is-done) svg { width: 14px; height: 14px; fill: currentColor; stroke: none; }
+.plan-step-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.plan-step-title { font-weight: 600; overflow-wrap: anywhere; }
+.plan-step.k-milestone .plan-step-title { font-weight: 700; }
+.plan-step.is-done .plan-step-title { color: var(--text-3); text-decoration: line-through; }
+.plan-step-sub { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; color: var(--text-3); font-size: 13px; }
+.plan-day { width: auto; max-width: 100%; min-height: 36px; padding: 4px 8px; font-size: 14px; }
+.plan-step-day { color: var(--text-2); font-weight: 600; }
+.plan-step-min { font-variant-numeric: tabular-nums; }
+.plan-tag { padding: 1px 8px; border-radius: 999px; background: var(--surface-2); color: var(--text-2); font-size: 12px; font-weight: 650; }
+.plan-step.k-milestone .plan-tag { background: var(--accent-soft); color: var(--accent); }
+.plan-step-moved { color: var(--text-3); }
+.plan-step-dll { color: var(--text-2); font-size: 13px; overflow-wrap: anywhere; }
+.plan-more {
+  flex: none; display: grid; place-items: center; width: 44px; height: 44px; margin: -6px -6px 0 0;
+  border: 0; border-radius: 50%; background: none; color: var(--text-2); cursor: pointer;
+}
+.plan-more svg { width: 20px; height: 20px; fill: currentColor; }
+.plan-more:hover, .plan-more:focus-visible, .plan-more[aria-expanded="true"] { background: var(--surface-2); outline: none; }
+.plan-lock { flex: none; display: grid; place-items: center; width: 44px; height: 32px; color: var(--text-3); }
+.plan-lock svg, .plan-lock-note svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linejoin: round; }
+.plan-step-edit {
+  flex: 1 1 100%; display: grid; gap: 10px; margin: 6px 0 2px; padding: 12px;
+  border-radius: 12px; background: var(--surface-2);
+}
+.plan-edit-acts { display: flex; flex-wrap: wrap; gap: 8px; }
+.plan-edit-acts .btn { min-height: 44px; }
+.plan-edit-acts .btn-primary { margin-left: auto; }
+.plan-lock-note { display: flex; align-items: flex-start; gap: 8px; margin: 10px 0 0; color: var(--text-2); font-size: 14px; }
+.plan-lock-note svg { flex: none; margin-top: 3px; }
+.plan-ed-fit { margin: 10px 0 0; }
+.plan-msg { margin: 10px 0 0; padding: 8px 12px; border-radius: 9px; background: var(--accent-soft); color: var(--text); font-size: 14px; }
+.plan-msg.is-error { background: var(--danger-soft); color: var(--danger); }
+.plan-empty { padding: 14px 2px; }
+.plan-editor[aria-busy="true"] { opacity: 0.85; }
+
+/* ---------- Pat's link (day.html?h=) ---------- */
+.plan-tutor { min-width: 0; }
+.plan-head h1 { overflow-wrap: anywhere; }
+.plan-head .meta { margin: 0 0 6px; color: var(--text-2); }
+.plan-coach { margin: 0 0 4px; padding: 10px 12px; border-radius: 10px; background: var(--accent-soft); color: var(--text); font-size: 15px; }
+.plan-sec { margin-top: 18px; }
+.plan-sec .sec-head { flex-wrap: wrap; }
+.plan-adds { display: inline-flex; flex-wrap: wrap; gap: 8px; margin-left: auto; letter-spacing: 0; text-transform: none; }
+.plan-adds .btn { min-height: 44px; }
+.plan-rows, .plan-arows, .plan-record {
+  list-style: none; margin: 0; padding: 0 12px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow);
+}
+.plan-row, .plan-arow { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; min-height: 56px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+.plan-row:last-child, .plan-arow:last-child { border-bottom: 0; }
+.plan-row-main { flex: 1 1 220px; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.plan-row-title { font-weight: 650; overflow-wrap: anywhere; }
+.plan-row-sub { color: var(--text-3); font-size: 13px; overflow-wrap: anywhere; }
+.plan-row-q { color: var(--text); overflow-wrap: anywhere; }
+.plan-row-a { color: var(--accent); font-size: 14px; overflow-wrap: anywhere; }
+.plan-row-acts { display: flex; flex-wrap: wrap; gap: 8px; }
+.plan-row-acts .btn { min-height: 44px; }
+.plan-row-link, .plan-arow-link {
+  flex: 1 1 100%; min-width: 0; min-height: 44px; display: flex; flex-direction: column; justify-content: center; gap: 2px;
+  color: var(--text); text-decoration: none;
+}
+.plan-row-link:hover .plan-row-title, .plan-arow-link:hover .plan-row-title { color: var(--accent); }
+.plan-arow-state { color: var(--text-2); font-size: 13px; font-weight: 600; }
+.plan-arow .plan-bars { flex: 1 1 100%; }
+.plan-diamond { display: inline-grid; place-items: center; margin-right: 6px; color: var(--accent); vertical-align: -1px; }
+.plan-diamond svg { width: 12px; height: 12px; fill: currentColor; }
+.plan-note { flex: 1 1 100%; display: grid; gap: 8px; padding: 10px 12px; border-radius: 12px; background: var(--surface-2); }
+.plan-note .form-actions .btn { min-height: 44px; }
+.plan-done, .plan-more-week { margin-top: 8px; }
+.plan-record li { padding: 10px 0; border-bottom: 1px solid var(--line); font-size: 14px; overflow-wrap: anywhere; }
+.plan-record li:last-child { border-bottom: 0; }
+.plan-pace { margin: 8px 0 0; color: var(--text-2); font-size: 14px; }
+.plan-tutor-a .back { display: inline-flex; align-items: center; min-height: 44px; font-weight: 600; }
+.plan-tutor-a .plan-head { margin-bottom: 12px; }
+.plan-ed { margin-top: 18px; }
+.plan-afields { margin: 0; padding: 16px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }
+.plan-afields .form-actions .btn { min-height: 44px; }
+.plan-kinds { display: flex; flex-wrap: wrap; gap: 8px; margin: 0; padding: 0; border: 0; min-width: 0; }
+.plan-kinds legend { width: 100%; padding: 0; margin-bottom: 4px; font-size: 13px; font-weight: 600; color: var(--text-2); }
+.plan-radio { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 14px; border: 1.5px solid var(--border); border-radius: 999px; cursor: pointer; }
+.plan-radio input { accent-color: var(--accent); }
+.plan-radio:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); font-weight: 650; }
+.plan-afields .plan-if-lesson, .plan-afields.is-lesson .plan-if-assignment { display: none; }
+.plan-afields.is-lesson .plan-if-lesson { display: inline; }
+.plan-afields textarea { min-height: 120px; }
+.plan-problem { margin-top: 20px; padding: 18px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }
+.plan-problem p { margin: 0; }
+.plan-problem p + p { margin-top: 12px; }
+.plan-problem .btn { min-height: 44px; }
