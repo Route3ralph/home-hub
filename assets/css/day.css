@@ -148,3 +148,155 @@
 .list-bought .sec-head { margin: 22px 0 6px; }
 .list-bought .lrow { color: var(--text-3); }
 .list-empty { padding: 16px 2px; font-size: 16px; }
+
+/* ---------- Homework (v1.3): the card, #homework, #focus, #points, #plan/<id> ----------
+   Big targets for one hand (44px and more), plain text for "behind" (never red), the ring from plan.css.
+   Every view also works in a 420px window beside his work on a computer. */
+.hw-card {
+  margin: 14px 0 0; padding: 12px 14px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow);
+}
+.hw-card-top, .hw-head-row { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.hw-card-head { margin: 0; font-size: 15px; font-weight: 650; color: var(--text-2); overflow-wrap: anywhere; }
+.hw-card-points, .hw-points { flex: none; font-weight: 700; text-decoration: none; white-space: nowrap; }
+.hw-card-next { margin: 6px 0 10px; font-size: 16px; font-weight: 600; overflow-wrap: anywhere; }
+.hw-card-acts { display: flex; flex-wrap: wrap; gap: 10px; }
+.hw-card-acts .btn { min-height: 48px; padding: 10px 18px; font-size: 16px; }
+.hw-head h1 { margin: 2px 0 4px; }
+.hw-points { font-size: 18px; }
+.hw-block { margin: 14px 0 0; }
+.hw-block .btn { width: 100%; justify-content: center; }
+
+/* Now: the next step, its "done looks like", his cue, the length chips, with whom, one big Start */
+.hw-now-card {
+  padding: 14px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow);
+}
+.hw-now-title { margin: 0; font-size: 20px; font-weight: 700; line-height: 1.25; overflow-wrap: anywhere; }
+.hw-now-sub, .hw-now-dll { margin: 4px 0 0; color: var(--text-2); font-size: 14px; overflow-wrap: anywhere; }
+.hw-cue { margin: 10px 0 0; color: var(--text); font-style: italic; overflow-wrap: anywhere; }
+.hw-now-opts { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; margin: 12px 0; }
+.hw-lengths { display: flex; gap: 6px; }
+.hw-len {
+  min-width: 48px; min-height: 44px; padding: 0 10px;
+  border: 1px solid var(--border); border-radius: 999px; background: var(--surface); color: var(--text);
+  font-size: 16px; font-weight: 650; cursor: pointer;
+}
+.hw-len[aria-checked="true"] { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+.hw-with select { min-height: 44px; font-size: 16px; width: auto; }
+.hw-now-card .hw-start { width: 100%; }
+.hw-edit, .hw-link {
+  min-height: 44px; min-width: 44px; padding: 0 6px;
+  border: 0; background: none; color: var(--accent); font: inherit; font-style: normal; font-weight: 650; cursor: pointer; text-align: left;
+}
+.hw-link { padding: 0; min-width: 0; }
+
+/* Tonight, From earlier, Due soon */
+.hw-list {
+  padding: 2px 12px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow);
+}
+.hw-step { padding: 4px 0; border-bottom: 1px solid var(--line); }
+.hw-steps .hw-step:last-child { border-bottom: 0; }
+.hw-step-row { display: flex; align-items: center; gap: 6px; min-height: 56px; }
+.hw-step-main {
+  flex: 1; min-width: 0; min-height: 48px; padding: 4px 2px;
+  border: 0; background: none; color: var(--text); font: inherit; font-size: 16px; text-align: left; cursor: pointer;
+}
+.hw-step-title { font-weight: 600; overflow-wrap: anywhere; }
+.hw-step-min, .hw-step-from { color: var(--text-3); font-size: 14px; white-space: nowrap; }
+.hw-step.is-now .hw-step-title { color: var(--accent); }
+.hw-step.is-done .hw-step-title { color: var(--text-3); text-decoration: line-through; }
+.hw-step.k-milestone .hw-step-title::before { content: "◆ "; color: var(--accent); }
+.hw-more { flex: none; width: 44px; height: 44px; border: 0; border-radius: 50%; background: none; color: var(--text-2); cursor: pointer; }
+.hw-more svg { width: 20px; height: 20px; fill: currentColor; }
+.hw-more:hover, .hw-more[aria-expanded="true"] { background: var(--surface-2); }
+.hw-menu, .hw-step-acts { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 10px 46px; }
+.hw-menu .btn, .hw-step-acts .btn, .hw-noplan .btn { min-height: 40px; padding: 6px 12px; font-size: 14px; }
+.hw-note, .hw-q, .hw-waiting { margin: 0 0 8px 46px; color: var(--text-2); font-size: 14px; overflow-wrap: anywhere; }
+.hw-waiting { color: var(--accent); font-weight: 600; }
+.hw-noplan { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 0; border-top: 1px solid var(--line); }
+.hw-noplan-title { flex: 1 1 200px; min-width: 0; font-weight: 600; overflow-wrap: anywhere; }
+.hw-noplan-acts { display: flex; gap: 8px; }
+.hw-quick-chips { flex: 1 1 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; color: var(--text-2); font-size: 14px; }
+.hw-earlier { border-top: 1px solid var(--line); }
+.hw-earlier > summary {
+  display: flex; align-items: center; min-height: 48px; color: var(--text-2); font-weight: 650; cursor: pointer; list-style: none;
+}
+.hw-earlier > summary::-webkit-details-marker { display: none; }
+.hw-earlier-acts { margin: 6px 0 10px; }
+.hw-add { margin: 8px 0; }
+.hw-add .btn, .hw-earlier-acts .btn { min-height: 44px; }
+.hw-add-form { display: grid; gap: 10px; margin: 8px 0 12px; }
+.hw-add-form input { min-height: 44px; font-size: 16px; }
+.hw-asg { padding: 10px 0; border-bottom: 1px solid var(--line); }
+.hw-asg:last-child { border-bottom: 0; }
+.hw-asg.is-closed { color: var(--text-3); }
+.hw-asg-line { margin: 0; font-weight: 600; overflow-wrap: anywhere; }
+.hw-asg .plan-bars { margin: 8px 0 4px; }
+.hw-asg .hw-note, .hw-talk, .hw-stretch { margin: 6px 0 0; font-size: 14px; }
+.hw-stretch { color: var(--text-2); font-style: italic; overflow-wrap: anywhere; }
+.hw-pace, .hw-who { margin: 16px 0 0; color: var(--text-3); font-size: 14px; }
+.hw-opt { margin: 10px 0 0; }
+.hw-check { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; font-size: 14px; }
+
+/* #focus: a shrinking ring, the step, three buttons; no ticking seconds */
+.hw-focus { margin-top: 10px; text-align: center; }
+.hw-focus-sub { margin: 0; color: var(--text-2); font-size: 15px; overflow-wrap: anywhere; }
+.hw-focus-title { margin: 4px 0 6px; font-size: 22px; line-height: 1.25; overflow-wrap: anywhere; }
+.hw-focus-dll, .hw-focus-cue, .hw-ontime, .hw-tip { margin: 4px 0; color: var(--text-2); font-size: 15px; overflow-wrap: anywhere; }
+.hw-focus-cue { font-style: italic; color: var(--text); }
+.hw-ontime { color: var(--accent); font-weight: 650; }
+.hw-ring { position: relative; display: grid; place-items: center; margin: 14px auto; width: min(240px, 64vw); }
+.hw-ring .plan-ring { width: 100%; }
+.hw-left { position: absolute; color: var(--text-2); font-size: 16px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.hw-ring-small { width: min(120px, 40vw); }
+.hw-focus-acts, .hw-after-done, .hw-end-acts, .hw-end-next { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; margin: 12px 0 0; }
+.hw-focus-acts .btn, .hw-after-done .btn, .hw-end-acts .btn, .hw-end-next .btn { flex: 1 1 140px; }
+.hw-end { margin: 8px 0 0; text-align: left; }
+.hw-end h2 { margin: 0 0 10px; font-size: 20px; text-align: center; }
+.hw-end .field input { min-height: 44px; font-size: 16px; }
+.hw-end-points { margin: 0 0 6px; text-align: center; font-size: 17px; font-weight: 650; }
+.hw-end-balance { margin-left: 8px; color: var(--accent); }
+.hw-unsent { margin: 0; }
+.hw-break { display: grid; justify-items: center; gap: 8px; }
+.hw-break p { margin: 0; font-size: 17px; }
+
+/* The stuck sheet and the small forms: over the page, the ring still running underneath */
+.hw-sheet {
+  position: fixed; inset: 0; z-index: 40; display: flex; align-items: flex-end; justify-content: center;
+  padding: 16px; background: color-mix(in srgb, var(--text) 35%, transparent);
+}
+.hw-sheet-card {
+  width: 100%; max-width: 560px; max-height: calc(100vh - 32px); overflow: auto; padding: 18px; text-align: left;
+  background: var(--bg, var(--surface)); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow);
+}
+.hw-sheet-card h2 { margin: 0 0 8px; font-size: 18px; line-height: 1.3; overflow-wrap: anywhere; }
+.hw-sheet-head { display: flex; align-items: flex-start; gap: 4px; }
+.hw-sheet-head .hw-stuck-plan { flex: 1; margin: 0 0 8px; }
+.hw-sheet-acts { display: grid; gap: 4px; }
+.hw-sheet-acts .btn { width: 100%; justify-content: center; }
+.hw-sheet-hint { margin: 0 0 8px; color: var(--text-3); font-size: 13px; overflow-wrap: anywhere; }
+.hw-sheet .list-chips { margin: 8px 0; }
+.hw-inline { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
+.day .hw-inline input[type="text"] { flex: 1 1 160px; min-width: 0; width: auto; min-height: 48px; font-size: 16px; }
+.hw-inline .btn { min-height: 48px; padding: 0 18px; font-size: 16px; }
+
+/* #points */
+.hw-balance-big { margin: 10px 0 0; font-size: 32px; font-weight: 750; }
+.hw-today { margin: 2px 0 0; color: var(--text-2); }
+.hw-ask, .hw-reward { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; min-height: 52px; padding: 4px 0; border-bottom: 1px solid var(--line); }
+.hw-rewards .hw-reward:last-child { border-bottom: 0; }
+.hw-ask > span, .hw-reward-t { flex: 1 1 180px; min-width: 0; font-weight: 600; overflow-wrap: anywhere; }
+.hw-ask .btn, .hw-reward .btn { min-height: 40px; }
+.hw-more-needed { color: var(--text-3); font-size: 14px; }
+.hw-free, .hw-tell { margin: 8px 0; color: var(--text-2); font-size: 14px; }
+.hw-lines { margin: 0; padding: 4px 14px 4px 30px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }
+.hw-lines li { padding: 6px 0; overflow-wrap: anywhere; }
+.hw-suggest-hint { margin: 0; color: var(--text-3); font-size: 13px; }
+
+/* The tutor link (?h=): plan.js's tutor view, wider on a computer */
+.day.day-tutor { max-width: 960px; }
+
+@media (max-width: 640px) {
+  .hw-card-acts .btn { flex: 1 1 auto; justify-content: center; }
+  .hw-menu, .hw-step-acts, .hw-note, .hw-q, .hw-waiting { margin-left: 0; }
+}
