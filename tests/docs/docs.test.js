@@ -7,8 +7,8 @@
 //   • CLAUDE.md and tests/README.md name every suite tests/run.sh runs, and every public page;
 //   • day.html carries the same ?v= as index.html (CLAUDE.md says so);
 //   • docs/v2-design.md names every table, column, function and anon-callable function the
-//     migrations add, and every signature it, docs/v1.1-google-calendar.md or docs/v1.2-kitchen.md
-//     writes out has the migration's parameter names;
+//     migrations add, and every signature it, docs/v1.1-google-calendar.md, docs/v1.2-kitchen.md or
+//     docs/v1.3-homework.md writes out has the migration's parameter names;
 //   • from migration 0004 (v1.2) on, docs/v2-design.md writes out every new table, added column
 //     and constraint as the migration has it (in ```sql blocks), the signature of every public
 //     function, every private function, and every function a migration renames;
@@ -217,8 +217,9 @@ check(`docs/v2-design.md names every function a migration renames, old and new n
 check('docs/v2-design.md says a later change to a wrapped function replaces the wrapper and its _v3 body together',
   !renamed.some(([, to]) => /_v\d+$/.test(to)) || /replaces the wrapper and its `?_v3`? body together/.test(design));
 
-// Every signature written out in the design (and in the v1.1 and v1.2 designs,
-// docs/v1.1-google-calendar.md and docs/v1.2-kitchen.md) has the real parameter names, in order. A signature is
+// Every signature written out in the design (and in the v1.1, v1.2 and v1.3 designs,
+// docs/v1.1-google-calendar.md, docs/v1.2-kitchen.md and docs/v1.3-homework.md) has the real parameter names,
+// in order. A signature is
 // "f()" or arguments that are parameters: "p" or "p_…" (the migrations' naming), or a name and a type
 // ("p_from date", "t public.tasks"), or any plain names after a schema ("private.series_after(t, p_after)").
 // A call ("monday(start)", "series_after(greatest(due_date,
@@ -226,7 +227,7 @@ check('docs/v2-design.md says a later change to a wrapped function replaces the 
 const PARAM = /^(?:out\s+)?(?:p(?:_[a-z0-9_]*)?|[a-z_][a-z0-9_]*\s+[a-z_][a-z0-9_.]*(?:\[\])?)(?:\s+[a-z_][a-z0-9_.]*(?:\[\])?|\s+default\s+\S+)*$/i;
 const designSignatures = new Set();   // the functions whose signature docs/v2-design.md writes out
 for (const [file, text] of [['docs/v2-design.md', design], ['docs/v1.1-google-calendar.md', read('docs/v1.1-google-calendar.md')],
-  ['docs/v1.2-kitchen.md', read('docs/v1.2-kitchen.md')]]) {
+  ['docs/v1.2-kitchen.md', read('docs/v1.2-kitchen.md')], ['docs/v1.3-homework.md', read('docs/v1.3-homework.md')]]) {
   const wrong = [];
   let signatures = 0;
   for (const m of text.matchAll(/(?<![\w.])(?:(public|private)\.)?([a-z_][a-z0-9_]*)\(([^()]*)\)/g)) {
@@ -257,14 +258,17 @@ const missingAnon = [...anon].filter((n) => !words(tokenSec).has(n)).sort();
 check(`docs/v2-design.md "Anonymous token functions" lists every function anon can call (${[...anon].sort().join(', ')})`, anon.size > 0 && !missingAnon.length, `missing ${missingAnon.join(', ')}`);
 // Each function anon can call is a decision (a secret is its only key): adding one means adding it here,
 // to the design and to tests/db/access.test.sql. 0002: My day and the confirmation email; 0004 (v1.2):
-// the helper's shopping list.
-const ANON = ['add_to_list_by_token', 'buy_item_by_token', 'complete_by_token', 'confirm_digest', 'get_list_by_token', 'get_person_day',
-  'stop_digest', 'undo_by_token'];
+// the helper's shopping list; 0005 (v1.3): a kid's homework on My day (seven) and the tutor link (four).
+const ANON = ['add_to_list_by_token', 'assignment_by_token', 'buy_item_by_token', 'complete_by_token', 'confirm_digest', 'focus_by_token',
+  'get_list_by_token', 'get_person_day', 'homework_by_token', 'homework_prefs_by_token', 'plan_by_token', 'reward_by_token',
+  'step_by_token', 'stop_digest', 'tutor_assignment_by_token', 'tutor_plan_by_token', 'tutor_step_by_token', 'tutor_view_by_token',
+  'undo_by_token'];
 check(`the migrations let anon call exactly the ${ANON.length} token functions this check knows`, [...anon].sort().join() === ANON.join(), [...anon].sort());
-// They are all My day's (day.html), and CLAUDE.md says day.html calls only them.
+// They are all day.html's (My day, and from v1.3 the tutor link's mode), and CLAUDE.md says day.html calls only them.
 const missingClaude = ANON.filter((n) => !clientSec.includes(`\`${n}\``));
 check(`CLAUDE.md "Client code" names every token function day.html may call (${ANON.length})`, !missingClaude.length, `missing ${missingClaude.join(', ')}`);
-const NUMBER = { five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12 };
+const NUMBER = { five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12, thirteen: 13, fourteen: 14,
+  fifteen: 15, sixteen: 16, seventeen: 17, eighteen: 18, nineteen: 19, twenty: 20 };
 const counted = (/These (\w+) are the only new functions anon can call/.exec(tokenSec) || [])[1];
 check(`docs/v2-design.md "Anonymous token functions" counts them right ("These ${counted} are the only new functions anon can call": ${anon.size})`,
   NUMBER[String(counted).toLowerCase()] === anon.size, tokenSec.slice(0, 300));
@@ -278,7 +282,7 @@ check(`docs/v2-design.md "Anonymous token functions" counts them right ("These $
   const m0004 = migrationFiles.find((f) => f.startsWith('0004'));
   const added = functions(sqlNoComments(read(`supabase/migrations/${m0004}`))).filter((f) => !old.has(`${f.schema}.${f.name}`));
   const count = (schema) => new Set(added.filter((f) => f.schema === schema).map((f) => f.name)).size;
-  const N = Object.assign({ thirteen: 13, fourteen: 14, fifteen: 15, sixteen: 16, seventeen: 17, eighteen: 18, nineteen: 19, twenty: 20 }, NUMBER);
+  const N = NUMBER;
   const said = /(\w+) new public and (\w+) new private functions/.exec(section(read('docs/v1.2-kitchen.md'), /^## 2\. What ships/)) || [];
   check(`docs/v1.2-kitchen.md §2 counts the functions 0004 adds ("${said[1]} new public and ${said[2]} new private": ${count('public')} and ${count('private')})`,
     N[String(said[1]).toLowerCase()] === count('public') && N[String(said[2]).toLowerCase()] === count('private'), said[0]);
@@ -339,7 +343,8 @@ check(`docs/v2-design.md writes out every table, added column and constraint of 
 // ---------------------------------------------------------------------
 // Example data in the docs is fictional (CLAUDE.md "Test data"): phone numbers in 555-0100 to 555-0199
 // ---------------------------------------------------------------------
-for (const f of ['CLAUDE.md', 'README.md', 'docs/v2-design.md', 'docs/v1.1-google-calendar.md', 'docs/v1.2-kitchen.md', 'tests/README.md']) {
+for (const f of ['CLAUDE.md', 'README.md', 'docs/v2-design.md', 'docs/v1.1-google-calendar.md', 'docs/v1.2-kitchen.md',
+  'docs/v1.3-homework.md', 'tests/README.md']) {
   const bad = [...read(f).matchAll(/\b555-(\d{4})\b/g)].map((m) => m[0]).filter((n) => !/^555-01\d\d$/.test(n));
   check(`${f}: example phone numbers are fictional (555-0100 to 555-0199)`, !bad.length, bad);
 }
