@@ -1445,8 +1445,9 @@ const coachRpc = {
 // db.schoolReply replaces the answer, db.schoolRead(db, feed) is what a read brought (it may add items).
 // Without withSchool every one answers 404 and the keys aren't there, as on schema 5.
 // withSchoolCheck(db) (after withSchool) is 0008 (schema 8): the status card's check fills up with the latest past items
-// when fewer than 5 are to come, each with past (docs/v1.3-homework.md §12.8). Without it, 0006's check: only items due
-// today or later, no past key (so [] when every item is past), as on schema 6 and 7.
+// when fewer than 5 are to come, each with past (docs/v1.3-homework.md §12.8), and a removed link added again starts as
+// not read (set_school_feed). Without it, 0006's: a check of only items due today or later, no past key (so [] when every
+// item is past), and a link added again keeps its old last read, as on schema 6 and 7.
 const SCHOOL_KINDS = ['assignments', 'schedule', 'games'];
 const SCHOOL_URLS = new WeakMap();
 function withSchool(db, opts) {
@@ -1631,7 +1632,11 @@ const schoolRpc = {
     if (!f) {
       f = schoolFeedRow({ kid_id: b.p_kid, kind: b.p_kind, host, url_end: url.slice(-4), next_at: at, created_by: email, updated_by: email });
       db.school_feeds.push(f);
-    } else Object.assign(f, { host, url_end: url.slice(-4), next_at: at, fails: 0, last_stop: null, removed_at: null, updated_by: email, updated_at: now() });
+    } else {
+      // 0008 (db.schoolCheck8): a removed link added again starts as not read (Replace keeps its last read); 0006 keeps it.
+      if (db.schoolCheck8 && f.removed_at) Object.assign(f, { last_try_at: null, last_ok_at: null, last_count: null, last_repeats: null });
+      Object.assign(f, { host, url_end: url.slice(-4), next_at: at, fails: 0, last_stop: null, removed_at: null, updated_by: email, updated_at: now() });
+    }
     SCHOOL_URLS.get(db).set(f.id, url);
     return { id: f.id, kind: f.kind, host: f.host, url_end: f.url_end };
   }),

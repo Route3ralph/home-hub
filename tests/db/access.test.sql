@@ -46,6 +46,14 @@ select test.is((select p.prosecdef || ' ' || p.provolatile::text || ' ' || array
                 from pg_proc p where p.oid = 'public.school_feed_status(uuid)'::regprocedure),
                'true s search_path="" jsonb anon:false authenticated:true public:false service_role:false',
                'school_feed_status (replaced by 0008): definer, stable, search_path = '''', jsonb; signed-in users only');
+-- ... and set_school_feed (Add link, Replace, Remove; replaced by 0008 so a removed link added again starts as not
+-- read): the same rules as 0006 gave it, a volatile definer function only signed-in users may call.
+select test.is((select p.prosecdef || ' ' || p.provolatile::text || ' ' || array_to_string(p.proconfig, ',') || ' ' || p.prorettype::regtype::text
+                       || ' ' || (select string_agg(r || ':' || has_function_privilege(r, p.oid, 'execute'), ' ' order by r)
+                                  from unnest(array['public', 'anon', 'authenticated', 'service_role']) r)
+                from pg_proc p where p.oid = 'public.set_school_feed(uuid, text, text)'::regprocedure),
+               'true v search_path="" jsonb anon:false authenticated:true public:false service_role:false',
+               'set_school_feed (replaced by 0008): definer, volatile, search_path = '''', jsonb; signed-in users only');
 :as_removed
 select test.is(whoami(), null, 'removed member: whoami is null even with a person row');
 :as_stranger

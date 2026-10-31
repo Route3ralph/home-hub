@@ -283,10 +283,17 @@ const ESSAY = { uid: 'asg-1004', summary: 'English - 7: Essay outline', lines: [
     const add = await rpcAs('alex@example.com', 'set_school_feed', { p_kid: P.jordan.id, p_kind: 'assignments', p_url: `webcal://${LINK}` });
     check('Remove, then Add link again: the same link\'s row, not checked', ok(rm) && ok(add) && add.body.id === feedId
       && (await one(`select checked from school_feeds where id = '${feedId}'`)).checked === 'f', { rm: rm.status, add: add.body });
+    // 0008: Remove kept the row (for the assignments made from the old link) with the old link's last read on it; added
+    // again, it starts as a new link, not read yet.
+    const fresh = await one(`select concat_ws(' ', coalesce(last_try_at::text, '-'), coalesce(last_ok_at::text, '-'), coalesce(last_count::text, '-'),
+      coalesce(last_repeats::text, '-')) as s from school_feeds where id = '${feedId}'`);
+    check('... as a new link, not read yet: none of the old link\'s last read (its time, count or repeating events)', fresh.s === '- - - -', fresh);
     await h.mark();
     const { page, context } = await open({ email: 'alex@example.com', path: '/#/homework', label: 'school-past-alex' });
     await until(async () => !!(await page.$('[data-row="school"] [data-act="school-now"]')), 8000);
     check('the Homework page on schema 8', (await page.evaluate(() => HomeHub.core.schemaVersion)) === 8, await page.evaluate(() => HomeHub.core.schemaVersion));
+    check('... its Assignments link "Added · first read within the hour" (not the old link\'s "Last read …")',
+      (await tc(page, `${FEED('assignments')} .hw-feed-state`)) === 'Added · first read within the hour', await tc(page, `${FEED('assignments')} .hw-feed-state`));
     await page.click('[data-row="school"] [data-act="school-now"]');
     await toastIs(page, /^Checked/);
     check('Check now: "Checked 1 link · 6 items", every one past', (await lastToast(page)) === 'Checked 1 link · 6 items', await lastToast(page));

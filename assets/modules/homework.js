@@ -951,14 +951,24 @@
   // are to come; those read "was due". On 6 and 7 there is no past key, and nothing past on the check.
   const isPast = (x) => x.past === true;
   const checkLine = (x) => [x.subject, x.title, `${isPast(x) ? 'was due' : 'due'} ${fmt.day(x.due_date)}`].filter(Boolean).join(' · ');
+  // The stops only Replace mends (their words say "use Replace"); Home Hub tries the others again.
+  const REPLACE_STOPS = ['bad_link', 'redirect', 'refused', 'gone', 'sign_in', 'not_calendar'];
   // An empty check, in words, by the Assignments link's status (the same on 7 and 8, with no version gate): not read
   // yet; read with nothing in it; read with items, every one past (on 7, whose check has only items due from today).
+  // A read one ends with when the next ones show: once the school posts them, if Home Hub reads the link (a paused one
+  // isn't read until it is resumed; a stop only Replace mends isn't read with any luck until it is replaced).
   function emptyCheckWords(st, f) {
     if (!f.last_ok_at) return 'Once the Assignments link is read, its next 5 items show here, to check against Blackbaud.';
     const n = Number(f.last_count) || 0;
     const read = `The Assignments link was read ${when(st, f.last_ok_at)}`;
-    if (!n) return `${read} and held no assignments due from 2 weeks ago on. The next ones show here once the school posts some, to check against Blackbaud.`;
-    return `${read}: ${n === 1 ? 'its one assignment is' : `all ${n} of its assignments are`} already past. The next ones show here once the school posts one due today or later, to check against Blackbaud.`;
+    const next = (what) => {
+      const then = `the next ones show here once the school posts ${what}, to check against Blackbaud.`;
+      if (f.paused) return `It is paused, and Home Hub doesn't read it until you resume it; then ${then}`;
+      if (REPLACE_STOPS.includes(f.last_stop)) return `Its last read didn't work: copy the link again and use Replace; then ${then}`;
+      return `The next ones show here once the school posts ${what}, to check against Blackbaud.`;
+    };
+    if (!n) return `${read} and held no assignments due from 2 weeks ago on. ${next('some')}`;
+    return `${read}: ${n === 1 ? 'its one assignment is' : `all ${n} of its assignments are`} already past. ${next('one due today or later')}`;
   }
   // The first-import check (§11.2 step 7): an Assignments link nobody has checked. Until a parent answers, nothing from
   // it reaches him or the tutor; the answer sets the due date as an item's last ('end') or first ('start') day, moved -1 to 1.
@@ -1610,10 +1620,15 @@
   // The first-import check's answer: the due date is an item's last ('end') or first ('start') day, moved by shift.
   function checkDates(st, id, rule, shift) {
     st.schoolOff = false;
-    // Every item on the check past (0008): nothing reaches his New from school until the school posts one to come.
-    const past = !!(st.school && st.school.check.length && st.school.check.every(isPast));
-    write(st, () => run(sb().rpc('check_school_feed', { p_feed: id, p_date_rule: rule, p_date_shift: shift })),
-      () => toast(`Dates checked. ${kidName(st)}'s New from school shows ${past ? 'the next ones once the school posts them' : 'them now'}.`));
+    // The toast says what his New from school holds after the answer, which re-dates every item (an item due yesterday
+    // is due today after "A day later"; one due today is past after "A day earlier"): check_school_feed answers the
+    // status card, and st.school (read again after it) stands in if that answer is missing.
+    let after = null;
+    write(st, async () => { after = await run(sb().rpc('check_school_feed', { p_feed: id, p_date_rule: rule, p_date_shift: shift })); },
+      () => {
+        const s = after && typeof after === 'object' ? schoolStatus(after) : st.school;
+        toast(`Dates checked. ${kidName(st)}'s New from school shows ${s && s.new.length ? 'them now' : 'the next ones once the school posts them'}.`);
+      });
   }
   function schoolItemAct(st, id, action) {
     const x = st.school && [].concat(st.school.new, st.school.hidden).find((y) => y.id === id);

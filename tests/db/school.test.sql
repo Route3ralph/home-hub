@@ -1083,3 +1083,55 @@ select test.is((select f.checked || ' ' || (f.removed_at is not null) || ' ' || 
                'false true Unit test review', '... its row stays for the item made homework: removed, not checked, the item there and past');
 :as_admin
 select test.is(school_feed_status(test.person('Riley')) -> 'check', '[]'::jsonb, '... and a removed link has no check');
+
+-- ---------------------------------------------------------------------
+-- Added again after Remove: a new link, not read yet (migration 0008, docs/v1.3-homework.md §12 item 2)
+-- Remove keeps the row for what was made homework, with the old link's last read on it (0006). Adding the link again
+-- takes that row; from 0008 it starts as a new link, not read yet: the old read's time, count and repeating events go,
+-- so the page doesn't describe the old link's last read ("all 7 of its assignments are already past") as the new one's.
+-- Replace on a live link keeps its last read. The clock is still Tue Jan 12, 10:00am, the time of the last read.
+-- ---------------------------------------------------------------------
+create function pg_temp.readstate(j jsonb) returns text language sql immutable as $$
+  select concat_ws(' ', x ->> 'checked', coalesce(x ->> 'last_try_at', '-'), coalesce(x ->> 'last_ok_at', '-'), coalesce(x ->> 'last_count', '-'),
+                   coalesce(x ->> 'last_repeats', '-'), coalesce(x ->> 'last_stop', '-'), x ->> 'fails')
+  from jsonb_array_elements(j -> 'feeds') x where x ->> 'kind' = 'assignments'
+$$;
+:as_owner
+select test.is((select (last_ok_at is not null) || ' ' || last_count from school_feeds where id = :'riley_feed'), 'true 7',
+               'removed, the row still has the old link''s last read (as 0006 leaves it)');
+:as_admin
+select set_school_feed(test.person('Riley'), 'assignments', 'webcal://academy.school.example/podium/feed/iCal.aspx?z=L1l2L3l4L5l6L7l8') ->> 'id' as riley_again \gset
+select school_feed_status(test.person('Riley')) as rs \gset
+select test.is(:'riley_again', :'riley_feed', 'Add Riley''s link again: the same row');
+select test.is(pg_temp.readstate(:'rs'::jsonb), 'false - - - - - 0',
+               '... as a new link, not read yet: not checked, and none of the old link''s last read (its time, count or repeating events)');
+select test.is(pg_temp.tp(:'rs'::jsonb -> 'check'), 'Unit test review true', '... its check: the item made homework before Remove, still on the school site');
+:as_service
+select test.is((select count(*) from jsonb_array_elements(school_begin(true) -> 'feeds') x where x ->> 'feed_id' = :'riley_feed'), 1::bigint,
+               '... and Check now reads it at once, a minute after the old link''s last read or not');
+select school_finish(pg_temp.lease());
+-- The school takes the unit test review off its site: absent from two reads of the new link, it is gone.
+select test.is(pg_temp.read('Riley', 'assignments', pg_temp.riley('Unit test review')) ->> 'missing', '1', 'the new link''s first read: the unit test review missing once ...');
+select test.is(pg_temp.read('Riley', 'assignments', pg_temp.riley('Unit test review')) ->> 'gone', '1', '... and from the next: gone');
+:as_admin
+select school_feed_status(test.person('Riley')) as rs \gset
+select test.is(split_part(pg_temp.readstate(:'rs'::jsonb), ' ', 1) || ' ' || ((select x ->> 'last_ok_at' from jsonb_array_elements(:'rs'::jsonb -> 'feeds') x
+                                                                               where x ->> 'kind' = 'assignments')::timestamptz = private.now())
+               || ' ' || split_part(pg_temp.readstate(:'rs'::jsonb), ' ', 4), 'false true 7', '... the new link read now, with 7 items');
+-- Replace on the live link: the same row, its items and its last read kept.
+select set_school_feed(test.person('Riley'), 'assignments', 'webcal://academy.school.example/podium/feed/iCal.aspx?z=M1m2M3m4M5m6M7m8');
+select test.is(pg_temp.readstate(school_feed_status(test.person('Riley'))), pg_temp.readstate(:'rs'::jsonb),
+               'Replace on a live link keeps its last read (only a removed link added again starts as not read)');
+-- Remove, with the only item made homework now gone from the school site; then Add again: nothing for the check.
+select test.is(set_school_feed(test.person('Riley'), 'assignments', null), null, 'Remove it again');
+:as_owner
+select test.is((select count(*) || ' ' || bool_and(i.gone_at is not null and i.made_at is not null) || ' ' || (f.last_ok_at is not null) || ' ' || f.last_count
+                from school_feeds f join school_items i on i.feed_id = f.id where f.id = :'riley_feed' group by f.id),
+               '1 true true 7', '... the row stays for the one item made homework, gone from the school site, with the last read on it');
+:as_admin
+select set_school_feed(test.person('Riley'), 'assignments', 'webcal://academy.school.example/podium/feed/iCal.aspx?z=N1n2N3n4N5n6N7n8');
+select school_feed_status(test.person('Riley')) as rs \gset
+select test.is((:'rs'::jsonb -> 'check')::text || ' ' || pg_temp.readstate(:'rs'::jsonb), '[] false - - - - - 0',
+               'added again with every item kept gone: the check empty, and the link not read yet (so the page says "Once the Assignments link is read…")');
+:as_stranger
+select test.is(school_feed_status(test.person('Riley')), null, 'a stranger still gets null');

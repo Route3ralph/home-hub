@@ -11,7 +11,8 @@
 # homework on and no school link 0006 leaves My day, his homework view and Pat's as 0005 made them (step 5e),
 # and 0007 (the coach view) too while it is off, as 0007 leaves every link (5d, 5e); turning it on for a link
 # adds one key to that link's view and changes nothing else (step 5f); and that migration 0008 changes only the
-# school status card's first-import check (its refusals, its undo, and "same status card").
+# school status card's first-import check and what a removed link added again keeps of its last read (its refusals,
+# its undo, and "same status card").
 # Prints one "PASS  name" or "FAIL  name  (detail)" line per check, then the totals,
 # and exits non-zero if anything failed.
 # Needs the PostgreSQL 16 server binaries (PG_BIN overrides where they are); cluster.sh starts
@@ -251,9 +252,11 @@ if [[ $out == *"(migration 0007) isn't installed"* ]] && [[ $(catalog_of hub_06_
   report "PASS  migration 0008 refuses to run without 0007 (a database at 0006), and changes nothing"
 else report "FAIL  migration 0008 refuses to run without 0007  (${out:0:200})"; fi
 # ... and on a database at 0007 that isn't as 0007 left it, where what 0008 replaces or reads is missing: the status
-# card's function, or the column that marks an item gone from the school site.
+# card's function, Add link's (set_school_feed), the column that marks an item gone from the school site, or the
+# table that keeps a link's address.
 n=0
-for broken in 'drop function public.school_feed_status(uuid)' 'alter table public.school_items drop column gone_at'; do
+for broken in 'drop function public.school_feed_status(uuid)' 'drop function public.set_school_feed(uuid, text, text)' \
+              'alter table public.school_items drop column gone_at' 'drop table private.school_feed_urls'; do
   n=$((n + 1))
   sql -d postgres -c "create database hub_07_shape$n template hub_06_stamps"
   quiet -d "hub_07_shape$n" -c "$broken" >/dev/null
@@ -264,25 +267,28 @@ for broken in 'drop function public.school_feed_status(uuid)' 'alter table publi
     report "PASS  migration 0008 refuses a database at 0007 not as 0007 left it ($broken), and changes nothing"
   else report "FAIL  migration 0008 refuses a database at 0007 not as 0007 left it ($broken)  (${out:0:200})"; fi
 done
-# Undo, as docs/v1.3-homework.md §16.7 says: 0006's school_feed_status again (its create function … $$; block from
-# 0006, with create or replace) and hub_schema_version() returning 7. The status card is then 0006's (the same function
-# as on a database at 0007, with the same grants), and 0008 runs again, leaving the functions as on a fresh install.
+# Undo, as docs/v1.3-homework.md §16.7 says: 0006's school_feed_status and set_school_feed again (their create
+# function … $$; blocks from 0006, with create or replace) and hub_schema_version() returning 7. The two functions are
+# then 0006's (the same as on a database at 0007, with the same grants), and 0008 runs again, leaving the functions as on
+# a fresh install.
 sql -d postgres -c 'create database hub_set_back_7 template hub'
-{ sed -n '/^create function public\.school_feed_status(p_kid uuid)$/,/^\$\$;$/p' supabase/migrations/0006_homework_school.sql \
-    | sed '1s/^create function/create or replace function/'
+{ for f in 'school_feed_status(p_kid uuid)' 'set_school_feed(p_kid uuid, p_kind text, p_url text)'; do
+    sed -n "/^create function public\.$f\$/,/^\\$\\$;\$/p" supabase/migrations/0006_homework_school.sql \
+      | sed '1s/^create function/create or replace function/'
+  done
   echo "create or replace function public.hub_schema_version() returns int language sql immutable set search_path = '' as \$\$ select 7 \$\$;"
 } >"$dir/undo_0008.sql"
-fn_of() { quiet -d "$1" -A -t -c "select md5(p.prosrc) || ' ' || p.prosecdef || ' ' || p.provolatile || ' ' || array_to_string(p.proconfig, ',') || ' '
-                                         || has_function_privilege('anon', p.oid, 'execute') || ' ' || has_function_privilege('authenticated', p.oid, 'execute')
-                                         || ' ' || has_function_privilege('service_role', p.oid, 'execute')
-                                  from pg_proc p where p.oid = 'public.school_feed_status(uuid)'::regprocedure"; }
+fn_of() { quiet -d "$1" -A -t -c "select string_agg(p.proname || ' ' || md5(p.prosrc) || ' ' || p.prosecdef || ' ' || p.provolatile || ' ' || array_to_string(p.proconfig, ',')
+                                         || ' ' || has_function_privilege('anon', p.oid, 'execute') || ' ' || has_function_privilege('authenticated', p.oid, 'execute')
+                                         || ' ' || has_function_privilege('service_role', p.oid, 'execute'), ' | ' order by p.proname)
+                                  from pg_proc p where p.oid in ('public.school_feed_status(uuid)'::regprocedure, 'public.set_school_feed(uuid,text,text)'::regprocedure)"; }
 undo=$(quiet -d hub_set_back_7 -f "$dir/undo_0008.sql" 2>&1)
 v07=$(fn_of hub_06_stamps)
 got_undo="$(quiet -d hub_set_back_7 -A -t -c "select public.hub_schema_version()") $([[ $(fn_of hub_set_back_7) == "$v07" ]] && echo same-as-0007)"
 out=$(quiet -d hub_set_back_7 -f supabase/migrations/0008_school_check.sql 2>&1)
 got_again="$(quiet -d hub_set_back_7 -A -t -c "select public.hub_schema_version()") $([[ $(catalog_of hub_set_back_7) == "$(catalog_of hub)" && $(fn_of hub_set_back_7) == "$(fn_of hub)" ]] && echo same-as-fresh)"
 if [[ -z $undo && $got_undo == "7 same-as-0007" && -z $out && $got_again == "8 same-as-fresh" ]]; then
-  report "PASS  migration 0008's undo: 0006's status card back, schema 7; then 0008 runs again, as on a fresh install"
+  report "PASS  migration 0008's undo: 0006's status card and Add link back, schema 7; then 0008 runs again, as on a fresh install"
 else report "FAIL  migration 0008's undo  (undo: ${undo:0:150}; then: $got_undo; again: ${out:0:150} $got_again)"; fi
 # Same output: on a database at 0007 with school links (as 5d's), 0008 changes only the status card's check: every
 # other key of every kid's card is as before; a link with five or more items to come gets the same five, each with
