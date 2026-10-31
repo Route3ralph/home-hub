@@ -659,10 +659,12 @@ async function tokenRpcs(page, db) {
     const moved = await readTl(page, CHART);
     check('a save moves the block: "Draft the second half" on Sunday, from the plan as saved', (calls(db, 'tutor_plan_by_token')[0].body.p_steps || [])[4].day === '2026-11-08'
       && !!moved && same(moved.rows[1].steps, ['7:20', '8:20', '10:20']), JSON.stringify([calls(db, 'tutor_plan_by_token').map((c) => c.body.p_steps && c.body.p_steps[4]), moved && moved.rows[1].steps]));
-    // No chart for a plan on one day (the worksheet) or no plan (the hostile one).
+    // No chart for a plan on one day (the worksheet) or no plan (the hostile one). This goto changes only the hash, so
+    // the essay's screen (its chart and editor) stays until the worksheet's read answers: wait for the worksheet's own
+    // heading, never for an editor that may still be the essay's.
     await page.goto(`${BASE}/day.html?h=${PAT}#a/${I.math}`);
-    await until(async () => !!(await page.$('.plan-tutor-a .plan-editor')), 4000);
-    const oneDay = !(await page.$(CHART));
+    await until(async () => (await text(page, '.plan-tutor-a .plan-head h1')) === 'Worksheet 4.2' && !!(await page.$('.plan-tutor-a .plan-editor')), 4000);
+    const oneDay = (await text(page, '.plan-tutor-a .plan-head h1')) === 'Worksheet 4.2' && !(await page.$(CHART));
     await page.evaluate((id) => { location.hash = `#a/${id}`; }, T.bad);
     await until(async () => (await text(page, '.plan-tutor-a .plan-head h1')) === BAD, 4000);
     check('no chart for a plan on one day (the worksheet) or no plan; the hostile title as text', oneDay && !(await page.$(CHART)) && !(await page.$('.plan-tutor-a img')) && !(await page.evaluate(() => window.__tlx)));
