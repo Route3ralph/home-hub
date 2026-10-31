@@ -7,7 +7,9 @@
    - The kid line: his points and his homework time; a kid picker with two
      kids or more.
    - First visit (parents): homework on for a kid, his homework time
-     (prefilled Mon–Thu 4:30–5:15), then three rewards in three sizes.
+     (prefilled Mon–Thu 4:30–5:15), then three rewards in three sizes (an
+     instant one he cashes on the spot, about 15; one a week, about 200; a
+     bigger one, about 500).
    - Then, in this order, each left out when empty: To approve (his asks,
      with his balance and where this week's points came from; his
      suggestions to price), To check (milestones he ticked: Looks done with
@@ -17,8 +19,9 @@
      qa_log too, with who and when), Assignments and lessons (+ Assignment,
      + Lesson; Done (30 days) folded), This week (the week strip with busy
      titles, focused minutes, pace, his blocks), Points and rewards (Give
-     points, Void, the rewards), Switches (homework on, points and their
-     values, homework time, Pat's links, Erase).
+     points, Void, the rewards, instant or not; his instant cash-ins in
+     Recent), Switches (homework on, points and their values, his instant
+     rewards a day, homework time, Pat's links, Erase).
    - An assignment: its fields (the teacher's text keeps its lines), Mark
      done, Drop, Delete, Copy to next week (a lesson); the plan editor
      (assets/plan.js, role 'family'); its questions, answers and notes;
@@ -236,17 +239,20 @@
   // His assignments on the page: open ones, and done or dropped ones of the last 30 days.
   const recent = (st, a) => a.status === 'open' || (a.status === 'done' ? householdDate(a.done_at) || a.due_date : householdDate(a.updated_at)) >= dates.addDays(st.today, -30);
 
-  // "this week: +31 focus and on time, +20 milestones checked by Pat" (Mon–Sun), for the trade lines.
+  // "this week: +31 focus and on time, +20 milestones ticked, +20 milestones checked by Pat" (Mon–Sun), for the
+  // trade lines: a milestone pays half at his tick and the rest at the check.
   function weekSources(st) {
     const mon = mondayOf(st.today);
     const rows = st.ledger.filter((l) => l.day >= mon && l.day <= dates.addDays(mon, 6));
     const focus = sum(rows.filter((l) => l.kind === 'focus' || l.kind === 'on_time'), (l) => l.delta);
+    const ticked = sum(rows.filter((l) => l.kind === 'milestone_done'), (l) => l.delta);
     const ms = rows.filter((l) => l.kind === 'milestone');
     const given = sum(rows.filter((l) => l.kind === 'given'), (l) => l.delta);
     const voided = sum(rows.filter((l) => l.kind === 'void'), (l) => l.delta);
     const by = [...new Set(ms.map((l) => (viaLink(l.who) ? String(whoName(l.who)).split(/[\s,]+/)[0] : whoName(l.who))))];
     const parts = [];
     if (focus) parts.push(`${signed(focus)} focus and on time`);
+    if (ticked) parts.push(`${signed(ticked)} milestones ticked`);
     if (ms.length) parts.push(`${signed(sum(ms, (l) => l.delta))} milestones checked${by.length ? ` by ${by.join(' and ')}` : ''}`);
     if (given) parts.push(`${signed(given)} given`);
     if (voided) parts.push(`${signed(voided)} voided`);
@@ -310,7 +316,7 @@
   }
 
   // His blocks, as one line: 'Tue 4:35pm · 20 min · with Pat · Step done · Find 2 sources'.
-  const RESULT = { done: 'Step done', more: 'More to do', stopped: 'Stopped', expired: 'Not answered' };
+  const RESULT = { done: 'Step done', more: 'More to do', stopped: 'Stopped', time: 'Time\'s up (no answer yet)', expired: 'Not answered' };
   function blockLine(st, b, absolute) {
     const day = householdDate(b.started_at);
     const step = b.step_id ? st.steps.find((s) => s.id === b.step_id) : null;
@@ -483,9 +489,12 @@
         : esc(blockLine(st, b))}</li>`).join('')}</ul>` : ''}`);
   }
 
-  const LEDGER = { focus: 'Focus', on_time: 'On time', milestone: 'Checked', given: 'Given' };
+  const LEDGER = { focus: 'Focus', on_time: 'On time', milestone_done: 'Ticked', milestone: 'Checked', given: 'Given' };
   function ledgerLine(st, l) {
-    const what = l.kind === 'void' ? `Void: ${l.note || ''}` : l.kind === 'trade' ? l.note || 'Trade' : [LEDGER[l.kind], l.note].filter(Boolean).join(l.kind === 'milestone' ? ': ' : ' · ');
+    // A trade of an instant reward he cashed himself says so (no parent's yes was needed).
+    const cashed = l.kind === 'trade' && l.ask_id && st.asks.some((x) => x.id === l.ask_id && x.status === 'cashed');
+    const what = l.kind === 'void' ? `Void: ${l.note || ''}` : l.kind === 'trade' ? `${l.note || 'Trade'}${cashed ? ` (instant, cashed in by ${kidName(st)})` : ''}`
+      : [LEDGER[l.kind], l.note].filter(Boolean).join(l.kind === 'milestone' || l.kind === 'milestone_done' ? ': ' : ' · ');
     return `${signed(l.delta)} ${what} · ${rel(st, l.day)}`;
   }
 
@@ -498,7 +507,7 @@
     }
     const mon = mondayOf(st.today);
     const today = sum(st.ledger.filter((l) => l.day === st.today && (l.kind === 'focus' || l.kind === 'on_time')), (l) => l.delta);
-    const ms = sum(st.ledger.filter((l) => l.kind === 'milestone' && l.day >= mon && l.day <= dates.addDays(mon, 6)), (l) => l.delta);
+    const ms = sum(st.ledger.filter((l) => (l.kind === 'milestone' || l.kind === 'milestone_done') && l.day >= mon && l.day <= dates.addDays(mon, 6)), (l) => l.delta);
     const line = `${balance(st)} · today ${signed(today)} of ${k.pts_day_cap} · milestones this week ${ms} of ${k.pts_milestone_week}`;
     const acts = admin ? `<span class="hw-adds">${btn('give', 'Give points')}${btn('add-reward', '+ Reward')}</span>` : '';
     const rewards = st.rewards.filter((r) => r.cost != null);
@@ -506,11 +515,11 @@
     const last = st.ledger.slice(0, 10);
     return section('points', 'Points and rewards', `<p class="hw-points-line">${esc(line)}</p>`
       + `${rewards.length ? `<ul class="hw-card hw-rows hw-rewards">${rewards.map((r) => `<li class="hw-row${r.active ? '' : ' is-off'}"><div class="hw-row-main">`
-        + `<span class="hw-rw-line">${esc(`${r.title} · ${r.cost}${r.active ? '' : ' · off'}`)}</span></div>`
+        + `<span class="hw-rw-line">${esc(`${r.title} · ${r.cost}${r.instant ? ' · instant' : ''}${r.active ? '' : ' · off'}`)}</span></div>`
         + `${admin ? `<div class="hw-row-acts"><button type="button" class="hw-more" data-act="edit-reward" data-reward="${esc(r.id)}" aria-label="${esc(`Edit ${r.title}`)}">${ICON.dots}</button></div>` : ''}</li>`).join('')}</ul>`
-        : `<p class="hw-card empty-line hw-empty">No rewards yet.${admin ? ' Add one he can afford most homework days (about 15), one about once a week (about 60) and a bigger one (about 150).' : ''}</p>`}`
+        : `<p class="hw-card empty-line hw-empty">No rewards yet.${admin ? ' Add an instant one he can get after one block (about 15), one about once a week (about 200) and a bigger one (about 500).' : ''}</p>`}`
       + `${last.length ? `<h3 class="hw-sub">Recent</h3><ul class="hw-card hw-rows hw-ledger">${last.map((l) => `<li class="hw-row"><div class="hw-row-main"><span class="hw-ledger-line">${esc(ledgerLine(st, l))}</span></div>`
-        + `${admin && ['focus', 'on_time', 'milestone', 'given'].includes(l.kind) && !voided.has(l.id) ? `<div class="hw-row-acts">${btn('void', 'Void…', ` data-entry="${esc(l.id)}"`)}</div>` : ''}</li>`).join('')}</ul>` : ''}`, null, acts);
+        + `${admin && ['focus', 'on_time', 'milestone_done', 'milestone', 'given'].includes(l.kind) && !voided.has(l.id) ? `<div class="hw-row-acts">${btn('void', 'Void…', ` data-entry="${esc(l.id)}"`)}</div>` : ''}</li>`).join('')}</ul>` : ''}`, null, acts);
   }
 
   // ---------- Switches (§9.2)
@@ -566,15 +575,17 @@
     const off = admin ? '' : ' disabled';
     const tutor = tutorFirst(st);
     const others = admin ? v2.people().filter((p) => p.active !== false && p.role === 'kid' && !st.kids.some((x) => x.kid_id === p.id)) : [];
-    const values = [['pts_focus', 'Per 5 minutes of a block', 0, 5], ['pts_on_time', 'Starting on time', 0, 50], ['pts_milestone', 'A milestone checked', 0, 100],
-      ['pts_day_cap', 'Most a day from blocks and on-time starts', 0, 300], ['pts_milestone_week', 'Most a week from milestones', 0, 400]];
+    const values = [['pts_focus', 'Per focused minute', 0, 5], ['pts_on_time', 'Starting on time (once 5 minutes are done)', 0, 50],
+      ['pts_milestone', 'A milestone (half when he ticks it, half when it\'s checked)', 0, 100],
+      ['pts_day_cap', 'Most a day from blocks and on-time starts', 0, 300], ['pts_milestone_week', 'Most a week from milestones', 0, 400],
+      ['instant_day', 'Instant rewards he may get a day', 0, 10]];
     const rows = [];
     rows.push(`<div class="hw-switch-row" data-row="kid"><label class="hw-switch"><input type="checkbox" data-act="kid-on"${k.active ? ' checked' : ''}${off}><span>Homework for ${esc(kid)}</span></label>
       <small class="hw-switch-line">Homework on ${esc(kid)}'s My day, and ${esc(tutor ? `${tutor}'s` : 'the tutor\'s')} link. Off hides them; nothing is deleted.</small>
       ${others.map((p) => btn('turn-on', `Turn on homework for ${firstName(p.name)}`, ` data-kid="${esc(p.id)}"`)).join('')}</div>`);
     if (k.active) {
       rows.push(`<div class="hw-switch-row" data-row="points"><label class="hw-switch"><input type="checkbox" data-act="points-on"${k.points_on ? ' checked' : ''}${off}><span>Points</span></label>
-        <small class="hw-switch-line">Points for on-time starts, focus blocks and checked milestones. Off: nothing is earned, and his My day shows no points.</small>
+        <small class="hw-switch-line">Points for on-time starts, focus blocks (paid the moment a block ends) and milestones (half when he ticks one, half when it's checked). Off: nothing is earned, and his My day shows no points.</small>
         ${admin && k.points_on ? `<form class="hw-values" data-form="values" novalidate autocomplete="off"><div class="hw-values-grid">${values.map(([name, label, lo, hi]) => `<label class="field"><span>${esc(label)}</span>`
           + `<input type="number" name="${name}" min="${lo}" max="${hi}" step="1" inputmode="numeric" value="${esc(k[name])}"></label>`).join('')}
           <label class="field"><span>Focus length offered first</span><select name="focus_minutes">${P.LENGTHS.map((m) => `<option value="${m}"${k.focus_minutes === m ? ' selected' : ''}>${m} min</option>`).join('')}</select></label></div>
@@ -617,11 +628,14 @@
     if (!st.times.length) {
       parts.push(`<div class="hw-setup-step"><h3>${esc(kid)}'s homework time</h3><p>When he does homework. His steps are placed only in it, around his other events.</p>${timeFormHTML(true)}</div>`);
     } else if (st.row.points_on && !st.rewards.length) {
-      const sizes = [[15, '15 minutes of extra game time', 'one he can afford most homework days'], [60, 'Choose Friday\'s dinner', 'about once a week'], [150, 'A new book', 'a bigger one']];
-      parts.push(`<div class="hw-setup-step"><h3>Add 3 rewards</h3><p>What ${esc(kid)}'s points buy. He asks for one; a parent says yes.</p>
-        <form class="hw-rewardsform" data-form="rewards" novalidate autocomplete="off"><div class="hw-rws">${sizes.map(([cost, eg, hint]) => `<div class="hw-rw">
+      // The owner's sizes: an instant one he can get after one block, one about once a week, a bigger one.
+      const sizes = [[15, '15 minutes of extra game time', 'an instant one, after one block', true], [200, 'Choose Friday\'s dinner', 'about once a week', false],
+        [500, 'A new book', 'a bigger one', false]];
+      parts.push(`<div class="hw-setup-step"><h3>Add 3 rewards</h3><p>What ${esc(kid)}'s points buy. An instant one he gets on the spot (you see it on Today); for the others he asks, and a parent says yes.</p>
+        <form class="hw-rewardsform" data-form="rewards" novalidate autocomplete="off"><div class="hw-rws">${sizes.map(([cost, eg, hint, instant]) => `<div class="hw-rw">
           <label class="field"><span>${esc(cap(hint))}</span><input type="text" name="title" maxlength="60" placeholder="${esc(eg)}"></label>
-          <label class="field hw-rw-cost"><span>Points</span><input type="number" name="cost" min="1" max="10000" step="1" inputmode="numeric" value="${cost}"></label></div>`).join('')}</div>
+          <label class="field hw-rw-cost"><span>Points</span><input type="number" name="cost" min="1" max="10000" step="1" inputmode="numeric" value="${cost}"></label>
+          <label class="check hw-rw-instant"><input type="checkbox" name="instant"${instant ? ' checked' : ''}> Instant</label></div>`).join('')}</div>
           <p class="form-error" role="alert" hidden></p><div class="form-actions"><button type="submit" class="btn btn-primary">Add rewards</button></div></form></div>`);
     }
     return parts.length ? `<div class="hw-card hw-setup"><h2 class="hw-setup-title">Get homework ready</h2>${parts.join('')}</div>` : '';
@@ -871,7 +885,8 @@
       if (!title) continue;
       if (Array.from(title).length > 60) return fail('A reward\'s name is at most 60 characters.');
       if (!Number.isInteger(cost) || cost < 1 || cost > 10000) return fail('Each reward costs 1 to 10,000 points.');
-      rows.push({ kid_id: st.kid, title, cost, active: true, sort_order: start + rows.length + 1 });
+      const instant = !!(r.querySelector('[name="instant"]') && r.querySelector('[name="instant"]').checked);
+      rows.push({ kid_id: st.kid, title, cost, active: true, instant, sort_order: start + rows.length + 1 });
     }
     if (!rows.length) return fail('Name at least one reward.');
     return write(st, () => q(sb().from('rewards').insert(rows).select('id')), () => toast(`${plural(rows.length, 'reward')} added`));
@@ -881,7 +896,7 @@
     const f = form.elements;
     const err = form.querySelector('.form-error');
     const patch = {};
-    const limits = { pts_focus: 5, pts_on_time: 50, pts_milestone: 100, pts_day_cap: 300, pts_milestone_week: 400 };
+    const limits = { pts_focus: 5, pts_on_time: 50, pts_milestone: 100, pts_day_cap: 300, pts_milestone_week: 400, instant_day: 10 };
     for (const name of Object.keys(limits)) {
       const v = Number(f[name].value);
       if (!Number.isInteger(v) || v < 0 || v > limits[name]) { err.textContent = `Use a whole number from 0 to ${limits[name]}.`; err.hidden = false; f[name].focus(); return null; }
@@ -1012,11 +1027,12 @@
   }
 
   function rewardDialog(st, reward) {
-    const r = reward || { title: '', cost: '', active: true };
+    const r = reward || { title: '', cost: '', active: true, instant: false };
     const form = openDialog(`<form class="form d-inner hw-reward" novalidate autocomplete="off">${dialogTop(reward ? reward.title : 'New reward')}
       <label class="field"><span>Reward</span><input type="text" name="title" maxlength="60" value="${esc(r.title)}" placeholder="Choose Friday's dinner"></label>
       <label class="field"><span>Points</span><input type="number" name="cost" min="1" max="10000" step="1" inputmode="numeric" value="${esc(r.cost == null ? '' : r.cost)}"></label>
       <label class="check"><input type="checkbox" name="active"${r.active ? ' checked' : ''}> On (he can ask for it)</label>
+      <label class="check"><input type="checkbox" name="instant"${r.instant ? ' checked' : ''}> Instant: he gets it on the spot, no ask (you see it on Today; at most ${esc(st.row ? st.row.instant_day : 2)} a day)</label>
       ${dialogFoot('Save', reward ? '<button type="button" class="btn btn-danger left" data-act="delete-reward-now">Delete</button>' : '')}</form>`);
     const f = form.elements;
     form.addEventListener('submit', (e) => {
@@ -1026,7 +1042,7 @@
       const cost = Number(f.cost.value);
       if (!title || Array.from(title).length > 60) { err.textContent = 'Name it, in at most 60 characters.'; err.hidden = false; return undefined; }
       if (!Number.isInteger(cost) || cost < 1 || cost > 10000) { err.textContent = 'It costs 1 to 10,000 points.'; err.hidden = false; return undefined; }
-      const row = { title, cost, active: f.active.checked };
+      const row = { title, cost, active: f.active.checked, instant: f.instant.checked };
       if (reward) {
         const patch = {};
         Object.keys(row).forEach((k) => { if (row[k] !== reward[k]) patch[k] = row[k]; });
@@ -1034,7 +1050,7 @@
         return dialogWrite(st, form, () => q(sb().from('rewards').update(patch).eq('id', reward.id).select('id')), () => toast('Saved'));
       }
       const next = st.rewards.reduce((n, x) => Math.max(n, Number(x.sort_order) || 0), 0) + 1;
-      return dialogWrite(st, form, () => q(sb().from('rewards').insert({ kid_id: st.kid, title, cost, active: row.active, sort_order: next }).select('id')),
+      return dialogWrite(st, form, () => q(sb().from('rewards').insert({ kid_id: st.kid, title, cost, active: row.active, instant: row.instant, sort_order: next }).select('id')),
         () => toast(`Added: ${title}`));
     });
     const del = form.querySelector('[data-act="delete-reward-now"]');

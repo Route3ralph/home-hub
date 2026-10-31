@@ -71,14 +71,15 @@ create table public.homework_kids (
   kid_id             uuid primary key references public.people (id) on delete cascade,
   active             boolean not null default true,     -- off: no card on his My day, his tutor links answer null, the AI refuses; nothing deleted
   points_on          boolean not null default true,     -- off: nothing earned; points, rewards and asks hidden on My day
-  focus_minutes      int not null default 20 check (focus_minutes in (10, 15, 20, 25)),   -- the length offered first
+  focus_minutes      int not null default 10 check (focus_minutes in (10, 15, 20, 25)),   -- the length offered first
   cue                text check (cue is null or char_length(cue) between 1 and 120),           -- his start cue, in his words
   if_stuck           text check (if_stuck is null or char_length(if_stuck) between 1 and 120), -- his if-then line
-  pts_focus          int not null default 1 check (pts_focus between 0 and 5),                -- per 5 minutes of a block
-  pts_on_time        int not null default 5 check (pts_on_time between 0 and 50),
-  pts_milestone      int not null default 20 check (pts_milestone between 0 and 100),
-  pts_day_cap        int not null default 20 check (pts_day_cap between 0 and 300),           -- focus and on-time points a day
-  pts_milestone_week int not null default 80 check (pts_milestone_week between 0 and 400),    -- milestone points a household week (Mon–Sun)
+  pts_focus          int not null default 1 check (pts_focus between 0 and 5),                -- per focused minute of a block
+  pts_on_time        int not null default 10 check (pts_on_time between 0 and 50),
+  pts_milestone      int not null default 40 check (pts_milestone between 0 and 100),         -- half at his tick, the rest at the check
+  pts_day_cap        int not null default 60 check (pts_day_cap between 0 and 300),           -- focus and on-time points a day
+  pts_milestone_week int not null default 160 check (pts_milestone_week between 0 and 400),   -- milestone points a household week (Mon–Sun)
+  instant_day        int not null default 2 check (instant_day between 0 and 10),             -- instant rewards he may cash a day
   created_at         timestamptz not null default now(),
   created_by         text,
   updated_at         timestamptz not null default now(),
@@ -194,7 +195,7 @@ create table public.focus_sessions (
   started_at    timestamptz not null,            -- private.now()
   ends_at       timestamptz not null,            -- started_at + minutes
   ended_at      timestamptz,
-  result        text check (result in ('done', 'more', 'stopped', 'expired')),
+  result        text check (result in ('done', 'more', 'stopped', 'time', 'expired')),   -- time: the ring ran out, his answer to come
   seen_minutes  int check (seen_minutes is null or seen_minutes between 0 and 25),   -- whole minutes the server saw
   on_time       boolean not null default false,  -- the day's first block, started in the on-time window
   points        int not null default 0,          -- what it earned (focus and on-time), for the record
@@ -212,6 +213,7 @@ create table public.rewards (
   title      text not null check (char_length(title) between 1 and 60),   -- "Choose Friday's dinner"
   cost       int check (cost is null or cost between 1 and 10000),         -- null: a suggestion nobody has priced yet
   active     boolean not null default true,
+  instant    boolean not null default false,     -- he cashes it on the spot (no parent's yes), at most instant_day a day
   suggested  boolean not null default false,     -- he suggested it
   sort_order int not null default 0,
   created_at timestamptz not null default now(),
@@ -228,7 +230,8 @@ create table public.reward_asks (
   reward_id  uuid references public.rewards (id) on delete set null,
   title      text not null,                     -- copied when asked, so a later edit doesn't change a trade
   cost       int not null,
-  status     text not null default 'waiting' check (status in ('waiting', 'approved', 'declined', 'cancelled')),
+  status     text not null default 'waiting' check (status in ('waiting', 'approved', 'declined', 'cancelled', 'cashed')),
+                                                -- cashed: an instant reward he took on the spot (decided at once, by him)
   asked_at   timestamptz not null,
   decided_at timestamptz,
   decided_by text,
@@ -237,14 +240,16 @@ create table public.reward_asks (
 create unique index reward_asks_waiting on public.reward_asks (kid_id, reward_id) where status = 'waiting';
 create index reward_asks_kid on public.reward_asks (kid_id, asked_at desc);
 
--- Every point earned, given, voided and traded. Rows are never changed; the only delete is a
--- milestone check taken back within 15 minutes (a mis-tap).
+-- Every point earned, given, voided and traded. Rows are never changed; the only deletes are a
+-- milestone check taken back within 15 minutes (a mis-tap), and the half a milestone paid at his
+-- tick when he unticks it himself.
 create table public.points_ledger (
   id         uuid primary key default gen_random_uuid(),   -- given points: the parent's page's key
   kid_id     uuid not null references public.homework_kids (kid_id) on delete cascade,
   at         timestamptz not null,              -- private.now()
   day        date not null,                     -- the household's day it counts for: a block's start day for focus and on_time
-  kind       text not null check (kind in ('focus', 'on_time', 'milestone', 'given', 'void', 'trade')),
+  kind       text not null check (kind in ('focus', 'on_time', 'milestone_done', 'milestone', 'given', 'void', 'trade')),
+                                                -- milestone_done: half a milestone, at his tick; milestone: the rest, at the check
   delta      int not null check (delta <> 0 and delta between -10000 and 1000),
   session_id uuid references public.focus_sessions (id) on delete set null,
   step_id    uuid references public.homework_steps (id) on delete set null,
@@ -257,6 +262,7 @@ create table public.points_ledger (
 create unique index points_focus_once on public.points_ledger (session_id) where kind = 'focus';
 create unique index points_on_time_once on public.points_ledger (kid_id, day) where kind = 'on_time';
 create unique index points_milestone_once on public.points_ledger (step_id) where kind = 'milestone';
+create unique index points_milestone_done_once on public.points_ledger (step_id) where kind = 'milestone_done';
 create unique index points_void_once on public.points_ledger (void_of) where kind = 'void';
 create index points_ledger_kid on public.points_ledger (kid_id, at desc);
 
@@ -536,12 +542,12 @@ revoke all on public.homework_kids, public.homework_times, public.tutor_links, p
 grant select on public.homework_kids, public.homework_times, public.tutor_links, public.assignments,
                 public.homework_steps, public.focus_sessions, public.rewards, public.reward_asks,
                 public.points_ledger, public.ai_runs to authenticated;
-grant update (active, points_on, focus_minutes, pts_focus, pts_on_time, pts_milestone, pts_day_cap, pts_milestone_week)
+grant update (active, points_on, focus_minutes, pts_focus, pts_on_time, pts_milestone, pts_day_cap, pts_milestone_week, instant_day)
   on public.homework_kids to authenticated;
 grant insert (event_id, kid_id), delete on public.homework_times to authenticated;
 grant insert (kid_id, kind, title, subject, due_date, details, stretch, status),
       update (kind, title, subject, due_date, details, stretch, status), delete on public.assignments to authenticated;
-grant insert (kid_id, title, cost, active, sort_order), update (title, cost, active, sort_order), delete
+grant insert (kid_id, title, cost, active, instant, sort_order), update (title, cost, active, instant, sort_order), delete
   on public.rewards to authenticated;
 revoke all on public.homework_use from service_role;
 
@@ -1242,9 +1248,12 @@ $$;
 -- has already found the step on its side (his given plan, the link's kid, any for a parent).
 --   'done' (kid, family): ticked by p_who; Not yet and the coach's note cleared (the note kept in
 --          qa_log). The turn-in, or the last open step, makes the assignment done. A done step stays
---          as it is (a resend).
+--          as it is (a resend). A milestone pays half its points at once ('milestone_done', the half
+--          rounded up; once per step: a tick after Not yet pays nothing more): the answer has paid.
 --   'undo' (kid: only his own tick of the last 15 minutes; family: any tick), never a checked one;
---          a done assignment opens again.
+--          a done assignment opens again. Undone by the one who ticked it, a milestone's first half
+--          goes with the tick (the tick never stood), refused (P0001 "Those points are already
+--          spent.") when that would take his balance below zero; anyone else's Undo takes nothing.
 --   'not_today' (kid, plain steps): to the next day after today with homework time and room for it,
 --          up to the last work day (moved_from keeps the old day). p_day is the day his screen
 --          showed: a step no longer on it was moved already (a resend) and stays.
@@ -1252,13 +1261,14 @@ $$;
 --   'smaller' (kid): a new plain step titled p_text (3 to 80), 10 minutes, just before this one, on
 --          its day (today if that has passed), with p_key as its id (a resend finds it); a block
 --          running on the old step moves to it.
---   'check' (tutor, family): a milestone, ticked too if it wasn't (the work was seen), with an
---          optional note; its points (private.award, so the weekly cap applies: past it the check is
---          recorded and pays nothing: the answer has paid and used_up).
+--   'check' (tutor, family): a milestone, ticked too if it wasn't (the work was seen: its first half
+--          too), with an optional note; the rest of its points (private.award, so the weekly cap
+--          applies: past it the check is recorded and pays nothing: the answer has paid and used_up).
 --   'not_yet' (tutor, family): a ticked milestone not checked, with a note saying what's missing:
---          unticked, nothing taken.
---   'uncheck' (tutor, family): the one who checked it, within 15 minutes: the check and its points go;
---          refused (P0001 "Those points are already spent.") when that would take his balance below zero.
+--          unticked, nothing taken (his first half stays).
+--   'uncheck' (tutor, family): the one who checked it, within 15 minutes: the check and its half go
+--          (his tick's half stays); refused (P0001 "Those points are already spent.") when that would
+--          take his balance below zero.
 --   'answer' (tutor, family): an answer to his question (at most 200); its writer can change it for 15
 --          minutes from the first answer (the old one kept in qa_log).
 --   'clear' (family): an answer (p_text 'answer') or a coach's note ('note'); null: the answer if there
@@ -1282,6 +1292,8 @@ declare
   v_day   date;
   v_last  date;
   v_pts   int;
+  v_half  int;
+  v_want  int;
   v_log   jsonb;
   v_add   jsonb := '[]';   -- entries for qa_log
   v_ch    boolean := false;
@@ -1305,6 +1317,7 @@ begin
   select * into v_k from public.homework_kids k where k.kid_id = v_a.kid_id;
 
   if p_action = 'done' then
+    v_out := jsonb_build_object('paid', 0);
     if v_s.done_at is null then
       if v_s.coach_note is not null then
         v_add := jsonb_build_array(jsonb_build_object('note', v_s.coach_note, 'at', v_s.coach_note_at, 'by', v_s.coach_note_by));
@@ -1312,6 +1325,11 @@ begin
       update public.homework_steps
       set done_at = v_now, done_by = p_who, not_yet_at = null, coach_note = null, coach_note_by = null, coach_note_at = null
       where id = v_s.id;
+      if v_s.kind = 'milestone' then
+        -- Half the milestone now (rounded up), the rest at the check.
+        v_pts := private.award(v_a.kid_id, 'milestone_done', (v_k.pts_milestone + 1) / 2, v_today, null, v_s.id, null, null, v_s.title, p_who);
+        v_out := jsonb_build_object('paid', v_pts);
+      end if;
       v_ch := true;
     end if;
 
@@ -1321,6 +1339,20 @@ begin
         raise exception '%', case when p_role = 'kid' then 'Only your own tick can be undone, for 15 minutes.'
                                   else 'That milestone is checked: take the check back first.' end
           using errcode = '42501';
+      end if;
+      if v_s.kind = 'milestone' and v_s.done_by = p_who then
+        -- His own Undo (or a parent's of the parent's own tick): the first half goes with the tick, never
+        -- below zero. Anyone else's Undo takes nothing, as Not yet. The kid's row is locked last.
+        perform 1 from public.homework_kids k where k.kid_id = v_a.kid_id for update;
+        if (select b.balance from private.points_balance(v_a.kid_id) b)
+           - (select coalesce(sum(l.delta), 0) from public.points_ledger l
+              where (l.step_id = v_s.id and l.kind = 'milestone_done')
+                 or (l.kind = 'void' and l.void_of in (select m.id from public.points_ledger m where m.step_id = v_s.id and m.kind = 'milestone_done'))) < 0 then
+          raise exception 'Those points are already spent.' using errcode = 'P0001';
+        end if;
+        delete from public.points_ledger l
+        where l.kind = 'void' and l.void_of in (select m.id from public.points_ledger m where m.step_id = v_s.id and m.kind = 'milestone_done');
+        delete from public.points_ledger l where l.step_id = v_s.id and l.kind = 'milestone_done';
       end if;
       update public.homework_steps set done_at = null, done_by = null where id = v_s.id;
       v_ch := true;
@@ -1418,9 +1450,16 @@ begin
           not_yet_at = null, coach_note = v_text, coach_note_by = case when v_text is not null then v_coach end,
           coach_note_at = case when v_text is not null then v_now end
       where id = v_s.id;
-      v_pts := private.award(v_a.kid_id, 'milestone', v_k.pts_milestone, v_today, null, v_s.id, null, null, v_s.title, p_who);
-      v_out := jsonb_build_object('paid', v_pts,
-                                  'used_up', v_k.points_on and v_k.pts_milestone > 0 and v_pts < v_k.pts_milestone);
+      -- Not ticked yet (the work was seen): its first half too; then the rest, at the check.
+      v_half := 0;
+      v_want := v_k.pts_milestone - (v_k.pts_milestone + 1) / 2;
+      if v_s.done_at is null then
+        v_half := private.award(v_a.kid_id, 'milestone_done', (v_k.pts_milestone + 1) / 2, v_today, null, v_s.id, null, null, v_s.title, p_who);
+        v_want := v_k.pts_milestone;
+      end if;
+      v_pts := v_half + private.award(v_a.kid_id, 'milestone', v_k.pts_milestone - (v_k.pts_milestone + 1) / 2, v_today, null, v_s.id, null, null,
+                                      v_s.title, p_who);
+      v_out := jsonb_build_object('paid', v_pts, 'used_up', v_k.points_on and v_want > 0 and v_pts < v_want);
       v_ch := true;
     end if;
 
@@ -1542,9 +1581,9 @@ $$;
 
 -- One ledger row at private.now(), for the household's day p_day (a block's start day for 'focus'
 -- and 'on_time', today otherwise), on conflict do nothing (each block, each day's on-time start,
--- each milestone and each void is paid once). Caps: 'focus' and 'on_time' together at most
--- pts_day_cap on p_day (a block crossing it gets the rest); 'milestone' at most pts_milestone_week
--- in p_day's household week (Mon–Sun). Nothing earned or given while points are off; a trade and a
+-- each half of each milestone and each void is paid once). Caps: 'focus' and 'on_time' together at
+-- most pts_day_cap on p_day (a block crossing it gets the rest); 'milestone_done' and 'milestone'
+-- (a milestone's two halves) together at most pts_milestone_week in p_day's household week (Mon–Sun). Nothing earned or given while points are off; a trade and a
 -- void are written whatever the switch says. The kid's homework_kids row is locked first, so two
 -- calls can't both take the last of a cap. Answers the points written (0 when capped or already there).
 create function private.award(p_kid uuid, p_kind text, p_delta int, p_day date, p_session uuid, p_step uuid, p_ask uuid,
@@ -1563,7 +1602,7 @@ begin
   if v_k.kid_id is null or p_kind is null then
     return 0;
   end if;
-  if p_kind in ('focus', 'on_time', 'milestone', 'given') and (not v_k.points_on or v_d <= 0) then
+  if p_kind in ('focus', 'on_time', 'milestone_done', 'milestone', 'given') and (not v_k.points_on or v_d <= 0) then
     return 0;
   end if;
   if p_kind in ('focus', 'on_time') then
@@ -1571,10 +1610,10 @@ begin
     from public.points_ledger l
     where l.kid_id = p_kid and l.day = p_day and l.kind in ('focus', 'on_time');
     v_d := least(v_d, v_k.pts_day_cap - v_used);
-  elsif p_kind = 'milestone' then
+  elsif p_kind in ('milestone_done', 'milestone') then
     select coalesce(sum(l.delta), 0) into v_used
     from public.points_ledger l
-    where l.kid_id = p_kid and l.kind = 'milestone' and l.day between private.monday(p_day) and private.monday(p_day) + 6;
+    where l.kid_id = p_kid and l.kind in ('milestone_done', 'milestone') and l.day between private.monday(p_day) and private.monday(p_day) + 6;
     v_d := least(v_d, v_k.pts_milestone_week - v_used);
   end if;
   if v_d = 0 or ((p_kind in ('void', 'trade')) <> (v_d < 0)) then
@@ -1638,12 +1677,15 @@ $$;
 --            minutes before to 10 minutes after the first free minute of today's homework time.
 --   'switch': the open block moves to another of his open steps (Keep going, Next step).
 --   'end':    p_result 'done' (the step is ticked; on an assignment with no plan, the assignment is
---            done), 'more' or 'stopped', with an optional note; seen_minutes are the whole minutes from
---            its start to now, at most its length. Answered within 24 hours of its start, a block with
---            a step or an assignment earns pts_focus per 5 whole minutes seen, and an on-time block
---            seen for 8 minutes or more pts_on_time, both on its start day (private.award, so the
---            daily cap applies). Every answer earns the same for the same minutes. A block already
---            ended answers as it is.
+--            done), 'more', 'stopped', or 'time' (the ring ran out: the page sends it at once, so the
+--            block pays the moment it ends, and his answer comes after), with an optional note;
+--            seen_minutes are the whole minutes from its start to now, at most its length. Ended within
+--            24 hours of its start, a block with a step or an assignment earns pts_focus per whole
+--            minute seen, and an on-time block seen for 5 minutes or more pts_on_time, both on its start
+--            day (private.award, so the daily cap applies). Every answer earns the same for the same
+--            minutes. A block ended as 'time' then takes his answer ('done', 'more' or 'stopped', and the
+--            note): the result, the note and the tick change, the points never. Any other ended block
+--            answers as it is.
 -- A block id of another kid: 42501 "That block isn't yours.", as for an unknown one ('switch', 'end').
 -- Answers {block, earned: {focus, on_time, capped}} and _changed (block, not session: his view's session
 -- is the block still open).
@@ -1754,10 +1796,27 @@ begin
     if v_f.id is null then
       raise exception 'That block isn''t yours.' using errcode = '42501';
     end if;
-    if v_f.ended_at is null then
-      if p_result is null or p_result not in ('done', 'more', 'stopped') then
+    if v_f.ended_at is null or v_f.result = 'time' then
+      if p_result is null or p_result not in ('done', 'more', 'stopped', 'time') then
         raise exception 'Choose step done, more to do or stop.' using errcode = '22023';
       end if;
+    end if;
+    if v_f.result = 'time' and p_result <> 'time' then
+      -- His answer after the ring ran out: the result, the note and the tick; the points are as paid.
+      update public.focus_sessions
+      set result = p_result, note = coalesce(nullif(private.clean_text(p_note, 120), ''), note)
+      where id = v_f.id;
+      if p_result = 'done' then
+        if v_f.step_id is not null then
+          perform private.step_act(v_f.step_id, 'done', null, null, null, 'kid', v_who);
+        elsif v_f.assignment_id is not null then
+          update public.assignments a set status = 'done', updated_by = v_who
+          where a.id = v_f.assignment_id and a.status = 'open'
+            and not exists (select 1 from public.homework_steps s where s.assignment_id = a.id);
+        end if;
+      end if;
+      v_ch := true;
+    elsif v_f.ended_at is null then
       v_seen := least(floor(extract(epoch from v_now - v_f.started_at) / 60)::int, v_f.minutes);
       v_day := (v_f.started_at at time zone v_tz)::date;
       update public.focus_sessions
@@ -1775,8 +1834,8 @@ begin
       if (v_f.step_id is not null or v_f.assignment_id is not null) and v_now - v_f.started_at <= interval '24 hours' then
         v_title := coalesce((select s.title from public.homework_steps s where s.id = v_f.step_id),
                             (select a.title from public.assignments a where a.id = v_f.assignment_id));
-        perform private.award(p_kid, 'focus', v_k.pts_focus * (greatest(v_seen, 0) / 5), v_day, v_f.id, v_f.step_id, null, null, v_title, v_who);
-        if v_f.on_time and v_seen >= 8 then
+        perform private.award(p_kid, 'focus', v_k.pts_focus * greatest(v_seen, 0), v_day, v_f.id, v_f.step_id, null, null, v_title, v_who);
+        if v_f.on_time and v_seen >= 5 then
           perform private.award(p_kid, 'on_time', v_k.pts_on_time, v_day, v_f.id, v_f.step_id, null, null, v_title, v_who);
         end if;
         update public.focus_sessions f
@@ -1906,7 +1965,8 @@ $$;
 --    now: step | null, tonight: [step], load: {planned, free}, earlier: [step],
 --    assignments: [{id, kind, title, subject, due_date, status, state, plan_rev, added_by, given_by, ai_help,
 --                   stretch, behind, minutes_left, time_left, horizon, no_time, next_milestone, steps}],
---    points: {balance, held, today, capped} | null, rewards | null, asks | null, recent | null,
+--    points: {balance, held, today, capped, cash_left} | null, rewards | null, asks | null, recent | null,
+--    goal: {next: {id, title, cost, need} | null, now: {id, title, cost, instant} | null} | null,
 --    pace: {ratio, steps} | null, week: {focused, last_week}}
 --   step = {id, assignment_id, assignment, kind, title, done_looks_like, minutes, day, from_day, moved, done,
 --           undo, checked, waiting, not_yet, coach: {by, text} | null, question, answer}
@@ -1915,7 +1975,14 @@ $$;
 -- given to him. Now (and the card's Next) is today's first open step, or, on a day with homework
 -- time, the first earlier one; earlier steps are listed only on a day with homework time. plan_rev
 -- is what his own plan save (plan_by_token's p_rev) needs; on_time.points is the on-time value his
--- words name ("+5").
+-- words name ("+10"). session.earn is what his timer counts up from while a block runs (per_minute,
+-- the on-time points this block gets once 5 minutes are seen, and room: what is left of the day's cap
+-- on its start day), so it never shows more than the end pays; null for his own block or points off.
+-- A reward has instant and can_cash (an instant one his free points cover, with cash_left today);
+-- goal is the next-reward bar: next, the cheapest reward his free points (balance less held) don't
+-- cover yet, with need, the points to go; now, the dearest he can get now (cash or ask), the one he
+-- can cash first at the same cost (instant: he can cash it on the spot). Null with points off or no
+-- priced reward.
 create function private.homework_view_kid(p_kid uuid, p_lang text)
 returns jsonb
 language plpgsql
@@ -1941,6 +2008,9 @@ declare
   v_pace   numeric;
   v_mon    date;
   v_out    jsonb;
+  v_rw     jsonb;
+  v_cashed int;
+  v_goal   jsonb;
 begin
   select * into v_k from public.homework_kids k where k.kid_id = p_kid;
   select * into v_me from public.people p where p.id = p_kid;
@@ -1969,7 +2039,7 @@ begin
                      and st.done_at >= v_now - interval '15 minutes',
              'checked', st.checked_at is not null,
              'waiting', case when st.kind = 'milestone' and st.done_at is not null and st.checked_at is null and v_k.points_on
-                             then v_k.pts_milestone end,
+                             then v_k.pts_milestone - (v_k.pts_milestone + 1) / 2 end,   -- the half the check pays
              'not_yet', st.not_yet_at is not null,
              'coach', case when st.coach_note is not null then jsonb_build_object('by', st.coach_note_by, 'text', st.coach_note) end,
              'question', st.question,
@@ -1993,6 +2063,32 @@ begin
   end if;
   select p.balance, p.held into v_bal, v_held from private.points_balance(p_kid) p;
   v_pace := private.homework_pace(p_kid);
+  -- His rewards, the instant ones he cashed today, and the next-reward bar.
+  select count(*)::int into v_cashed from public.reward_asks q
+  where q.kid_id = p_kid and q.status = 'cashed' and (q.decided_at at time zone v_tz)::date = v_today;
+  if v_k.points_on then
+    select coalesce(jsonb_agg(jsonb_build_object(
+             'id', r.id, 'title', r.title, 'cost', r.cost, 'instant', r.instant,
+             'can_ask', v_bal - v_held >= r.cost
+                        and (select count(*) from public.reward_asks q where q.kid_id = p_kid and q.status = 'waiting') < 3
+                        and not exists (select 1 from public.reward_asks q
+                                        where q.kid_id = p_kid and q.reward_id = r.id and q.status = 'waiting'),
+             'can_cash', r.instant and v_bal - v_held >= r.cost and v_cashed < v_k.instant_day)
+           order by r.sort_order, r.cost, r.title, r.id), '[]') into v_rw
+    from public.rewards r where r.kid_id = p_kid and r.active and r.cost is not null;
+    if jsonb_array_length(v_rw) > 0 then
+      v_goal := jsonb_build_object(
+        'next', (select jsonb_build_object('id', x -> 'id', 'title', x -> 'title', 'cost', x -> 'cost',
+                                           'need', (x ->> 'cost')::int - (v_bal - v_held))
+                 from jsonb_array_elements(v_rw) with ordinality t (x, n)
+                 where (x ->> 'cost')::int > v_bal - v_held
+                 order by (x ->> 'cost')::int, n limit 1),
+        'now', (select jsonb_build_object('id', x -> 'id', 'title', x -> 'title', 'cost', x -> 'cost', 'instant', x -> 'can_cash')
+                from jsonb_array_elements(v_rw) with ordinality t (x, n)
+                where (x ->> 'can_cash')::boolean or (x ->> 'can_ask')::boolean
+                order by (x ->> 'cost')::int desc, (x ->> 'can_cash')::boolean desc, n limit 1));
+    end if;
+  end if;
 
   with fm as (
     select * from jsonb_to_recordset(v_fm)
@@ -2086,7 +2182,17 @@ begin
                            'points', v_k.pts_on_time) end,
     'session', (select jsonb_build_object('id', f.id, 'step_id', f.step_id, 'assignment_id', f.assignment_id,
                                           'title', coalesce(s.title, a.title), 'minutes', f.minutes,
-                                          'started_at', f.started_at, 'ends_at', f.ends_at, 'with', f.with_whom)
+                                          'started_at', f.started_at, 'ends_at', f.ends_at, 'with', f.with_whom,
+                                          'on_time', f.on_time,
+                                          'earn', case when v_k.points_on and (f.step_id is not null or f.assignment_id is not null)
+                                                            and f.started_at > v_now - interval '24 hours'
+                                                       then jsonb_build_object(
+                                                              'per_minute', v_k.pts_focus,
+                                                              'on_time', case when f.on_time then v_k.pts_on_time else 0 end,
+                                                              'room', greatest(v_k.pts_day_cap - coalesce((
+                                                                        select sum(l.delta) from public.points_ledger l
+                                                                        where l.kid_id = p_kid and l.kind in ('focus', 'on_time')
+                                                                          and l.day = (f.started_at at time zone v_tz)::date), 0), 0)) end)
                 from public.focus_sessions f
                 left join public.homework_steps s on s.id = f.step_id
                 left join public.assignments a on a.id = f.assignment_id
@@ -2104,16 +2210,10 @@ begin
                 'today', coalesce((select sum(l.delta) from public.points_ledger l
                                    where l.kid_id = p_kid and l.day = v_today and l.delta > 0), 0),
                 'capped', coalesce((select sum(l.delta) from public.points_ledger l
-                                    where l.kid_id = p_kid and l.day = v_today and l.kind in ('focus', 'on_time')), 0) >= v_k.pts_day_cap) end,
-    'rewards', case when v_k.points_on then
-                 (select coalesce(jsonb_agg(jsonb_build_object(
-                           'id', r.id, 'title', r.title, 'cost', r.cost,
-                           'can_ask', v_bal - v_held >= r.cost
-                                      and (select count(*) from public.reward_asks q where q.kid_id = p_kid and q.status = 'waiting') < 3
-                                      and not exists (select 1 from public.reward_asks q
-                                                      where q.kid_id = p_kid and q.reward_id = r.id and q.status = 'waiting'))
-                         order by r.sort_order, r.cost, r.title, r.id), '[]')
-                  from public.rewards r where r.kid_id = p_kid and r.active and r.cost is not null) end,
+                                    where l.kid_id = p_kid and l.day = v_today and l.kind in ('focus', 'on_time')), 0) >= v_k.pts_day_cap,
+                'cash_left', greatest(v_k.instant_day - v_cashed, 0)) end,
+    'rewards', v_rw,
+    'goal', v_goal,
     'asks', case when v_k.points_on then
               (select coalesce(jsonb_agg(jsonb_build_object(
                         'id', q.id, 'reward_id', q.reward_id, 'title', q.title, 'cost', q.cost, 'status', q.status,
@@ -2121,7 +2221,7 @@ begin
                       order by q.asked_at desc, q.id), '[]')
                from public.reward_asks q
                where q.kid_id = p_kid
-                 and (q.status = 'waiting' or (q.status in ('approved', 'declined') and q.decided_at >= v_now - interval '7 days'))) end,
+                 and (q.status = 'waiting' or (q.status in ('approved', 'declined', 'cashed') and q.decided_at >= v_now - interval '7 days'))) end,
     'recent', case when v_k.points_on then
                 (select coalesce(jsonb_agg(jsonb_build_object('day', l.day, 'kind', l.kind, 'delta', l.delta, 'note', l.note)
                                            order by l.at desc, l.id), '[]')
@@ -2143,10 +2243,11 @@ end;
 $$;
 
 -- The card on his My day (get_person_day's homework key): {next: {id, title, assignment, minutes} |
--- null, length, steps, minutes, earlier?, window?, session?: {ends_in_s}, points?}. next is his
+-- null, length, steps, minutes, earlier?, window?, session?: {ends_in_s}, points?, goal?}. next is his
 -- view's now; steps and minutes count today's open steps; earlier is left out when there are none
 -- or no homework time today, window when there is none today, session when no block is open,
--- points when points are off. Never raises: anything wrong leaves the card out.
+-- points when points are off, goal (his view's next-reward bar) when it is null. Never raises:
+-- anything wrong leaves the card out.
 create function private.homework_card(p_kid uuid, p_lang text)
 returns jsonb
 language plpgsql
@@ -2175,7 +2276,8 @@ begin
                  then jsonb_build_object('session', jsonb_build_object(
                         'ends_in_s', greatest(0, ceil(extract(epoch from (v -> 'session' ->> 'ends_at')::timestamptz - private.now())))::int))
                  else '{}' end
-         || case when jsonb_typeof(v -> 'points') = 'object' then jsonb_build_object('points', v -> 'points' -> 'balance') else '{}' end;
+         || case when jsonb_typeof(v -> 'points') = 'object' then jsonb_build_object('points', v -> 'points' -> 'balance') else '{}' end
+         || case when jsonb_typeof(v -> 'goal') = 'object' then jsonb_build_object('goal', v -> 'goal') else '{}' end;
 exception when others then
   return null;
 end;
@@ -2937,7 +3039,7 @@ begin
 end;
 $$;
 
--- A parent's correction, never a penalty rule: one focus, on_time, milestone or given entry gets a
+-- A parent's correction, never a penalty rule: one focus, on_time, milestone_done, milestone or given entry gets a
 -- 'void' of the same size, with a reason he sees. Refused when it would take his balance below
 -- zero ("Those points are already spent."). An entry already voided answers as it is.
 create function public.void_points(p_entry uuid, p_note text)
@@ -2960,7 +3062,7 @@ begin
     raise exception 'Say why.' using errcode = '22023';
   end if;
   select * into v_l from public.points_ledger l where l.id = p_entry;
-  if v_l.id is null or v_l.kind not in ('focus', 'on_time', 'milestone', 'given') then
+  if v_l.id is null or v_l.kind not in ('focus', 'on_time', 'milestone_done', 'milestone', 'given') then
     raise exception 'Only earned or given points can be voided.' using errcode = '22023';
   end if;
   perform 1 from public.homework_kids k where k.kid_id = v_l.kid_id for update;
@@ -3284,9 +3386,12 @@ $$;
 
 -- Rewards from his side (§8.5): 'ask' (p_reward, an active priced reward of his; p_key the ask's id;
 -- what he has free, his balance less what his waiting asks hold, must cover it; at most 3 waiting;
--- the points are held), 'cancel' (his own waiting ask: p_key its id, or p_reward), 'suggest' (p_text,
--- 1 to 60; p_key the new reward's id; it arrives unpriced and off; at most 5 waiting). While points
--- are off: 42501 "Points are off.".
+-- the points are held), 'cash' (p_reward, an active priced instant reward of his; p_key the row's id;
+-- his free points must cover it, and he may cash at most homework_kids.instant_day a household day:
+-- the ask is written decided at once, 'cashed', by him, and its points are taken at once, a 'trade'
+-- the parents see; a reward that isn't instant: 42501 "Ask a parent for that one."), 'cancel' (his
+-- own waiting ask: p_key its id, or p_reward), 'suggest' (p_text, 1 to 60; p_key the new reward's id;
+-- it arrives unpriced and off; at most 5 waiting). While points are off: 42501 "Points are off.".
 create function public.reward_by_token(p_token text, p_action text, p_reward uuid default null, p_text text default null,
                                        p_key uuid default null)
 returns jsonb
@@ -3310,8 +3415,8 @@ begin
     return null;
   end if;
   v_who := private.short_name(me) || ' (My day)';
-  if p_action is null or p_action not in ('ask', 'cancel', 'suggest') then
-    raise exception 'Choose ask, cancel or suggest.' using errcode = '22023';
+  if p_action is null or p_action not in ('ask', 'cash', 'cancel', 'suggest') then
+    raise exception 'Choose ask, cash, cancel or suggest.' using errcode = '22023';
   end if;
   if char_length(p_text) > 60 then
     raise exception 'That''s too long.' using errcode = '22023';
@@ -3346,6 +3451,37 @@ begin
         values (p_key, me.id, v_r.id, v_r.title, v_r.cost, 'waiting', private.now());
         v_ch := true;
       end if;
+    end if;
+
+  elsif p_action = 'cash' then
+    if p_key is null then
+      raise exception 'An ask needs its id.' using errcode = '22023';
+    end if;
+    select * into v_q from public.reward_asks q where q.id = p_key;
+    if v_q.id is not null and (v_q.kid_id <> me.id or v_q.status <> 'cashed') then
+      raise exception 'That reward isn''t on your list.' using errcode = '42501';
+    end if;
+    if v_q.id is null then
+      select * into v_r from public.rewards w where w.id = p_reward and w.kid_id = me.id and w.active and w.cost is not null;
+      if v_r.id is null then
+        raise exception 'That reward isn''t on your list.' using errcode = '42501';
+      end if;
+      if not v_r.instant then
+        raise exception 'Ask a parent for that one.' using errcode = '42501';
+      end if;
+      if (select count(*) from public.reward_asks q
+          where q.kid_id = me.id and q.status = 'cashed'
+            and (q.decided_at at time zone private.tz())::date = public.today_local()) >= v_k.instant_day then
+        raise exception 'That''s all the instant rewards for today. Ask a parent for this one.' using errcode = 'P0001';
+      end if;
+      select b.balance, b.held into v_bal, v_held from private.points_balance(me.id) b;
+      if v_bal - v_held < v_r.cost then
+        raise exception 'Not enough points yet.' using errcode = '42501';
+      end if;
+      insert into public.reward_asks (id, kid_id, reward_id, title, cost, status, asked_at, decided_at, decided_by)
+      values (p_key, me.id, v_r.id, v_r.title, v_r.cost, 'cashed', private.now(), private.now(), v_who);
+      perform private.award(me.id, 'trade', -v_r.cost, public.today_local(), null, null, p_key, null, v_r.title, v_who);
+      v_ch := true;
     end if;
 
   elsif p_action = 'cancel' then

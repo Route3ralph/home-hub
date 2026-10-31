@@ -256,6 +256,18 @@
 .hw-end .field input { min-height: 44px; font-size: 16px; }
 .hw-end-points { margin: 0 0 6px; text-align: center; font-size: 17px; font-weight: 650; }
 .hw-end-balance { margin-left: 8px; color: var(--accent); }
+/* The points counted up while the ring runs, and the celebration when a block (or a milestone's first half) pays */
+.hw-live { margin: 0 0 4px; font-size: 16px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.hw-live-bal { color: var(--accent); }
+.hw-sofar { margin-left: 6px; color: var(--text-2); }
+.hw-focus .plan-goal { max-width: 360px; margin: 6px auto 0; text-align: left; }
+.hw-head .plan-goal { margin: 6px 0 0; }
+.hw-plus {
+  display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 999px; background: var(--accent-soft); color: var(--accent);
+  font-weight: 750; animation: hw-pop 0.9s ease-out both;
+}
+@keyframes hw-pop { 0% { transform: scale(0.6); opacity: 0; } 30% { transform: scale(1.25); opacity: 1; } 100% { transform: scale(1); opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .hw-plus { animation: none; } }
 .hw-unsent { margin: 0; }
 .hw-break { display: grid; justify-items: center; gap: 8px; }
 .hw-break p { margin: 0; font-size: 17px; }
@@ -300,3 +312,7 @@
   .hw-card-acts .btn { flex: 1 1 auto; justify-content: center; }
   .hw-menu, .hw-step-acts, .hw-note, .hw-q, .hw-waiting { margin-left: 0; }
 }
+
+/* Instant rewards: cashed on the spot on #points */
+.hw-reward.is-instant .hw-reward-t { font-weight: 650; }
+.hw-cash-none { margin: 6px 0 0; color: var(--text-3); font-size: 14px; }

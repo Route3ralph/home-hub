@@ -123,7 +123,7 @@ const WEEK = [
   });
   check('plan.js loads in day.html as window.HomePlan, frozen', basics.loaded === 'object' && basics.frozen);
   const API = ['HORIZON', 'KINDS', 'LENGTHS', 'LIMITS', 'PLAIN', 'STARTERS', 'WORDS', 'addDays', 'answer', 'audioAt', 'bars', 'check', 'clean',
-    'cleanBlock', 'daysBetween', 'editor', 'ended', 'esc', 'firstDay', 'fmt', 'focused', 'friendly', 'fromRows', 'guess', 'homeworkDays',
+    'cleanBlock', 'daysBetween', 'editor', 'ended', 'esc', 'estimate', 'firstDay', 'fmt', 'focused', 'friendly', 'fromRows', 'goalBar', 'guess', 'homeworkDays',
     'horizon', 'isoWeekday', 'lastWorkDay', 'left', 'ms', 'newId', 'onTimeLine', 'pace', 'place', 'pointsLine', 'ring', 'spare', 'starter',
     't', 'timeLeft', 'timer', 'tutor', 'week', 'weekday', 'workLeft'];
   check('the documented API, and nothing else', same(basics.names, API.slice().sort()), JSON.stringify(basics.names));
@@ -439,17 +439,55 @@ const WEEK = [
 
   const focusWords = await ev(() => {
     const P = window.HomePlan;
-    return [P.pointsLine({ seen: 12, focus: 2, on_time: 0 }, 'en'), P.pointsLine({ seen: 20, focus: 4, on_time: 5 }, 'en'), P.pointsLine({ seen: 4, focus: 0, on_time: 0 }, 'en'),
+    return [P.pointsLine({ seen: 12, focus: 12, on_time: 0 }, 'en'), P.pointsLine({ seen: 20, focus: 20, on_time: 10 }, 'en'), P.pointsLine({ seen: 0, focus: 0, on_time: 0 }, 'en'),
       P.pointsLine({ seen: 20, focus: 0, on_time: 0, capped: true }, 'en'), P.pointsLine({ seen: 20, focus: 2, on_time: 0, capped: true }, 'en'),
-      P.pointsLine({ seen: 25, focus: 0, on_time: 0 }, 'en'), P.pointsLine({ seen: 12, focus: 2, on_time: 5 }, 'es'), P.pointsLine({ seen: 3 }, 'es'),
+      P.pointsLine({ seen: 25, focus: 0, on_time: 0 }, 'en'), P.pointsLine({ seen: 12, focus: 12, on_time: 10 }, 'es'), P.pointsLine({ seen: 0 }, 'es'),
+      P.pointsLine({ seen: 3, focus: 3, on_time: 0 }, 'en'),
       P.onTimeLine({ from: '16:00', until: '16:40', done: false }, 'en'), P.onTimeLine({ from: '16:00', until: '16:40', done: false, points: 8 }, 'es'),
       P.onTimeLine({ from: '16:00', until: '16:40', done: true }, 'en'), P.onTimeLine(null, 'en')];
   });
-  check('pointsLine: what the server saw ("+2 · 12 minutes", "+4 · 20 minutes · +5 on time"), under 5 minutes, the daily limit; his own block; Spanish',
-    same(focusWords.slice(0, 8), ['+2 · 12 minutes', '+4 · 20 minutes · +5 on time', 'Under 5 minutes: no points this time.', "Today's limit reached.",
-      "+2 · 20 minutes · Today's limit reached.", '25 minutes', '+2 · 12 minutos · +5 a tiempo', 'Menos de 5 minutos: esta vez sin puntos.']), JSON.stringify(focusWords.slice(0, 8)));
-  check('onTimeLine: "start by 4:40pm for +5" until the on-time start is done', same(focusWords.slice(8), ['start by 4:40pm for +5', 'empieza antes de las 16:40 para +8', '', '']),
-    JSON.stringify(focusWords.slice(8)));
+  // The owner changed the rule: a point per minute the server saw (it was 1 per 5 minutes, so under 5 minutes paid
+  // nothing); a block under a minute still pays nothing; the on-time default is +10.
+  check('pointsLine: what the server saw ("+12 · 12 minutes", "+20 · 20 minutes · +10 on time", "+3 · 3 minutes"), under a minute, the daily limit; his own block; Spanish',
+    same(focusWords.slice(0, 9), ['+12 · 12 minutes', '+20 · 20 minutes · +10 on time', 'Under a minute: no points this time.', "Today's limit reached.",
+      "+2 · 20 minutes · Today's limit reached.", '25 minutes', '+12 · 12 minutos · +10 a tiempo', 'Menos de un minuto: esta vez sin puntos.', '+3 · 3 minutes']),
+    JSON.stringify(focusWords.slice(0, 9)));
+  check('onTimeLine: "start by 4:40pm for +10" until the on-time start is done', same(focusWords.slice(9), ['start by 4:40pm for +10', 'empieza antes de las 16:40 para +8', '', '']),
+    JSON.stringify(focusWords.slice(9)));
+  // His timer's live count (the owner's "points ticking up during the block"): an estimate a point a minute from
+  // the server's start, the on-time points once 5 minutes are seen, never past the block's length or what is left of
+  // the day's cap (so never more than the end pays).
+  const est = await ev(() => {
+    const P = window.HomePlan;
+    const e = { per_minute: 1, on_time: 10, room: 60 };
+    return [P.estimate(e, 59, 20), P.estimate(e, 60, 20), P.estimate(e, 4 * 60 + 59, 20), P.estimate(e, 5 * 60, 20), P.estimate(e, 30 * 60, 20),
+      P.estimate({ per_minute: 1, on_time: 0, room: 7 }, 12 * 60, 20), P.estimate({ per_minute: 2, on_time: 0, room: 60 }, 3 * 60, 10), P.estimate(null, 600, 20),
+      P.estimate({ per_minute: 1, on_time: 10, room: 0 }, 600, 20)];
+  });
+  check("estimate: 0 under a minute, 1 at a minute, 4 at 4:59, 15 at 5 minutes (with the on-time 10), 30 past the end of a 20-minute block, the cap's room (7), the parents' 2 a minute, nothing for his own block or a full day",
+    same(est, [0, 1, 4, 15, 30, 7, 6, 0, 0]), JSON.stringify(est));
+  // The next-reward bar (§8.5): "N points to <reward>" toward the cheapest he can't afford yet, "You can get <reward> now!" when he can.
+  const goal = await ev(() => {
+    const P = window.HomePlan;
+    const txt = (html) => { const d = document.createElement('div'); d.innerHTML = html; return [...d.querySelectorAll('p')].map((p) => p.textContent).concat(
+      d.querySelector('.plan-goal-fill') ? [d.querySelector('.plan-goal-fill').style.width] : []); };
+    return [
+      txt(P.goalBar({ next: { title: 'Choose Friday\'s dinner', cost: 200, need: 6 }, now: null }, { lang: 'en' })),
+      txt(P.goalBar({ next: { title: 'A new book', cost: 500, need: 1 }, now: null }, { lang: 'en' })),
+      txt(P.goalBar({ next: { title: 'A new book', cost: 500, need: 300 }, now: { title: '15 minutes of extra game time', cost: 15, instant: true } }, { lang: 'en' })),
+      txt(P.goalBar({ next: null, now: { title: 'A new book', cost: 500, instant: false } }, { lang: 'en' })),
+      txt(P.goalBar({ next: { title: 'Choose Friday\'s dinner', cost: 200, need: 6 }, now: null }, { lang: 'en', extra: 4 })),
+      txt(P.goalBar({ next: { title: 'Choose Friday\'s dinner', cost: 200, need: 6 }, now: null }, { lang: 'en', extra: 9 })),
+      txt(P.goalBar({ next: { title: 'Elegir la cena del viernes', cost: 200, need: 6 }, now: { title: 'Un libro', cost: 50, instant: false } }, { lang: 'es' })),
+      P.goalBar(null, { lang: 'en' }), P.goalBar({ next: null, now: null }, { lang: 'en' }),
+      txt(P.goalBar({ next: { title: '<b>x</b>', cost: 10, need: 5 }, now: null }, { lang: 'en' })),
+    ];
+  });
+  check(`goalBar: "6 points to …" with a bar of his free points (97%), "1 point to …", "You can get … now!" with the way to the next, the timer's points moving it on, "… when this block ends!", Spanish, nothing without a goal, a title as text`,
+    same(goal, [["6 points to Choose Friday's dinner", '97%'], ['1 point to A new book', '99.8%'],
+      ['You can get 15 minutes of extra game time now!', '300 points to A new book', '40%'], ['You can get A new book now!', '100%'],
+      ["2 points to Choose Friday's dinner", '99%'], ["Choose Friday's dinner when this block ends!", '100%'],
+      ['¡Ya puedes conseguir Un libro!', '6 puntos para Elegir la cena del viernes', '97%'], '', '', ['5 points to <b>x</b>', '50%']]), JSON.stringify(goal));
 
   // =====================================================================
   // 7. What an answer means, and the database's messages in his words

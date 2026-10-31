@@ -223,7 +223,7 @@ select test.is((select string_agg(c.relname || '.' || a.attname, ', ' order by c
                   and has_column_privilege('authenticated', c.oid, a.attname, 'insert')),
                'assignments.details, assignments.due_date, assignments.kid_id, assignments.kind, assignments.status, assignments.stretch, '
                'assignments.subject, assignments.title, homework_times.event_id, homework_times.kid_id, rewards.active, rewards.cost, '
-               'rewards.kid_id, rewards.sort_order, rewards.title',
+               'rewards.instant, rewards.kid_id, rewards.sort_order, rewards.title',
                '0005''s tables: the columns signed-in users may insert (assignments without added_by, given_* or the AI''s; homework_times; rewards)');
 select test.is((select string_agg(c.relname || '.' || a.attname, ', ' order by c.relname, a.attname)
                 from pg_class c join pg_attribute a on a.attrelid = c.oid
@@ -232,9 +232,9 @@ select test.is((select string_agg(c.relname || '.' || a.attname, ', ' order by c
                                     'rewards', 'reward_asks', 'points_ledger', 'ai_runs')
                   and has_column_privilege('authenticated', c.oid, a.attname, 'update')),
                'assignments.details, assignments.due_date, assignments.kind, assignments.status, assignments.stretch, assignments.subject, '
-               'assignments.title, homework_kids.active, homework_kids.focus_minutes, homework_kids.points_on, homework_kids.pts_day_cap, '
-               'homework_kids.pts_focus, homework_kids.pts_milestone, homework_kids.pts_milestone_week, homework_kids.pts_on_time, '
-               'rewards.active, rewards.cost, rewards.sort_order, rewards.title',
+               'assignments.title, homework_kids.active, homework_kids.focus_minutes, homework_kids.instant_day, homework_kids.points_on, '
+               'homework_kids.pts_day_cap, homework_kids.pts_focus, homework_kids.pts_milestone, homework_kids.pts_milestone_week, '
+               'homework_kids.pts_on_time, rewards.active, rewards.cost, rewards.instant, rewards.sort_order, rewards.title',
                '0005''s tables: the columns signed-in users may update (never cue, if_stuck, given_*, plan_rev, done_at or added_by)');
 select test.is((select string_agg(t, ', ' order by t)
                 from unnest(array['homework_kids', 'homework_times', 'tutor_links', 'assignments', 'homework_steps', 'focus_sessions',

@@ -3,25 +3,31 @@
 // stand-in, with every write checked in the tables themselves. The flows run in order and build on
 // each other, and they move the household's clock across days (so they have their own copy of the
 // database, not flows.test.js's, whose flows stay on Tue Oct 27):
-//   Mon Nov 2, 9:00am  Alex turns homework on for Jordan on the Homework page, sets his homework time
-//                      (Mon–Thu 4:30–5:15), three rewards, a spelling sheet due Wed, and Pat's link;
+//   Mon Nov 2, 9:00am  Alex turns homework on for Jordan on the Homework page (10 minutes first, by
+//                      default; Alex makes it 20), sets his homework time (Mon–Thu 4:30–5:15), the three
+//                      suggested rewards (15 instant, 200, 500) and one more of 60, a spelling sheet due
+//                      Wed, and Pat's link;
 //                      the morning email and Jordan's text carry the homework-time event and nothing else.
 //   Mon Nov 2, 9:05am  Pat's link (signed out) adds the science project, plans it from the essay starter
 //                      plan (placed by the database in his homework time, around Tuesday's piano) and
 //                      gives it to him; the page shows nothing of the family and calls only its four functions.
-//   Mon Nov 2, 4:31pm  Jordan's My day: the card, one tap on Start, the ring; the server's clock moves 20
-//                      minutes, Step done: +4 and +5 on time. A second block the phone counts as 20
-//                      minutes but the server saw 7 of: +1. Quick on the spelling sheet, + Homework for
-//                      his own worksheet, both ticked.
-//   Wed Nov 4, 4:35pm  He ticks the outline milestone, asks Pat a question, and Re-plans the steps left
-//                      from Monday (Thursday's milestone, which they now can't reach, is to talk about
-//                      with Pat). Pat sends the milestone back with Not yet and a note (he sees it),
-//                      he ticks it again, Pat answers and checks it: +20. He asks for a reward; Sam can't
-//                      decide it; Alex taps Yes on Today, with the balance and this week's points beside it.
+//   Mon Nov 2, 4:31pm  Jordan's My day: the card, one tap on Start, the ring (with its live count and the
+//                      next-reward bar); the server's clock moves 20 minutes and the ring runs out: the
+//                      phone ends the block at once and the server pays +20 and +10 on time before he
+//                      answers; Step done ticks the step. A second block the phone counts as 20 minutes
+//                      but the server saw 7 of: +7. Quick on the spelling sheet, + Homework for his own
+//                      worksheet, both ticked.
+//   Wed Nov 4, 4:35pm  He ticks the outline milestone (+20 now), asks Pat a question, and Re-plans the
+//                      steps left from Monday (Thursday's milestone, which they now can't reach, is to
+//                      talk about with Pat). Pat sends the milestone back with Not yet and a note (he
+//                      sees it; his +20 stays), he ticks it again, Pat answers and checks it: the other
+//                      +20. He gets the instant reward on the spot (−15; Today says so); he asks for the
+//                      60 one; Sam can't decide it; Alex taps Yes on Today, with the balance and this
+//                      week's points beside it.
 //   Then Pat's link Off and On again, New link, past its end date, and homework off: the link stops
 //   at once each time, and Jordan's card goes. Last, homework on again with 1,200 more ledger rows (the
 //   stand-in cuts a read at 1,000, as Supabase's API does) and an ask: Today and the Homework page show
-//   the balance his view has, 1215.
+//   the balance his view has, 1202.
 // Pat Lee is also the made-up electrician contractor in seed_v1.sql: the tutor is only ever looked for
 // inside the tutor link's row and Pat's page. Screenshots: tests/e2e/shots/realdb-homework-*.png.
 const { setup, HOMEWORK_CALLS } = require('./lib');
@@ -84,8 +90,10 @@ const PAT_WHO = 'Pat Lee, tutor (tutor link)';
       (await tc(page, '#main h1')) === 'Homework' && same(await texts(page, '.hw-setup [data-act="turn-on"]'), ['Turn on homework for Jordan']), await tc(page, '#main'));
     await page.click('.hw-setup [data-act="turn-on"]');
     await page.waitForSelector('.hw-setup form[data-form="time"]', { timeout: 5000 });
-    const kid = await one(`select active, points_on, focus_minutes, created_by from homework_kids where kid_id = '${P.jordan.id}'`);
-    check('setup: Turn on makes his homework_kids row (on, points on, 20 minutes first), by Alex', same(kid, { active: 't', points_on: 't', focus_minutes: '20', created_by: 'alex@example.com' }), kid);
+    const kid = await one(`select active, points_on, focus_minutes, pts_focus, pts_on_time, pts_milestone, pts_day_cap, pts_milestone_week, instant_day, created_by
+      from homework_kids where kid_id = '${P.jordan.id}'`);
+    check('setup: Turn on makes his homework_kids row (on, points on, 10 minutes first; 1 a minute, +10 on time, 40 a milestone, caps 60 and 160, 2 instant rewards a day), by Alex',
+      same(kid, { active: 't', points_on: 't', focus_minutes: '10', pts_focus: '1', pts_on_time: '10', pts_milestone: '40', pts_day_cap: '60', pts_milestone_week: '160', instant_day: '2', created_by: 'alex@example.com' }), kid);
     await page.click('.hw-setup form[data-form="time"] button[type="submit"]');
     await page.waitForSelector('.hw-setup form[data-form="rewards"]', { timeout: 5000 });
     const ev = await one(`select e.title, e.start_date, e.start_time, e.end_time, e.repeat, e.repeat_weekdays, e.responsible_id, e.skip_days_off, e.created_by
@@ -93,14 +101,33 @@ const PAT_WHO = 'Pat Lee, tutor (tutor link)';
     check('setup: his homework time (prefilled Mon–Thu 4:30–5:15) is one weekly event in his name, from today, ISO weekdays 1–4, with days off skipped, and its homework_times link',
       !!ev && same([ev.title, ev.start_date, ev.start_time, ev.end_time, ev.repeat, ev.repeat_weekdays, ev.responsible_id, ev.skip_days_off, ev.created_by],
         ['Homework', MON, '16:30:00', '17:15:00', 'weekly', '{1,2,3,4}', P.jordan.id, 't', 'alex@example.com']), ev);
-    const rewardTitles = ['15 minutes of extra game time', 'Choose Friday\'s dinner', 'A new book'];
+    const rewardTitles = ['15 minutes of extra game time', 'A new book', 'A trip to the water park'];
     for (let i = 0; i < 3; i++) await page.fill(`.hw-setup form[data-form="rewards"] .hw-rw:nth-child(${i + 1}) [name="title"]`, rewardTitles[i]);
     await page.click('.hw-setup form[data-form="rewards"] button[type="submit"]');
     await until(async () => !(await page.$('.hw-setup')) && !!(await page.$('.hw-kidline')), 6000);
-    const rw = await sql(`select title, cost, active, suggested, sort_order, created_by from rewards where kid_id = '${P.jordan.id}' order by sort_order`);
-    check('setup: three rewards in three sizes (15, 60, 150), his, on, in order, by Alex (a direct insert, the column grants and row-level security allowing it)',
-      same(rw.map((r) => [r.title, r.cost, r.active, r.suggested, r.sort_order, r.created_by]), rewardTitles.map((t, i) => [t, ['15', '60', '150'][i], 't', 'f', String(i + 1), 'alex@example.com'])), rw);
+    let rw = await sql(`select title, cost, active, instant, suggested, sort_order, created_by from rewards where kid_id = '${P.jordan.id}' order by sort_order`);
+    check('setup: three rewards in the suggested sizes (15 instant, 200, 500), his, on, in order, by Alex (a direct insert, the column grants and row-level security allowing it)',
+      same(rw.map((r) => [r.title, r.cost, r.active, r.instant, r.suggested, r.sort_order, r.created_by]),
+        rewardTitles.map((t, i) => [t, ['15', '200', '500'][i], 't', i === 0 ? 't' : 'f', 'f', String(i + 1), 'alex@example.com'])), rw);
     reward = (await one(`select id from rewards where kid_id = '${P.jordan.id}' and cost = 15`)).id;
+    // One more he asks for (not instant), from + Reward.
+    await page.click('[data-act="add-reward"]');
+    await page.waitForSelector('#formDialog form.hw-reward', { timeout: 5000 });
+    await page.fill('#formDialog form.hw-reward [name="title"]', 'Choose Friday\'s dinner');
+    await page.fill('#formDialog form.hw-reward [name="cost"]', '60');
+    await page.click('#formDialog form.hw-reward button[type="submit"]');
+    await until(async () => (await sql(`select 1 from rewards where kid_id = '${P.jordan.id}'`)).length === 4, 5000);
+    rw = await sql(`select title, cost, active, instant, sort_order, created_by from rewards where kid_id = '${P.jordan.id}' order by sort_order`);
+    check('setup: + Reward adds "Choose Friday\'s dinner" at 60, not instant, last, by Alex', same(rw.slice(-1).map((r) => [r.title, r.cost, r.active, r.instant, r.sort_order, r.created_by]),
+      [['Choose Friday\'s dinner', '60', 't', 'f', '4', 'alex@example.com']]), rw);
+    // His first length: Alex makes it 20 (the plans below are cut and placed in 20-minute steps), once the
+    // page has the new reward (a write while one is on its way is not sent).
+    await until(async () => (await texts(page, '.hw-rewards li .hw-rw-line')).includes('Choose Friday\'s dinner · 60') && !(await page.$('.hw-page[aria-busy]')), 5000);
+    await page.selectOption('form[data-form="values"] [name="focus_minutes"]', '20');
+    await page.click('form[data-form="values"] button[type="submit"]');
+    await until(async () => (await one(`select focus_minutes from homework_kids where kid_id = '${P.jordan.id}'`)).focus_minutes === '20', 5000);
+    check('setup: the points values form saves his first length, 20 (the values the same)', same(await one(`select focus_minutes, pts_focus, pts_on_time, pts_day_cap, instant_day from homework_kids where kid_id = '${P.jordan.id}'`),
+      { focus_minutes: '20', pts_focus: '1', pts_on_time: '10', pts_day_cap: '60', instant_day: '2' }));
     check('setup: the kid line names his homework time', (await tc(page, '.hw-kidline')) === 'Jordan · 0 points · Homework time Mon–Thu 4:30–5:15pm ›', await tc(page, '.hw-kidline'));
 
     // A spelling sheet due Wednesday, with no plan (he'll make it one step with Quick).
@@ -237,23 +264,40 @@ const PAT_WHO = 'Pat Lee, tutor (tutor link)';
     check('card: one tap on Start begins a 20-minute block on Next, alone, on time, started by the server\'s clock',
       !!b1 && same([b1.step_id, b1.assignment_id, b1.minutes, b1.with_whom, b1.on_time, b1.len, b1.ended_at], [S[0].id, sci, '20', 'alone', 't', '00:20:00', null])
       && Math.abs(Date.parse(b1.started_at) - hub) < 15000, b1);
-    check('#focus: the step, "On time · +5 once 8 minutes are done", and 20 minutes on the ring', (await tc(page, '.hw-focus-title')) === S[0].title
-      && (await tc(page, '.hw-ontime')) === 'On time · +5 once 8 minutes are done' && (await tc(page, '.hw-left')) === '20 min', await tc(page, '#app'));
+    check('#focus: the step, "On time · +10 once 5 minutes are done", and 20 minutes on the ring', (await tc(page, '.hw-focus-title')) === S[0].title
+      && (await tc(page, '.hw-ontime')) === 'On time · +10 once 5 minutes are done' && (await tc(page, '.hw-left')) === '20 min', await tc(page, '#app'));
+    // The live count (an estimate from the server's start time, his view's session.earn) and the next-reward bar.
+    const earn = ((await view()) || {}).session;
+    check('#focus: his view\'s block says what it pays (1 a minute, +10 on time, 60 left of the day\'s cap), and the screen counts from ★ 0, "+0 so far", toward "15 points to 15 minutes of extra game time"',
+      !!earn && !!earn.earn && earn.earn.per_minute === 1 && earn.earn.on_time === 10 && earn.earn.room === 60 && earn.on_time === true
+      && (await tc(page, '.hw-live')) === '★ 0 +0 so far' && (await tc(page, '.hw-focus .plan-goal-text')) === '15 points to 15 minutes of extra game time',
+      { earn, live: await tc(page, '.hw-live'), goal: await tc(page, '.hw-focus .plan-goal') });
     await shot(page, 'homework-focus');
-    // The server's clock moves 20 minutes, and the phone's with it: the ring runs out.
+    // The server's clock moves 20 minutes, and the phone's with it: the ring runs out, and the phone ends
+    // the block at once (result "time"): the server pays before he says how it went.
     await h.setClock(new Date(Date.parse(b1.started_at) + 20 * 60000 + 5000).toISOString());
     await page.clock.fastForward('20:05');
-    await page.waitForSelector('.hw-end [data-act="hw-end"][data-result="done"]', { timeout: 5000 });
+    const paid = await until(async () => (await one(`select result from focus_sessions where id = '${b1.id}'`)).result === 'time', 5000);
+    const t1 = await one(`select result, seen_minutes, points, ended_at is not null as ended from focus_sessions where id = '${b1.id}'`);
+    let l = await ledger();
+    check('end: the ring runs out and the block ends at once (focus_by_token "time": 20 minutes seen by the server, 30 points), the step still open',
+      paid && same(t1, { result: 'time', seen_minutes: '20', points: '30', ended: 't' }) && (await steps(sci))[0].done_at === null, t1);
+    check('end: the ledger has +20 focus (1 a minute) and +10 on time, on Monday, from the server\'s clock', same(l.map((x) => [x.kind, x.delta, x.day]), [['focus', '20', MON], ['on_time', '10', MON]]), l);
+    check('end: before he answers, the screen shows the server\'s points, "+20 · 20 minutes · +10 on time", the "+30", and counts up to ★ 30',
+      await until(async () => (await tc(page, '.hw-end .hw-points-line')) === '+20 · 20 minutes · +10 on time' && (await tc(page, '.hw-end-balance')) === '★ 30', 5000)
+      && (await tc(page, '.hw-end .hw-plus')) === '+30' && !!(await page.$('.hw-end [data-act="hw-end"][data-result="done"]')), await tc(page, '.hw-end'));
+    await shot(page, 'homework-paid');
     await page.click('.hw-end [data-act="hw-end"][data-result="done"]');
-    await page.waitForSelector('.hw-points-line', { timeout: 5000 });
+    await until(async () => (await one(`select result from focus_sessions where id = '${b1.id}'`)).result === 'done', 5000);
+    await page.waitForSelector('.hw-end-next [data-act="hw-next"]', { timeout: 5000 });
     const e1 = await one(`select result, seen_minutes, points, ended_at is not null as ended from focus_sessions where id = '${b1.id}'`);
     const s1 = (await steps(sci))[0];
-    check('end: Step done ends the block (20 minutes seen by the server, 9 points) and ticks the step, as "Jordan … (My day)"',
-      same(e1, { result: 'done', seen_minutes: '20', points: '9', ended: 't' }) && !!s1.done_at && /^Jordan( Example)? \(My day\)$/.test(s1.done_by), { e1, done_by: s1.done_by });
-    let l = await ledger();
-    check('end: the ledger has +4 focus and +5 on time, on Monday, from the server\'s clock', same(l.map((x) => [x.kind, x.delta, x.day]), [['focus', '4', MON], ['on_time', '5', MON]]), l);
-    check('end: the screen shows the server\'s points: "+4 · 20 minutes · +5 on time" and ★ 9', (await tc(page, '.hw-points-line')) === '+4 · 20 minutes · +5 on time'
-      && (await tc(page, '.hw-end-balance')) === '★ 9', await tc(page, '.hw-end'));
+    l = await ledger();
+    check('end: Step done is his answer: the block\'s result "done" (its points the same, nothing paid twice) and the step ticked, as "Jordan … (My day)"',
+      same(e1, { result: 'done', seen_minutes: '20', points: '30', ended: 't' }) && !!s1.done_at && /^Jordan( Example)? \(My day\)$/.test(s1.done_by) && l.length === 2,
+      { e1, done_by: s1.done_by, l });
+    check('end: "Block finished." with the same points and ★ 30', (await tc(page, '.hw-end h2')) === 'Block finished.' && (await tc(page, '.hw-points-line')) === '+20 · 20 minutes · +10 on time'
+      && (await tc(page, '.hw-end-balance')) === '★ 30', await tc(page, '.hw-end'));
 
     // A second block: the phone's clock runs 20 minutes, but the server saw 7.
     await page.click('.hw-end-next [data-act="hw-next"]');
@@ -264,14 +308,15 @@ const PAT_WHO = 'Pat Lee, tutor (tutor link)';
     const b2 = await one(`select id, step_id, started_at, on_time from focus_sessions where kid_id = '${P.jordan.id}' and ended_at is null`);
     await h.setClock(new Date(Date.parse(b2.started_at) + 7 * 60000 + 10000).toISOString());
     await page.clock.fastForward('20:05');
-    await page.waitForSelector('.hw-end [data-act="hw-end"][data-result="more"]', { timeout: 5000 });
+    await until(async () => (await one(`select result from focus_sessions where id = '${b2.id}'`)).result === 'time', 5000);
     await page.click('.hw-end [data-act="hw-end"][data-result="more"]');
-    await page.waitForSelector('.hw-points-line', { timeout: 5000 });
+    await until(async () => (await one(`select result from focus_sessions where id = '${b2.id}'`)).result === 'more', 5000);
+    await page.waitForSelector('.hw-end-next', { timeout: 5000 });
     const e2 = await one(`select result, seen_minutes, points from focus_sessions where id = '${b2.id}'`);
     l = await ledger();
-    check('end: a block the phone counted to its end but the server saw 7 minutes of earns what the server saw: More to do, 7 minutes, +1, not on time (the day\'s second)',
-      !!b2 && b2.step_id === S[1].id && b2.on_time === 'f' && same(e2, { result: 'more', seen_minutes: '7', points: '1' })
-      && same(l.map((x) => [x.kind, x.delta]), [['focus', '4'], ['on_time', '5'], ['focus', '1']]) && (await tc(page, '.hw-points-line')) === '+1 · 7 minutes', { e2, line: await tc(page, '.hw-points-line') });
+    check('end: a block the phone counted to its end but the server saw 7 minutes of earns what the server saw: More to do, 7 minutes, +7, not on time (the day\'s second)',
+      !!b2 && b2.step_id === S[1].id && b2.on_time === 'f' && same(e2, { result: 'more', seen_minutes: '7', points: '7' })
+      && same(l.map((x) => [x.kind, x.delta]), [['focus', '20'], ['on_time', '10'], ['focus', '7']]) && (await tc(page, '.hw-points-line')) === '+7 · 7 minutes', { e2, line: await tc(page, '.hw-points-line') });
     const s2 = (await steps(sci))[1];
     check('end: More to do leaves the step open', s2.done_at === null);
 
@@ -333,10 +378,11 @@ const PAT_WHO = 'Pat Lee, tutor (tutor link)';
     await page.click(`.hw-tonight .hw-step[data-step="${ms.id}"] .hw-box`);
     await until(async () => !!(await one(`select done_at from homework_steps where id = '${ms.id}'`)).done_at, 4000);
     // The row is written before the page has the answer, so wait for the toast drawn from it.
-    const msToast = await until(async () => /\+20 when Pat checks it/.test(await lastToast(page)), 4000);
+    const msToast = await until(async () => /^\+20 now · \+20 more when Pat checks it/.test(await lastToast(page)), 4000);
     const msLedger = await ledger();
-    check('milestone: he ticks "Plan it: an outline or a sketch"; the toast says "+20 when Pat checks it" (nothing paid yet)',
-      msToast && msLedger.length === 3, { toast: await lastToast(page), ledger: msLedger });
+    check('milestone: he ticks "Plan it: an outline or a sketch" and is paid half at once (milestone_done +20, today, by him); the toast says "+20 now · +20 more when Pat checks it", and ★ 57',
+      msToast && msLedger.length === 4 && same(msLedger.slice(-1).map((x) => [x.kind, x.delta, x.day, /\(My day\)$/.test(x.who)]), [['milestone_done', '20', WED, true]])
+      && await until(async () => (await tc(page, '.hw-head .hw-points')) === '★ 57', 4000), { toast: await lastToast(page), ledger: msLedger, head: await tc(page, '.hw-head .hw-points') });
     // Ask Pat, from ⋯ on the next step.
     await page.click(`.hw-step[data-step="${later.id}"] [data-act="hw-more"]`);
     await page.click(`.hw-step[data-step="${later.id}"] .hw-menu [data-act="hw-ask"]`);
@@ -379,8 +425,8 @@ const PAT_WHO = 'Pat Lee, tutor (tutor link)';
     await pat.page.click('.plan-note [type="submit"]');
     await until(async () => !!(await one(`select not_yet_at from homework_steps where id = '${ms.id}'`)).not_yet_at, 4000);
     const ny = (await steps(sci)).find((s) => s.id === ms.id);
-    check('not yet: Pat\'s Not yet unticks the milestone with the note, by the tutor, and pays nothing',
-      ny.done_at === null && ny.coach_note === 'Add a source for the second point.' && ny.coach_note_by === 'tutor' && (await ledger()).length === 3, ny);
+    check('not yet: Pat\'s Not yet unticks the milestone with the note, by the tutor, and takes nothing back (his +20 stays)',
+      ny.done_at === null && ny.coach_note === 'Add a source for the second point.' && ny.coach_note_by === 'tutor' && (await ledger()).length === 4, ny);
     await pat.context.close();
     // Jordan sees it under the milestone, and ticks it again.
     const j = await open({ phone: true, path: `/day.html?t=${P.jordan.day_token}#homework`, label: 'hw-jordan-notyet' });
@@ -389,7 +435,9 @@ const PAT_WHO = 'Pat Lee, tutor (tutor link)';
       await tc(j.page, `.hw-step[data-step="${ms.id}"]`));
     await j.page.click(`.hw-step[data-step="${ms.id}"] .hw-box`);
     await until(async () => !!(await one(`select done_at from homework_steps where id = '${ms.id}'`)).done_at, 4000);
-    check('not yet: he ticks it again; the note goes', (await one(`select coach_note, not_yet_at from homework_steps where id = '${ms.id}'`)).not_yet_at === null);
+    check('not yet: he ticks it again; the note goes, and the first half is not paid twice ("+20 when Pat checks it")',
+      (await one(`select coach_note, not_yet_at from homework_steps where id = '${ms.id}'`)).not_yet_at === null && (await ledger()).length === 4
+      && await until(async () => /^\+20 when Pat checks it/.test(await lastToast(j.page)), 4000), await lastToast(j.page));
     await j.context.close();
 
     // Pat answers his question and checks the milestone.
@@ -409,7 +457,7 @@ const PAT_WHO = 'Pat Lee, tutor (tutor link)';
     await until(async () => !!(await one(`select checked_at from homework_steps where id = '${ms.id}'`)).checked_at, 4000);
     const ck = (await steps(sci)).find((s) => s.id === ms.id);
     const l = await ledger();
-    check('check: Looks done checks the milestone with the note, by Pat\'s link, and pays +20 (milestone, today, "Pat Lee, tutor (tutor link)")',
+    check('check: Looks done checks the milestone with the note, by Pat\'s link, and pays the other half, +20 (milestone, today, "Pat Lee, tutor (tutor link)")',
       ck.checked_by === PAT_WHO && ck.coach_note === 'Clear outline. The third point is the strongest.' && ck.coach_note_by === 'tutor'
       && same(l.slice(-1).map((x) => [x.kind, x.delta, x.day, x.who]), [['milestone', '20', WED, PAT_WHO]]), { ck, l });
     const toasts = await texts(p2.page, '.toasts');
@@ -430,14 +478,28 @@ const PAT_WHO = 'Pat Lee, tutor (tutor link)';
   await flow('trade', async () => {
     if (!reward) throw new Error('no reward');
     await h.mark();
+    const dinner = (await one(`select id from rewards where kid_id = '${P.jordan.id}' and cost = 60`)).id;
     const j = await open({ phone: true, path: `/day.html?t=${P.jordan.day_token}#points`, label: 'hw-jordan-points' });
     await j.page.waitForSelector('.hw-balance-big', { timeout: 8000 });
-    check('#points: his balance is the server\'s, ★ 30 (4 + 5 + 1 + 20)', (await tc(j.page, '.hw-balance-big')) === '★ 30', await tc(j.page, '.hw-balance-big'));
-    await j.page.click(`.hw-reward[data-reward="${reward}"] [data-act="hw-ask-reward"]`);
-    await until(async () => !!(await one(`select id from reward_asks where kid_id = '${P.jordan.id}'`)), 4000);
-    const ask = await one(`select id, title, cost, status, reward_id from reward_asks where kid_id = '${P.jordan.id}'`);
-    check('ask: reward_by_token ask holds 15 points for "15 minutes of extra game time", waiting; "Tell a parent you asked."',
-      same([ask.title, ask.cost, ask.status, ask.reward_id], ['15 minutes of extra game time', '15', 'waiting', reward])
+    check('#points: his balance is the server\'s, ★ 77 (20 + 10 + 7 on Monday, 20 + 20 for the milestone)', (await tc(j.page, '.hw-balance-big')) === '★ 77', await tc(j.page, '.hw-balance-big'));
+    // The instant reward: Get it now, Yes: the points go at once, and no parent decides it.
+    await j.page.click(`.hw-reward[data-reward="${reward}"] [data-act="hw-cash"]`);
+    await j.page.click(`.hw-reward[data-reward="${reward}"] [data-act="hw-cash-yes"]`);
+    await until(async () => !!(await one(`select id from reward_asks where kid_id = '${P.jordan.id}' and status = 'cashed'`)), 4000);
+    const cash = await one(`select title, cost, status, reward_id, decided_by, decided_at = asked_at as at_once from reward_asks where kid_id = '${P.jordan.id}' and status = 'cashed'`);
+    let l = await ledger();
+    check('cash: reward_by_token cash gets "15 minutes of extra game time" on the spot (an ask "cashed", decided by him at once) and writes the trade, −15',
+      same([cash.title, cash.cost, cash.status, cash.reward_id, /\(My day\)$/.test(cash.decided_by), cash.at_once], ['15 minutes of extra game time', '15', 'cashed', reward, true, 't'])
+      && same(l.slice(-1).map((x) => [x.kind, x.delta, /\(My day\)$/.test(x.who)]), [['trade', '-15', true]]), { cash, l });
+    check('cash: "Got it: 15 minutes of extra game time. Tell a parent.", ★ 62, and one more instant reward today',
+      await until(async () => /^Got it: 15 minutes of extra game time\. Tell a parent\./.test(await lastToast(j.page)) && (await tc(j.page, '.hw-balance-num')) === '★ 62', 4000)
+      && ((await view()) || { points: {} }).points.cash_left === 1, { toast: await lastToast(j.page), balance: await tc(j.page, '.hw-balance-num') });
+    // The 60 one is not instant: he asks.
+    await j.page.click(`.hw-reward[data-reward="${dinner}"] [data-act="hw-ask-reward"]`);
+    await until(async () => !!(await one(`select id from reward_asks where kid_id = '${P.jordan.id}' and status = 'waiting'`)), 4000);
+    const ask = await one(`select id, title, cost, status, reward_id from reward_asks where kid_id = '${P.jordan.id}' and status = 'waiting'`);
+    check('ask: reward_by_token ask holds 60 points for "Choose Friday\'s dinner", waiting; "Tell a parent you asked."',
+      same([ask.title, ask.cost, ask.status, ask.reward_id], ['Choose Friday\'s dinner', '60', 'waiting', dinner])
       && await until(async () => /Tell a parent you asked\./.test(await tc(j.page, '.hw-asks')), 4000), await tc(j.page, '.hw-asks'));
     await shot(j.page, 'homework-points');
     await j.context.close();
@@ -458,19 +520,22 @@ const PAT_WHO = 'Pat Lee, tutor (tutor link)';
     const a = await open({ email: 'alex@example.com', phone: true, path: '/', label: 'hw-alex-today' });
     await a.page.waitForSelector(`.today-hw-ask[data-ask="${ask.id}"]`, { timeout: 8000 });
     const line = await tc(a.page, `.today-hw-ask[data-ask="${ask.id}"]`);
-    check('today: "Jordan asks: 15 minutes of extra game time · 15 · balance 30 (this week: +10 focus and on time, +20 milestones checked by Pat)" with Yes and Not now',
-      line === 'Jordan asks: 15 minutes of extra game time · 15 · balance 30 (this week: +10 focus and on time, +20 milestones checked by Pat) Yes Not now', line);
+    check('today: "Jordan asks: Choose Friday\'s dinner · 60 · balance 62 (this week: +37 focus and on time, +20 milestones ticked, +20 milestones checked by Pat)" with Yes and Not now',
+      line === 'Jordan asks: Choose Friday\'s dinner · 60 · balance 62 (this week: +37 focus and on time, +20 milestones ticked, +20 milestones checked by Pat) Yes Not now', line);
+    const cashedLine = await tc(a.page, '.today-hw-cashed');
+    check('today: the parents see the instant reward he got: "Jordan cashed in: 15 minutes of extra game time · 15 · 4:3xpm"', /^Jordan cashed in: 15 minutes of extra game time · 15 · 4:3\dpm$/.test(cashedLine), cashedLine);
     await shot(a.page, 'homework-today');
     await a.page.click(`.today-hw-ask[data-ask="${ask.id}"] [data-act="hw-yes"]`);
     await until(async () => (await one(`select status from reward_asks where id = '${ask.id}'`)).status === 'approved', 4000);
     const dec = await one(`select status, decided_by, decided_at is not null as at from reward_asks where id = '${ask.id}'`);
-    const l = await ledger();
-    check('today: Yes (decide_reward) approves it, by Alex, and writes the trade, −15', same(dec, { status: 'approved', decided_by: 'alex@example.com', at: 't' })
-      && same(l.slice(-1).map((x) => [x.kind, x.delta, x.who]), [['trade', '-15', 'alex@example.com']]), { dec, l });
+    l = await ledger();
+    check('today: Yes (decide_reward) approves it, by Alex, and writes the trade, −60', same(dec, { status: 'approved', decided_by: 'alex@example.com', at: 't' })
+      && same(l.slice(-1).map((x) => [x.kind, x.delta, x.who]), [['trade', '-60', 'alex@example.com']]), { dec, l });
     check('today: the line goes', await until(async () => !(await a.page.$(`.today-hw-ask[data-ask="${ask.id}"]`)), 4000));
     await a.context.close();
     const v = await view();
-    check('his view: balance 15, nothing held, the ask approved', v.points.balance === 15 && v.points.held === 0 && v.asks.some((x) => x.id === ask.id && x.status === 'approved'), v.points);
+    check('his view: balance 2, nothing held, the ask approved and the instant one "cashed"', v.points.balance === 2 && v.points.held === 0 && v.asks.some((x) => x.id === ask.id && x.status === 'approved')
+      && v.asks.some((x) => x.status === 'cashed' && x.title === '15 minutes of extra game time'), { points: v.points, asks: v.asks });
     const f = await failures();
     check('trade: no API request failed (but Sam\'s refusal)', same(f, [`POST /rest/v1/rpc/decide_reward → 403 42501 Only a parent can change homework.`]), f);
   });
@@ -480,7 +545,11 @@ const PAT_WHO = 'Pat Lee, tutor (tutor link)';
     await h.mark();
     const { page, context } = await open({ email: 'morgan@example.com', path: '/#/homework', label: 'hw-morgan' });
     await page.waitForSelector('.hw-kidline', { timeout: 8000 });
-    check('parents: the kid line has his balance', /^Jordan · 15 points/.test(await tc(page, '.hw-kidline')), await tc(page, '.hw-kidline'));
+    check('parents: the kid line has his balance', /^Jordan · 2 points/.test(await tc(page, '.hw-kidline')), await tc(page, '.hw-kidline'));
+    const recent = await texts(page, '.hw-ledger li .hw-ledger-line');
+    check('parents: Recent has the instant reward he cashed in and both halves of the milestone',
+      recent.some((x) => /^−15 15 minutes of extra game time \(instant, cashed in by Jordan\)/.test(x)) && recent.some((x) => /^\+20 Ticked: /.test(x))
+      && recent.some((x) => /^\+20 Checked: /.test(x)), recent);
     const qa = await texts(page, '[data-sec="qa"] li');
     check('parents: Questions and notes show Pat\'s answer and Pat\'s note to Jordan, with who gave them',
       qa.some((x) => /Answered by Pat Lee, tutor .*“Yes, a short title at the top\.”/.test(x)) && qa.some((x) => /Pat's note on .*“Clear outline\. The third point is the strongest\.”/.test(x)), qa);
@@ -549,19 +618,19 @@ const PAT_WHO = 'Pat Lee, tutor (tutor link)';
       select '${P.jordan.id}', timestamptz '2025-09-08 21:00:00+00' + i * interval '5 hours', (timestamptz '2025-09-08 21:00:00+00' + i * interval '5 hours')::date,
              'given', 1, 'Old points', 'alex@example.com'
       from generate_series(1, 1200) i`);
-    const rid = (await one(`select id from rewards where kid_id = '${P.jordan.id}' and cost = 60`)).id;
+    const rid = (await one(`select id from rewards where kid_id = '${P.jordan.id}' and cost = 60`)).id;   // Choose Friday's dinner
     const asked = await anonRpc('reward_by_token', { p_token: P.jordan.day_token, p_action: 'ask', p_reward: rid, p_key: '00000000-0000-4000-8000-00000000a5c1' });
     const pts = ((await view()) || {}).points || {};
     const rows = Number((await one(`select count(*) as n from points_ledger where kid_id = '${P.jordan.id}'`)).n);
-    check('a long ledger: more than 1,000 rows, his view\'s balance 1215, the ask waiting', rows > 1000 && pts.balance === 1215 && asked.status === 200, { rows, pts, asked: asked.status });
+    check('a long ledger: more than 1,000 rows, his view\'s balance 1202, the ask waiting', rows > 1000 && pts.balance === 1202 && asked.status === 200, { rows, pts, asked: asked.status });
     const a = await open({ email: 'alex@example.com', path: '/', label: 'hw-alex-long' });
     await a.page.waitForSelector('.today-hw-ask', { timeout: 8000 });
     const line = await tc(a.page, '.today-hw-ask');
-    check('a long ledger, Today: "Jordan asks: Choose Friday\'s dinner · 60 · balance 1215 (this week: …)", every row counted', /^Jordan asks: Choose Friday's dinner · 60 · balance 1215 \(this week: /.test(line), line);
+    check('a long ledger, Today: "Jordan asks: Choose Friday\'s dinner · 60 · balance 1202 (this week: …)", every row counted', /^Jordan asks: Choose Friday's dinner · 60 · balance 1202 \(this week: /.test(line), line);
     await go(a.page, '#/homework');
     await a.page.waitForSelector('.hw-ask', { timeout: 8000 });
-    check('a long ledger, the Homework page: "Jordan · 1215 points" and the ask with "balance 1215"', /^Jordan · 1215 points/.test(await tc(a.page, '.hw-kidline'))
-      && / · balance 1215 \(/.test(await tc(a.page, '.hw-ask .hw-ask-line')), [await tc(a.page, '.hw-kidline'), await tc(a.page, '.hw-ask .hw-ask-line')]);
+    check('a long ledger, the Homework page: "Jordan · 1202 points" and the ask with "balance 1202"', /^Jordan · 1202 points/.test(await tc(a.page, '.hw-kidline'))
+      && / · balance 1202 \(/.test(await tc(a.page, '.hw-ask .hw-ask-line')), [await tc(a.page, '.hw-kidline'), await tc(a.page, '.hw-ask .hw-ask-line')]);
     await a.context.close();
     const f = await failures();
     check('a long ledger: no API request failed', !f.length, f);

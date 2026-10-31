@@ -1049,8 +1049,9 @@ const emailOf = (req) => {
   const reads5 = hwReads(log);
   // The ask's kid's points: all of them, a page at a time (the API's Max rows cuts a read short without an
   // error), oldest first, until a page comes back empty: here his 8 rows, then an empty page.
-  check('reads: waiting asks, one steps request (milestones to check, open questions, touched in 30 days), and the ask\'s kid\'s points, page by page', reads5.length === 4
+  check('reads: waiting asks, today\'s instant cash-ins, one steps request (milestones to check, open questions, touched in 30 days), and the ask\'s kid\'s points, page by page', reads5.length === 5
     && reads5.some((l) => /^GET \/rest\/v1\/reward_asks\?.*status=eq\.waiting/.test(l))
+    && reads5.some((l) => /^GET \/rest\/v1\/reward_asks\?.*status=eq\.cashed&decided_at=gte\.2026-10-24/.test(l))
     && reads5.some((l) => /^GET \/rest\/v1\/homework_steps\?.*updated_at=gte\.2026-09-25.*or=\(and\(kind\.eq\.milestone,done_at\.not\.is\.null,checked_at\.is\.null\),and\(question\.not\.is\.null,answer\.is\.null\)\)/.test(l))
     && same(reads5.filter((l) => l.includes('/points_ledger?')), [0, 8].map((n) => `GET /rest/v1/points_ledger?select=id,kid_id,kind,delta,day,who&kid_id=in.(${ID.jordan})&order=at.asc,id.asc&offset=${n}&limit=1000`)),
     JSON.stringify(reads5));
@@ -1134,6 +1135,23 @@ const emailOf = (req) => {
   ({ page, log } = await open({ label: 'hw-v4', rpc: fRpc, db: withFood(todayDb()) }));
   check('schema 4: no homework lines and no homework request', !(await page.$('.today-hw')) && !hwReads(log).length, JSON.stringify(hwReads(log)));
   await page.context().close();
+  // An instant reward he cashed in today (the owner's "immediate gratification"): decided by him at once, so a line
+  // that needs no tap; yesterday's isn't shown.
+  {
+    const d = hwDb();
+    d.reward_asks.push(askRow({ kid_id: ID.jordan, title: '15 minutes of extra game time', cost: 15, status: 'cashed', asked_at: '2026-10-25T20:52:00.000000+00:00',
+      decided_at: '2026-10-25T20:52:00.000000+00:00', decided_by: 'Jordan Example (My day)' }),
+    askRow({ kid_id: ID.jordan, title: 'Old cash-in', cost: 10, status: 'cashed', asked_at: '2026-10-24T20:52:00.000000+00:00',
+      decided_at: '2026-10-24T20:52:00.000000+00:00', decided_by: 'Jordan Example (My day)' }));
+    d.points_ledger.push(ledgerRow({ kid_id: ID.jordan, day: '2026-10-25', kind: 'milestone_done', delta: 20, who: 'Jordan Example (My day)' }));
+    ({ page } = await open({ label: 'hw-cashed', rpc: hRpc, db: d }));
+    const lines = await hwLines(page);
+    check('schema 5 (parents): "Jordan cashed in: 15 minutes of extra game time · 15 · 4:52pm", with no buttons; not yesterday\'s',
+      lines.includes('Jordan cashed in: 15 minutes of extra game time · 15 · 4:52pm') && !lines.some((l) => /Old cash-in/.test(l))
+      && !(await page.$('.today-hw-cashed button')), JSON.stringify(lines));
+    check('... and the ask line counts a milestone\'s first half: "+20 milestones ticked"', /\+20 milestones ticked, \+40 milestones checked by Pat/.test(lines[0] || ''), JSON.stringify(lines));
+    await page.context().close();
+  }
   const quiet = hwDb();
   quiet.reward_asks = [];
   quiet.homework_steps = [];
