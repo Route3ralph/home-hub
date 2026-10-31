@@ -1,4 +1,4 @@
-// Small pieces shared by handler.ts, render.ts and calendar.ts, kept here so handler.ts and
+// Small pieces shared by handler.ts, render.ts, calendar.ts, school.ts and homework.ts, kept here so handler.ts and
 // calendar.ts don't import each other. No imports from outside, so it runs in the Node tests.
 
 export const DETAIL_MAX = 300;        // one line of detail or error, as stored for Settings
@@ -22,6 +22,9 @@ export interface Deps {
   user: (authorization: string) => Db;   // the caller's sign-in and the publishable key: whoami, status
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
+  // Work that goes on after the answer (the AI planner's call to Claude): EdgeRuntime.waitUntil in index.ts; the
+  // tests collect the promise. Without it the work is done before the answer.
+  background?: (p: Promise<unknown>) => void;
 }
 
 export const json = (status: number, body: unknown) =>
