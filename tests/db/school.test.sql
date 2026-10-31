@@ -5,6 +5,9 @@
 -- a moved item without a UID); the first-import check; Jordan's New from school (Quick, Plan with
 -- Pat, Hide) and the parents' Add, Hide and Show; school changes reaching an assignment unless a
 -- person changed that field; schedule and games as busy time; the status card; Remove and Erase.
+-- After the review (on Robin's links, at the end): the description trimmed on the item and in applied by
+-- the hourly run, paused or not; a run that dies partway; two classes' items without a UID, and the
+-- moved-item step's limits; Remove and Add again; Resume and homework back on not stale.
 -- The household is fixtures.sql's: Alex (admin), Sam (adult), Taylor (the kid with homework),
 -- Morgan (the helper), plus Robin, a second kid. Everything is made up: the school's host is
 -- academy.school.example (the allowed suffix is replaced below), the classes and titles too.
@@ -177,7 +180,7 @@ select test.is((select c.relrowsecurity and not exists (select 1 from pg_policy 
                 from pg_class c where c.oid = 'private.school_feed_urls'::regclass), true, '... row-level security on, no policies');
 select test.is((select string_agg(a.attname, ',' order by a.attnum) from pg_attribute a
                 where a.attrelid = 'public.school_feeds'::regclass and a.attnum > 0 and not a.attisdropped),
-               'id,kid_id,kind,host,url_end,date_rule,date_shift,checked,paused,next_at,last_try_at,last_ok_at,last_count,last_repeats,last_stop,fails,created_at,created_by,updated_at,updated_by',
+               'id,kid_id,kind,host,url_end,date_rule,date_shift,checked,paused,next_at,last_try_at,last_ok_at,last_count,last_repeats,last_stop,fails,removed_at,created_at,created_by,updated_at,updated_by',
                'school_feeds has no address column: the host and its last 4 characters');
 :as_anon
 select test.is(test.try('select * from private.school_feed_urls'), 'denied', 'anon can''t read the addresses');
@@ -252,8 +255,8 @@ select test.is((select string_agg(title || ' ' || coalesce(subject, '-') || ' ' 
                'the items: a UID repeated in one read is one item, the last one wins; the due date is the span''s end (the default rule)');
 select test.is((select key = md5('uid:a-101@academy.school.example') from school_items where title = 'Lab report: water filters'), true,
                'an item''s key is the md5 of its UID');
-select test.is((select key = md5('title:vocabulary quiz|2026-11-06') from school_items where title = 'Vocabulary quiz'), true,
-               '... or, without one, of its title and first day');
+select test.is((select key = md5('title:spanish' || E'\n' || 'vocabulary quiz|2026-11-06') from school_items where title = 'Vocabulary quiz'), true,
+               '... or, without one, of its class, its title and its first day (a line break, which neither can hold, between class and title)');
 select test.is((pg_temp.item('Lab report: water filters')).details, E'Write up the lab.\nUse the template on the class page.',
                'the item''s description is kept, with its line break');
 select test.is((select last_ok_at = private.now() and last_try_at = private.now() and last_count = 5 and last_stop is null and fails = 0
@@ -354,7 +357,8 @@ select test.is(pg_temp.run(format('select school_item_by_token(%L, %L, ''quick''
 select test.is(pg_temp.run(format('select school_item_by_token(%L, %L, ''hide'')', test.token('Taylor'), gen_random_uuid())),
                '42501 That isn''t on your list from school.', 'an unknown item: 42501');
 :as_service
-select pg_temp.read('Robin', 'assignments', '[{"uid": "r-1", "title": "Robin''s map", "subject": "Geography", "first_day": "2026-11-05", "last_day": "2026-11-05"}]');
+-- (Due in December: the hourly run's trim lets the household's past items go, and the clock visits Nov 28 below.)
+select pg_temp.read('Robin', 'assignments', '[{"uid": "r-1", "title": "Robin''s map", "subject": "Geography", "first_day": "2026-12-05", "last_day": "2026-12-05"}]');
 :as_anon
 select test.is(pg_temp.run(format('select school_item_by_token(%L, %L, ''hide'')', test.token('Taylor'), pg_temp.iid('Robin''s map'))),
                '42501 That isn''t on your list from school.', 'another kid''s item: the same 42501');
@@ -668,11 +672,18 @@ select test.is(school_item_by_token(test.token('Taylor'), pg_temp.iid('Vocabular
 :as_admin
 select save_homework_kid(test.person('Taylor'), true);
 select test.is(set_school_feed(test.person('Taylor'), 'assignments', null), null, 'Remove (no address) answers null');
+-- Remove deletes the address and every item no one made an assignment; the items made assignments stay
+-- (on the link's row, kept for them but no longer a link), so adding the link again doesn't show them as new.
 :as_owner
-select test.is((select count(*) from school_feeds where kid_id = test.person('Taylor') and kind = 'assignments')
+select test.is((select count(*) || ' ' || bool_and(removed_at is not null) from school_feeds where kid_id = test.person('Taylor') and kind = 'assignments')
                  || ' ' || (select count(*) from private.school_feed_urls u where u.feed_id = (:'added'::jsonb ->> 'id')::uuid)
-                 || ' ' || (select count(*) from school_items where feed_id = (:'added'::jsonb ->> 'id')::uuid),
-               '0 0 0', '... the link, its address and its items go');
+                 || ' ' || (select string_agg(title, ' | ' order by title) from school_items where feed_id = (:'added'::jsonb ->> 'id')::uuid)
+                 || ' ' || (select count(*) from school_items where feed_id = (:'added'::jsonb ->> 'id')::uuid and made_at is null),
+               '1 true 0 Essay: a person who changed our town | Graph the results | Lab report: water filters (final) | Read chapters 5 and 6 0',
+               '... the address and the items nobody made an assignment go; the four made assignments stay, on a row marked removed');
+:as_admin
+select test.is((select string_agg(x ->> 'kind', ',' order by n) from jsonb_array_elements(school_feed_status(test.person('Taylor')) -> 'feeds') with ordinality t (x, n)),
+               'schedule,games', '... and the status card no longer shows it');
 select test.is((select string_agg(title || ' ' || added_by || ' ' || status, ' | ' order by title) from assignments where kid_id = test.person('Taylor')),
                'Essay: my town school open | Graph the results school open | Lab report: water filters (final) school open | Read chapters 5 and 6 school open',
                '... and the assignments made from it stay, marked from school');
@@ -708,3 +719,266 @@ select test.is((select string_agg(t || ' ' || x, ', ' order by t, x)
 select test.is((select string_agg(r, ', ') from unnest(array['anon', 'authenticated', 'service_role']) r
                 where has_table_privilege(r, 'private.school_sync', 'select, insert, update, delete, truncate, references, trigger')),
                null, 'private.school_sync: no privilege for anyone but its owner');
+
+-- =====================================================================
+-- Review fixes, on Robin's links (Taylor's were erased above): the description's retention, a run that
+-- dies partway, items without a UID (the class in the key, the moved-item step), Remove and Add again,
+-- Resume and homework back on. hub.now is 6:00pm on Mon Nov 2 here, then moves.
+-- =====================================================================
+
+-- ---------------------------------------------------------------------
+-- The teacher's text is emptied 30 days after the due date on the item too (§11.3, §13.3)
+-- ---------------------------------------------------------------------
+:as_owner
+set hub.now = '2026-11-02 19:00 America/New_York';
+:as_service
+select pg_temp.read('Robin', 'assignments', '[
+  {"uid": "r-1", "title": "Robin''s map", "subject": "Geography", "first_day": "2026-11-05", "last_day": "2026-11-05"},
+  {"uid": "r-2", "title": "Goggles lab", "subject": "Chemistry", "details": "Teacher text: bring goggles.", "first_day": "2026-11-05", "last_day": "2026-11-05"},
+  {"uid": "r-3", "title": "Field notes", "subject": "Biology", "details": "Teacher text: three pages.", "first_day": "2026-11-06", "last_day": "2026-11-06"}
+]');
+:as_admin
+select check_school_feed((:'robin'::jsonb ->> 'id')::uuid, 'end', 0) is not null;
+select school_item_action(pg_temp.iid('Goggles lab'), 'add') ->> 'assignment_id' as goggles \gset
+-- Paused, so no read (school_store) runs for the link from here on.
+select pause_school_feed((:'robin'::jsonb ->> 'id')::uuid, true);
+:as_owner
+select test.is((select details || ' ' || (applied ->> 'details') from school_items where title = 'Goggles lab'),
+               'Teacher text: bring goggles. Teacher text: bring goggles.', 'an item made an assignment keeps the description, and so does what the feed wrote (applied)');
+set hub.now = '2026-12-05 09:00 America/New_York';   -- 30 days after Nov 5
+:as_service
+select school_finish((school_begin() ->> 'run_id')::uuid);
+:as_owner
+select test.is((select details from school_items where title = 'Goggles lab'), 'Teacher text: bring goggles.', '30 days after the due date the item still has it');
+select test.is((select string_agg(title, ' | ' order by title) from school_items where feed_id = (:'robin'::jsonb ->> 'id')::uuid), 'Goggles lab',
+               '... and past items nobody made an assignment are let go by the hourly run, even on a paused link');
+set hub.now = '2026-12-06 09:00 America/New_York';   -- 31 days after
+:as_service
+select school_finish((school_begin() ->> 'run_id')::uuid);
+:as_owner
+select test.is((select coalesce(details, '-') || ' ' || coalesce(applied ->> 'details', '-') || ' ' || (applied ? 'details') || ' ' || (applied ->> 'title')
+                from school_items where title = 'Goggles lab'),
+               '- - true Goggles lab', 'the next day the hourly run empties it on the item and in applied (the rest of applied stays), paused link and all');
+:as_adult
+select test.is((select coalesce(details, '-') || ' ' || coalesce(applied ->> 'details', '-') from school_items where title = 'Goggles lab'), '- -',
+               '... so Sam (a member, reading the table) gets neither');
+:as_owner
+select private.homework_trim(test.person('Robin'));
+:as_admin
+select pause_school_feed((:'robin'::jsonb ->> 'id')::uuid, false);
+:as_service
+select pg_temp.read('Robin', 'assignments', '[{"uid": "r-4", "title": "Spelling list", "subject": "English", "first_day": "2026-12-08", "last_day": "2026-12-08"}]');
+:as_owner
+select test.is((select coalesce(a.details, '-') || ' ' || coalesce(i.details, '-') || ' ' || coalesce(i.applied ->> 'details', '-')
+                from assignments a join school_items i on i.assignment_id = a.id where a.id = :'goggles'),
+               '- - -', '... and once the assignment''s own copy is trimmed, a later read writes none of it back');
+
+-- ---------------------------------------------------------------------
+-- A run that dies partway (the Edge Function stopped): the link it was reading backs off, the others are read
+-- ---------------------------------------------------------------------
+:as_admin
+select set_school_feed(test.person('Robin'), 'schedule', 'webcal://academy.school.example/podium/feed/iCal.aspx?z=R5r6S7s8R9r0S1s2') ->> 'id' as r_sched \gset
+select set_school_feed(test.person('Robin'), 'games', 'webcal://academy.school.example/podium/feed/iCal.aspx?z=R3r4G5g6R7r8G9g0') ->> 'id' as r_games \gset
+:as_owner
+set hub.now = '2026-12-07 10:23 America/New_York';
+update school_feeds set next_at = private.now() - interval '3 minutes' where id = (:'robin'::jsonb ->> 'id')::uuid;
+update school_feeds set next_at = private.now() - interval '2 minutes' where id = :'r_sched';
+update school_feeds set next_at = private.now() - interval '1 minute' where id = :'r_games';
+:as_service
+select school_begin() as d1 \gset
+select test.is((select string_agg(x ->> 'kind', ',' order by n) from jsonb_array_elements(:'d1'::jsonb -> 'feeds') with ordinality t (x, n)),
+               'assignments,schedule,games', 'a run is handed the due links, the longest due first');
+-- It dies reading the first: nothing stored, no school_finish. An hour later the lease has run out.
+:as_owner
+set hub.now = '2026-12-07 11:23 America/New_York';
+:as_service
+select school_begin() as d2 \gset
+select test.is((:'d2'::jsonb ->> 'go') || ' ' || (select string_agg(x ->> 'kind', ',' order by n) from jsonb_array_elements(:'d2'::jsonb -> 'feeds') with ordinality t (x, n)),
+               'true schedule,games', 'the next run isn''t handed the link the dead run was reading first again: the others are read');
+:as_owner
+select test.is((select last_stop || ' ' || fails || ' ' || (last_try_at = private.now()) || ' ' || (next_at = private.now() + interval '50 minutes')
+                from school_feeds where id = (:'robin'::jsonb ->> 'id')::uuid),
+               'error 1 true true', '... that link is a failed read (error), backed off like any failure');
+:as_admin
+select test.is((select string_agg((x ->> 'kind') || ' ' || coalesce(x ->> 'last_stop', '-') || ' ' || (x ->> 'stale'), ', ' order by n)
+                from jsonb_array_elements(school_feed_status(test.person('Robin')) -> 'feeds') with ordinality t (x, n)),
+               'assignments error false, schedule - false, games - false', '... and the status card says so, not "stale" (run cron.sql again)');
+-- This run stores the schedule link, then dies too: the games link, next in line and never stored, is the one marked.
+:as_service
+select test.is(school_store((:'d2'::jsonb ->> 'run_id')::uuid, :'r_sched'::uuid, '[]', null) ->> 'stored', 'true', 'the next run stores one link, then dies');
+:as_owner
+set hub.now = '2026-12-07 12:23 America/New_York';
+:as_service
+select school_begin() as d3 \gset
+:as_owner
+select test.is((select string_agg(kind || ' ' || coalesce(last_stop, '-') || ' ' || fails, ', ' order by kind) from school_feeds where kid_id = test.person('Robin')),
+               'assignments error 1, games error 1, schedule - 0', '... the link it was reading is marked; the one it stored isn''t');
+select test.is((select string_agg(x ->> 'kind', ',' order by n) from jsonb_array_elements(:'d3'::jsonb -> 'feeds') with ordinality t (x, n)),
+               'schedule,assignments', '... and of the links due, those that are reading well go first');
+-- A run that ends normally (school_finish) after running out of time: the link it didn't reach isn't marked.
+:as_service
+select school_store((:'d3'::jsonb ->> 'run_id')::uuid, :'r_sched'::uuid, '[]', null);
+select school_finish((:'d3'::jsonb ->> 'run_id')::uuid);
+:as_owner
+set hub.now = '2026-12-07 13:23 America/New_York';
+:as_service
+select school_finish((school_begin() ->> 'run_id')::uuid);
+:as_owner
+select test.is((select last_stop || ' ' || fails from school_feeds where id = (:'robin'::jsonb ->> 'id')::uuid), 'error 1',
+               'a link a finished run didn''t reach (out of time) counts no failure');
+
+-- ---------------------------------------------------------------------
+-- Items without a UID: the class is part of the key; the moved-item step takes only an item the last good
+-- read saw, inside the window, of the same class
+-- ---------------------------------------------------------------------
+:as_owner
+set hub.now = '2026-12-07 14:23 America/New_York';   -- a Monday
+:as_service
+select test.is(pg_temp.read('Robin', 'assignments', '[
+  {"title": "Homework", "subject": "Math 7", "first_day": "2026-12-10", "last_day": "2026-12-10"},
+  {"title": "Homework", "subject": "Science 7", "first_day": "2026-12-10", "last_day": "2026-12-10"},
+  {"title": "Reading log", "subject": "English", "first_day": "2026-12-11", "last_day": "2026-12-11"},
+  {"title": "Vocabulary quiz", "subject": "Spanish", "first_day": "2026-12-11", "last_day": "2026-12-11"},
+  {"uid": "r-4", "title": "Spelling list", "subject": "English", "first_day": "2026-12-08", "last_day": "2026-12-08"}
+]') ->> 'kept', '5', 'two classes'' "Homework" due the same day, without UIDs: both kept');
+:as_owner
+select test.is((select string_agg(subject || ' ' || (key = md5('title:' || lower(subject) || E'\n' || 'homework|2026-12-10')), ', ' order by subject)
+                from school_items where title = 'Homework'),
+               'Math 7 true, Science 7 true', '... two items, each keyed by its class, its title and its first day');
+select id as math_hw from school_items where title = 'Homework' and subject = 'Math 7' \gset
+:as_admin
+select school_item_action(pg_temp.iid('Vocabulary quiz'), 'add') ->> 'assignment_id' as quiz \gset
+:as_anon
+select test.ok(school_item_by_token(test.token('Robin'), pg_temp.iid('Reading log'), 'hide') is not null, 'Robin hides the reading log');
+-- An hour later the Math homework moved a day; the Science one didn't.
+:as_owner
+set hub.now = '2026-12-07 15:23 America/New_York';
+:as_service
+select test.is(pg_temp.read('Robin', 'assignments', '[
+  {"title": "Homework", "subject": "Math 7", "first_day": "2026-12-11", "last_day": "2026-12-11"},
+  {"title": "Homework", "subject": "Science 7", "first_day": "2026-12-10", "last_day": "2026-12-10"},
+  {"title": "Reading log", "subject": "English", "first_day": "2026-12-11", "last_day": "2026-12-11"},
+  {"title": "Vocabulary quiz", "subject": "Spanish", "first_day": "2026-12-11", "last_day": "2026-12-11"},
+  {"uid": "r-4", "title": "Spelling list", "subject": "English", "first_day": "2026-12-08", "last_day": "2026-12-08"}
+]') ->> 'added', '0', 'a no-UID item whose date moved is still the same item ...');
+:as_owner
+select test.is((select string_agg(subject || ' ' || due_date, ', ' order by subject) from school_items where title = 'Homework')
+                 || ' ' || (select (id = :'math_hw') from school_items where title = 'Homework' and subject = 'Math 7'),
+               'Math 7 2026-12-11, Science 7 2026-12-10 true', '... the Math one keeps its row with the new date; the Science one is untouched');
+-- Another class's "Homework" isn't the Math one moved.
+:as_service
+select test.is(pg_temp.read('Robin', 'assignments', '[
+  {"title": "Homework", "subject": "Science 7", "first_day": "2026-12-10", "last_day": "2026-12-10"},
+  {"title": "Homework", "subject": "Art 7", "first_day": "2026-12-12", "last_day": "2026-12-12"},
+  {"title": "Reading log", "subject": "English", "first_day": "2026-12-11", "last_day": "2026-12-11"},
+  {"title": "Vocabulary quiz", "subject": "Spanish", "first_day": "2026-12-11", "last_day": "2026-12-11"},
+  {"uid": "r-4", "title": "Spelling list", "subject": "English", "first_day": "2026-12-08", "last_day": "2026-12-08"}
+]') ->> 'added', '1', 'a new "Homework" of another class is a new item ...');
+:as_owner
+select test.is((select missing || ' ' || due_date || ' ' || (id = :'math_hw') from school_items where title = 'Homework' and subject = 'Math 7'),
+               '1 2026-12-11 true', '... and the Math one, absent, is missing once (not taken over)');
+-- Three weeks on, the same weekly titles come again. Last time's are past the window: new items, not those moved.
+set hub.now = '2026-12-29 10:23 America/New_York';
+:as_service
+select test.is(pg_temp.read('Robin', 'assignments', '[
+  {"title": "Reading log", "subject": "English", "first_day": "2027-01-04", "last_day": "2027-01-04"},
+  {"title": "Vocabulary quiz", "subject": "Spanish", "first_day": "2027-01-04", "last_day": "2027-01-04"}
+]') ->> 'added', '2', 'next month''s "Reading log" and "Vocabulary quiz" (no UIDs) are two new items');
+:as_owner
+select test.is((select string_agg(due_date || ' ' || (made_at is not null) || ' ' || coalesce((assignment_id = :'quiz')::text, '-'), ', ' order by due_date)
+                from school_items where title = 'Vocabulary quiz'),
+               '2026-12-11 true true, 2027-01-04 false -', '... the quiz made an assignment keeps its row and its date');
+select test.is((select due_date || ' ' || status || ' ' || coalesce(updated_by, '-') from assignments where id = :'quiz'), '2026-12-11 open alex@example.com',
+               '... and its open assignment''s due date doesn''t move');
+:as_anon
+select test.is((select string_agg((x ->> 'title') || ' ' || (x ->> 'due_date'), ', ' order by n)
+                from jsonb_array_elements(homework_by_token(test.token('Robin')) -> 'from_school') with ordinality t (x, n)),
+               'Reading log 2027-01-04, Vocabulary quiz 2027-01-04', '... the new ones are New from school for Robin, the reading log not hidden');
+
+-- ---------------------------------------------------------------------
+-- Remove keeps what was made an assignment; adding the link again doesn't bring it back as new
+-- ---------------------------------------------------------------------
+:as_service
+select pg_temp.read('Robin', 'assignments', '[
+  {"uid": "r-101", "title": "Lab report", "subject": "Biology", "first_day": "2027-01-05", "last_day": "2027-01-05"},
+  {"uid": "r-102", "title": "Read chapter 5", "subject": "History", "first_day": "2027-01-06", "last_day": "2027-01-06"},
+  {"title": "Reading log", "subject": "English", "first_day": "2027-01-04", "last_day": "2027-01-04"}
+]');
+:as_anon
+select school_item_by_token(test.token('Robin'), pg_temp.iid('Lab report'), 'with_tutor') ->> 'assignment_id' as lab_r \gset
+:as_owner
+set hub.now = '2026-12-29 10:30 America/New_York';
+:as_service
+select school_begin(true) as d5 \gset
+:as_admin
+select test.is(set_school_feed(test.person('Robin'), 'assignments', ''), null, 'Remove Robin''s Assignments link');
+:as_owner
+select test.is((select string_agg(title, ' | ' order by title) from school_items where feed_id = (:'robin'::jsonb ->> 'id')::uuid)
+                 || ' ' || (select count(*) from private.school_feed_urls where feed_id = (:'robin'::jsonb ->> 'id')::uuid),
+               'Goggles lab | Lab report | Vocabulary quiz 0', '... the items made assignments stay; the rest and the address go');
+:as_service
+select test.is(school_store((:'d5'::jsonb ->> 'run_id')::uuid, (:'robin'::jsonb ->> 'id')::uuid,
+                            '[{"uid": "r-103", "title": "Map quiz", "first_day": "2027-01-07", "last_day": "2027-01-07"}]', null),
+               '{"stored": false, "stop": "removed"}'::jsonb, 'a run that was handed the link before Remove stores nothing for it');
+select school_finish((:'d5'::jsonb ->> 'run_id')::uuid);
+select test.is((select count(*) from jsonb_array_elements(school_begin(true) -> 'feeds') x where (x ->> 'feed_id')::uuid = (:'robin'::jsonb ->> 'id')::uuid),
+               0::bigint, '... and no run is handed it again');
+select school_finish(pg_temp.lease());
+:as_admin
+select test.is((select string_agg(x ->> 'kind', ',' order by n) from jsonb_array_elements(school_feed_status(test.person('Robin')) -> 'feeds') with ordinality t (x, n)),
+               'schedule,games', 'the status card no longer shows it');
+select test.throws(format('select check_school_feed(%L, ''end'', 0)', :'robin'::jsonb ->> 'id'), 'That school link isn''t there any more.',
+                   'a removed link has no check ...');
+select test.throws(format('select pause_school_feed(%L, true)', :'robin'::jsonb ->> 'id'), 'That school link isn''t there any more.', '... and no pause');
+:as_anon
+select homework_by_token(test.token('Robin')) as rv \gset
+select test.is((:'rv'::jsonb ? 'from_school') || ' ' || (pg_temp.el(:'rv'::jsonb -> 'assignments', 'Lab report') -> 'school')::text,
+               'false {"gone": false, "moved_to": null}', 'Robin has no New from school now; the assignment made from it keeps its school marks');
+:as_admin
+select set_school_feed(test.person('Robin'), 'assignments', 'webcal://academy.school.example/podium/feed/iCal.aspx?z=R1r2R3r4R5r6R7r8') ->> 'id' as robin_again \gset
+select test.is(:'robin_again', :'robin'::jsonb ->> 'id', 'Add link again: the same link''s row');
+:as_service
+select test.is(pg_temp.read('Robin', 'assignments', '[
+  {"uid": "r-101", "title": "Lab report", "subject": "Biology", "first_day": "2027-01-05", "last_day": "2027-01-05"},
+  {"uid": "r-102", "title": "Read chapter 5", "subject": "History", "first_day": "2027-01-06", "last_day": "2027-01-06"},
+  {"title": "Reading log", "subject": "English", "first_day": "2027-01-04", "last_day": "2027-01-04"},
+  {"title": "Vocabulary quiz", "subject": "Spanish", "first_day": "2027-01-04", "last_day": "2027-01-04"}
+]') ->> 'added', '3', 'the first read adds only what wasn''t made an assignment (the lab report keeps its row)');
+:as_admin
+select test.is(pg_temp.titles(school_feed_status(test.person('Robin')) -> 'check'), 'Reading log | Vocabulary quiz | Lab report | Read chapter 5',
+               'added again, the link asks the first-import check again');
+select test.is(pg_temp.titles(check_school_feed(:'robin_again'::uuid, 'end', 0) -> 'new'), 'Reading log | Vocabulary quiz | Read chapter 5',
+               '... and once answered, the lab report (made an assignment before Remove) isn''t new');
+:as_anon
+select test.is(school_item_by_token(test.token('Robin'), pg_temp.iid('Lab report'), 'with_tutor') ->> 'assignment_id', :'lab_r',
+               'Plan with Pat on it finds the same assignment');
+:as_owner
+select test.is((select count(*) from assignments where title = 'Lab report' and kid_id = test.person('Robin')), 1::bigint, '... no second one is made');
+-- Remove with nothing made from it: the row goes too.
+:as_admin
+select set_school_feed(test.person('Robin'), 'games', null);
+:as_owner
+select test.is((select count(*) from school_feeds where id = :'r_games'), 0::bigint, 'Remove a link nothing was made from: its row goes');
+
+-- ---------------------------------------------------------------------
+-- Resume, and homework back on: due now, not "stale" straight away
+-- ---------------------------------------------------------------------
+:as_admin
+select pause_school_feed(:'r_sched'::uuid, true);
+:as_owner
+set hub.now = '2026-12-30 12:00 America/New_York';
+:as_admin
+select pause_school_feed(:'r_sched'::uuid, false);
+select test.is((select (x ->> 'stale') || ' ' || ((x ->> 'next_at')::timestamptz = private.now())
+                from jsonb_array_elements(school_feed_status(test.person('Robin')) -> 'feeds') x where x ->> 'kind' = 'schedule'),
+               'false true', 'Resume after a day: due now, not stale');
+select save_homework_kid(test.person('Robin'), false);
+:as_owner
+set hub.now = '2026-12-31 12:00 America/New_York';
+:as_admin
+select test.is((select string_agg(x ->> 'stale', ',') from jsonb_array_elements(school_feed_status(test.person('Robin')) -> 'feeds') x), 'false,false',
+               'with homework off a link isn''t read on purpose: not stale');
+select save_homework_kid(test.person('Robin'), true);
+select test.is((select string_agg((x ->> 'stale') || ' ' || ((x ->> 'next_at')::timestamptz = private.now()), ',' order by x ->> 'kind')
+                from jsonb_array_elements(school_feed_status(test.person('Robin')) -> 'feeds') x),
+               'false true,false true', 'homework back on: its links are due now, not stale');

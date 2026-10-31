@@ -1,18 +1,25 @@
 // A lenient iCalendar (RFC 5545) reader for the school's Blackbaud calendar links
 // (docs/v1.3-homework.md §11.3). Hand-written, no imports, so it runs in Deno and in the Node tests.
 // It reads what Blackbaud's feeds were seen to hold, and what the research warned about:
-//   • CRLF, LF or CR line ends; folded lines (a line starting with a space or a tab continues the last);
+//   • CRLF, LF or CR line ends; folded lines (a line starting with a space or a tab continues the last):
+//     school.ts unfolds the bytes before it decodes them (unfoldBytes), so a fold inside a character's
+//     UTF-8 bytes joins it whole; parseIcal unfolds again (a no-op then) for text handed to it;
 //   • VEVENTs only (a VALARM inside one, a VTIMEZONE beside them, are skipped); a repeated property in
 //     one event: the last one wins; STATUS:CANCELLED events are left out (an item taken off the site);
 //   • DTSTART and DTEND as VALUE=DATE, as date-times at midnight (Blackbaud's non-standard all-day
 //     form: an item at 00:00 that ends at 00:00, or has no end, is all-day), with TZID= (an IANA zone,
 //     the usual Windows names, or else the household's zone), Z, or floating (the household's zone);
 //     DURATION when there is no DTEND; an all-day end is exclusive, so it is moved back a day;
-//   • TEXT escapes (\n \, \; \\) and HTML entities; a description's HTML becomes plain text;
+//   • TEXT escapes (\n \, \; \\) and HTML entities; a description's HTML becomes plain text: only what is
+//     shaped like a tag (a known element's name, or a comment) goes, so "x < 3 and y > 1" stays;
+//   • NUL and the other control characters but tab and line breaks, and a lone surrogate, are taken out
+//     (Postgres's jsonb refuses NUL and a lone surrogate); cutText cuts by characters, never half of one;
 //   • RRULE and RDATE aren't expanded: the event is read once, and counted (the status card shows it);
 //   • an HTML page (Blackbaud's sign-in page, for a link that was replaced) is 'sign_in', anything else
 //     without a VCALENDAR 'not_calendar'.
-// Nothing here logs, and nothing here throws on bad input: a property it can't read is left out.
+// Nothing here logs, and nothing here throws on bad input: a property it can't read is left out. No
+// pattern here rescans the text from every "<" or every line, so the time is in proportion to the text's
+// length whatever a feed holds (a run stopped at the CPU limit stores nothing).
 
 export type IcalEvent = {
   uid: string | null;
@@ -141,17 +148,57 @@ export function decodeEntities(s: string): string {
   });
 }
 const unescapeText = (s: string) => s.replace(/\\([\\;,nN])/g, (_, c: string) => (c === 'n' || c === 'N' ? '\n' : c));
+// At most n characters (code points, as Postgres counts them), never half of a surrogate pair.
+export function cutText(s: string, n: number): string {
+  if (s.length <= n) return s;
+  let i = 0;
+  for (let k = 0; k < n && i < s.length; k++) {
+    const c = s.charCodeAt(i);
+    const d = i + 1 < s.length ? s.charCodeAt(i + 1) : 0;
+    i += c >= 0xd800 && c <= 0xdbff && d >= 0xdc00 && d <= 0xdfff ? 2 : 1;
+  }
+  return s.slice(0, i);
+}
+// A tag: "<" or "</", a known HTML element's name (or a namespaced one, a Word paste's "o:p"), then up to
+// the next ">" with no "<" on the way; or a comment, a doctype or "<?xml …>". Text such as "x < 3 and
+// y > 1", or "2<x and x>5", isn't one. Each try stops at the next "<", so the work is in proportion to
+// the text's length.
+const TAG = /<\/?(?:a|abbr|b|big|blockquote|body|br|caption|center|cite|code|col|colgroup|dd|del|div|dl|dt|em|font|h[1-6]|head|hr|html|i|img|ins|kbd|label|li|link|mark|meta|ol|p|pre|q|s|small|span|strike|strong|style|sub|sup|table|tbody|td|tfoot|th|thead|title|tr|tt|u|ul|wbr|[a-z][a-z0-9]*:[a-z0-9-]+)(?=[\s/>])[^<>]*>|<[!?][^<>]*>/gi;
+// Raw text longer than this (about 16 times what is kept) is cut before it is cleaned; a tag cut in two at
+// the end goes.
+const RAW_SUMMARY = 2000;
+const RAW_DESCRIPTION = 64000;
+const cutRaw = (s: string, n: number) => (s.length <= n ? s : cutText(s, n).replace(/<[^<>]*$/, ''));
 // One line: tags out, entities decoded, every run of spaces (and line breaks) one space.
-const oneLineText = (s: string) => decodeEntities(s.replace(/<[^>]*>/g, ' ')).replace(/\s+/g, ' ').trim();
+const oneLineText = (s: string) => decodeEntities(cutRaw(s, RAW_SUMMARY).replace(TAG, ' ')).replace(/\s+/g, ' ').trim();
 // A description: HTML's breaks and paragraphs become line breaks, the rest of the markup goes.
 function plainText(s: string): string {
-  const t = decodeEntities(s
+  const t = decodeEntities(cutRaw(s, RAW_DESCRIPTION)
     .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<\/(p|div|li|h[1-6]|tr)>/gi, '\n')
-    .replace(/<li[^>]*>/gi, '• ')
-    .replace(/<[^>]*>/g, ''));
+    .replace(/<\/(p|div|li|h[1-6]|tr)\s*>/gi, '\n')
+    .replace(/<li(?=[\s/>])[^<>]*>/gi, '• ')
+    .replace(TAG, ''));
   return t.split('\n').map((l) => l.replace(/[ \t ]+/g, ' ').trim()).join('\n').replace(/\n{3,}/g, '\n\n').trim();
 }
+// A feed's bytes unfolded before they are decoded: a line break (CRLF, LF or CR) followed by a space or a
+// tab goes, with that one space or tab, so a fold inside a character's UTF-8 bytes joins it whole (RFC 5545
+// §3.1). One pass over the bytes.
+export function unfoldBytes(b: Uint8Array): Uint8Array {
+  const out = new Uint8Array(b.length);
+  let n = 0;
+  for (let i = 0; i < b.length; i++) {
+    const c = b[i];
+    if (c === 0x0d || c === 0x0a) {
+      const j = c === 0x0d && b[i + 1] === 0x0a ? i + 2 : i + 1;
+      if (b[j] === 0x20 || b[j] === 0x09) { i = j; continue; }
+    }
+    out[n++] = c;
+  }
+  return out.subarray(0, n);
+}
+// What Postgres's jsonb can't hold, and nobody types: NUL and the other control characters but tab, line
+// feed and carriage return; DEL; and a surrogate without its other half.
+const UNSENDABLE = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]|[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g;
 
 // A content line: NAME;PARAM=VALUE;PARAM="VALUE":value. Colons inside quotes don't end the name.
 function contentLine(line: string): { name: string; params: Record<string, string>; value: string } | null {
@@ -181,8 +228,10 @@ function contentLine(line: string): { name: string; params: Record<string, strin
 }
 
 export function parseIcal(text: string, household: string): IcalResult {
-  const src = String(text ?? '').replace(/^﻿/, '');
-  if (!/^\s*BEGIN:VCALENDAR\b/im.test(src)) {
+  const src = String(text ?? '').replace(/^﻿/, '').replace(UNSENDABLE, '');
+  // A line (after spaces or tabs) that starts BEGIN:VCALENDAR: each try starts at a line break and stops at
+  // the first character that isn't a space or a tab (with the m flag, "^\s*" rescanned every blank line).
+  if (!/(?:^|[\r\n])[ \t]*BEGIN:VCALENDAR\b/i.test(src)) {
     return { kind: /<\s*(!doctype|html|head|body|form)\b/i.test(src) ? 'sign_in' : 'not_calendar' };
   }
   // Unfold.
@@ -245,7 +294,7 @@ function toEvent(p: Map<string, { params: Record<string, string>; value: string 
   const descRaw = p.get('DESCRIPTION')?.value ?? p.get('X-ALT-DESC')?.value ?? null;
   const description = descRaw == null ? null : (plainText(unescapeText(descRaw)) || null);
   const uidRaw = (p.get('UID')?.value ?? '').trim();
-  const uid = uidRaw ? unescapeText(uidRaw).replace(/\s+/g, ' ').slice(0, 255) : null;
+  const uid = uidRaw ? cutText(unescapeText(cutText(uidRaw, 1000)).replace(/\s+/g, ' '), 255) : null;
 
   const midnight = (w: When | null) => !!w && !w.date && w.wall.h === 0 && w.wall.mi === 0 && w.wall.s === 0;
   // All-day: a date, or Blackbaud's date-time at midnight that ends at midnight (or has no end).

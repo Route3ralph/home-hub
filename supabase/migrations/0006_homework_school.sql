@@ -16,6 +16,8 @@
 --     functions for anon in all.
 --   • hub-jobs (its school action, supabase/functions/hub-jobs/school.ts): school_begin (the lease, and
 --     the only reader of the addresses), school_store, school_finish.
+--   • A trigger on homework_kids (homework_kids_school_due): homework turned back on makes the kid's
+--     links due now.
 --   • Replaced, with the same signatures: free_minutes (his schedule and games are busy time),
 --     homework_card (a count of what is new from school) and hub_schema_version() (6). Wrapped:
 --     homework_view_kid and homework_view_tutor; 0005's bodies are renamed homework_view_kid_v5 and
@@ -90,6 +92,8 @@ create table public.school_feeds (
                                          'down', 'http', 'sign_in', 'not_calendar', 'empty', 'too_many', 'error')),
                                                 -- the last read's fixed code; null when it went well
   fails        int not null default 0,          -- failed reads in a row (the backoff)
+  removed_at   timestamptz,                     -- Remove, while items made assignments remain: the row stays only for
+                                                -- them (no address, not read, not on the status card); Add link takes it back
   created_at   timestamptz not null default now(),
   created_by   text,
   updated_at   timestamptz not null default now(),
@@ -103,8 +107,8 @@ create table public.school_items (
   id            uuid primary key default gen_random_uuid(),
   feed_id       uuid not null references public.school_feeds (id) on delete cascade,
   key           text not null check (key ~ '^[0-9a-f]{32}$'),
-                -- md5 of 'uid:' and its UID (with its start, for schedule and games), or of 'title:', its title
-                -- and its first day (its start) without one
+                -- md5 of 'uid:' and its UID (with its start, for schedule and games), or without one of 'title:',
+                -- its class, a line break, its title and its first day (its title and its start, for schedule and games)
   has_uid       boolean not null,
   title         text not null check (char_length(title) between 1 and 120),
   subject       text check (subject is null or char_length(subject) between 1 and 40),         -- the class, when the title names it
@@ -144,7 +148,8 @@ create table private.school_sync (
   id          boolean primary key default true check (id),
   run_id      uuid,
   lease_until timestamptz,
-  last_run_at timestamptz
+  last_run_at timestamptz,
+  handed      uuid[]       -- the links the run holding the lease was handed and hasn't stored yet, in order
 );
 
 -- An assignment made from a school item says so.
@@ -250,8 +255,10 @@ $$;
 -- with its line breaks, at most 4000), keyed, and only what the hub uses: assignments due from
 -- p_today - 14 to p_today + 120 (the due date by p_rule and p_shift), schedule and games items with a
 -- start from p_today to p_today + 55 (busy time can't use more, §5.3). An item without a title, or
--- without its dates, is left out; an end before the start is dropped. A key repeated in one read:
--- the last one wins.
+-- without its dates, is left out; an end before the start is dropped. The key: the UID's, or without
+-- one an assignment's class, title and first day (a line break, which clean_text never leaves in
+-- either, between the class and the title, so two classes' "Homework" due the same day are two
+-- items), a schedule or games item's title and start. A key repeated in one read: the last one wins.
 create function private.school_rows(p_kind text, p_items jsonb, p_rule text, p_shift int, p_today date)
 returns table (n bigint, key text, has_uid boolean, title text, subject text, details text,
                first_day date, last_day date, due_date date, starts_at timestamptz, ends_at timestamptz)
@@ -284,7 +291,7 @@ as $$
   kept as (
     select s.*,
            md5(case when p_kind = 'assignments'
-                    then coalesce('uid:' || s.uid, 'title:' || lower(s.title) || '|' || to_char(s.f, 'YYYY-MM-DD'))
+                    then coalesce('uid:' || s.uid, 'title:' || lower(coalesce(s.subject, '')) || E'\n' || lower(s.title) || '|' || to_char(s.f, 'YYYY-MM-DD'))
                     else coalesce('uid:' || s.uid, 'title:' || lower(s.title)) || '|' || to_char(s.s at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS') end) as k
     from shaped s
     where case when p_kind = 'assignments' then s.due between p_today - 14 and p_today + 120
@@ -300,6 +307,45 @@ as $$
          case when p_kind <> 'assignments' then k.e end
   from kept k
   order by k.k, k.n desc;
+$$;
+
+-- A failed read of one link: its fixed code, one more failure, and the next read 1, 2, 4, then 8 hours
+-- on (each 10 minutes early, so the hourly run finds it due). school_store's stops, and school_begin's
+-- for the link a dead run was reading.
+create function private.school_failed(p_feed uuid, p_stop text)
+returns void
+language sql
+set search_path = ''
+as $$
+  update public.school_feeds f
+  set last_try_at = private.now(), last_stop = p_stop, fails = f.fails + 1,
+      next_at = private.now() + make_interval(mins => (60 * power(2, least(f.fails, 3)))::int - 10)
+  where f.id = p_feed and f.removed_at is null;
+$$;
+
+-- The school rows' retention (§13.3), for the whole household, whatever a link's state (paused, homework
+-- off, removed): run by school_begin, so every hourly run and every Check now. An item's description,
+-- and the copy of it in applied, emptied 30 days after the item's due date, as the assignment's own copy
+-- (homework_trim): school_apply then finds the two equal and writes nothing back. Past items nobody made
+-- an assignment (assignments due before today - 14, busy time that ended before today) deleted, as a
+-- read does; and a removed link's row once no item is left on it.
+create function private.school_trim()
+returns void
+language plpgsql
+set search_path = ''
+as $$
+declare
+  v_today date := public.today_local();
+begin
+  update public.school_items i
+  set details = null, applied = case when i.applied is not null then jsonb_set(i.applied, '{details}', 'null') end
+  where i.due_date < v_today - 30 and (i.details is not null or i.applied ->> 'details' is not null);
+  delete from public.school_items i
+  where (i.due_date < v_today - 14 and i.assignment_id is null)
+     or coalesce(i.ends_at, i.starts_at) < (v_today::timestamp at time zone private.tz());
+  delete from public.school_feeds f
+  where f.removed_at is not null and not exists (select 1 from public.school_items i where i.feed_id = f.id);
+end;
 $$;
 
 -- An assignment from a school item (Quick, Plan with Pat, a parent's Add): kind 'assignment',
@@ -676,8 +722,10 @@ $$;
 --    hidden: [{id, title, subject, due_date}] (what he hid, still to come),
 --    moved: [{assignment_id, title, from, to}] (a planned assignment whose school date moved),
 --    gone: [{assignment_id, title, due_date}] (an open assignment no longer on the school site)}
--- stale: a link due for over 2 hours and not read (about 3 hours since the last read): the job isn't
--- running ("run supabase/cron.sql again"). Never the address.
+-- stale: a link the job would read (not paused, the kid's homework on) due for over 2 hours and not read
+-- (about 3 hours since the last read): the job isn't running ("run supabase/cron.sql again"). A removed
+-- link (kept only for the assignments made from it) isn't on the card, nor its items in check, new or
+-- hidden. Never the address.
 create function public.school_feed_status(p_kid uuid)
 returns jsonb
 language plpgsql
@@ -700,26 +748,31 @@ begin
                        'date_rule', f.date_rule, 'date_shift', f.date_shift, 'paused', f.paused,
                        'last_try_at', f.last_try_at, 'last_ok_at', f.last_ok_at, 'last_count', f.last_count,
                        'last_repeats', f.last_repeats, 'last_stop', f.last_stop, 'fails', f.fails, 'next_at', f.next_at,
-                       'stale', not f.paused and coalesce(f.next_at < v_now - interval '2 hours', false))
+                       'stale', not f.paused and k.active and p.active and coalesce(f.next_at < v_now - interval '2 hours', false))
                      order by case f.kind when 'assignments' then 1 when 'schedule' then 2 else 3 end), '[]')
-              from public.school_feeds f where f.kid_id = p_kid),
+              from public.school_feeds f
+              join public.homework_kids k on k.kid_id = f.kid_id
+              join public.people p on p.id = f.kid_id
+              where f.kid_id = p_kid and f.removed_at is null),
     'check', (select coalesce(jsonb_agg(jsonb_build_object('id', x.id, 'title', x.title, 'subject', x.subject,
                                                            'first_day', x.first_day, 'last_day', x.last_day, 'due_date', x.due_date)
                                         order by x.due_date, x.title, x.id), '[]')
               from (select i.* from public.school_items i
                     join public.school_feeds f on f.id = i.feed_id and f.kid_id = p_kid and f.kind = 'assignments' and not f.checked
+                                                and f.removed_at is null
                     where i.due_date >= v_today and i.gone_at is null
                     order by i.due_date, i.title, i.id limit 5) x),
     'new', (select coalesce(jsonb_agg(jsonb_build_object('id', x.id, 'title', x.title, 'subject', x.subject, 'due_date', x.due_date)
                                       order by x.due_date, x.title, x.id), '[]')
             from (select i.* from public.school_items i
                   join public.school_feeds f on f.id = i.feed_id and f.kid_id = p_kid and f.kind = 'assignments' and f.checked
+                                              and f.removed_at is null
                   where i.made_at is null and not i.hidden and i.gone_at is null and i.due_date between v_today and v_today + 30
                   order by i.due_date, i.title, i.id limit 50) x),
     'hidden', (select coalesce(jsonb_agg(jsonb_build_object('id', i.id, 'title', i.title, 'subject', i.subject, 'due_date', i.due_date)
                                          order by i.due_date, i.title, i.id), '[]')
                from public.school_items i
-               join public.school_feeds f on f.id = i.feed_id and f.kid_id = p_kid and f.kind = 'assignments'
+               join public.school_feeds f on f.id = i.feed_id and f.kid_id = p_kid and f.kind = 'assignments' and f.removed_at is null
                where i.made_at is null and i.hidden and i.gone_at is null and i.due_date >= v_today),
     'moved', (select coalesce(jsonb_agg(jsonb_build_object('assignment_id', a.id, 'title', a.title, 'from', a.due_date, 'to', i.due_date)
                                         order by a.due_date, a.title, a.id), '[]')
@@ -740,9 +793,12 @@ $$;
 -- 'schedule' or 'games'. The address must pass private.school_url (22023 otherwise, the same words for
 -- every way it can fail); it is kept in private.school_feed_urls and never answered. A new or replaced
 -- link is due to be read at once (the next run, or Check now); Replace keeps the link's row, its
--- first-import answer and its items. Remove deletes the link, its address and every item no one made
--- an assignment (assignments made from it stay, added_by 'school'). Answers {id, kind, host,
--- url_end}, or null for Remove.
+-- first-import answer and its items. Remove deletes the link's address and every item no one made an
+-- assignment (assignments made from it stay, added_by 'school'). While items made assignments remain,
+-- the row stays for them, marked removed (removed_at: not read, not on the status card, its first-import
+-- answer taken back), so adding the link again takes the same row: the next read finds those items by
+-- their keys instead of bringing them back as new; with none, the row goes too. Answers {id, kind,
+-- host, url_end}, or null for Remove.
 create function public.set_school_feed(p_kid uuid, p_kind text, p_url text)
 returns jsonb
 language plpgsql
@@ -763,7 +819,18 @@ begin
     raise exception 'Turn on homework for this kid first.' using errcode = '22023';
   end if;
   if nullif(btrim(p_url), '') is null then
-    delete from public.school_feeds f where f.kid_id = p_kid and f.kind = p_kind;
+    select * into v_f from public.school_feeds f where f.kid_id = p_kid and f.kind = p_kind for update;
+    if v_f.id is not null then
+      delete from private.school_feed_urls u where u.feed_id = v_f.id;
+      delete from public.school_items i where i.feed_id = v_f.id and i.made_at is null;
+      if exists (select 1 from public.school_items i where i.feed_id = v_f.id) then
+        update public.school_feeds f
+        set removed_at = coalesce(f.removed_at, private.now()), checked = false, paused = false, next_at = null, fails = 0, last_stop = null
+        where f.id = v_f.id;
+      else
+        delete from public.school_feeds f where f.id = v_f.id;
+      end if;
+    end if;
     return null;
   end if;
   v_url := private.school_url(p_url);
@@ -774,7 +841,7 @@ begin
   insert into public.school_feeds as f (kid_id, kind, host, url_end, next_at)
   values (p_kid, p_kind, split_part(substr(v_url, 9), '/', 1), right(v_url, 4), private.now())
   on conflict (kid_id, kind) do update
-  set host = excluded.host, url_end = excluded.url_end, next_at = excluded.next_at, fails = 0, last_stop = null
+  set host = excluded.host, url_end = excluded.url_end, next_at = excluded.next_at, fails = 0, last_stop = null, removed_at = null
   returning * into v_f;
   insert into private.school_feed_urls as u (feed_id, url) values (v_f.id, v_url)
   on conflict (feed_id) do update set url = excluded.url;
@@ -798,7 +865,7 @@ begin
     raise exception 'Only a parent can change homework.' using errcode = '42501';
   end if;
   select * into v_f from public.school_feeds f where f.id = p_feed for update;
-  if v_f.id is null then
+  if v_f.id is null or v_f.removed_at is not null then
     raise exception 'That school link isn''t there any more.' using errcode = '22023';
   end if;
   if v_f.kind <> 'assignments' then
@@ -816,7 +883,8 @@ begin
 end;
 $$;
 
--- Pause (or go on reading) a link. A paused link isn't read; its items stay.
+-- Pause (or go on reading) a link. A paused link isn't read; its items stay. Resume makes it due now
+-- (unless a backoff has it later), so the status card's "stale" counts from then, not from before the pause.
 create function public.pause_school_feed(p_feed uuid, p_paused boolean)
 returns void
 language plpgsql
@@ -830,12 +898,33 @@ begin
   if p_paused is null then
     raise exception 'Choose on or off.' using errcode = '22023';
   end if;
-  update public.school_feeds f set paused = p_paused where f.id = p_feed;
+  update public.school_feeds f
+  set paused = p_paused,
+      next_at = case when f.paused and not p_paused then greatest(coalesce(f.next_at, private.now()), private.now()) else f.next_at end
+  where f.id = p_feed and f.removed_at is null;
   if not found then
     raise exception 'That school link isn''t there any more.' using errcode = '22023';
   end if;
 end;
 $$;
+
+-- Homework turned back on for a kid: his links can be read again, so they are due now (unless a backoff
+-- has one later), and the status card's "stale" counts from then. Runs as its owner: a parent may turn
+-- homework on with a plain update of homework_kids.active, and school_feeds takes no writes.
+create function private.school_feeds_due()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  update public.school_feeds f set next_at = greatest(coalesce(f.next_at, private.now()), private.now())
+  where f.kid_id = new.kid_id and f.removed_at is null;
+  return null;
+end;
+$$;
+create trigger homework_kids_school_due after update of active on public.homework_kids
+  for each row when (new.active and not old.active) execute function private.school_feeds_due();
 
 -- A parent's actions on an Assignments item: 'add' (make it an assignment from school now, as Plan
 -- with Pat does; with or without the first-import check), 'hide' (off his New from school) and
@@ -955,10 +1044,17 @@ $$;
 -- ---------------------------------------------------------------------
 
 -- Takes the lease for one run (5 minutes; a run past it counts as dead) and hands over the links to
--- read: {go, stop, run_id, today, tz, feeds: [{feed_id, kind, url}]}, at most 10, the longest due
--- first. A link is due when its next_at has passed, it isn't paused, and its kid is active with
--- homework on; p_force (a parent's Check now): every such link not tried in the last minute. While
--- another run holds the lease: {go: false, stop: 'busy'}. The only reader of the addresses.
+-- read: {go, stop, run_id, today, tz, feeds: [{feed_id, kind, url}]}, at most 10: those reading well
+-- first, then the longest due. A link is due when its next_at has passed, it isn't paused or removed,
+-- and its kid is active with homework on; p_force (a parent's Check now): every such link not tried in
+-- the last minute. While another run holds the lease: {go: false, stop: 'busy'}. The only reader of
+-- the addresses. Before that:
+--   • a run that died (its lease ran out without school_finish, e.g. the Edge Function was stopped
+--     mid-read): it reads the links in the order it was handed them and school_store takes each off
+--     school_sync.handed, so the first one left is the one it was reading. That one is a failed read
+--     ('error', backed off as any failure), so it isn't first again next time and the others are read;
+--     the ones after it were never tried and stay as they were;
+--   • the household's school rows are trimmed (private.school_trim), whatever the links' state.
 create function public.school_begin(p_force boolean default false)
 returns jsonb
 language plpgsql
@@ -966,30 +1062,38 @@ security definer
 set search_path = ''
 as $$
 declare
-  v_now timestamptz := private.now();
-  v_run uuid;
+  v_now   timestamptz := private.now();
+  v_y     private.school_sync;
+  v_run   uuid := gen_random_uuid();
+  v_feeds jsonb;
+  v_ids   uuid[];
 begin
   insert into private.school_sync (id) values (true) on conflict (id) do nothing;
-  update private.school_sync y
-  set run_id = gen_random_uuid(), lease_until = v_now + interval '5 minutes'
-  where y.id and (y.lease_until is null or y.lease_until < v_now)
-  returning y.run_id into v_run;
-  if v_run is null then
+  select * into v_y from private.school_sync y where y.id for update;
+  if v_y.lease_until is not null and v_y.lease_until >= v_now then
     return jsonb_build_object('go', false, 'stop', 'busy');
   end if;
-  return jsonb_build_object(
-    'go', true, 'stop', null, 'run_id', v_run, 'today', public.today_local(), 'tz', private.tz(),
-    'feeds', (select coalesce(jsonb_agg(jsonb_build_object('feed_id', x.id, 'kind', x.kind, 'url', u.url) order by x.next_at, x.id), '[]')
-              from (select f.id, f.kind, f.next_at
-                    from public.school_feeds f
-                    join public.homework_kids k on k.kid_id = f.kid_id and k.active
-                    join public.people p on p.id = f.kid_id and p.active
-                    where not f.paused
-                      and case when coalesce(p_force, false) then f.last_try_at is null or f.last_try_at < v_now - interval '1 minute'
-                               else f.next_at is null or f.next_at <= v_now end
-                    order by f.next_at nulls first, f.id
-                    limit 10) x
-              join private.school_feed_urls u on u.feed_id = x.id));
+  if v_y.run_id is not null and cardinality(v_y.handed) > 0 then
+    perform private.school_failed(v_y.handed[1], 'error');
+  end if;
+  perform private.school_trim();
+  select coalesce(jsonb_agg(jsonb_build_object('feed_id', x.id, 'kind', x.kind, 'url', u.url) order by x.n), '[]'),
+         coalesce(array_agg(x.id order by x.n), '{}')
+  into v_feeds, v_ids
+  from (select f.id, f.kind, row_number() over (order by f.fails > 0, f.next_at nulls first, f.id) as n
+        from public.school_feeds f
+        join public.homework_kids k on k.kid_id = f.kid_id and k.active
+        join public.people p on p.id = f.kid_id and p.active
+        where not f.paused and f.removed_at is null
+          and case when coalesce(p_force, false) then f.last_try_at is null or f.last_try_at < v_now - interval '1 minute'
+                   else f.next_at is null or f.next_at <= v_now end
+        order by f.fails > 0, f.next_at nulls first, f.id
+        limit 10) x
+  join private.school_feed_urls u on u.feed_id = x.id;
+  update private.school_sync y
+  set run_id = v_run, lease_until = v_now + interval '5 minutes', handed = v_ids
+  where y.id;
+  return jsonb_build_object('go', true, 'stop', null, 'run_id', v_run, 'today', public.today_local(), 'tz', private.tz(), 'feeds', v_feeds);
 end;
 $$;
 
@@ -1000,8 +1104,9 @@ $$;
 -- assignments or 2,000 schedule or games items: else 'too_many', nothing applied) are stored:
 --   • a read with nothing in it when 3 or more items were there is 'empty' and not applied;
 --   • new items are added, the others updated (an item back on the site is no longer gone);
---   • an Assignments item without a UID that is absent, with a new key of the same title in this read,
---     is the same item with its date moved (it keeps its row, and its assignment);
+--   • an Assignments item without a UID that the last good read saw, still inside the window and not
+--     gone, absent from this one, with a new key of the same class and title in it, is the same item
+--     with its date moved (it keeps its row, and its assignment);
 --   • an item inside the window absent from a good, non-empty read is missing once more; from two in a
 --     row it is gone (marked; a schedule or games item is deleted, being only busy time);
 --   • past items nobody made an assignment are let go (assignments due before today - 14, busy time
@@ -1032,8 +1137,10 @@ begin
   if not exists (select 1 from private.school_sync y where y.id and y.run_id = p_run and y.lease_until >= v_now) then
     return jsonb_build_object('stored', false, 'stop', 'late');
   end if;
+  -- This link's read is over, whatever its outcome (school_begin's note of where a dead run stopped).
+  update private.school_sync y set handed = array_remove(y.handed, p_feed) where y.id and y.run_id = p_run;
   select * into v_f from public.school_feeds f where f.id = p_feed for update;
-  if v_f.id is null then
+  if v_f.id is null or v_f.removed_at is not null then
     return jsonb_build_object('stored', false, 'stop', 'removed');
   end if;
   v_asg := v_f.kind = 'assignments';
@@ -1064,17 +1171,17 @@ begin
   end if;
 
   if v_stop is not null then
-    update public.school_feeds f
-    set last_try_at = v_now, last_stop = v_stop, fails = f.fails + 1,
-        next_at = v_now + make_interval(mins => (60 * power(2, least(f.fails, 3)))::int - 10)
-    where f.id = p_feed;
+    perform private.school_failed(p_feed, v_stop);
     return jsonb_build_object('stored', false, 'stop', v_stop);
   end if;
 
-  -- An Assignments item without a UID whose date moved: the absent one of the same title takes the new key.
+  -- An Assignments item without a UID whose date moved: the item of the same class and title that the
+  -- last good read saw, still inside the window, not gone and absent from this one, takes the new key.
+  -- (An older one of the same title, a week's "Reading log" from before, is another item: past the
+  -- window, or seen in this read.)
   if v_asg then
     for c in
-      select x.key, x.title, x.first_day
+      select x.key, x.title, x.subject, x.first_day
       from private.school_rows(v_f.kind, p_items, v_f.date_rule, v_f.date_shift, v_today) x
       where not x.has_uid and not exists (select 1 from public.school_items i where i.feed_id = p_feed and i.key = x.key)
       order by x.n
@@ -1082,6 +1189,9 @@ begin
       update public.school_items i set key = c.key
       where i.id = (select o.id from public.school_items o
                     where o.feed_id = p_feed and not o.has_uid and lower(o.title) = lower(c.title)
+                      and lower(coalesce(o.subject, '')) = lower(coalesce(c.subject, ''))
+                      and o.gone_at is null and o.last_seen_at >= v_f.last_ok_at
+                      and o.due_date between v_today - 14 and v_today + 120
                       and not exists (select 1 from private.school_rows(v_f.kind, p_items, v_f.date_rule, v_f.date_shift, v_today) y
                                       where y.key = o.key)
                     order by abs(o.first_day - c.first_day), o.first_seen_at, o.id
@@ -1136,7 +1246,8 @@ begin
 end;
 $$;
 
--- Ends a run: the lease is free, and the run is noted (the status card's last_run_at).
+-- Ends a run: the lease is free, and the run is noted (the status card's last_run_at). A link it was
+-- handed and didn't store (no time left) stays due, and counts no failure.
 create function public.school_finish(p_run uuid)
 returns void
 language plpgsql
@@ -1145,7 +1256,7 @@ set search_path = ''
 as $$
 begin
   update private.school_sync y
-  set run_id = null, lease_until = null, last_run_at = private.now()
+  set run_id = null, lease_until = null, last_run_at = private.now(), handed = null
   where y.id and y.run_id = p_run;
 end;
 $$;
@@ -1204,6 +1315,9 @@ revoke execute on function private.school_assignment(uuid, text)                
 revoke execute on function private.school_apply(uuid)                             from public, anon, authenticated;
 revoke execute on function private.school_marks(uuid)                             from public, anon, authenticated;
 revoke execute on function private.school_new(uuid)                               from public, anon, authenticated;
+revoke execute on function private.school_failed(uuid, text)                      from public, anon, authenticated;
+revoke execute on function private.school_trim()                                  from public, anon, authenticated;
+revoke execute on function private.school_feeds_due()                             from public, anon, authenticated;
 revoke execute on function private.homework_view_kid(uuid, text)                  from public, anon, authenticated;
 revoke execute on function private.homework_view_tutor(uuid, uuid, text)          from public, anon, authenticated;
 

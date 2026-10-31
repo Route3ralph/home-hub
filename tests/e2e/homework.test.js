@@ -1237,7 +1237,11 @@ const emailOf = (req) => {
     check('Remove: set_school_feed(kid, assignments, null); "Assignments link removed"; Not added again, his assignments from school kept',
       same(lastCall(db, 'set_school_feed').body, { p_kid: ID.jordan, p_kind: 'assignments', p_url: null })
       && (await lastToast(page)) === 'Assignments link removed' && (await tc(page, `${FEED('assignments')} .hw-feed-state`)) === 'Not added'
-      && db.school_feeds.length === 1 && db.school_feeds[0].kind === 'schedule' && !!db.assignments.find((a) => a.id === made.id) && !(await page.$('[data-keep="new"]')), await lastToast(page));
+      && db.school_feeds.filter((f) => !f.removed_at).map((f) => f.kind).join() === 'schedule' && !!db.assignments.find((a) => a.id === made.id) && !(await page.$('[data-keep="new"]')), await lastToast(page));
+    const removed = db.school_feeds.find((f) => f.kind === 'assignments');
+    check('... the link\'s row stays, marked removed, with only the items made assignments (so adding it again doesn\'t bring them back as new)',
+      !!removed && !!removed.removed_at && !schoolUrlOf(db, removed.id) && db.school_items.filter((i) => i.feed_id === removed.id).length > 0
+      && db.school_items.filter((i) => i.feed_id === removed.id).every((i) => !!i.made_at), db.school_items.filter((i) => i.feed_id === (removed || {}).id));
     check('nothing on the page or in the console ever carried a link', !(await page.content()).includes(SECRET) && !(await page.content()).includes('SCHEDULEZ')
       && !said.some((x) => x.includes(SECRET) || x.includes('SCHEDULEZ')));
     await page.context().close();

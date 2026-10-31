@@ -19,7 +19,7 @@ import { handle } from '../../supabase/functions/hub-jobs/handler.ts';
 import {
   SCHOOL_HOST, SCHOOL_LIMITS, MAX_BYTES, RUN_BUDGET_MS, checkAddress, keep,
 } from '../../supabase/functions/hub-jobs/school.ts';
-import { parseIcal, splitClass, resolveZone } from '../../supabase/functions/hub-jobs/ical.ts';
+import { parseIcal, splitClass, resolveZone, unfoldBytes } from '../../supabase/functions/hub-jobs/ical.ts';
 import { readFileSync } from 'node:fs';
 
 const results: string[] = [];
@@ -257,6 +257,62 @@ check('the class from the title: "Biology - 2 (B): Lab report" → Biology, Lab 
 check('... "History 8 - 1: Read" → History 8; "Art 8: Sketch" → Art 8', splitClass('History 8 - 1: Read').subject === 'History 8' && splitClass('Art 8: Sketch').subject === 'Art 8');
 check('... "Chapter 6: questions" and a title with no colon name no class', splitClass('Chapter 6: questions 1-10').subject === null && splitClass('Worksheet 5.1').subject === null);
 
+// Text that isn't HTML: a "<" and a ">" in a title are kept; only things shaped like tags go.
+const oneEvent = (lines: string[]) => {
+  const r = parseIcal(crlf(['BEGIN:VCALENDAR', 'BEGIN:VEVENT', 'UID:t-1@academy.school.example', 'DTSTART;VALUE=DATE:20261105', ...lines, 'END:VEVENT', 'END:VCALENDAR']), TZ);
+  return r.kind === 'calendar' ? r.events[0] : null;
+};
+check('a title with "x < 3 and y > 1" keeps it (not a tag)', oneEvent(['SUMMARY:Math 8 (A): Graph x < 3 and y > 1 on one grid'])?.summary === 'Math 8 (A): Graph x < 3 and y > 1 on one grid',
+  oneEvent(['SUMMARY:Math 8 (A): Graph x < 3 and y > 1 on one grid'])?.summary);
+check('... and "Show 2<x and x>5", and "&lt;" decoded', oneEvent(['SUMMARY:Math 8: Show 2<x and x>5'])?.summary === 'Math 8: Show 2<x and x>5'
+  && oneEvent(['SUMMARY:Math 8: Solve x &lt; 3'])?.summary === 'Math 8: Solve x < 3', [oneEvent(['SUMMARY:Math 8: Show 2<x and x>5'])?.summary, oneEvent(['SUMMARY:Math 8: Solve x &lt; 3'])?.summary]);
+check('... while real tags still go, in a title and a description (a comment, a Word paste\'s <o:p> too)',
+  oneEvent(['SUMMARY:Math 8: <b>Graph</b> <span style="color:red">it</span>'])?.summary === 'Math 8: Graph it'
+  && oneEvent(['DESCRIPTION:<div class="x"><!-- note --><p>Use 2 < 3.</p><ul><li>One</li><li >Two</li></ul><o:p></o:p>Done<br/></div>', 'SUMMARY:A'])?.description
+    === 'Use 2 < 3.\n• One\n• Two\nDone', oneEvent(['DESCRIPTION:<div class="x"><!-- note --><p>Use 2 < 3.</p><ul><li>One</li><li >Two</li></ul><o:p></o:p>Done<br/></div>', 'SUMMARY:A'])?.description);
+
+// Hostile bodies take time in proportion to their size (no pattern rescans the text from every "<" or every line).
+const cpu = (f: () => unknown) => { const t = process.cpuUsage(); f(); const u = process.cpuUsage(t); return (u.user + u.system) / 1000; };
+for (const [name, body] of [
+  ['a 200 KB DESCRIPTION of "<"', crlf(['BEGIN:VCALENDAR', 'BEGIN:VEVENT', 'UID:x', 'DTSTART;VALUE=DATE:20261105', 'SUMMARY:Math 8: a', `DESCRIPTION:${'<'.repeat(200000)}`, 'END:VEVENT', 'END:VCALENDAR'])],
+  ['a 200 KB SUMMARY of "<"', crlf(['BEGIN:VCALENDAR', 'BEGIN:VEVENT', 'UID:x', 'DTSTART;VALUE=DATE:20261105', `SUMMARY:${'<'.repeat(200000)}`, 'END:VEVENT', 'END:VCALENDAR'])],
+  ['a DESCRIPTION of "<li" and "<b " without a ">"', crlf(['BEGIN:VCALENDAR', 'BEGIN:VEVENT', 'UID:x', 'DTSTART;VALUE=DATE:20261105', 'SUMMARY:a', `DESCRIPTION:${'<li'.repeat(40000)}${'<b '.repeat(40000)}${'<!'.repeat(40000)}`, 'END:VEVENT', 'END:VCALENDAR'])],
+  ['a body of 100,000 blank lines', '\n'.repeat(100000)],
+  ['100,000 blank lines before the calendar', '\r\n'.repeat(100000) + crlf(['BEGIN:VCALENDAR', 'BEGIN:VEVENT', 'DTSTART;VALUE=DATE:20261105', 'SUMMARY:a', 'END:VEVENT', 'END:VCALENDAR'])],
+] as const) {
+  let r: ReturnType<typeof parseIcal> | null = null;
+  const ms = cpu(() => { r = parseIcal(body, TZ); });
+  check(`${name} is read in under 500 ms of CPU (${Math.round(ms)} ms)`, ms < 500 && !!r, ms);
+}
+
+// Characters Postgres's jsonb refuses never reach school_store: NUL (and the other C0 controls but tab and line
+// breaks), and a lone surrogate; and a cut never splits a character in two.
+const nul = oneEvent(['SUMMARY:Biology 8: Lab\u0000report\u0007', 'DESCRIPTION:Bring\u0000 the\u001b kit.\u0000'])!;
+check('a NUL (and a BEL, an ESC) in a title or a description is taken out', nul?.summary === 'Biology 8: Labreport' && nul?.description === 'Bring the kit.', nul);
+const lone = oneEvent(['SUMMARY:Art 8: Draw \ud83d it', 'DESCRIPTION:Bring \udca9 paper \ud83d\udcda'])!;
+check('... and a lone surrogate (half an emoji) too; a whole emoji stays', lone?.summary === 'Art 8: Draw it' && lone?.description === 'Bring paper \u{1F4DA}', lone);
+const BOOK = '\u{1F4DA}';
+const cutDesc = oneEvent(['SUMMARY:English 9 (B): ' + 'a'.repeat(119) + BOOK + 'b', 'DESCRIPTION:' + 'x'.repeat(3999) + BOOK + ' Bring the book.'])!;
+const cutKept = keep(cutDesc ? [cutDesc] : [], 'assignments', TODAY);
+const ck = Array.isArray(cutKept) ? cutKept[0] : null;
+const lonely = (t: unknown) => /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/.test(String(t ?? ''));
+check('an emoji across the 4,000th character of a description and the 120th of a title: cut by characters, never half of one',
+  !!ck && Array.from(String(ck.details)).length === 4000 && String(ck.details).endsWith(BOOK) && Array.from(String(ck.title)).length === 120
+  && String(ck.title).endsWith(BOOK) && !lonely(ck.details) && !lonely(ck.title), ck && [Array.from(String(ck.details)).length, String(ck.details).slice(-3), String(ck.title).slice(-3)]);
+const cutBusy = keep([{ uid: 'g-9', summary: 'c'.repeat(119) + BOOK + 'd', description: null, allDay: false, firstDay: TODAY, lastDay: TODAY,
+  start: '2026-11-02T21:00:00.000Z', end: '2026-11-02T22:00:00.000Z', repeats: false }], 'games', TODAY);
+check('... and a busy item\'s title the same', Array.isArray(cutBusy) && String(cutBusy[0].title).endsWith(BOOK) && !lonely(cutBusy[0].title), cutBusy);
+check('... so what is sent holds no \\u0000 and no lone surrogate', ![nul, lone, ck].some((x) => /\\u0000|\\ud[89ab][0-9a-f]{2}(?!\\ud[c-f])/i.test(JSON.stringify(x))), JSON.stringify([nul, lone]));
+
+// A fold inside a character's bytes (RFC 5545 §3.1: a simple writer may split a UTF-8 sequence): unfolded on the bytes.
+const enc = new TextEncoder();
+const bytesOf = (...parts: (string | number[])[]) => new Uint8Array(parts.flatMap((x) => (typeof x === 'string' ? [...enc.encode(x)] : x)));
+const foldedBytes = bytesOf('BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:f-1\r\nDTSTART;VALUE=DATE:20261105\r\nSUMMARY:Espa', [0xc3, 0x0d, 0x0a, 0x20, 0xb1],
+  'ol 2 (A): Lectura ', [0xf0, 0x9f, 0x0a, 0x09, 0x93, 0x9a], '\r\nDESCRIPTION:a\r\n b\r c\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n');
+const unfolded = new TextDecoder('utf-8').decode(unfoldBytes(foldedBytes));
+check('unfoldBytes joins a fold (CRLF, LF or CR, then a space or a tab) inside an "ñ" and an emoji',
+  unfolded.includes('SUMMARY:Español 2 (A): Lectura \u{1F4DA}\r\n') && unfolded.includes('DESCRIPTION:abc\r\n') && !unfolded.includes('\ufffd'), unfolded);
+
 // What is kept.
 const kept = keep(evs, 'assignments', TODAY);
 const keptList = Array.isArray(kept) ? kept : [];
@@ -315,7 +371,7 @@ type Call = { fn: string; args: any };
 type Hit = { url: string; redirect: unknown; signal: boolean; method: string };
 type Route = (url: string, init: any) => Promise<Response> | Response;
 
-function setup(opts: { feeds?: any[]; routes?: Record<string, Route>; begin?: any; storeError?: boolean; admin?: boolean } = {}) {
+function setup(opts: { feeds?: any[]; routes?: Record<string, Route>; begin?: any; storeError?: boolean | ((args: any) => boolean); admin?: boolean } = {}) {
   const calls: Call[] = [];
   const hits: Hit[] = [];
   const clock = { t: NOW };
@@ -327,7 +383,7 @@ function setup(opts: { feeds?: any[]; routes?: Record<string, Route>; begin?: an
         return Promise.resolve(opts.begin ?? { data: { go: true, stop: null, run_id: RUN, today: TODAY, tz: TZ, feeds: opts.feeds ?? [FEEDS.assignments] }, error: null });
       }
       if (fn === 'school_store') {
-        if (opts.storeError) return Promise.resolve({ data: null, error: { message: 'boom', code: 'XX000' } });
+        if (typeof opts.storeError === 'function' ? opts.storeError(args) : opts.storeError) return Promise.resolve({ data: null, error: { message: 'boom', code: 'XX000' } });
         const n = Array.isArray(args?.p_items) ? args.p_items.length : 0;
         return Promise.resolve({ data: args?.p_stop ? { stored: false, stop: args.p_stop } : { stored: true, stop: null, kept: n, added: n, missing: 0, gone: 0 }, error: null });
       }
@@ -439,6 +495,26 @@ const keepAlive = setInterval(() => { /* waiting */ }, 1000);
     const se = setup({ routes: { [FEEDS.assignments.url]: ok(ASSIGNMENTS) }, storeError: true });
     const rse = await run(se);
     check('a database error storing: 500, the run still ended (school_finish)', rse.status === 500 && se.calls.at(-1)?.fn === 'school_finish' && !rse.text.includes('boom'), rse);
+    // school_store refuses the items (PostgREST answers an error, as for text jsonb won't take): the link still gets a
+    // fixed stop, so it backs off and the status card says what happened, and the other links are stored.
+    const items = setup({ feeds: [FEEDS.assignments, FEEDS.games], routes: { [FEEDS.assignments.url]: ok(ASSIGNMENTS), [FEEDS.games.url]: ok(GAMES) },
+      storeError: (a) => a?.p_feed === FEEDS.assignments.feed_id && a?.p_stop === null });
+    const ri = await run(items);
+    const sti = stores(items.calls);
+    check('school_store refusing a link\'s items: stored again as that link\'s failed read (error, no items), the run goes on',
+      sti.length === 3 && sti[0].p_feed === FEEDS.assignments.feed_id && sti[0].p_items.length === 10 && sti[1].p_feed === FEEDS.assignments.feed_id
+      && sti[1].p_stop === 'error' && sti[1].p_items.length === 0 && sti[2].p_feed === FEEDS.games.feed_id && sti[2].p_stop === null, sti.map((a) => [a.p_feed, a.p_stop, a.p_items?.length]));
+    check('... the answer: 200, one failed, one stored (not the database\'s words)', ri.status === 200 && JSON.parse(ri.text).failed === 1 && JSON.parse(ri.text).stored === 1
+      && JSON.parse(ri.text).ok === false && !ri.text.includes('boom'), ri);
+  }
+
+  // ---- A fold inside a character's bytes, read through the action.
+  {
+    const s = setup({ routes: { [FEEDS.assignments.url]: () => new Response(foldedBytes, { status: 200, headers: { 'Content-Type': 'text/calendar' } }) } });
+    await run(s);
+    const st = stores(s.calls);
+    check('a feed folded inside an "ñ" is stored as "Español 2" · "Lectura 📚" (no U+FFFD)', st[0]?.p_stop === null && st[0].p_items[0]?.subject === 'Español 2'
+      && st[0].p_items[0]?.title === 'Lectura \u{1F4DA}' && !JSON.stringify(st[0].p_items).includes('\ufffd'), st[0]?.p_items);
   }
 
   // ---- What each failure is stored as.

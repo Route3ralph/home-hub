@@ -9,8 +9,10 @@
 // redirects and body included; at most MAX_REDIRECTS redirects, each checked like the link; at most
 // MAX_BYTES), parse it, keep what the hub uses (assignments due from today − 14 to today + 120 days,
 // schedule and games items with a start from today to today + 55; then at most 400 assignments or
-// 2,000 other items, else 'too_many') and store it, or store its stop (school_store); then end the run
-// (school_finish). A link that fails doesn't stop the others.
+// 2,000 other items, else 'too_many') and store it, or store its stop (school_store; if school_store refuses
+// the items, the read is stored again as 'error', with none); then end the run (school_finish). A link that
+// fails doesn't stop the others. A run stopped partway (the Edge Function's limits) never reaches
+// school_finish: the next school_begin marks the link it was reading as failed (school_sync.handed).
 //
 // Safety: the address works like a password. It is fetched only as https on port 443, from a host
 // ending in SCHOOL_HOST.suffix, with no user info, and redirect: 'manual', so a redirect off those
@@ -21,7 +23,7 @@
 
 import { json, noSchema } from './util.ts';
 import type { Deps } from './util.ts';
-import { parseIcal, splitClass, addDays } from './ical.ts';
+import { parseIcal, splitClass, addDays, cutText, unfoldBytes } from './ical.ts';
 import type { IcalEvent } from './ical.ts';
 
 // The hosts a school link may name: Blackbaud's. The tests replace it with a made-up one.
@@ -116,7 +118,8 @@ async function drop(res: Response) {
   try { await res.body?.cancel(); } catch { /* nothing to read */ }
 }
 
-// The body, at most MAX_BYTES, as UTF-8 (a bad byte becomes U+FFFD).
+// The body, at most MAX_BYTES, unfolded on its bytes (a fold inside a character's UTF-8 bytes joins it whole,
+// ical.ts's unfoldBytes), then as UTF-8 (a bad byte becomes U+FFFD).
 async function readBody(res: Response, signal: AbortSignal): Promise<Fetched> {
   if (!res.body) return { ok: true, text: '' };
   const reader = res.body.getReader();
@@ -141,13 +144,14 @@ async function readBody(res: Response, signal: AbortSignal): Promise<Fetched> {
   const all = new Uint8Array(size);
   let at = 0;
   for (const c of chunks) { all.set(c, at); at += c.byteLength; }
-  return { ok: true, text: new TextDecoder('utf-8').decode(all) };
+  return { ok: true, text: new TextDecoder('utf-8').decode(unfoldBytes(all)) };
 }
 
 // What school_store takes for one item.
 type Item = Record<string, string | null>;
 
-// The items the hub uses from one link's events (see the top of this file), or 'too_many'.
+// The items the hub uses from one link's events (see the top of this file), or 'too_many'. Text is cut to what
+// the database keeps by characters (cutText), never through the middle of an emoji.
 export function keep(events: IcalEvent[], kind: string, today: string): Item[] | 'too_many' {
   const out: Item[] = [];
   if (kind === 'assignments') {
@@ -158,8 +162,8 @@ export function keep(events: IcalEvent[], kind: string, today: string): Item[] |
       if (e.lastDay < from || e.firstDay > to) continue;
       const { subject, title } = splitClass(e.summary);
       if (!title) continue;
-      out.push({ uid: e.uid, title: title.slice(0, 120), subject: subject ? subject.slice(0, 40) : null,
-        details: e.description ? e.description.slice(0, 4000) : null, first_day: e.firstDay, last_day: e.lastDay });
+      out.push({ uid: e.uid, title: cutText(title, 120), subject: subject ? cutText(subject, 40) : null,
+        details: e.description ? cutText(e.description, 4000) : null, first_day: e.firstDay, last_day: e.lastDay });
     }
     return out.length > MAX_ASSIGNMENTS ? 'too_many' : out;
   }
@@ -167,7 +171,7 @@ export function keep(events: IcalEvent[], kind: string, today: string): Item[] |
   const to = addDays(today, BUSY_WINDOW.to);
   for (const e of events) {
     if (e.allDay || !e.start || e.firstDay < from || e.firstDay > to || !e.summary) continue;
-    out.push({ uid: e.uid, title: e.summary.slice(0, 120), starts_at: e.start, ends_at: e.end });
+    out.push({ uid: e.uid, title: cutText(e.summary, 120), starts_at: e.start, ends_at: e.end });
   }
   return out.length > MAX_BUSY ? 'too_many' : out;
 }
@@ -219,9 +223,15 @@ export async function runSchool(deps: Deps, opts: { force: boolean }): Promise<R
     } catch {
       itemStop = 'error';   // never the error's own words
     }
-    const r = await db.rpc('school_store', {
+    let r = await db.rpc('school_store', {
       p_run: run, p_feed: f?.feed_id ?? null, p_items: itemStop ? [] : items, p_stop: itemStop, p_repeats: repeats,
     });
+    // The items refused (PostgREST or the database answered an error): still store this link's read as a failed
+    // one, a fixed code with no items, so it backs off and the status card says so, rather than being due again
+    // every hour with nothing recorded.
+    if (r.error && !itemStop) {
+      r = await db.rpc('school_store', { p_run: run, p_feed: f?.feed_id ?? null, p_items: [], p_stop: 'error', p_repeats: 0 });
+    }
     if (r.error) { stop = 'error'; tally.failed++; continue; }
     const out = (r.data ?? {}) as { stored?: boolean; stop?: string; kept?: number };
     if (out.stored) { tally.stored++; tally.items += typeof out.kept === 'number' ? out.kept : 0; }

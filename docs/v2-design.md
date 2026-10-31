@@ -873,6 +873,8 @@ create table public.school_feeds (
                                          'down', 'http', 'sign_in', 'not_calendar', 'empty', 'too_many', 'error')),
                                                 -- the last read's fixed code; null when it went well
   fails        int not null default 0,          -- failed reads in a row (the backoff)
+  removed_at   timestamptz,                     -- Remove, while items made assignments remain: the row stays only for
+                                                -- them (no address, not read, not on the status card); Add link takes it back
   created_at   timestamptz not null default now(),
   created_by   text,
   updated_at   timestamptz not null default now(),
@@ -886,8 +888,8 @@ create table public.school_items (
   id            uuid primary key default gen_random_uuid(),
   feed_id       uuid not null references public.school_feeds (id) on delete cascade,
   key           text not null check (key ~ '^[0-9a-f]{32}$'),
-                -- md5 of 'uid:' and its UID (with its start, for schedule and games), or of 'title:', its title
-                -- and its first day (its start) without one
+                -- md5 of 'uid:' and its UID (with its start, for schedule and games), or without one of 'title:',
+                -- its class, a line break, its title and its first day (its title and its start, for schedule and games)
   has_uid       boolean not null,
   title         text not null check (char_length(title) between 1 and 120),
   subject       text check (subject is null or char_length(subject) between 1 and 40),         -- the class, when the title names it
@@ -924,7 +926,8 @@ create table private.school_sync (
   id          boolean primary key default true check (id),
   run_id      uuid,
   lease_until timestamptz,
-  last_run_at timestamptz
+  last_run_at timestamptz,
+  handed      uuid[]       -- the links the run holding the lease was handed and hasn't stored yet, in order
 );
 create index school_items_feed_due on public.school_items (feed_id, due_date);
 create index school_items_feed_start on public.school_items (feed_id, starts_at);
@@ -938,23 +941,24 @@ alter table public.assignments add constraint assignments_added_by_check check (
 - Row-level security on all four. `school_feeds` and `school_items`: members select (policies "Family can see school links" and "Family can see school items"); no write grant (the functions write). `private.school_feed_urls` and `private.school_sync`: no policies, and `revoke all … from public, anon, authenticated, service_role`. service_role keeps the defaults on `school_feeds` and `school_items` (the job's functions are definers anyway).
 - `school_feeds` is stamped by `private.stamp()` (`school_feeds_stamp` on insert; `school_feeds_stamp_change` on an update that changes more than the read's status: `next_at`, `last_try_at`, `last_ok_at`, `last_count`, `last_repeats`, `last_stop` and `fails`), so a read never changes `updated_at`.
 - `assignments.added_by` gains `'school'`: an assignment made from a school item (Quick, Plan with Pat, a parent's Add). The views pass it through, so the pages can say "from school".
+- A trigger on `homework_kids`, `homework_kids_school_due` (after an update of `active`, when homework is turned back on): `private.school_feeds_due()` makes that kid's links due now (unless a backoff has one later), so the status card doesn't call them stale at once. It is SECURITY DEFINER, since a parent may turn homework on with a plain update and `school_feeds` takes no writes.
 
 ### Functions
 Page read (`authenticated`; SECURITY DEFINER, so the status card can say when the job last ran; null for anyone who isn't a member):
-- `school_feed_status(p_kid uuid)` returns jsonb: `{kid_id, last_run_at, feeds: [{id, kind, host, url_end, checked, date_rule, date_shift, paused, last_try_at, last_ok_at, last_count, last_repeats, last_stop, fails, next_at, stale}], check, new, hidden, moved, gone}`: each link's status (`stale`: due for over 2 hours and not read, so the job isn't running), the first-import check (an Assignments link not checked yet: its next 5 items), what is new for him, what he hid, planned assignments whose school date moved, and open ones no longer on the school site. Never the address.
+- `school_feed_status(p_kid uuid)` returns jsonb: `{kid_id, last_run_at, feeds: [{id, kind, host, url_end, checked, date_rule, date_shift, paused, last_try_at, last_ok_at, last_count, last_repeats, last_stop, fails, next_at, stale}], check, new, hidden, moved, gone}`: each link's status (`stale`: a link the job would read, not paused and the kid's homework on, due for over 2 hours and not read, so the job isn't running), the first-import check (an Assignments link not checked yet: its next 5 items), what is new for him, what he hid, planned assignments whose school date moved, and open ones no longer on the school site. A removed link (its row kept for the assignments made from it) isn't on it, nor its items in the check, new or hidden. Never the address.
 
 Signed-in actions (`authenticated` only; SECURITY DEFINER; each raises 42501 "Only a parent can change homework." unless `private.is_admin()`):
-- `set_school_feed(p_kid uuid, p_kind text, p_url text)` returns jsonb `{id, kind, host, url_end}`: Add link and Replace (`p_url` an address that passes `private.school_url`, else 22023 "That isn't a school calendar link. …", the same words for every way it can fail), or Remove (`p_url` null or empty: answers null, and deletes the link, its address and its items; assignments made from it stay). `p_kind` `'assignments'`, `'schedule'` or `'games'`. A new or replaced link is due to be read at once.
+- `set_school_feed(p_kid uuid, p_kind text, p_url text)` returns jsonb `{id, kind, host, url_end}`: Add link and Replace (`p_url` an address that passes `private.school_url`, else 22023 "That isn't a school calendar link. …", the same words for every way it can fail), or Remove (`p_url` null or empty: answers null, and deletes the link's address and every item no one made an assignment; assignments made from it stay. While such items remain the row stays for them, marked removed (`removed_at`; not read, not on the status card, `checked` taken back, check and pause refused), so adding the link again takes the same row and the next read finds those items by their keys; with none left, the row goes too). `p_kind` `'assignments'`, `'schedule'` or `'games'`. A new or replaced link is due to be read at once.
 - `check_school_feed(p_feed uuid, p_date_rule text, p_date_shift int)` returns jsonb (the status card): the first-import check on an Assignments link: an item's due date is its first (`'start'`) or last (`'end'`) day, moved −1 to 1 days; every item's due date follows, and so do the assignments made from them that nobody changed.
-- `pause_school_feed(p_feed uuid, p_paused boolean)` returns void: a paused link isn't read; its items stay.
+- `pause_school_feed(p_feed uuid, p_paused boolean)` returns void: a paused link isn't read; its items stay. Resume makes it due now (unless a backoff has it later).
 - `school_item_action(p_item uuid, p_action text)` returns jsonb `{assignment_id}` and the status card: `'add'` (make an Assignments item an assignment from school now), `'hide'` and `'show'` (off and back on his New from school).
 
 My day (`anon`, `authenticated`; SECURITY DEFINER): `school_item_by_token(p_token text, p_item uuid, p_action text, p_minutes int default null)` (its signature in §3 "Anonymous token functions"). It starts from `private.homework_kid_by_token(p_token)`, as his seven do.
 
 `hub-jobs` (`service_role` only; SECURITY DEFINER):
-- `school_begin(p_force boolean default false)` returns jsonb `{go, stop, run_id, today, tz, feeds: [{feed_id, kind, url}]}`: takes the read job's lease (5 minutes; `{go: false, stop: 'busy'}` while another run holds it) and hands over at most 10 links that are due (next_at passed, not paused, the kid active with homework on; `p_force`, a parent's Check now: every such link not read in the last minute). The only reader of the addresses.
-- `school_store(p_run uuid, p_feed uuid, p_items jsonb, p_stop text, p_repeats int default 0)` returns jsonb `{stored, stop, kept, added, missing, gone}`: only while `p_run` holds the lease (else `{stored: false, stop: 'late'}`). A failed read (`p_stop`, a fixed code; anything else is stored as `'error'`) changes only the link's status: one more failure, and the next read 1, 2, 4, then 8 hours on. A good one stores the items: what the hub uses (assignments due from today − 14 to today + 120, schedule and games items from today to today + 55), at most 400 or 2,000 (`'too_many'`, nothing applied); a read with nothing in it when 3 or more items were there is `'empty'` and not applied; an item without a UID whose date moved keeps its row; an item absent from two good reads in a row while inside the window is gone (marked; a busy item is deleted); past items nobody made an assignment are let go; then the school's changes reach the assignments made from them (`private.school_apply`). Only fixed codes are stored.
-- `school_finish(p_run uuid)` returns void: the lease is free, and the run is noted.
+- `school_begin(p_force boolean default false)` returns jsonb `{go, stop, run_id, today, tz, feeds: [{feed_id, kind, url}]}`: takes the read job's lease (5 minutes; `{go: false, stop: 'busy'}` while another run holds it) and hands over at most 10 links that are due (next_at passed, not paused or removed, the kid active with homework on; `p_force`, a parent's Check now: every such link not read in the last minute), those reading well first, noting them in order (`private.school_sync.handed`). The only reader of the addresses. Before that, a run that died (its lease ran out with links still noted) has the first of them, the one it was reading, stored as a failed read (`'error'`, backed off), and the household's school rows are trimmed (`private.school_trim`).
+- `school_store(p_run uuid, p_feed uuid, p_items jsonb, p_stop text, p_repeats int default 0)` returns jsonb `{stored, stop, kept, added, missing, gone}`: only while `p_run` holds the lease (else `{stored: false, stop: 'late'}`); it takes the link off the run's noted ones, and a removed link answers `{stored: false, stop: 'removed'}`. A failed read (`p_stop`, a fixed code; anything else is stored as `'error'`) changes only the link's status: one more failure, and the next read 1, 2, 4, then 8 hours on. A good one stores the items: what the hub uses (assignments due from today − 14 to today + 120, schedule and games items from today to today + 55), at most 400 or 2,000 (`'too_many'`, nothing applied); a read with nothing in it when 3 or more items were there is `'empty'` and not applied; an item without a UID whose date moved (one the last good read saw, inside the window, of the same class and title) keeps its row; an item absent from two good reads in a row while inside the window is gone (marked; a busy item is deleted); past items nobody made an assignment are let go; then the school's changes reach the assignments made from them (`private.school_apply`). Only fixed codes are stored.
+- `school_finish(p_run uuid)` returns void: the lease is free, and the run is noted; a link it was handed and didn't store (no time left) stays due and counts no failure.
 
 Replaced, with the same signatures (`create or replace`, so they keep their grants):
 - `hub_schema_version()` returns 6.
@@ -972,3 +976,6 @@ New in private (revoked from public, anon and authenticated; only the definer fu
 - `private.school_apply(p_feed uuid)` returns int: the school's changes into the open assignments made from a link's items, a field at a time, never one a person changed.
 - `private.school_marks(p_kid uuid)` returns jsonb: the marks above, by assignment id. STABLE.
 - `private.school_new(p_kid uuid)` returns jsonb: his New from school (at most 20, due from today to today + 30), or null with no checked Assignments link. STABLE.
+- `private.school_failed(p_feed uuid, p_stop text)` returns void: one failed read of a link (its fixed code, one more failure, the backoff). `school_store` and `school_begin` call it.
+- `private.school_trim()` returns void: the school rows' retention for the household, whatever a link's state: an item's description and the copy in `applied` emptied 30 days after its due date; past items nobody made an assignment deleted (assignments due before today − 14, busy time that ended); a removed link's row once no item is left. `school_begin` calls it.
+- `private.school_feeds_due()` returns trigger: the trigger above. SECURITY DEFINER.

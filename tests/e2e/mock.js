@@ -1215,7 +1215,11 @@ const homeworkRpc = {
     const k = db.homework_kids.find((x) => x.kid_id === b.p_kid);
     if (!k && !b.p_active) return null;
     if (!k) db.homework_kids.push(hwKidRow({ kid_id: b.p_kid, active: true, created_at: foodStamp(db), created_by: email, updated_at: foodStamp(db), updated_by: email }));
-    else if (k.active !== b.p_active) Object.assign(k, { active: b.p_active, updated_at: foodStamp(db), updated_by: email });
+    else if (k.active !== b.p_active) {
+      // 0006's trigger: homework back on makes his school links due now.
+      if (b.p_active && db.school_feeds) db.school_feeds.filter((f) => f.kid_id === b.p_kid && !f.removed_at).forEach((f) => { f.next_at = scDueNow(db, f.next_at); });
+      Object.assign(k, { active: b.p_active, updated_at: foodStamp(db), updated_by: email });
+    }
     return null;
   }),
   add_homework_time: hwCall('add_homework_time', ['p_kid', 'p_weekdays', 'p_start', 'p_end'], [], (db, b, email) => {
@@ -1391,7 +1395,7 @@ const schoolUrlOf = (db, feedId) => (SCHOOL_URLS.get(db) || new Map()).get(feedI
 const schoolFeedRow = (o) => Object.assign({
   id: uuid(), kid_id: null, kind: 'assignments', host: 'academy.school.example', url_end: 'a1b2', date_rule: 'end', date_shift: 0, checked: false,
   paused: false, next_at: null, last_try_at: null, last_ok_at: null, last_count: null, last_repeats: null, last_stop: null, fails: 0,
-  created_at: now(), created_by: null, updated_at: now(), updated_by: null,
+  removed_at: null, created_at: now(), created_by: null, updated_at: now(), updated_by: null,
 }, o);
 const schoolItemRow = (o) => {
   const r = Object.assign({
@@ -1436,22 +1440,23 @@ function scNew(db, kid, today) {
     && i.due_date >= today && i.due_date <= tkAdd(today, 30)).sort(scByDue).slice(0, 20)
     .map((i) => ({ id: i.id, title: i.title, subject: i.subject, due_date: i.due_date, quick: tkBetween(today, i.due_date) <= 3 }));
 }
-// The status card (school_feed_status).
+// The status card (school_feed_status). A removed link (its row kept only for the assignments made from it) isn't on it.
 function scStatus(db, kid, nowMs, today) {
   const order = { assignments: 1, schedule: 2, games: 3 };
   const assignment = (i) => (i.assignment_id ? db.assignments.find((a) => a.id === i.assignment_id && a.status === 'open') : null);
   const pick = (i) => ({ id: i.id, title: i.title, subject: i.subject, due_date: i.due_date });
+  const on = db.homework_kids.some((k) => k.kid_id === kid && k.active);
   return {
     kid_id: kid, last_run_at: db.schoolLastRun || null,
-    feeds: db.school_feeds.filter((f) => f.kid_id === kid).sort((x, y) => order[x.kind] - order[y.kind]).map((f) => ({
+    feeds: db.school_feeds.filter((f) => f.kid_id === kid && !f.removed_at).sort((x, y) => order[x.kind] - order[y.kind]).map((f) => ({
       id: f.id, kind: f.kind, host: f.host, url_end: f.url_end, checked: f.checked, date_rule: f.date_rule, date_shift: f.date_shift, paused: f.paused,
       last_try_at: f.last_try_at, last_ok_at: f.last_ok_at, last_count: f.last_count, last_repeats: f.last_repeats, last_stop: f.last_stop, fails: f.fails,
-      next_at: f.next_at, stale: !f.paused && f.next_at != null && tkMs(f.next_at) < nowMs - 2 * 3600e3 })),
-    check: scItemsOf(db, kid, (i, f) => f.kind === 'assignments' && !f.checked && i.due_date != null && i.due_date >= today && !i.gone_at).sort(scByDue).slice(0, 5)
+      next_at: f.next_at, stale: !f.paused && on && f.next_at != null && tkMs(f.next_at) < nowMs - 2 * 3600e3 })),
+    check: scItemsOf(db, kid, (i, f) => f.kind === 'assignments' && !f.checked && !f.removed_at && i.due_date != null && i.due_date >= today && !i.gone_at).sort(scByDue).slice(0, 5)
       .map((i) => ({ id: i.id, title: i.title, subject: i.subject, first_day: i.first_day, last_day: i.last_day, due_date: i.due_date })),
-    new: scItemsOf(db, kid, (i, f) => f.kind === 'assignments' && f.checked && !i.made_at && !i.hidden && !i.gone_at && i.due_date >= today
+    new: scItemsOf(db, kid, (i, f) => f.kind === 'assignments' && f.checked && !f.removed_at && !i.made_at && !i.hidden && !i.gone_at && i.due_date >= today
       && i.due_date <= tkAdd(today, 30)).sort(scByDue).slice(0, 50).map(pick),
-    hidden: scItemsOf(db, kid, (i, f) => f.kind === 'assignments' && !i.made_at && i.hidden && !i.gone_at && i.due_date >= today).sort(scByDue).map(pick),
+    hidden: scItemsOf(db, kid, (i, f) => f.kind === 'assignments' && !f.removed_at && !i.made_at && i.hidden && !i.gone_at && i.due_date >= today).sort(scByDue).map(pick),
     moved: scItemsOf(db, kid, (i) => { const a = assignment(i); return !!a && !i.gone_at && i.due_date !== a.due_date && !!i.applied && a.due_date === i.applied.due_date; })
       .map((i) => { const a = assignment(i); return { assignment_id: a.id, title: a.title, from: a.due_date, to: i.due_date, due_date: a.due_date }; })
       .sort(scByDue).map((x) => ({ assignment_id: x.assignment_id, title: x.title, from: x.from, to: x.to })),
@@ -1509,6 +1514,8 @@ function scCall(name, args, defaults, run) {
   };
 }
 const scNowMs = (db) => db.foodNow;
+// A link that can be read again (Resume; homework back on, the homework_kids_school_due trigger): due now, or its later next_at.
+const scDueNow = (db, nextAt) => (nextAt && tkMs(nextAt) > scNowMs(db) ? nextAt : fromMicros(scNowMs(db) * 1000));
 const scStatusOf = (db, kid) => scStatus(db, kid, scNowMs(db), hwToday(db));
 const schoolRpc = {
   school_feed_status: scCall('school_feed_status', ['p_kid'], [], (db, b, email) => {
@@ -1521,10 +1528,15 @@ const schoolRpc = {
     if (!db.homework_kids.some((k) => k.kid_id === b.p_kid)) throw new Raise('22023', 'Turn on homework for this kid first.');
     const old = db.school_feeds.find((f) => f.kid_id === b.p_kid && f.kind === b.p_kind) || null;
     if (b.p_url == null || !String(b.p_url).trim()) {
+      // Remove: the address and every item nobody made an assignment go; while items made assignments remain, the row
+      // stays for them, marked removed (not read, not on the card, its check answer taken back), else it goes too.
       if (old) {
-        db.school_feeds = db.school_feeds.filter((f) => f !== old);
-        db.school_items = db.school_items.filter((i) => i.feed_id !== old.id);
         SCHOOL_URLS.get(db).delete(old.id);
+        db.school_items = db.school_items.filter((i) => i.feed_id !== old.id || i.made_at);
+        if (db.school_items.some((i) => i.feed_id === old.id)) {
+          Object.assign(old, { removed_at: old.removed_at || fromMicros(scNowMs(db) * 1000), checked: false, paused: false, next_at: null, fails: 0,
+            last_stop: null, updated_by: email, updated_at: now() });
+        } else db.school_feeds = db.school_feeds.filter((f) => f !== old);
       }
       return null;
     }
@@ -1536,14 +1548,14 @@ const schoolRpc = {
     if (!f) {
       f = schoolFeedRow({ kid_id: b.p_kid, kind: b.p_kind, host, url_end: url.slice(-4), next_at: at, created_by: email, updated_by: email });
       db.school_feeds.push(f);
-    } else Object.assign(f, { host, url_end: url.slice(-4), next_at: at, fails: 0, last_stop: null, updated_by: email, updated_at: now() });
+    } else Object.assign(f, { host, url_end: url.slice(-4), next_at: at, fails: 0, last_stop: null, removed_at: null, updated_by: email, updated_at: now() });
     SCHOOL_URLS.get(db).set(f.id, url);
     return { id: f.id, kind: f.kind, host: f.host, url_end: f.url_end };
   }),
   check_school_feed: scCall('check_school_feed', ['p_feed', 'p_date_rule', 'p_date_shift'], [], (db, b, email) => {
     parentOnly(db, email);
     const f = scFeed(db, b.p_feed);
-    if (!f) throw new Raise('22023', "That school link isn't there any more.");
+    if (!f || f.removed_at) throw new Raise('22023', "That school link isn't there any more.");
     if (f.kind !== 'assignments') throw new Raise('22023', 'Only the Assignments link has dates to check.');
     if (!['start', 'end'].includes(b.p_date_rule) || ![-1, 0, 1].includes(b.p_date_shift)) {
       throw new Raise('22023', 'Choose the start or the end date, and a shift of -1, 0 or 1 day.');
@@ -1557,7 +1569,9 @@ const schoolRpc = {
     parentOnly(db, email);
     if (typeof b.p_paused !== 'boolean') throw new Raise('22023', 'Choose on or off.');
     const f = scFeed(db, b.p_feed);
-    if (!f) throw new Raise('22023', "That school link isn't there any more.");
+    if (!f || f.removed_at) throw new Raise('22023', "That school link isn't there any more.");
+    // Resume: due now (unless a backoff has it later), so "stale" counts from then.
+    if (f.paused && !b.p_paused) f.next_at = scDueNow(db, f.next_at);
     Object.assign(f, { paused: b.p_paused, updated_by: email, updated_at: now() });
     return null;
   }),
@@ -1587,7 +1601,7 @@ function schoolJob(db, email) {
   const nowMs = scNowMs(db);
   const at = fromMicros(nowMs * 1000);
   const tally = { read: 0, stored: 0, failed: 0, skipped: 0, items: 0 };
-  db.school_feeds.filter((f) => !f.paused && (!f.last_try_at || tkMs(f.last_try_at) < nowMs - 60e3)
+  db.school_feeds.filter((f) => !f.paused && !f.removed_at && (!f.last_try_at || tkMs(f.last_try_at) < nowMs - 60e3)
     && db.homework_kids.some((k) => k.kid_id === f.kid_id && k.active)).forEach((f) => {
     tally.read++;
     if (db.schoolRead) db.schoolRead(db, f);
