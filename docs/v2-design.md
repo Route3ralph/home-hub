@@ -28,6 +28,10 @@ This is the build contract for Home Hub v2. It replaces the first draft after fo
 - A Homework page (`#/homework`) for the parents; on a kid's My day, his homework in small steps, a focus timer, points and rewards; and a tutor link (`day.html?h=<token>`) that shows one kid's homework and nothing else. A later PR adds the AI planner (a `hub-jobs` change, no migration).
 - The build contract is `docs/v1.3-homework.md`. Its database part is migration `0005_homework.sql`, summarised in §10 below.
 
+**v1.3 — the school feed (the site and `hub-jobs` go live first; then the migration, after 0005, and `cron.sql` again)**
+- The school's Blackbaud calendar links (Assignments, Schedule, Games/Practices), copied by a parent and kept as secrets: `hub-jobs` reads them hourly; his assignments reach his My day as New from school, his schedule and games are busy time. A `hub-jobs` and `cron.sql` change, no new secret.
+- The build contract is `docs/v1.3-homework.md` §11 and §12. Its database part is migration `0006_homework_school.sql`, summarised in §11 below.
+
 Later: web push, Twilio SMS.
 
 ## 1. Item model — two kinds
@@ -206,7 +210,7 @@ day_note text   -- an event's note for this one day (event_changes.note), for wh
 `day_text(p_person uuid, p_day date) returns text` — the message for one person's day in their language (used by the Today page "Send their day" buttons and the digest; covered by SQL tests). Lines: timed events in order, all-day events, tasks due, then up to 3 late tasks ("+N more"). People are named by first name (`private.short_name`: the whole name only when another active person has the same first name): the person in charge's copy reads "Piano · with Jordan"; the copy for someone along reads "Piano · Taylor". Linked directory entries add their phone; a changed day's own note comes last. Never the event's or task's notes, never account numbers; private items read "Private item". (v1.2 adds the line of a meal the person is on, before the late tasks: §9.)
 
 ### Anonymous token functions (My day page; `grant execute to anon, authenticated`)
-A secret is the only key: the person's My day token (`people.day_token`) for fourteen of them, the confirmation secret (`people_confirm.token`) for `confirm_digest`, and a tutor link's token (`tutor_links.token`) for the tutor link's four. These nineteen are the only new functions anon can call (v1's `get_shared_project` is the other one): 0002 adds the first five, migration 0004 (v1.2, §9) the next three, for the helper's shopping list, and migration 0005 (v1.3, §10) the last eleven, seven for a kid's homework on his My day and four for the tutor link. A tutor token is never a My day token: the My day functions look up `people.day_token` only, and the tutor link's four `tutor_links.token` only.
+A secret is the only key: the person's My day token (`people.day_token`) for fifteen of them, the confirmation secret (`people_confirm.token`) for `confirm_digest`, and a tutor link's token (`tutor_links.token`) for the tutor link's four. These twenty are the only new functions anon can call (v1's `get_shared_project` is the other one): 0002 adds the first five, migration 0004 (v1.2, §9) the next three, for the helper's shopping list, migration 0005 (v1.3, §10) eleven, seven for a kid's homework on his My day and four for the tutor link, and migration 0006 (§11) the last, his New from school. A tutor token is never a My day token: the My day functions look up `people.day_token` only, and the tutor link's four `tutor_links.token` only.
 - `get_person_day(p_token text) returns jsonb` → `{person:{name, language, digest_enabled, email_confirmed}, today: date, days:[{day, items:[…]}], late:[…]}` for today and tomorrow; only that person's items (responsible or participant); item fields: kind, item_id, occurrence, day, end_day, title, all_day, start_time, end_time, time_label, location, contractor_name, contractor_phone, note (a changed day's own note), status, mine (a task they're in charge of). No notes, no other people's details; private items read "Private item". Returns null for an unknown token or inactive person. (v1.2 adds `meals` to a day that has any, and `list` for a helper; both are left out when empty: §9.)
 - `complete_by_token(p_token text, p_task_id uuid, p_occurrence date) returns uuid` (log id, for Undo) → only tasks where that person is responsible; a repeating task needs `p_occurrence` (a page left open overnight can't tick off the next date); otherwise the same rules as complete_task. Logged as done by "<name> (My day)".
 - `undo_by_token(p_token text, p_log_id uuid) returns uuid` (task id) → the toast's Undo on My day: only a `done` entry that person made on My day, on a task they're in charge of, that is still the task's latest entry, within 15 minutes.
@@ -226,6 +230,7 @@ A secret is the only key: the person's My day token (`people.day_token`) for fou
 - `tutor_assignment_by_token(p_token text, p_fields jsonb) returns jsonb` (v1.3) → adds or changes an assignment or lesson of the link's kid, and with `ai` `'undo'` or `'dismiss'` does that to its AI draft (as `homework_ai_draft`); any other is 42501 "That assignment isn't on this link.". A title that cleans to nothing is refused (22023), on a change too.
 - `tutor_plan_by_token(p_token text, p_assignment uuid, p_steps jsonb, p_rev int, p_give boolean default false) returns jsonb` (v1.3) → a plan saved from the link, given to him with `p_give`.
 - `tutor_step_by_token(p_token text, p_step uuid, p_action text, p_text text default null) returns jsonb` (v1.3) → checks a milestone (Not yet, and taking a check back within 15 minutes), and answers his question.
+- `school_item_by_token(p_token text, p_item uuid, p_action text, p_minutes int default null) returns jsonb` (v1.3, 0006) → his New from school: `'quick'` (`p_minutes` 5 to 60; the item becomes an assignment from school and Quick makes it tonight's one step, by `assignment_by_token`'s rules: "Plan this one with Pat." for one due 4 or more days out, and then nothing is made), `'with_tutor'` (Plan with Pat: an assignment from school with no plan, on the tutor's link) or `'hide'`. Only an item of his checked Assignments link still on the school site; any other is 42501 "That isn't on your list from school.". Counted as his writes; answers `{assignment_id}` and his view.
 Each v1.3 writer is counted (150 writes and 20 Starts a day for his link, 200 writes a day for a tutor link: P0001 "That's a lot for one day.") and answers with the view, so the page redraws without a second read (§10).
 Tokens and secrets are 32 hex characters; `rotate_day_token(p_person uuid)` (admin) replaces a My day token, and the old link stops working at once; `new_tutor_token(p_link uuid)` (admin, v1.3) replaces a tutor link's.
 
@@ -315,7 +320,7 @@ One Edge Function, `hub-jobs` (verify_jwt off; each action authorizes itself; `s
 2. Merge PR A, then PR B (site stays in v1 mode until step 3).
 3. Apply migration 0002 (site switches to v2 on next load).
 4. Deploy `hub-jobs` from main with verify_jwt false (`supabase/config.toml` pins it for the CLI; the dashboard and the MCP's `deploy_edge_function` need it turned off by hand). Secrets: `HUB_CRON_SECRET` (≥ 32 chars), `SITE_URL` (required: the site's address, for the links in the emails; without it every run stops with `stop: 'config'` and Preview answers 503), `RESEND_API_KEY` and `EMAIL_FROM` (required) and `EMAIL_FROM_NAME`, shared with `send-email`; and `HEALTHCHECK_URL`, which is optional. For v1.1, `GOOGLE_SA_JSON` (optional: the Google service-account key; without it the calendar job stops with `not_set_up` and the morning email is unchanged).
-5. Create the two Vault secrets by hand (`hub_cron_secret`, the same value as `HUB_CRON_SECRET`, and `hub_jobs_url`, the function's address), then run `cron.sql` (enables pg_cron/pg_net; refuses a missing or placeholder secret; idempotent). Run `cron.sql` again after a release that changes it: v1.1 adds the `hub-calendar` job.
+5. Create the two Vault secrets by hand (`hub_cron_secret`, the same value as `HUB_CRON_SECRET`, and `hub_jobs_url`, the function's address), then run `cron.sql` (enables pg_cron/pg_net; refuses a missing or placeholder secret; idempotent). Run `cron.sql` again after a release that changes it: v1.1 adds the `hub-calendar` job, and v1.3's school feed (migration 0006) the `hub-school` job.
 6. Smoke checks: no header → 401; preview → rendered JSON; Settings shows the last run; next morning `notification_log` has sent rows.
 7. Ops hardening: Auth email rate limit ≈ 6/hour; the signup hook stays on; Resend click/open tracking off.
 
@@ -840,3 +845,130 @@ New in private (revoked from public and anon; "nobody" means also from authentic
 - `private.scrub(p_text text, p_kid uuid)` returns text: invisible characters first, then links (with or without `https://`), emails, phone numbers, ids, titled names, the family's names (every person's, and each capitalized word of a name), the tutor links' labels (but not a label's class or role words) and the never-send words out, a phrase matched across line breaks, and `<` `>` replaced. STABLE. Nobody.
 - `private.ai_input(p_assignment uuid, p_kind text, p_request text, p_answers text[], p_from text)` returns jsonb `{fields, message}`: the AI's input built from the database, and the one user message, which is also the preview; `p_from` (`'tutor'` or `'parent'`) is the role the request is wrapped with, never a name. STABLE. Nobody.
 - `private.homework_kids_tidy()`, `private.assignments_tidy()`, `private.rewards_tidy()`, `private.tutor_links_tidy()` and `private.household_homework_check()`: the triggers above.
+
+## 11. v1.3: the school feed
+
+The build contract is `docs/v1.3-homework.md` (§11 and §12); this section lists what its migration, `supabase/migrations/0006_homework_school.sql`, adds to the database, so the docs check can hold the two together. Fresh install = `schema.sql`, then `0002` to `0006`. It is one transaction and additive (the v2 pages work the same on 5 and 6), every rule in §3 applies, and it seeds no rows: with no school link, every page, view, email and text is as on 5, and with links and items stored the email, the texts and My day still come out as on 4 (check 5d in `tests/db/run.sh`). It opens with guards, each of which changes nothing: without `hub_schema_version()` it raises "Home Hub v2 (migration 0002) isn't installed"; below 5, "Homework (migration 0005) isn't installed"; at 6 or more, "The school feed (migration 0006) is already installed"; with `school_feeds` there but the version set back to 5 (`docs/v1.3-homework.md` §16.5), "… set back to 5"; and unless `private.free_minutes`, `private.homework_view_kid`, `private.homework_view_tutor`, `private.homework_card`, `assignment_by_token` and `assignments_added_by_check` are as 0005 left them, "This database isn't as migration 0005 left it". It ends by making `hub_schema_version()` return 6. **`hub-jobs` and `cron.sql` change** (a `school` action, `school.ts` and `ical.ts`; a fifth job, `hub-school`; no new secret), so the site and `hub-jobs` go live first, then the owner applies 0006 and runs `cron.sql` again (`docs/v1.3-homework.md` §16.4). One new function for anon (§3 "Anonymous token functions"): a kid's New from school. **The address is a secret**: it is kept only in `private.school_feed_urls`, on which no API role (anon, authenticated, service_role) has any privilege; only `school_begin` (SECURITY DEFINER, service_role only) reads it, to hand it to `hub-jobs`; nothing answers or logs it, and pages see the host and its last 4 characters.
+
+### Tables
+```sql
+-- A kid's school calendar link (Assignments, Schedule or Games/Practices): its settings and status.
+-- The address itself is in private.school_feed_urls. Written only through the functions below.
+create table public.school_feeds (
+  id           uuid primary key default gen_random_uuid(),
+  kid_id       uuid not null references public.homework_kids (kid_id) on delete cascade,
+  kind         text not null check (kind in ('assignments', 'schedule', 'games')),
+  host         text not null check (char_length(host) between 1 and 253),   -- "<school>.myschoolapp.com", for the status line
+  url_end      text not null check (char_length(url_end) = 4),               -- the address's last 4 characters: "…a1b2"
+  date_rule    text not null default 'end' check (date_rule in ('start', 'end')),   -- an item's due date: its first or last day
+  date_shift   int not null default 0 check (date_shift between -1 and 1),          -- … moved this many days
+  checked      boolean not null default false,  -- a parent answered the first-import check (Assignments only)
+  paused       boolean not null default false,  -- not read; its items stay
+  next_at      timestamptz,                     -- read when this has passed (now, for a new or replaced link)
+  last_try_at  timestamptz,
+  last_ok_at   timestamptz,
+  last_count   int,                             -- items the last good read kept
+  last_repeats int,                             -- repeating events (RRULE or RDATE) the last good read saw and didn't expand
+  last_stop    text check (last_stop in ('bad_link', 'redirect', 'unreachable', 'timeout', 'too_big', 'refused', 'gone',
+                                         'down', 'http', 'sign_in', 'not_calendar', 'empty', 'too_many', 'error')),
+                                                -- the last read's fixed code; null when it went well
+  fails        int not null default 0,          -- failed reads in a row (the backoff)
+  created_at   timestamptz not null default now(),
+  created_by   text,
+  updated_at   timestamptz not null default now(),
+  updated_by   text,
+  unique (kid_id, kind)
+);
+
+-- What the links hold that the hub uses. An Assignments item becomes an assignment (added_by 'school')
+-- when he taps Quick or Plan with Pat, or a parent taps Add; Schedule and Games items are busy time.
+create table public.school_items (
+  id            uuid primary key default gen_random_uuid(),
+  feed_id       uuid not null references public.school_feeds (id) on delete cascade,
+  key           text not null check (key ~ '^[0-9a-f]{32}$'),
+                -- md5 of 'uid:' and its UID (with its start, for schedule and games), or of 'title:', its title
+                -- and its first day (its start) without one
+  has_uid       boolean not null,
+  title         text not null check (char_length(title) between 1 and 120),
+  subject       text check (subject is null or char_length(subject) between 1 and 40),         -- the class, when the title names it
+  details       text check (details is null or char_length(details) between 1 and 4000),      -- an assignment's description, as the school wrote it
+  first_day     date,                           -- an assignment's days (an all-day end is moved back a day)
+  last_day      date,
+  due_date      date,                           -- first_day or last_day (the link's date_rule) + date_shift
+  starts_at     timestamptz,                    -- schedule and games
+  ends_at       timestamptz,
+  assignment_id uuid references public.assignments (id) on delete set null,   -- the assignment made from it
+  made_at       timestamptz,                    -- when it was made one: it is never new again
+  applied       jsonb,                          -- what the feed last wrote into that assignment: {title, subject, due_date, details}
+  hidden        boolean not null default false, -- he hid it (a parent can show it again)
+  first_seen_at timestamptz not null,
+  last_seen_at  timestamptz not null,
+  missing       int not null default 0,         -- good, non-empty reads in a row it was absent from (inside the window)
+  gone_at       timestamptz,                    -- absent from two: no longer on the school site (marked, never deleted)
+  unique (feed_id, key),
+  check ((due_date is null) <> (starts_at is null)),
+  check ((due_date is null) = (first_day is null) and (first_day is null) = (last_day is null)),
+  check (last_day is null or last_day >= first_day),
+  check (ends_at is null or ends_at >= starts_at),
+  check ((made_at is null) = (applied is null))
+);
+
+-- The addresses: passwords, in effect. Only public.school_begin reads them.
+create table private.school_feed_urls (
+  feed_id uuid primary key references public.school_feeds (id) on delete cascade,
+  url     text not null check (char_length(url) between 20 and 500)
+);
+
+-- The read job's lease: one row.
+create table private.school_sync (
+  id          boolean primary key default true check (id),
+  run_id      uuid,
+  lease_until timestamptz,
+  last_run_at timestamptz
+);
+create index school_items_feed_due on public.school_items (feed_id, due_date);
+create index school_items_feed_start on public.school_items (feed_id, starts_at);
+create index school_items_assignment on public.school_items (assignment_id);
+
+-- An assignment made from a school item says so.
+alter table public.assignments drop constraint assignments_added_by_check;
+alter table public.assignments add constraint assignments_added_by_check check (added_by in ('family', 'tutor', 'kid', 'school'));
+```
+
+- Row-level security on all four. `school_feeds` and `school_items`: members select (policies "Family can see school links" and "Family can see school items"); no write grant (the functions write). `private.school_feed_urls` and `private.school_sync`: no policies, and `revoke all … from public, anon, authenticated, service_role`. service_role keeps the defaults on `school_feeds` and `school_items` (the job's functions are definers anyway).
+- `school_feeds` is stamped by `private.stamp()` (`school_feeds_stamp` on insert; `school_feeds_stamp_change` on an update that changes more than the read's status: `next_at`, `last_try_at`, `last_ok_at`, `last_count`, `last_repeats`, `last_stop` and `fails`), so a read never changes `updated_at`.
+- `assignments.added_by` gains `'school'`: an assignment made from a school item (Quick, Plan with Pat, a parent's Add). The views pass it through, so the pages can say "from school".
+
+### Functions
+Page read (`authenticated`; SECURITY DEFINER, so the status card can say when the job last ran; null for anyone who isn't a member):
+- `school_feed_status(p_kid uuid)` returns jsonb: `{kid_id, last_run_at, feeds: [{id, kind, host, url_end, checked, date_rule, date_shift, paused, last_try_at, last_ok_at, last_count, last_repeats, last_stop, fails, next_at, stale}], check, new, hidden, moved, gone}`: each link's status (`stale`: due for over 2 hours and not read, so the job isn't running), the first-import check (an Assignments link not checked yet: its next 5 items), what is new for him, what he hid, planned assignments whose school date moved, and open ones no longer on the school site. Never the address.
+
+Signed-in actions (`authenticated` only; SECURITY DEFINER; each raises 42501 "Only a parent can change homework." unless `private.is_admin()`):
+- `set_school_feed(p_kid uuid, p_kind text, p_url text)` returns jsonb `{id, kind, host, url_end}`: Add link and Replace (`p_url` an address that passes `private.school_url`, else 22023 "That isn't a school calendar link. …", the same words for every way it can fail), or Remove (`p_url` null or empty: answers null, and deletes the link, its address and its items; assignments made from it stay). `p_kind` `'assignments'`, `'schedule'` or `'games'`. A new or replaced link is due to be read at once.
+- `check_school_feed(p_feed uuid, p_date_rule text, p_date_shift int)` returns jsonb (the status card): the first-import check on an Assignments link: an item's due date is its first (`'start'`) or last (`'end'`) day, moved −1 to 1 days; every item's due date follows, and so do the assignments made from them that nobody changed.
+- `pause_school_feed(p_feed uuid, p_paused boolean)` returns void: a paused link isn't read; its items stay.
+- `school_item_action(p_item uuid, p_action text)` returns jsonb `{assignment_id}` and the status card: `'add'` (make an Assignments item an assignment from school now), `'hide'` and `'show'` (off and back on his New from school).
+
+My day (`anon`, `authenticated`; SECURITY DEFINER): `school_item_by_token(p_token text, p_item uuid, p_action text, p_minutes int default null)` (its signature in §3 "Anonymous token functions"). It starts from `private.homework_kid_by_token(p_token)`, as his seven do.
+
+`hub-jobs` (`service_role` only; SECURITY DEFINER):
+- `school_begin(p_force boolean default false)` returns jsonb `{go, stop, run_id, today, tz, feeds: [{feed_id, kind, url}]}`: takes the read job's lease (5 minutes; `{go: false, stop: 'busy'}` while another run holds it) and hands over at most 10 links that are due (next_at passed, not paused, the kid active with homework on; `p_force`, a parent's Check now: every such link not read in the last minute). The only reader of the addresses.
+- `school_store(p_run uuid, p_feed uuid, p_items jsonb, p_stop text, p_repeats int default 0)` returns jsonb `{stored, stop, kept, added, missing, gone}`: only while `p_run` holds the lease (else `{stored: false, stop: 'late'}`). A failed read (`p_stop`, a fixed code; anything else is stored as `'error'`) changes only the link's status: one more failure, and the next read 1, 2, 4, then 8 hours on. A good one stores the items: what the hub uses (assignments due from today − 14 to today + 120, schedule and games items from today to today + 55), at most 400 or 2,000 (`'too_many'`, nothing applied); a read with nothing in it when 3 or more items were there is `'empty'` and not applied; an item without a UID whose date moved keeps its row; an item absent from two good reads in a row while inside the window is gone (marked; a busy item is deleted); past items nobody made an assignment are let go; then the school's changes reach the assignments made from them (`private.school_apply`). Only fixed codes are stored.
+- `school_finish(p_run uuid)` returns void: the lease is free, and the run is noted.
+
+Replaced, with the same signatures (`create or replace`, so they keep their grants):
+- `hub_schema_version()` returns 6.
+- `private.free_minutes(p_kid uuid, p_from date, p_to date, p_except uuid)`: 0005's body, plus his school schedule and games items (timed, not gone) as busy blocks, on their household day (the lines are marked "0006"). Placement, the views' bars and `homework_week` follow.
+- `private.homework_card(p_kid uuid, p_lang text)`: 0005's, plus `from_school`, how many items are new from school, left out when none.
+
+Wrapped (0005's bodies renamed, unchanged): `private.homework_view_kid` is now `private.homework_view_kid_v5`, and `private.homework_view_tutor` is now `private.homework_view_tutor_v5`; the new `private.homework_view_kid(p_kid uuid, p_lang text)` and `private.homework_view_tutor(p_link uuid, p_assignment uuid, p_part text)` call them and add the school's marks (`school: {gone, moved_to}`) to each assignment made from school, and his view `from_school` (his New from school) once he has a checked Assignments link. Without a school link both answer exactly as 0005's. As for the `_v3` bodies, a later change to a wrapped function replaces the wrapper and its `_v5` body together. Nobody may call either.
+
+New in private (revoked from public, anon and authenticated; only the definer functions above call them):
+- `private.school_host_suffix()` returns text: `'.myschoolapp.com'`, the hosts a link may name (the database tests replace it). IMMUTABLE.
+- `private.school_url(p_url text)` returns text: the address check (webcal:// to https://; https only, port 443, no user info, the host suffix, the path `/podium/feed/iCal.aspx`, a z value, at most 500 characters), as the link is kept, or null. STABLE.
+- `private.safe_instant(s text)` returns timestamptz: an ISO 8601 instant with Z or an offset, or null. IMMUTABLE.
+- `private.school_rows(p_kind text, p_items jsonb, p_rule text, p_shift int, p_today date)` returns table: one read's items cleaned, keyed and inside the window, a repeated key's last one. STABLE.
+- `private.school_assignment(p_item uuid, p_who text)` returns uuid: an assignment from a school item, noted on the item.
+- `private.school_apply(p_feed uuid)` returns int: the school's changes into the open assignments made from a link's items, a field at a time, never one a person changed.
+- `private.school_marks(p_kid uuid)` returns jsonb: the marks above, by assignment id. STABLE.
+- `private.school_new(p_kid uuid)` returns jsonb: his New from school (at most 20, due from today to today + 30), or null with no checked Assignments link. STABLE.

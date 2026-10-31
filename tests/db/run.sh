@@ -6,7 +6,8 @@
 # migration 0003 leaves the email, day_text and My day exactly as 0002 made them while no Google
 # calendar is set up (same_output.sql), that migration 0004 leaves every event on the wall as
 # 0003 made it while no meal is planned (step 5c), and that migration 0005 leaves the email,
-# day_text and My day exactly as 0004 made them while homework is off for everyone (step 5d).
+# day_text and My day exactly as 0004 made them while homework is off for everyone (step 5d), and
+# migration 0006 too, with school links and their items in that household (step 5d).
 # Prints one "PASS  name" or "FAIL  name  (detail)" line per check, then the totals,
 # and exits non-zero if anything failed.
 # Needs the PostgreSQL 16 server binaries (PG_BIN overrides where they are); cluster.sh starts
@@ -103,6 +104,27 @@ got=$(quiet -d hub_set_back_4 -A -t -c "select public.hub_schema_version()")
 if [[ $out == *"set back to 4"* && $got == "4" && $(catalog) == "$before" ]]; then
   report "PASS  migration 0005 on a database set back to 4: says so (\"set back to 4\"), and changes nothing"
 else report "FAIL  migration 0005 on a database set back to 4  (${out:0:200}; version: $got)"; fi
+# 0006 (the school feed) refuses to run twice, and on a v1 database.
+out=$(quiet -d hub_again -f supabase/migrations/0006_homework_school.sql 2>&1)
+if [[ $out == *"already installed"* ]]; then report "PASS  migration 0006 refuses to run twice"
+else report "FAIL  migration 0006 refuses to run twice  (${out:0:200})"; fi
+out=$(quiet -d hub_v1_again -f supabase/migrations/0006_homework_school.sql 2>&1)
+if [[ $out == *"isn't installed"* ]] && [[ -z $(quiet -d hub_v1_again -A -t -c "select to_regclass('public.school_feeds')") ]]; then
+  report "PASS  migration 0006 refuses to run on a v1 database (0002 isn't installed), and changes nothing"
+else report "FAIL  migration 0006 refuses to run on a v1 database  (${out:0:200})"; fi
+# A database where the owner set the school feed back as docs/v1.3-homework.md §16.5 says (hub_schema_version()
+# set back to 5): running 0006 again says so, and changes nothing.
+sql -d postgres -c 'create database hub_set_back_5 template hub'
+quiet -d hub_set_back_5 >/dev/null <<'SQL'
+create or replace function public.hub_schema_version() returns int language sql immutable set search_path = '' as $$ select 5 $$;
+SQL
+catalog_of() { quiet -d "$1" -A -t -c "select count(*) || ' ' || md5(string_agg(p.oid::regprocedure::text || md5(p.prosrc), ',' order by p.oid::regprocedure::text)) from pg_proc p where p.pronamespace in ('public'::regnamespace, 'private'::regnamespace)"; }
+before=$(catalog_of hub_set_back_5)
+out=$(quiet -d hub_set_back_5 -f supabase/migrations/0006_homework_school.sql 2>&1)
+got=$(quiet -d hub_set_back_5 -A -t -c "select public.hub_schema_version()")
+if [[ $out == *"set back to 5"* && $got == "5" && $(catalog_of hub_set_back_5) == "$before" ]]; then
+  report "PASS  migration 0006 on a database set back to 5: says so (\"set back to 5\"), and changes nothing"
+else report "FAIL  migration 0006 on a database set back to 5  (${out:0:200}; version: $got)"; fi
 
 # The database with migration 0002 only, as it is live before 0003 (steps 5 and 5b).
 sql -d postgres -c 'create database hub_02 template hub_v1'
@@ -127,6 +149,18 @@ if [[ $out == *"(migration 0004) isn't installed"* ]] && [[ -z $(quiet -d hub_03
    && [[ $(quiet -d hub_03_again -A -t -c "select public.hub_schema_version()") == 3 ]]; then
   report "PASS  migration 0005 refuses to run without 0004 (a database at 0003), and changes nothing"
 else report "FAIL  migration 0005 refuses to run without 0004  (${out:0:200})"; fi
+# Migration 0006 refuses a database without 0005: one at 0003 and one at 0004 ("Homework (migration 0005) isn't installed").
+out=$(quiet -d hub_03_again -f supabase/migrations/0006_homework_school.sql 2>&1)
+if [[ $out == *"(migration 0005) isn't installed"* ]] && [[ -z $(quiet -d hub_03_again -A -t -c "select to_regclass('public.school_feeds')") ]]; then
+  report "PASS  migration 0006 refuses to run on a database at 0003, and changes nothing"
+else report "FAIL  migration 0006 refuses to run on a database at 0003  (${out:0:200})"; fi
+sql -d postgres -c 'create database hub_04_again template hub_03_again'
+quiet -d hub_04_again -f supabase/migrations/0004_meals_and_shopping.sql >/dev/null 2>&1
+out=$(quiet -d hub_04_again -f supabase/migrations/0006_homework_school.sql 2>&1)
+if [[ $out == *"(migration 0005) isn't installed"* ]] && [[ -z $(quiet -d hub_04_again -A -t -c "select to_regclass('public.school_feeds')") ]] \
+   && [[ $(quiet -d hub_04_again -A -t -c "select public.hub_schema_version()") == 4 ]]; then
+  report "PASS  migration 0006 refuses to run without 0005 (a database at 0004), and changes nothing"
+else report "FAIL  migration 0006 refuses to run without 0005  (${out:0:200})"; fi
 
 # 5. preflight.sql's promise, "nothing migration 0002 creates exists yet", covers everything the
 #    migration creates that a live database could already have under the same name (which would
@@ -247,9 +281,10 @@ SQL
 
   # 5d. Migration 0005 replaces get_person_day (the homework card). With homework off for everyone, the
   #     email, day_text and My day must come out exactly as 0004 made them: the same household at 0004
-  #     (hub_04), and a copy that gets 0005 and then homework data for a kid whose homework is off (an
-  #     assignment and its plan, a block, points, a reward and an ask, a tutor link, and one of her
-  #     events linked as homework time). Compared as in 5b, with nothing stripped.
+  #     (hub_04), and a copy that gets 0005 and later and then homework data for a kid whose homework is
+  #     off (an assignment and its plan, a block, points, a reward and an ask, a tutor link, and one of
+  #     her events linked as homework time; from 0006 a checked Assignments link with an item and a
+  #     Schedule link with a class, as busy time). Compared as in 5b, with nothing stripped.
   sql -d postgres -c 'create database hub_04 template hub_02'
   ok=1
   for m in supabase/migrations/*.sql; do
@@ -280,6 +315,17 @@ select id, '2026-10-30 21:00+00', '2026-10-30', 'given', 30, 'A good start', 'al
 insert into public.rewards (kid_id, title, cost) select id, 'Choose Friday''s dinner', 15 from public.people where name = 'Taylor';
 insert into public.reward_asks (kid_id, reward_id, title, cost, asked_at) select kid_id, id, title, cost, '2026-10-31 15:00+00' from public.rewards;
 update public.household set homework_never_send = '{"Example Academy"}', homework_ai = true;
+insert into public.school_feeds (id, kid_id, kind, host, url_end, checked)
+select 'f0000000-0000-4000-8000-000000000001', id, 'assignments', 'academy.school.example', 'a1b2', true from public.people where name = 'Taylor';
+insert into public.school_feeds (id, kid_id, kind, host, url_end)
+select 'f0000000-0000-4000-8000-000000000002', id, 'schedule', 'academy.school.example', 'c3d4' from public.people where name = 'Taylor';
+insert into private.school_feed_urls (feed_id, url) values
+  ('f0000000-0000-4000-8000-000000000001', 'https://academy.school.example/podium/feed/iCal.aspx?z=Q1w2E3r4T5y6a1b2'),
+  ('f0000000-0000-4000-8000-000000000002', 'https://academy.school.example/podium/feed/iCal.aspx?z=S1s2S3s4S5s6c3d4');
+insert into public.school_items (feed_id, key, has_uid, title, subject, first_day, last_day, due_date, first_seen_at, last_seen_at)
+values ('f0000000-0000-4000-8000-000000000001', md5('uid:a-1'), true, 'Lab report', 'Biology', '2026-11-05', '2026-11-05', '2026-11-05', now(), now());
+insert into public.school_items (feed_id, key, has_uid, title, starts_at, ends_at, first_seen_at, last_seen_at)
+values ('f0000000-0000-4000-8000-000000000002', md5('uid:s-1'), true, 'Orchestra rehearsal', '2026-11-03 21:00+00', '2026-11-03 21:45+00', now(), now());
 SQL
   then report "FAIL  same output at 0005: loading homework data  ($(tail -n 1 "$dir/load.log"))"; ok=0; fi
   same_output hub_04 >"$dir/same_04.txt" 2>&1

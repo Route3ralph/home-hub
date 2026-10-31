@@ -1,4 +1,4 @@
-// hub-jobs: Home Hub's morning email and its Google Calendar copy. One Edge Function, deployed
+// hub-jobs: Home Hub's morning email, its Google Calendar copy and the school feed. One Edge Function, deployed
 // with verify_jwt off; each action checks who is asking itself. Kept free of outside imports so it
 // can be tested in Node; index.ts wires it up. (send-email is a separate function, unchanged.)
 //
@@ -23,6 +23,10 @@
 //   calendar_test  admins: { calendar_id } → checks one calendar in Google (calendar.ts).
 //            Both answer 503 {stop: 'no_schema'} until migration 0003 is applied. The body is ignored
 //            except for action and calendar_id.
+//   school   pg_cron (supabase/cron.sql) every hour at minute 23 with x-hub-cron, or a parent's Check now
+//            (their own sign-in; it reads every link not read in the last minute): reads the school's
+//            Blackbaud calendar links (school.ts, ical.ts; docs/v1.3-homework.md §11.3). Answers 503
+//            {stop: 'no_schema'} until migration 0006 is applied. The body is ignored except for action.
 //
 // Secrets (Supabase dashboard → Edge Functions → Secrets):
 //   HUB_CRON_SECRET  at least 32 random characters; the same value as the Vault secret hub_cron_secret
@@ -30,6 +34,7 @@
 //   RESEND_API_KEY, EMAIL_FROM, EMAIL_FROM_NAME (optional)   as for send-email
 //   HEALTHCHECK_URL  optional, e.g. a healthchecks.io ping URL (it must also answer at <url>/fail)
 //   GOOGLE_SA_JSON   optional: the Google service-account key file, for the calendar (read in calendar.ts)
+// The school feed needs no secret of its own: the links are in the database (private.school_feed_urls).
 // Supabase provides SUPABASE_URL, the publishable key and the secret (service-role) key.
 
 import { renderConfirm, renderDigest, siteBase, confirmUrl } from './render.ts';
@@ -37,6 +42,7 @@ import type { Digest, Email } from './render.ts';
 import { CORS, DETAIL_MAX, json, message, oneLine, sameSecret, isUuid } from './util.ts';
 import type { Db, Deps } from './util.ts';
 import { runCalendar, testCalendar } from './calendar.ts';
+import { runSchool } from './school.ts';
 
 // What the tests and index.ts import from here.
 export { CORS, sameSecret };
@@ -135,7 +141,8 @@ export async function handle(req: Request, deps: Deps): Promise<Response> {
     return action === 'preview' ? preview(body, deps) : status(userDb, deps);
   }
   if (action === 'calendar' || action === 'calendar_test') return calendar(req, action, body, deps);
-  return json(400, { error: 'Unknown action. Use digest, preview, status, calendar or calendar_test.' });
+  if (action === 'school') return school(req, deps);
+  return json(400, { error: 'Unknown action. Use digest, preview, status, calendar, calendar_test or school.' });
 }
 
 // ---------------------------------------------------------------------
@@ -163,6 +170,33 @@ async function calendar(req: Request, action: 'calendar' | 'calendar_test', body
     return json(503, { error: 'The function has no Supabase service key (SUPABASE_URL and SUPABASE_SECRET_KEYS).' });
   }
   return action === 'calendar' ? runCalendar(deps, { force }) : testCalendar(body, deps);
+}
+
+// ---------------------------------------------------------------------
+// school: who may ask (the work is in school.ts)
+// pg_cron's x-hub-cron header (compared in constant time, as for digest), or a signed-in admin, whose
+// run is Check now and reads every link not read in the last minute.
+// ---------------------------------------------------------------------
+async function school(req: Request, deps: Deps): Promise<Response> {
+  const given = (req.headers.get('x-hub-cron') || '').trim();
+  let force = false;
+  if (given) {
+    const secret = (deps.env('HUB_CRON_SECRET') || '').trim();
+    if (secret.length < MIN_SECRET) {
+      return json(503, { error: `The school feed is not set up: HUB_CRON_SECRET must be at least ${MIN_SECRET} characters.` });
+    }
+    if (!sameSecret(given, secret)) return json(401, { error: 'Not allowed.' });
+  } else {
+    const authorization = req.headers.get('Authorization') || '';
+    if (!/^Bearer\s+\S+/.test(authorization)) return json(401, { error: 'Not allowed.' });
+    const { data: me, error } = await deps.user(authorization).rpc('whoami');
+    if (error || !me || me.role !== 'admin') return json(403, { error: 'Only family admins can do this.' });
+    force = true;
+  }
+  if (!deps.env('SUPABASE_URL') || !serviceKey(deps.env)) {
+    return json(503, { error: 'The function has no Supabase service key (SUPABASE_URL and SUPABASE_SECRET_KEYS).' });
+  }
+  return runSchool(deps, { force });
 }
 
 // ---------------------------------------------------------------------
