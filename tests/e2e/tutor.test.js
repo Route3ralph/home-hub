@@ -694,6 +694,23 @@ async function tokenRpcs(page, db) {
       && ch.rows[2].title === 'Revisar y entregar' && ch.rows[0].sub === '3 pasos · 50 min', JSON.stringify(ch && [ch.label, ch.rows.map((r) => [r.title, r.sub])]));
     await page.context().close();
   }
+  {
+    // A class name of 38 characters (the school's feed and the form allow 40): at 1280px it wraps inside the name column,
+    // never into the days.
+    const long = tlDb();
+    long.assignments.find((a) => a.id === T.essay).subject = 'English Language Arts 7 Honors Section';
+    ({ page, db } = await open({ label: 'pat-timeline-long-class', path: `/day.html?h=${PAT}`, db: long }));
+    await page.waitForSelector(TL);
+    const spill = await page.evaluate((sel) => Array.from(document.querySelectorAll(`${sel} .plan-tl-row`)).map((r) => {
+      const right = r.querySelector('.plan-tl-name').getBoundingClientRect().right;
+      const ends = Array.from(r.querySelectorAll('.plan-tl-sub > span')).flatMap((x) => Array.from(x.getClientRects()).map((b) => b.right));
+      return { id: r.dataset.id, right, over: ends.filter((x) => x > right + 0.5) };
+    }), TL);
+    check('a class name of 38 characters at 1280px: it wraps inside the name column (no part of any row\'s line runs into the days)',
+      spill.length === 7 && spill.every((r) => !r.over.length) && (await text(page, `${TL} .plan-tl-row[data-id="${T.essay}"] .plan-tl-sub`)).startsWith('English Language Arts 7 Honors Section'),
+      JSON.stringify(spill.find((r) => r.id === T.essay)));
+    await page.context().close();
+  }
   // Phones and desktops, light and dark: no sideways page scroll (a timeline wider than its box scrolls inside it).
   for (const [w, ctxOpts] of [[390, { viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true }], [1280, { viewport: { width: 1280, height: 900 } }]]) {
     for (const scheme of ['light', 'dark']) {
@@ -717,6 +734,26 @@ async function tokenRpcs(page, db) {
       await page.evaluate(() => { if (document.activeElement) document.activeElement.blur(); window.scrollTo(0, 0); });
       await page.locator('.plan-tutor-a [data-ref="chart"]').screenshot({ path: `${TL_SHOTS}tutor-chart-${w}-${scheme}.png` });
       await page.screenshot({ path: `${TL_SHOTS}tutor-assignment-${w}-${scheme}.png`, fullPage: true });
+      // The cell model: 33 days from today, its steps from Nov 23. The chart opens on them (the day before the first), its
+      // rows' names still in view, and its box scrolls by keyboard.
+      await page.evaluate((id) => { location.hash = `#a/${id}`; }, T.cell);
+      await until(async () => (await text(page, '.plan-tutor-a .plan-head h1')) === 'Model of a cell' && !!(await page.$(CHART)), 4000);
+      const cell = await page.evaluate((sel) => {
+        const b = document.querySelector(`${sel} .plan-tl-scroll`);
+        const r = b.getBoundingClientRect();
+        const names = Array.from(b.querySelectorAll('.plan-tl-row .plan-tl-name'));
+        const wide = names.length && names[0].getBoundingClientRect().bottom > b.querySelector('.plan-tl-row .plan-tl-track').getBoundingClientRect().top + 1;
+        const from = wide ? names[0].getBoundingClientRect().right : r.left;
+        const inside = (el) => { const x = el.getBoundingClientRect(); return x.left >= from - 0.5 && x.right <= r.right + 0.5; };
+        return { wider: b.scrollWidth > b.clientWidth, at: b.scrollLeft, steps: Array.from(b.querySelectorAll('.plan-tl-step')).map(inside), due: inside(b.querySelector('.plan-tl-hday.is-due')),
+          names: names.every((n) => { const x = n.getBoundingClientRect(); return x.left >= r.left - 0.5 && x.left < r.right; }), tab: b.getAttribute('tabindex'), role: b.getAttribute('role'),
+          label: b.getAttribute('aria-label') };
+      }, CHART);
+      check(`Pat's link ${w}px (${scheme}): the cell model's chart (Mon Nov 2 to Fri Dec 4) opens on its steps: all 3 and the due day in view, the rows' names too; its box scrolls by keyboard`,
+        cell.steps.length === 3 && cell.steps.every(Boolean) && cell.due && cell.names && cell.tab === '0' && cell.role === 'region' && cell.label === 'Plan by day, Mon Nov 2 to Fri Dec 4'
+        && (w > 540 || (cell.wider && cell.at > 0)) && await sideOk(page), JSON.stringify(cell));
+      await page.evaluate(() => { if (document.activeElement) document.activeElement.blur(); window.scrollTo(0, 0); });
+      await page.locator('.plan-tutor-a [data-ref="chart"]').screenshot({ path: `${TL_SHOTS}tutor-chart-cell-${w}-${scheme}.png` });
       await page.context().close();
     }
   }

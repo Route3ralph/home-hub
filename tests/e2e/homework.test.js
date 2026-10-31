@@ -1535,7 +1535,15 @@ const emailOf = (req) => {
     check('the lesson without a plan: "no plan yet", from today to its do-by day; the history timeline 1 of 4 with its checked milestone (before today) not drawn',
       les.bar === '1 / 6' && les.fill === null && les.due === '5' && les.sub === 'Math · no plan yet · do by Mon Nov 9' && hist.bar === '1 / 8' && hist.fill === '25%' && !hist.ms.length
       && hist.due === '7' && hist.sub === 'History · 1 of 4 · due Wed Nov 11', JSON.stringify([les, hist]));
-    check('the timeline is read from what the page already reads (no other request)', !log.some((l) => /rpc\/(homework_by_token|tutor_view_by_token)/.test(l)), JSON.stringify(log.slice(-5)));
+    // No request of its own: the steps of every assignment in the page's one batched read, no request (REST or RPC) that
+    // names one open assignment, and no token function.
+    const OPEN = [BOOKS, MATH, FRACTIONS, HIST, SCI, ESSAY, CELL];
+    const stepReads = log.filter((l) => l.startsWith('GET /rest/v1/homework_steps?'));
+    const perOne = log.filter((l) => OPEN.some((id) => l.includes(`eq.${id}`)))
+      .concat((db.rpcCalls || []).filter((c) => OPEN.some((id) => JSON.stringify(c.body || null).includes(id))).map((c) => `rpc/${c.name}`));
+    check('the timeline is read from what the page already reads (no other request): the steps in one read for every assignment, no request for one of them, no token function',
+      stepReads.length === 1 && stepReads[0].includes('assignment_id=in.') && !perOne.length && !log.some((l) => /rpc\/(homework_by_token|tutor_view_by_token)/.test(l)),
+      JSON.stringify({ stepReads: stepReads.length, perOne: perOne.slice(0, 3) }));
     // A row's link opens the assignment, with its chart above the editor.
     await page.click(`${TL} .plan-tl-row[data-id="${ESSAY}"] a.plan-tl-name`);
     await until(page, (id) => location.hash === `#/homework/${id}` && !!document.querySelector('.hw-a[data-id]'), 4000, ESSAY);
@@ -1575,6 +1583,23 @@ const emailOf = (req) => {
     await page.context().close();
   }
   {
+    // A class name of 38 characters (the school's feed and the form allow 40): at 1280px it wraps inside the name column,
+    // never into the days.
+    const long = timelineDb();
+    long.assignments.find((a) => a.id === ESSAY).subject = 'English Language Arts 7 Honors Section';
+    ({ page } = await open({ label: 'timeline-long-class', db: long }));
+    const spill = await page.evaluate((sel) => Array.from(document.querySelectorAll(`${sel} .plan-tl-row`)).map((r) => {
+      const right = r.querySelector('.plan-tl-name').getBoundingClientRect().right;
+      const ends = Array.from(r.querySelectorAll('.plan-tl-sub > span')).flatMap((x) => Array.from(x.getClientRects()).map((b) => b.right));
+      return { id: r.dataset.id, right, over: ends.filter((x) => x > right + 0.5) };
+    }), TL);
+    const essayRow = spill.find((r) => r.id === ESSAY) || {};
+    check('a class name of 38 characters at 1280px: it wraps inside the name column (no part of any row\'s line runs into the days)',
+      spill.length === 7 && spill.every((r) => !r.over.length) && (await page.$eval(`${TL} .plan-tl-row[data-id="${ESSAY}"] .plan-tl-sub`, (e) => e.textContent)).startsWith('English Language Arts 7 Honors Section'),
+      JSON.stringify(essayRow));
+    await page.context().close();
+  }
+  {
     // Nothing open: no Next 3 weeks at all.
     const none = fullDb();
     none.assignments.filter((a) => a.status === 'open').forEach((a) => Object.assign(a, { status: 'done', done_at: at(TODAY, '10:00') }));
@@ -1604,6 +1629,17 @@ const emailOf = (req) => {
       const box = await page.evaluate((sel) => { const b = document.querySelector(`${sel} .plan-tl-scroll`); return b ? { sw: b.scrollWidth, cw: b.clientWidth, ox: getComputedStyle(b).overflowX } : null; }, CHART);
       check(`timelines ${w}px (${scheme}): the essay's chart with no sideways page scroll (it scrolls inside its own box when wider)`, await noSideScroll(page) && !!box
         && (box.sw <= box.cw + 1 || box.ox === 'auto'), JSON.stringify(box));
+      // It opens on what's next: its due day (Fri Nov 20) and every step in view, though 16 days are wider than a phone's box;
+      // the box scrolls by keyboard.
+      const seen = await page.evaluate((sel) => {
+        const b = document.querySelector(`${sel} .plan-tl-scroll`);
+        const r = b.getBoundingClientRect();
+        const inside = (el) => { const x = el.getBoundingClientRect(); return x.left >= r.left - 0.5 && x.right <= r.right + 0.5; };
+        return { due: inside(b.querySelector('.plan-tl-hday.is-due')), steps: Array.from(b.querySelectorAll('.plan-tl-step')).every(inside), at: b.scrollLeft,
+          tab: b.getAttribute('tabindex'), label: b.getAttribute('aria-label') };
+      }, CHART);
+      check(`timelines ${w}px (${scheme}): the essay's chart opens with its due day and every step in view; its box scrolls by keyboard (tabindex 0, labelled)`,
+        seen.due && seen.steps && seen.tab === '0' && seen.label === 'Plan by day, Thu Nov 5 to Fri Nov 20', JSON.stringify(seen));
       await page.evaluate(() => { document.activeElement.blur(); window.scrollTo(0, 0); });
       await page.locator('.hw-a [data-ref="chart"]').screenshot({ path: `${TL_SHOTS}homework-chart-${w}-${scheme}.png` });
       await page.screenshot({ path: `${TL_SHOTS}homework-assignment-${w}-${scheme}.png`, fullPage: true });

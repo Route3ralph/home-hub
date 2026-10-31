@@ -1185,11 +1185,11 @@
     root.querySelector('[data-ref="blocks"]').innerHTML = blocksHTML(st, a);
     const box = root.querySelector('[data-ref="editor"]');
     const ed = editorAssignment(st, a.id);
-    // Its chart, from the plan as saved (unsaved changes in the editor show once saved); drawn only when it changed,
-    // so a chart scrolled inside its box stays where it was.
+    // Its chart, from the plan as saved (unsaved changes in the editor show once saved); drawn only when it changed (then
+    // opened on what's next when wider than its box), so a chart scrolled inside its box stays where it was.
     const chart = chartHTML(st, ed);
     const chartBox = root.querySelector('[data-ref="chart"]');
-    if (chartBox.hwDrawn !== chart) { chartBox.innerHTML = chart; chartBox.hwDrawn = chart; }
+    if (chartBox.hwDrawn !== chart) { chartBox.innerHTML = chart; chartBox.hwDrawn = chart; P.tlScroll(chartBox); }
     const more = { today: st.today, asOf: asOf(), serverNow: clockInstant(), week: st.week, length: st.row.focus_minutes, kid: kidName(st), tutor: tutorFirst(st),
       ai: aiOpts(st, a) };
     if (!admin) {

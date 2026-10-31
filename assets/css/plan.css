@@ -77,6 +77,18 @@
    box; a chart wider than its box scrolls inside it (never the page). */
 .plan-tl { width: 100%; min-width: 0; margin: 6px 0 0; container-type: inline-size; }
 .plan-tl-scroll { overflow-x: auto; overscroll-behavior-x: contain; }
+.plan-tl-scroll:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+/* A chart wider than its box: a shade on the edge where more days are (the box's own scroll shadows: the surface
+   covers scroll with the days, the shades stay put), and each row's name kept in view while it scrolls. */
+.plan-tl-chart .plan-tl-scroll {
+  --tl-shade: color-mix(in srgb, var(--text) 18%, transparent);
+  background:
+    linear-gradient(90deg, var(--surface) 40%, transparent) 0 0 / 24px 100% no-repeat local,
+    linear-gradient(270deg, var(--surface) 40%, transparent) 100% 0 / 24px 100% no-repeat local,
+    linear-gradient(90deg, var(--tl-shade), transparent) 0 0 / 12px 100% no-repeat scroll,
+    linear-gradient(270deg, var(--tl-shade), transparent) 100% 0 / 12px 100% no-repeat scroll;
+}
+.plan-tl-chart .plan-tl-name { position: sticky; left: 0; z-index: 3; justify-self: start; max-width: 100cqw; }
 .plan-tl-grid { --tl-name: 0px; min-width: calc(var(--tl-name) + var(--tl-days) * 15px); }
 .plan-tl-chart .plan-tl-grid { min-width: calc(var(--tl-name) + var(--tl-days) * 22px); }
 .plan-tl-head, .plan-tl-row { display: grid; grid-template-columns: minmax(0, 1fr); }
@@ -106,7 +118,8 @@ a.plan-tl-name { min-height: 44px; }
 a.plan-tl-name:hover .plan-tl-title, a.plan-tl-name:focus-visible .plan-tl-title { color: var(--accent); text-decoration: underline; }
 .plan-tl-title { font-size: 15px; font-weight: 650; overflow-wrap: anywhere; }
 .plan-tl-sub { color: var(--text-3); font-size: 13px; overflow-wrap: anywhere; }
-.plan-tl-sub > span { white-space: nowrap; }
+/* The count and the due words kept whole; the class (the first part, up to 40 characters) wraps inside the name. */
+.plan-tl-sub > span:not(:first-child) { white-space: nowrap; }
 .plan-tl-row.is-late .plan-tl-sub { color: var(--warn); font-weight: 600; }
 .plan-tl-dia { display: inline-grid; place-items: center; margin-right: 6px; color: var(--accent); vertical-align: -1px; }
 .plan-tl-dia svg { width: 12px; height: 12px; fill: var(--surface); stroke: currentColor; stroke-width: 3; }
@@ -169,6 +182,18 @@ a.plan-tl-name:hover .plan-tl-title, a.plan-tl-name:focus-visible .plan-tl-title
   .plan-tl-head, .plan-tl-row { grid-template-columns: var(--tl-name) minmax(0, 1fr); column-gap: 12px; }
   .plan-tl-corner { display: block; }
   .plan-tl-row { align-items: center; }
+  /* The chart's names (and the corner over them) stay beside the days while they scroll under; the shade moves past them. */
+  .plan-tl-chart .plan-tl-name, .plan-tl-chart .plan-tl-corner {
+    position: sticky; left: 0; z-index: 3; align-self: stretch; justify-self: stretch; max-width: none;
+    background: var(--surface); box-shadow: 12px 0 0 var(--surface);
+  }
+  .plan-tl-chart .plan-tl-scroll {
+    background:
+      linear-gradient(90deg, var(--surface) 40%, transparent) 192px 0 / 24px 100% no-repeat local,
+      linear-gradient(270deg, var(--surface) 40%, transparent) 100% 0 / 24px 100% no-repeat local,
+      linear-gradient(90deg, var(--tl-shade), transparent) 192px 0 / 12px 100% no-repeat scroll,
+      linear-gradient(270deg, var(--tl-shade), transparent) 100% 0 / 12px 100% no-repeat scroll;
+  }
 }
 
 /* ---------- His path (plan.js path): a dot a day to the due date, flags on milestones ---------- */
@@ -179,7 +204,7 @@ a.plan-tl-name:hover .plan-tl-title, a.plan-tl-name:focus-visible .plan-tl-title
 .plan-path-cheer { color: var(--accent); font-weight: 800; }
 .plan-path-days { list-style: none; margin: 0; padding: 0; display: flex; align-items: stretch; min-width: 0; }
 .plan-path-day { position: relative; flex: 1 1 0; min-width: 0; display: grid; grid-template-rows: 22px 22px auto; justify-items: center; }
-.plan-path-day.is-today { flex-grow: 2; }
+.plan-path-day.is-today { flex-grow: 2; min-width: max-content; }   /* never narrower than "Today", whatever flags he won before it */
 /* The line between the dots, through their middles. */
 .plan-path-day::before { content: ""; position: absolute; top: 31.5px; left: 0; right: 0; height: 3px; background: var(--border); }
 .plan-path-day.is-today::before { left: 50%; }

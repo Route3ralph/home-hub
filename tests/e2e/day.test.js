@@ -2844,6 +2844,12 @@ const HW_AUDIO_DROP = `(${HW_STUBS})(); (${HW_CLOCKED})(); (${HW_WAKE_DROP})();`
     check('#plan/<id>: milestones and the turn-in locked, with "Milestones are checkpoints you set with Pat. Change them together."',
       !(await page.$(`.plan-step[data-id="${H.s3}"] select[name="day"]`)) && !!(await page.$(`.plan-step[data-id="${H.s3}"] .plan-lock`))
       && (await hwText(page, '.plan-lock-note')) === 'Milestones are checkpoints you set with Pat. Change them together.');
+    // His path at the top: the days with his open steps (has-work), from the view and then from each write's answer.
+    const workDays = () => page.$$eval('.hw-plan-path .plan-path-day', (ds) => ds.map((d, i) => (d.classList.contains('has-work') ? i : -1)).filter((i) => i >= 0));
+    const dbWorkDays = () => [...new Set(db.homework_steps.filter((x) => x.assignment_id === H.sci && !x.done_at && x.day && x.day >= HWT)
+      .map((x) => Math.round((Date.parse(`${x.day}T00:00:00Z`) - Date.parse(`${HWT}T00:00:00Z`)) / 864e5)))].sort((a, b) => a - b);
+    check('#plan/<id>: his path at the top, his open steps on its days', same(await workDays(), [0, 2, 3, 9, 11]), JSON.stringify(await workDays()));
+    const reads = calls(db, 'homework_by_token').length;
     const i2 = await page.$eval(`.plan-step[data-id="${H.s2}"]`, (e) => e.dataset.i);
     await page.selectOption(`.plan-step[data-i="${i2}"] select[name="day"]`, '2026-11-03');
     await page.click('.plan-editor [data-act="save"]');
@@ -2852,6 +2858,8 @@ const HW_AUDIO_DROP = `(${HW_STUBS})(); (${HW_CLOCKED})(); (${HW_WAKE_DROP})();`
     check('Save: plan_by_token with the whole plan and its rev; the plain step moved', ps.p_assignment === H.sci && ps.p_rev === 3
       && ps.p_steps.find((s) => s.id === H.s2).day === '2026-11-03' && ps.p_steps.find((s) => s.id === H.s3).day === '2026-11-04'
       && db.homework_steps.find((s) => s.id === H.s2).day === '2026-11-03', JSON.stringify(ps));
+    check('Save: the path at the top drawn again from the answer (the moved step on Tue), with no read in between',
+      await until(async () => same(await workDays(), [0, 1, 2, 3, 9, 11])) && calls(db, 'homework_by_token').length === reads, JSON.stringify([await workDays(), calls(db, 'homework_by_token').length - reads]));
     // A stale copy (someone ticked a step since): reloads with "Changed since you opened it".
     db.assignments.find((a) => a.id === H.sci).plan_rev += 1;
     const i4 = await page.$eval(`.plan-step[data-id="${H.s4}"]`, (e) => e.dataset.i);
@@ -2861,6 +2869,10 @@ const HW_AUDIO_DROP = `(${HW_STUBS})(); (${HW_CLOCKED})(); (${HW_WAKE_DROP})();`
     await page.click('.plan-editor [data-act="replan"]');
     await until(() => calls(db, 'plan_by_token').length === 3);
     check('Re-plan in the editor: plan_by_token with p_steps null', calls(db, 'plan_by_token')[2].body.p_steps === null);
+    const r3 = calls(db, 'homework_by_token').length;
+    check('Re-plan: the path at the top drawn again from its answer (the days as placed again), with no read in between',
+      await until(async () => same(await workDays(), dbWorkDays())) && !same(dbWorkDays(), [0, 1, 2, 3, 9, 11]) && calls(db, 'homework_by_token').length === r3,
+      JSON.stringify([await workDays(), dbWorkDays()]));
     await page.click('.hw-head .list-back');
     check('‹ Homework goes back to #homework', await until(async () => (await page.evaluate(() => location.hash)) === '#homework'));
     await page.context().close();
@@ -3223,8 +3235,8 @@ const HW_AUDIO_DROP = `(${HW_STUBS})(); (${HW_CLOCKED})(); (${HW_WAKE_DROP})();`
     check('the reading log (no milestone, due Fri): "Due Fri (4 days)", a dot a day from "Today" to Friday, no flag',
       rd.line === 'Due Fri (4 days)' && same(rd.names, ['Today', 'T', 'W', 'T', 'F']) && !rd.flags.length && rd.fold === null, JSON.stringify(rd));
     const sp = pathOf(H.span);
-    check('the vocabulary project: its milestone (Fri Oct 30, not done) is the next flag, on today\'s dot: "Next flag: Flashcards made · from Fri"',
-      sp.line === 'Next flag: Flashcards made · from Fri' && sp.names.length === 8 && same(sp.flags, [0]) && !sp.done.length, JSON.stringify(sp));
+    check('the vocabulary project: its milestone (Fri Oct 30, not done) is the next flag, on today\'s dot: "Next flag: Flashcards made · from Fri Oct 30" (its date: the dots show this Friday)',
+      sp.line === 'Next flag: Flashcards made · from Fri Oct 30' && sp.names.length === 8 && same(sp.flags, [0]) && !sp.done.length, JSON.stringify(sp));
     const bd = pathOf(KT.bad);
     check('a hostile title and milestone: as text ("Next flag: <img …> · in 8 days"), no element made from them',
       bd.title === `${BADT} ›` && bd.line === `Next flag: ${BADM} · in 8 days` && same(bd.flags, [8]) && !(await page.$('.hw-paths img, .hw-paths b'))
@@ -3295,8 +3307,42 @@ const HW_AUDIO_DROP = `(${HW_STUBS})(); (${HW_CLOCKED})(); (${HW_WAKE_DROP})();`
       (await hwText(page, '#hw-paths-h')) === 'Tu camino' && (await hwText(page, '.hw-paths-more > summary')) === '+2 más'
       && pathOf(KT.read).line === 'Se entrega el vie (4 días)' && same(pathOf(KT.read).names, ['Hoy', 'M', 'X', 'J', 'V'])
       && pathOf(KT.essay).line === 'Siguiente bandera: Outline · el jue (3 días)' && pathOf(KT.essay).fold === '… para el vie 20 nov'
-      && pathOf(H.span).line === 'Siguiente bandera: Flashcards made · del vie', JSON.stringify(paths.map((p) => [p.line, p.fold])));
+      && pathOf(H.span).line === 'Siguiente bandera: Flashcards made · del vie 30 oct', JSON.stringify(paths.map((p) => [p.line, p.fold])));
     await page.context().close();
+
+    // Four flags won before today (the most a plan has) on a plan due Wed Dec 2: at 390px "Today" never runs into the next
+    // day's letter, on #homework and at the top of #plan/<id>.
+    {
+      const won = hwDb();
+      won.assignments = won.assignments.filter((a) => a.id === H.math);
+      won.homework_steps = won.homework_steps.filter((x) => x.assignment_id === H.math);
+      const W4 = hid(240);
+      const at = (iso) => `${iso}.000000+00:00`;
+      won.assignments.push(assignmentRow({ id: W4, kid_id: P.jordan, title: 'Ecosystem project', subject: 'Science', due_date: '2026-12-02', given_at: at('2026-10-20T15:00:00'),
+        given_by: 'alex@example.com', plan_rev: 1, created_at: at('2026-10-20T14:00:00') }));
+      [['milestone', 'Pick the ecosystem', '2026-10-26'], ['milestone', 'Find 3 sources', '2026-10-28'], ['milestone', 'Notes done', '2026-10-29'], ['milestone', 'Outline', '2026-10-30'],
+        ['step', 'Draft it', '2026-11-04'], ['step', 'Make the diagram', '2026-11-16'], ['turn_in', 'Turn it in', '2026-12-02']].forEach(([kind, title, day], i) => won.homework_steps.push(stepRow({
+        assignment_id: W4, pos: i + 1, kind, title, minutes: 20, day, done_at: day < HWT ? at(`${day}T21:00:00`) : null, done_by: day < HWT ? 'Jordan (My day)' : null })));
+      ({ page, db } = await open({ label: 'hw-path-won4', path: `/day.html?t=${JORDAN}#homework`, db: won, device: HW_DEVICE, init: HW_STUBS, ctx: phone() }));
+      await page.waitForSelector('.hw-paths .plan-path');
+      const apart = (sel) => page.$eval(sel, (p) => {
+        const names = Array.from(p.querySelectorAll('.plan-path-name')).map((n) => n.getBoundingClientRect());
+        const today = p.querySelector('.plan-path-day.is-today');
+        return { won: p.querySelectorAll('.plan-path-won .plan-path-flag').length, overlaps: names.slice(1).map((b, i) => Number((names[i].right - b.left).toFixed(1))).filter((x) => x > 0.5),
+          today: [Number(today.getBoundingClientRect().width.toFixed(1)), Number(today.querySelector('.plan-path-name').getBoundingClientRect().width.toFixed(1))],
+          line: p.querySelector('.plan-path-line').textContent.replace(/\s+/g, ' ').trim() };
+      });
+      const home = await apart(`.hw-path[data-asg="${W4}"] .plan-path`);
+      check('his path at 390px with four flags won before today: "Today" and every day\'s letter apart, the today dot as wide as its name (#homework)',
+        home.won === 4 && !home.overlaps.length && home.today[0] >= home.today[1] && home.line === 'Every flag done! Due Wed Dec 2 (30 days)' && await noSideScroll(page), JSON.stringify(home));
+      await page.evaluate(() => { if (document.activeElement) document.activeElement.blur(); window.scrollTo(0, 0); });
+      await page.locator('.hw-paths').screenshot({ path: `${TL_SHOTS}myday-paths-won4-390-light.png` });
+      await page.evaluate((id) => { location.hash = `#plan/${id}`; }, W4);
+      await page.waitForSelector('.hw-plan-path .plan-path');
+      const top = await apart('.hw-plan-path .plan-path');
+      check('... and at the top of #plan/<id>', top.won === 4 && !top.overlaps.length && top.today[0] >= top.today[1] && await noSideScroll(page), JSON.stringify(top));
+      await page.context().close();
+    }
 
     // Phones and desktops, light and dark: no sideways page scroll.
     for (const [w, ctxOpts] of [[390, phone()], [1280, { viewport: { width: 1280, height: 900 } }]]) {
