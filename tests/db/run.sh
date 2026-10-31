@@ -8,7 +8,9 @@
 # 0003 made it while no meal is planned (step 5c), and that migration 0005 leaves the email,
 # day_text and My day exactly as 0004 made them while homework is off for everyone (step 5d), and
 # migration 0006 too, with school links and their items in that household (step 5d), and that with
-# homework on and no school link 0006 leaves My day, his homework view and Pat's as 0005 made them (step 5e).
+# homework on and no school link 0006 leaves My day, his homework view and Pat's as 0005 made them (step 5e),
+# and 0007 (the coach view) too while it is off, as 0007 leaves every link (5d, 5e); turning it on for a link
+# adds one key to that link's view and changes nothing else (step 5f).
 # Prints one "PASS  name" or "FAIL  name  (detail)" line per check, then the totals,
 # and exits non-zero if anything failed.
 # Needs the PostgreSQL 16 server binaries (PG_BIN overrides where they are); cluster.sh starts
@@ -126,6 +128,27 @@ got=$(quiet -d hub_set_back_5 -A -t -c "select public.hub_schema_version()")
 if [[ $out == *"set back to 5"* && $got == "5" && $(catalog_of hub_set_back_5) == "$before" ]]; then
   report "PASS  migration 0006 on a database set back to 5: says so (\"set back to 5\"), and changes nothing"
 else report "FAIL  migration 0006 on a database set back to 5  (${out:0:200}; version: $got)"; fi
+# 0007 (the coach view) refuses to run twice, and on a v1 database.
+out=$(quiet -d hub_again -f supabase/migrations/0007_homework_coach.sql 2>&1)
+if [[ $out == *"already installed"* ]]; then report "PASS  migration 0007 refuses to run twice"
+else report "FAIL  migration 0007 refuses to run twice  (${out:0:200})"; fi
+out=$(quiet -d hub_v1_again -f supabase/migrations/0007_homework_coach.sql 2>&1)
+if [[ $out == *"isn't installed"* ]] && [[ -z $(quiet -d hub_v1_again -A -t -c "select to_regclass('public.coach_notes')") ]]; then
+  report "PASS  migration 0007 refuses to run on a v1 database (0002 isn't installed), and changes nothing"
+else report "FAIL  migration 0007 refuses to run on a v1 database  (${out:0:200})"; fi
+# A database where the owner set the coach view back as docs/v1.3-homework.md §20.7 says (every link's coach view off,
+# hub_schema_version() set back to 6): running 0007 again says so, and changes nothing.
+sql -d postgres -c 'create database hub_set_back_6 template hub'
+quiet -d hub_set_back_6 >/dev/null <<'SQL'
+update public.tutor_links set coach = false;
+create or replace function public.hub_schema_version() returns int language sql immutable set search_path = '' as $$ select 6 $$;
+SQL
+before=$(catalog_of hub_set_back_6)
+out=$(quiet -d hub_set_back_6 -f supabase/migrations/0007_homework_coach.sql 2>&1)
+got=$(quiet -d hub_set_back_6 -A -t -c "select public.hub_schema_version()")
+if [[ $out == *"set back to 6"* && $got == "6" && $(catalog_of hub_set_back_6) == "$before" ]]; then
+  report "PASS  migration 0007 on a database set back to 6: says so (\"set back to 6\"), and changes nothing"
+else report "FAIL  migration 0007 on a database set back to 6  (${out:0:200}; version: $got)"; fi
 
 # The database with migration 0002 only, as it is live before 0003 (steps 5 and 5b).
 sql -d postgres -c 'create database hub_02 template hub_v1'
@@ -162,6 +185,18 @@ if [[ $out == *"(migration 0005) isn't installed"* ]] && [[ -z $(quiet -d hub_04
    && [[ $(quiet -d hub_04_again -A -t -c "select public.hub_schema_version()") == 4 ]]; then
   report "PASS  migration 0006 refuses to run without 0005 (a database at 0004), and changes nothing"
 else report "FAIL  migration 0006 refuses to run without 0005  (${out:0:200})"; fi
+# Migration 0007 refuses a database without 0006: one at 0004 and one at 0005 ("The school feed (migration 0006) isn't installed").
+out=$(quiet -d hub_04_again -f supabase/migrations/0007_homework_coach.sql 2>&1)
+if [[ $out == *"(migration 0006) isn't installed"* ]] && [[ -z $(quiet -d hub_04_again -A -t -c "select to_regclass('public.coach_notes')") ]]; then
+  report "PASS  migration 0007 refuses to run on a database at 0004, and changes nothing"
+else report "FAIL  migration 0007 refuses to run on a database at 0004  (${out:0:200})"; fi
+sql -d postgres -c 'create database hub_05_again template hub_04_again'
+quiet -d hub_05_again -f supabase/migrations/0005_homework.sql >/dev/null 2>&1
+out=$(quiet -d hub_05_again -f supabase/migrations/0007_homework_coach.sql 2>&1)
+if [[ $out == *"(migration 0006) isn't installed"* ]] && [[ -z $(quiet -d hub_05_again -A -t -c "select to_regclass('public.coach_notes')") ]] \
+   && [[ $(quiet -d hub_05_again -A -t -c "select public.hub_schema_version() || ' ' || (select count(*) from pg_attribute where attrelid = 'public.tutor_links'::regclass and attname = 'coach')") == "5 0" ]]; then
+  report "PASS  migration 0007 refuses to run without 0006 (a database at 0005), and changes nothing"
+else report "FAIL  migration 0007 refuses to run without 0006  (${out:0:200})"; fi
 
 # 5. preflight.sql's promise, "nothing migration 0002 creates exists yet", covers everything the
 #    migration creates that a live database could already have under the same name (which would
@@ -445,10 +480,40 @@ SQL
   if [[ $ok -eq 1 && $rows -ge 30 && $card == *'"answer_due": true'* && $card == *'"goal": {'* && $card == *'"instant": true'* ]] \
      && ! grep -q -E 'homework_by_token = null|tutor_view_by_token [a-z]+ = null' "$dir/same_hw_05.txt" \
      && cmp -s "$dir/same_hw_05.txt" "$dir/same_hw_06.txt"; then
-    report "PASS  same output: with homework on and no school link, 0006 leaves get_person_day, his view and Pat's as 0005 made them ($rows results)"
+    report "PASS  same output: with homework on, no school link and the coach view off, 0006 and 0007 leave get_person_day, his view and Pat's as 0005 made them ($rows results)"
   else
-    report "FAIL  same output: with homework on and no school link, 0006 leaves get_person_day, his view and Pat's as 0005 made them  ($rows results; first difference: $(diff "$dir/same_hw_05.txt" "$dir/same_hw_06.txt" | head -n 3 | cut -c 1-400 | tr '\n' ' '))"
+    report "FAIL  same output: with homework on, no school link and the coach view off, 0006 and 0007 leave get_person_day, his view and Pat's as 0005 made them  ($rows results; first difference: $(diff "$dir/same_hw_05.txt" "$dir/same_hw_06.txt" | head -n 3 | cut -c 1-400 | tr '\n' ' '))"
   fi
+
+  # 5f. Migration 0007 replaces the wrapper of Pat's view (private.homework_view_tutor) to add one key, coach:
+  #     true, for a link with the coach view on. 0007 leaves it off on every link, so 5e above holds with 0007
+  #     applied; and on hub_05_later, turning it on for Pat's link adds exactly that key to his list and his
+  #     assignment's answer, and nothing else changes: not the AI poll, not her My day or her homework view,
+  #     not anyone's My day.
+  got=$(quiet -d hub_05_later -A -t <<'SQL' 2>&1
+set hub.now = '2026-11-03 16:40 America/New_York';
+create temp table before as
+select public.tutor_view_by_token('ab000000000000000000000000000cd1') as l,
+       public.tutor_view_by_token('ab000000000000000000000000000cd1', 'a0000000-0000-4000-8000-000000000005') as a,
+       public.tutor_view_by_token('ab000000000000000000000000000cd1', 'a0000000-0000-4000-8000-000000000005', 'ai') as ai,
+       public.homework_by_token((select p.day_token from public.people p where p.name = 'Taylor')) as h,
+       (select jsonb_agg(public.get_person_day(p.day_token) order by p.name) from public.people p) as d,
+       public.coach_view_by_token('ab000000000000000000000000000cd1') as c;
+update public.tutor_links set coach = true;
+select concat_ws(' ',
+  b.c is null,
+  public.tutor_view_by_token('ab000000000000000000000000000cd1') = b.l || '{"coach": true}',
+  public.tutor_view_by_token('ab000000000000000000000000000cd1', 'a0000000-0000-4000-8000-000000000005') = b.a || '{"coach": true}',
+  public.tutor_view_by_token('ab000000000000000000000000000cd1', 'a0000000-0000-4000-8000-000000000005', 'ai') = b.ai,
+  public.homework_by_token((select p.day_token from public.people p where p.name = 'Taylor')) = b.h,
+  (select jsonb_agg(public.get_person_day(p.day_token) order by p.name) from public.people p) = b.d,
+  public.coach_view_by_token('ab000000000000000000000000000cd1') ->> 'kid')
+from before b;
+SQL
+)
+  if [[ $got == "t t t t t t Taylor" ]]; then
+    report "PASS  same output: the coach view on for Pat's link adds only coach: true to his view, and changes nothing else"
+  else report "FAIL  same output: the coach view on for Pat's link adds only coach: true to his view  (${got:0:300})"; fi
 fi
 
 # 5c. Migration 0004 wraps private.calendar_desired (0003's body is now calendar_desired_v3) and
