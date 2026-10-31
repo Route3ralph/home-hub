@@ -148,6 +148,8 @@
       hw_k_focus: 'Focus', hw_k_on_time: 'On time', hw_k_milestone: 'Milestone checked', hw_k_given: 'From your parents', hw_k_void: 'Void',
       hw_k_trade: 'Trade', hw_back_home: '‹ Homework', hw_notify: 'Show a notification when a block ends', hw_notify_body: 'Your block is over.',
       hw_being_planned: 'Being planned', hw_start: 'Start',
+      // PR B: a plan made with an AI draft says so (§6.10); his view carries no parent's name.
+      hw_ai_help: 'Plan by {tutor}, with AI help', hw_ai_help_none: 'Plan by your parents, with AI help', hw_ai_help_family: 'Plan by your parents, with AI help',
       // 0006: New from school (docs/v1.3-homework.md §11.4)
       hw_school: 'New from school ({n})', hw_school_card: 'New from school: {n} ›', hw_school_quick: 'Quick · {n} min',
       hw_school_pat: 'Plan with {tutor}', hw_school_pat_none: 'Plan with your parents', hw_school_hide: 'Hide',
@@ -230,6 +232,7 @@
       hw_k_focus: 'Concentración', hw_k_on_time: 'A tiempo', hw_k_milestone: 'Hito revisado', hw_k_given: 'De tus padres', hw_k_void: 'Anulado',
       hw_k_trade: 'Cambio', hw_back_home: '‹ Tarea', hw_notify: 'Avisar con una notificación cuando termine un bloque', hw_notify_body: 'Tu bloque terminó.',
       hw_being_planned: 'En preparación', hw_start: 'Empezar',
+      hw_ai_help: 'Plan de {tutor}, con ayuda de IA', hw_ai_help_none: 'Plan de tus padres, con ayuda de IA', hw_ai_help_family: 'Plan de tus padres, con ayuda de IA',
       hw_school: 'Nuevo de la escuela ({n})', hw_school_card: 'Nuevo de la escuela: {n} ›', hw_school_quick: 'Rápido · {n} min',
       hw_school_pat: 'Planear con {tutor}', hw_school_pat_none: 'Planear con tus padres', hw_school_hide: 'Ocultar',
       hw_school_planned: 'Planeado para {day}: {title}', hw_school_for_pat: 'En tu tarea, para planear con {tutor}: {title}',
@@ -1753,6 +1756,7 @@
       tail = ` · ${esc(plan.t('behind', null, lang))} · <button type="button" class="hw-link" data-act="hw-replan" data-asg="${esc(a.id)}">${esc(`${plan.t('replan', null, lang)} ›`)}</button>`;
     }
     const given = a.status === 'open' && a.state === 'given';
+    if (given && a.ai_help === true) bits.push(hw(a.given_by === 'tutor' ? 'hw_ai_help' : 'hw_ai_help_family'));
     const notes = given ? (a.steps || []).filter((s) => s.kind === 'milestone' && s.coach && s.coach.text)
       .map((s) => `<p class="hw-note">${esc(s.not_yet ? plan.t('not_yet', { note: s.coach.text }, lang) : plan.t('coach_note', { who: whoOf(s.coach.by), note: s.coach.text }, lang))}</p>`).join('') : '';
     return `<div class="hw-asg${a.status !== 'open' ? ' is-closed' : ''}" data-asg="${esc(a.id)}">
@@ -2810,12 +2814,25 @@
       }
       return res;
     };
+    // The AI preview's "last sent" marks (PR B, §6.4): the only thing besides the language kept on the device for the link.
+    const sent = {
+      get: (id) => { try { return localStorage.getItem(`hh.ai.sent.${id}`); } catch (e) { return null; } },
+      set: (id, mark) => { try { localStorage.setItem(`hh.ai.sent.${id}`, mark); } catch (e) { /* no storage: always open */ } },
+    };
+    // hub-jobs' homework_ai (PR B): the token goes in the body, never in the call's address; supabase-js sends only the
+    // publishable key, so it is never a sign-in.
+    const invokeAi = async (body) => {
+      const r = await sb.functions.invoke('hub-jobs', { body: Object.assign({ action: 'homework_ai', token: tutorToken }, body) });
+      return { data: r.error ? null : r.data, error: r.error || null };
+    };
     const ctl = plan.tutor(root, {
       lang,
       toast,
+      sent,
       onGone: () => { document.title = 'Home Hub'; },
       go: (hash) => { location.hash = hash; },
       api: {
+        ai: (body) => one(() => invokeAi(body)),
         view: (id, part) => one(() => sb.rpc('tutor_view_by_token', { p_token: tutorToken, p_assignment: id || null, p_part: part || 'all' })).then(seen),
         assignment: (fields) => one(() => sb.rpc('tutor_assignment_by_token', { p_token: tutorToken, p_fields: fields })).then(seen),
         plan: (id, steps, rev, give) => one(() => sb.rpc('tutor_plan_by_token', { p_token: tutorToken, p_assignment: id, p_steps: steps, p_rev: rev, p_give: !!give })).then(seen),

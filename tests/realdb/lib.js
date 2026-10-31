@@ -9,6 +9,9 @@
 // hub-jobs' Google calls (the calendar job, Test) reach a fake Google (fakeGoogle below): h.google. Its school
 // reads (0006) reach a fake school site on *.school.example (fakeSchool below): h.school; school.ts's SCHOOL_HOST
 // suffix is set to that made-up one here, and a test sets the database's private.school_host_suffix() to match.
+// Its AI planner's calls (v1.3 PR B, homework_ai) reach a fake Anthropic (fakeAnthropic below): h.anthropic, with a
+// made-up ANTHROPIC_API_KEY (h.AI_KEY; h.fnEnv is the function's environment, for a test that takes the key away); the
+// work the handler hands deps.background is collected, and h.aiDone() waits for it.
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
@@ -23,6 +26,8 @@ const SUPA_JS = fs.readFileSync(path.join(__dirname, '../e2e/vendor/supabase.js'
 const CRON_SECRET = 'realdb-cron-secret-0123456789abcdef0123';
 const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
 const SERVICE_KEY = `${b64({ alg: 'HS256', typ: 'JWT' })}.${b64({ role: 'service_role', iss: 'supabase' })}.realdb`;
+// ANTHROPIC_API_KEY for the AI planner (v1.3 §6): made up; only the fake Anthropic below ever sees it.
+const AI_KEY = 'sk-ant-realdb-made-up-key-000000000000';
 // GOOGLE_SA_JSON: a service-account key file made here, with a key pair that exists only in this run
 // (the fake Google checks the signature with its public half). Fictional project and address.
 const SA_ACCOUNT = 'home-hub-sync@home-hub-example.iam.gserviceaccount.com';
@@ -211,6 +216,62 @@ function fakeSchool() {
     serve(z, text) { feeds.set(z, text); },
   };
 }
+// A fake Anthropic for hub-jobs' homework_ai (docs/v1.3-homework.md §6.5): POST https://api.anthropic.com/v1/messages,
+// made up, never the real one. Every request is in h.anthropic.requests ({ headers, body }, the body parsed). It answers
+// a valid plan built from the user message's own fields (kind, session_minutes, due, the free_time days and, for a
+// revise, current_plan: its locked steps sent back with their refs, the first one changed and the others left out, as
+// a model might, for homework.ts to put back), or the next reply queued with h.anthropic.next({ status, body, headers })
+// (a body object is sent as JSON), or a function of the request that gives one (it may be async, to change the database
+// while the run is open). The usage is fixed: 2600 in (1600 of them a cache write), 2200 out.
+function fakeAnthropic() {
+  const requests = [];
+  const queue = [];
+  const tag = (m, n) => { const x = new RegExp(`<${n}(?: [^>]*)?>([^]*?)</${n}>`).exec(m); return x ? x[1].trim() : null; };
+  function plan(message) {
+    const kind = tag(message, 'kind');
+    const session = Number(tag(message, 'session_minutes')) || 20;
+    const due = ((tag(message, 'due') || '').match(/\d{4}-\d{2}-\d{2}/) || [null])[0];
+    const days = (tag(message, 'free_time') || '').split('\n').map((l) => (l.match(/\d{4}-\d{2}-\d{2}/) || [null])[0]).filter(Boolean);
+    const day = (i) => (days.length ? days[Math.min(i, days.length - 1)] : due);
+    let current = [];
+    try { current = JSON.parse(tag(message, 'current_plan') || 'null') || []; } catch (e) { current = []; }
+    const locked = current.filter((x) => x && x.locked === true);
+    const revise = current.length > 0;
+    const steps = [
+      { ref: 'new', kind: 'start', title: 'Copy the requirements into your notes', done_looks_like: 'the list of requirements in your notes', minutes: 5, day: day(0) },
+      { ref: 'new', kind: 'step', title: revise ? 'Find one source and save its title' : 'Find 2 sources and save their titles',
+        done_looks_like: revise ? 'one title in your notes' : '2 titles in your notes', minutes: Math.min(session, revise ? 10 : 20), day: day(0) },
+    ];
+    if (locked[0]) steps.push({ ref: locked[0].ref, kind: locked[0].kind, title: `${locked[0].title} (changed)`, done_looks_like: 'changed by the AI', minutes: 5, day: day(1) });
+    steps.push({ ref: 'new', kind: 'milestone', title: 'Outline with 3 main points', done_looks_like: 'an outline you can show', minutes: Math.min(session, 20), day: day(1) },
+      { ref: 'new', kind: 'check', title: 'Check it against the instructions', done_looks_like: 'every point of the sheet ticked', minutes: Math.min(session, 15), day: day(2) });
+    if (kind !== 'lesson') steps.push({ ref: 'new', kind: 'turn_in', title: 'Turn it in', done_looks_like: 'handed in', minutes: 5, day: due });
+    return { summary: 'Make a poster about one river with two sources.', questions: revise ? [] : ['Did your teacher say which materials are allowed?'],
+      steps, stretch: 'Which part of the river would you most like to show in detail?', fits: true, note_for_adult: '' };
+  }
+  const ok = (body) => ({
+    id: `msg_realdb_${requests.length}`, type: 'message', role: 'assistant', model: body.model,
+    content: [{ type: 'text', text: JSON.stringify(plan(String(((body.messages || [])[0] || {}).content || ''))) }],
+    stop_reason: 'end_turn', stop_sequence: null,
+    usage: { input_tokens: 1000, cache_creation_input_tokens: 1600, cache_read_input_tokens: 0, output_tokens: 2200 },
+  });
+  return {
+    requests,
+    handles: (url) => String(url).startsWith('https://api.anthropic.com/'),
+    fetch: async (url, init = {}) => {
+      const req = { url: String(url), method: init.method || 'GET', headers: Object.assign({}, init.headers), body: JSON.parse(init.body || 'null') };
+      requests.push(req);
+      if (req.url !== 'https://api.anthropic.com/v1/messages' || req.method !== 'POST') return new Response('{"type":"error","error":{"type":"not_found_error","message":"Not found"}}', { status: 404 });
+      let r = queue.shift();
+      if (typeof r === 'function') r = await r(req);   // a reply may first do something while "Claude is thinking"
+      if (!r) r = { status: 200, body: ok(req.body) };
+      const text = typeof r.body === 'string' ? r.body : JSON.stringify(r.body);
+      return new Response(text, { status: r.status || 200, headers: Object.assign({ 'content-type': 'application/json' }, r.headers || {}) });
+    },
+    next(r) { queue.push(r); },
+    plan,
+  };
+}
 // supabase-js 2.117.3 (the vendored browser build) in Node, for the Edge Function's clients.
 let supabaseLib = null;
 function supabaseJs() {
@@ -251,12 +312,15 @@ async function setup(name, opts = {}) {
   const fnEnv = {
     HUB_CRON_SECRET: CRON_SECRET, SITE_URL: 'https://family.example/hub/', RESEND_API_KEY: 're_test_realdb', EMAIL_FROM: 'home@family.example',
     SUPABASE_SECRET_KEYS: JSON.stringify({ default: SERVICE_KEY }), SUPABASE_PUBLISHABLE_KEYS: JSON.stringify({ default: 'sb_publishable_realdb' }),
-    GOOGLE_SA_JSON: SA_JSON,
+    GOOGLE_SA_JSON: SA_JSON, ANTHROPIC_API_KEY: AI_KEY,
   };
   let server;
   const functions = {};
   const google = fakeGoogle(() => server.hubNow());
   const school = fakeSchool();
+  const anthropic = fakeAnthropic();
+  // The AI planner's work (EdgeRuntime.waitUntil in index.ts): h.aiDone() waits for every run started so far.
+  const background = [];
   if (opts.hubJobs !== false && !opts.v1) {
     const { handle } = await import(path.join(REPO, 'supabase/functions/hub-jobs/handler.ts'));
     // The made-up school's hosts (*.school.example), as the fn and db tests use, in place of *.myschoolapp.com.
@@ -272,8 +336,10 @@ async function setup(name, opts = {}) {
         }
         if (google.handles(url)) return google.fetch(url, init);
         if (school.handles(url)) return school.fetch(url, init);
+        if (anthropic.handles(url)) return anthropic.fetch(url, init);
         return new Response('ok', { status: 200 });
       },
+      background: (p) => { background.push(p); },
       service: () => sb.createClient(server.base, SERVICE_KEY, { auth }),
       user: (authorization) => sb.createClient(server.base, 'sb_publishable_realdb', { global: { headers: { Authorization: authorization } }, auth }),
       now: () => Date.parse(server.hubNow()),
@@ -402,7 +468,8 @@ async function setup(name, opts = {}) {
     const token = (await sessionFor(email)).access_token;
     return api('/functions/v1/hub-jobs', { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify(body) });
   };
-  return { base, browser, server, sent, google, school, runDigest, runCalendar, hubJobsAs, api, sql, migrate, clockNow, setClock, requests, mark, failed, sessionFor, open, settle, go, tc, texts, lastToast, titles, until, shot, check, flow, finish, errors };
+  const aiDone = async () => { while (background.length) await Promise.all(background.splice(0)); };
+  return { base, browser, server, sent, google, school, anthropic, fnEnv, aiDone, AI_KEY, runDigest, runCalendar, hubJobsAs, api, sql, migrate, clockNow, setClock, requests, mark, failed, sessionFor, open, settle, go, tc, texts, lastToast, titles, until, shot, check, flow, finish, errors };
 }
 
 // Homework (migration 0005, docs/v1.3-homework.md §3): its eleven tables and twenty-six public

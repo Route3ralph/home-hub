@@ -193,3 +193,15 @@
   .hw-rw { grid-template-columns: minmax(0, 1fr) 90px; }
   .hw-ed { padding: 8px; }
 }
+
+/* The AI planner's row of the switches card (PR B, §9.2) */
+.hw-ai-state { margin: 4px 0 0; font-size: 14px; font-weight: 650; }
+.hw-ai-test { font-weight: 600; }
+.hw-sub-title { margin-top: 12px; font-size: 14px; }
+.hw-never { list-style: none; margin: 6px 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.hw-never li { display: inline-flex; align-items: center; gap: 6px; padding: 2px 4px 2px 12px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface-2); font-size: 14px; }
+.hw-never .linkbtn { min-height: 36px; padding: 0 8px; }
+.hw-neverform .form-actions .btn { min-height: 44px; }
+.hw-ai-runs summary { min-height: 44px; display: inline-flex; align-items: center; color: var(--accent); font-weight: 650; cursor: pointer; }
+.hw-ai-runs ul { margin: 0; padding-left: 18px; font-size: 13px; color: var(--text-2); }
+.hw-link-ai { margin-top: 6px; }
