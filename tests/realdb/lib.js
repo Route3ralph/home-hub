@@ -221,7 +221,8 @@ function fakeSchool() {
 // a valid plan built from the user message's own fields (kind, session_minutes, due, the free_time days and, for a
 // revise, current_plan: its locked steps sent back with their refs, the first one changed and the others left out, as
 // a model might, for homework.ts to put back), or the next reply queued with h.anthropic.next({ status, body, headers })
-// (a body object is sent as JSON). The usage is fixed: 2600 in (1600 of them a cache write), 2200 out.
+// (a body object is sent as JSON), or a function of the request that gives one (it may be async, to change the database
+// while the run is open). The usage is fixed: 2600 in (1600 of them a cache write), 2200 out.
 function fakeAnthropic() {
   const requests = [];
   const queue = [];
@@ -262,7 +263,7 @@ function fakeAnthropic() {
       requests.push(req);
       if (req.url !== 'https://api.anthropic.com/v1/messages' || req.method !== 'POST') return new Response('{"type":"error","error":{"type":"not_found_error","message":"Not found"}}', { status: 404 });
       let r = queue.shift();
-      if (typeof r === 'function') r = r(req);
+      if (typeof r === 'function') r = await r(req);   // a reply may first do something while "Claude is thinking"
       if (!r) r = { status: 200, body: ok(req.body) };
       const text = typeof r.body === 'string' ? r.body : JSON.stringify(r.body);
       return new Response(text, { status: r.status || 200, headers: Object.assign({ 'content-type': 'application/json' }, r.headers || {}) });

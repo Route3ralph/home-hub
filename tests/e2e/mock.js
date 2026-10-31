@@ -1640,12 +1640,14 @@ function schoolJob(db, email) {
 }
 
 // ---- PR B: the AI planner (docs/v1.3-homework.md §6). hub-jobs { action: 'homework_ai', kind, assignment_id?, token?, request?,
-// answers?, key } for a signed-in parent or Pat's link (the token in the body), in handler.ts's and homework_ai_start's order:
-// the shape (400), who (a malformed token → not_found; Test with a token → 403; no sign-in 401, not an admin 403), the key
+// answers?, key, shown? } for a signed-in parent or Pat's link (the token in the body), in handler.ts's and homework_ai_start's order:
+// the shape (400; a plan or a revision without shown, plan.js's previewSeal of the preview the page showed), who (a malformed token → not_found; Test with a token → 403; no sign-in 401, not an admin 403), the key
 // (db.aiMode 'not_set_up'), then the database's rules: a resent key answers its run, the switch (household.homework_ai: off,
 // but for Test), a run open on the assignment (busy), the caps (db.aiCap: 'cap' | 'month'). A run starts (202 {run_id}) and
 // finishes at the next request the page makes (aiComplete), unless db.aiHold: with db.aiOutcome(db, run, assignment) →
 // { stop } | { draft } | undefined (the made-up draft below). db.aiMode 'no_schema' → 503, 'missing' → 404 (no hub-jobs).
+// A run whose message (aiMessage, as homework_ai_start builds it) isn't the one shown ends at once as changed, as
+// homework.ts ends it: 200 {stop: 'changed', run_id}, nothing pending.
 // homework_ai_preview and homework_ai_draft (the parents') and Pat's view's preview and ai come from the same rows.
 const AI_STOPS_CAP = ['cap', 'month'];
 const aiHh = (db) => (db.household && db.household[0]) || {};
@@ -1744,7 +1746,8 @@ function aiJob(db, body, email) {
   const kind = body.kind;
   if (!['plan', 'revise', 'test'].includes(kind) || !isUuid(body.key) || (kind !== 'test' && !isUuid(body.assignment_id))
     || (body.request != null && (typeof body.request !== 'string' || Array.from(body.request).length > 200))
-    || (body.answers != null && (!Array.isArray(body.answers) || body.answers.length > 3 || body.answers.some((x) => typeof x !== 'string' || Array.from(x).length > 200)))) {
+    || (body.answers != null && (!Array.isArray(body.answers) || body.answers.length > 3 || body.answers.some((x) => typeof x !== 'string' || Array.from(x).length > 200)))
+    || (kind !== 'test' && !/^[0-9a-f]{8}$/.test(String(body.shown)))) {
     return { status: 400, body: { error: 'A bad request.' } };
   }
   let link = null;
@@ -1785,6 +1788,11 @@ function aiJob(db, body, email) {
     request: body.request || null, answers: body.answers || null, message: a || kind === 'test' ? aiMessage(db, a, kind, body.request, body.answers, link ? 'tutor' : 'parent') : null };
   db.ai_runs.push(run);
   if (a) Object.assign(a, { ai_state: 'running', ai_stop: null });
+  if (kind !== 'test' && homePlan().previewSeal(run.message) !== body.shown) {
+    Object.assign(run, { status: 'failed', stop: 'changed', finished_at: aiStamp(db) });
+    if (a) Object.assign(a, { ai_state: 'failed', ai_stop: 'changed' });
+    return { status: 200, body: { stop: 'changed', run_id: run.id } };
+  }
   (db.aiPending = db.aiPending || []).push(run.id);
   return { status: 202, body: { run_id: run.id } };
 }

@@ -3,8 +3,9 @@
 // the injected deps.fetch: no SDK and no outside import, as google.ts calls Google, so hub-jobs still runs in Node.
 //
 // POST JSON { action: 'homework_ai', kind: 'plan' | 'revise' | 'test', assignment_id?, token?, request? (≤ 200),
-//             answers? (≤ 3 × 200), key (a uuid the page makes: a resend gets the same run) }
-//   1. shape: a bad kind or key, no assignment for a plan or a revision, an over-long request or answer → 400
+//             answers? (≤ 3 × 200), key (a uuid the page makes: a resend gets the same run),
+//             shown? (a plan or a revision: previewSeal of What Claude will see as the page showed it) }
+//   1. shape: a bad kind or key, no assignment or no seal for a plan or a revision, an over-long request or answer → 400
 //   2. who: a token (Pat's link) that isn't 32 hex characters → 200 {stop: 'not_found'} with no SQL; a well-formed one
 //      goes to SQL as it is (Test with a token → 403); otherwise the caller's sign-in → whoami must say admin (401
 //      with no Authorization, 403 otherwise)
@@ -12,7 +13,9 @@
 //      plans)
 //   4. homework_ai_start as service_role → {run_id, input} or {stop}: who again (a link's can_ai, its kid), the
 //      switch, a resent key, the lease and the caps, all under the household's lock (0005 not applied: 503 no_schema)
-//   5. 202 {run_id}, or 200 {stop}; a resent key's run → 202 {run_id} and nothing starts again
+//   5. 202 {run_id}, or 200 {stop}; a resent key's run → 202 {run_id} and nothing starts again. A message whose seal
+//      isn't the one the page sent (it changed after the preview was shown) → homework_ai_finish(run, 'changed') and
+//      200 {stop: 'changed', run_id}, with no call to Claude: nothing goes that the asker didn't see
 //   6. deps.background (EdgeRuntime.waitUntil in index.ts) runs the work: the request to Claude (input.message as it
 //      is), the checks on the answer (checkPlan), then homework_ai_finish(run, stop | null, draft | null, usage, model),
 //      tried twice. The work never throws: every failure ends in a fixed code. The page polls the assignment.
@@ -155,14 +158,32 @@ export function classify(status: number, text: string): Stop {
 
 // The estimated cost in cents (two decimals, as ai_runs.cents keeps it). With a fallback the top-level usage covers
 // only the attempt that answered: usage.iterations, when there, has every attempt, each at its own model's price.
-type Usage = { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number; model?: string };
+// A refusal before any output is billed only in BILLED_REFUSALS' categories (Anthropic's "How refusals are billed");
+// in any other, or with no category, it costs nothing, though its tokens are still reported. answer (the message:
+// its stop_reason, stop_details and fallback blocks) says which attempts declined and why: each 'message' entry
+// before a later one declined, with the category of the fallback block for it; the last declined if the answer is a
+// refusal, with stop_details' category. Without it (or a fallback block with no trigger) an attempt is counted.
+type Usage = { type?: string; input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number; model?: string };
+type Answer = { stop_reason?: unknown; stop_details?: { category?: unknown } | null; content?: unknown };
+export const BILLED_REFUSALS = ['bio', 'frontier_llm', 'reasoning_extraction'];
 const tokens = (n: unknown) => (typeof n === 'number' && Number.isFinite(n) && n > 0 ? n : 0);
-export function estimateCents(usage: (Usage & { iterations?: Usage[] }) | null | undefined, model: string): number {
+export function estimateCents(usage: (Usage & { iterations?: Usage[] }) | null | undefined, model: string, answer?: Answer | null): number {
   if (!usage || typeof usage !== 'object') return 0;
   const parts = Array.isArray(usage.iterations) && usage.iterations.length ? usage.iterations : [Object.assign({ model }, usage)];
+  // undefined: not known to have declined (counted); a string or null: the category it declined in.
+  const triggers = Array.isArray(answer?.content)
+    ? (answer!.content as any[]).filter((b) => b && b.type === 'fallback').map((b) => (b.trigger && typeof b.trigger === 'object' ? (b.trigger.category ?? null) : undefined))
+    : [];
+  const refused = answer && answer.stop_reason === 'refusal';
+  const finalCategory = refused ? (answer!.stop_details && typeof answer!.stop_details === 'object' ? (answer!.stop_details.category ?? null) : null) : undefined;
+  let t = 0;
   let dollars = 0;
-  for (const u of parts) {
+  for (let i = 0; i < parts.length; i++) {
+    const u = parts[i];
     if (!u || typeof u !== 'object') continue;
+    const last = i === parts.length - 1;
+    const declined: unknown = last ? finalCategory : u.type === 'message' ? triggers[t++] : undefined;
+    if (declined !== undefined && tokens(u.output_tokens) === 0 && !(typeof declined === 'string' && BILLED_REFUSALS.includes(declined))) continue;
     const p = PRICES[String(u.model ?? model)] ?? OTHER_PRICE;
     dollars += (tokens(u.input_tokens) * p.in + tokens(u.output_tokens) * p.out
       + tokens(u.cache_read_input_tokens) * p.read + tokens(u.cache_creation_input_tokens) * p.write) / 1e6;
@@ -176,15 +197,24 @@ export function estimateCents(usage: (Usage & { iterations?: Usage[] }) | null |
 const chars = (s: string) => Array.from(s).length;
 // Links, email addresses and phone numbers out of a plan's text (the prompt asks for none), as private.scrub finds
 // them: with https:// or www.; a dotted host with a path; a dotted host ending in a common top-level domain written in
-// lower case (so "end.Us" stays).
+// lower case (so "end.Us" stays); a phone number with or without its area code.
 const URL_LINK = /\b(?:https?:\/\/|www\.)\S+/gi;
 const HOST_PATH = /\b[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}(?::\d+)?\/\S*/g;
 const HOST_TLD = /\b[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.(?:com|org|net|edu|gov|us|io|ly|co|info|app)(?![A-Za-z0-9@_-])/g;
 const EMAIL = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
-const PHONE = /(?:\+?1[ .-]?)?(?:\(\d{3}\)[ .-]?|\b\d{3}[ .-])\d{3}[ .-]\d{4}\b/g;
+const PHONE = /(?:\+?1[ .-]?)?(?:\(\d{3}\)[ .-]?|\b\d{3}[ .-])?\b\d{3}[ .-]\d{4}\b/g;
+// The invisible characters SQL takes out afterwards (clean_text: zero-width and bidi; private.scrub also the soft
+// hyphen, U+034F and U+180E), taken out here first, so a link, an email or a phone number split by one is found and
+// can't be joined again by SQL. By code point, never by a regular expression or an escape in this source (§6.8).
+const HIDDEN = new Set<number>([0x00ad, 0x034f, 0x180e, 0xfeff]);
+for (const [lo, hi] of [[0x200b, 0x200f], [0x202a, 0x202e], [0x2060, 0x2069]]) for (let c = lo; c <= hi; c++) HIDDEN.add(c);
+const visible = (s: string) => Array.from(s).filter((ch) => !HIDDEN.has(ch.codePointAt(0)!)).join('');
+// A field's text, or null when it isn't a string or is far longer than any field may be (the patterns above take
+// time that grows with the square of a long run, and an answer can hold 12,000 tokens): checked before any of them.
+const RAW_MAX = 1200;
 function text(v: unknown): string | null {
-  if (typeof v !== 'string') return null;
-  return oneLine(oneLine(v).replace(EMAIL, ' ').replace(URL_LINK, ' ').replace(HOST_PATH, ' ').replace(HOST_TLD, ' ').replace(PHONE, ' '));
+  if (typeof v !== 'string' || v.length > RAW_MAX) return null;
+  return oneLine(oneLine(visible(v)).replace(EMAIL, ' ').replace(URL_LINK, ' ').replace(HOST_PATH, ' ').replace(HOST_TLD, ' ').replace(PHONE, ' '));
 }
 const within = (s: string | null, lo: number, hi: number) => s !== null && chars(s) >= lo && chars(s) <= hi;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -202,6 +232,8 @@ export function checkPlan(raw: unknown, fields: Fields): Draft | null {
   const a = raw as Record<string, unknown>;
   if (Object.keys(a).sort().join() !== KEYS.join()) return null;
   if (typeof a.fits !== 'boolean' || !Array.isArray(a.questions) || !Array.isArray(a.steps)) return null;
+  // The counts before any text is looked at. The answer may repeat a locked step (the copy is dropped), never more.
+  if (a.questions.length > 3 || a.steps.length > 12 + (Array.isArray(fields.current_plan) ? fields.current_plan.length : 0)) return null;
   const summary = text(a.summary);
   const stretch = text(a.stretch);
   const note = text(a.note_for_adult);
@@ -293,6 +325,23 @@ function restore(lk: Record<string, unknown>, ai: Record<string, unknown> | null
 // The action
 // ---------------------------------------------------------------------
 const TOKEN = /^[0-9a-f]{32}$/i;
+const SEAL = /^[0-9a-f]{8}$/;
+
+// The seal of What Claude will see (plan.js's previewSeal, the same function): FNV-1a over the code points of the
+// message without its request and its answers, as 8 hex characters. Those two come last (private.ai_input) and are
+// what the asker typed and sent in the body; every other part is the database's, which the page showed as it was. No
+// person-typed text can hold the tags' '<' (the scrub replaces it), so the first "\n<request from=" or "\n<answers>"
+// is where they start.
+export function previewSeal(message: string): string {
+  let base = String(message);
+  for (const tag of ['\n<request from="', '\n<answers>\n']) {
+    const i = base.indexOf(tag);
+    if (i >= 0) base = base.slice(0, i);
+  }
+  let h = 0x811c9dc5;
+  for (const ch of base) { h ^= ch.codePointAt(0)!; h = Math.imul(h, 0x01000193) >>> 0; }
+  return h.toString(16).padStart(8, '0');
+}
 const NO_SCHEMA = 'The AI planner needs the database update (migration 0005_homework.sql).';
 type Work = { run: string; kind: string; fields: Fields; message: string };
 
@@ -311,6 +360,7 @@ export async function homeworkAi(req: Request, body: Record<string, unknown>, de
   if (answers !== null && (!Array.isArray(answers) || answers.length > 3 || answers.some((x) => typeof x !== 'string' || chars(x) > 200))) {
     return json(400, { error: 'answers: at most 3, each at most 200 characters.' });
   }
+  if (kind !== 'test' && (typeof body.shown !== 'string' || !SEAL.test(body.shown))) return json(400, { error: 'shown must be the seal of What Claude will see.' });
 
   // 2. Who: Pat's link (its token), or a parent's sign-in.
   let token: string | null = null;
@@ -347,6 +397,13 @@ export async function homeworkAi(req: Request, body: Record<string, unknown>, de
   if (r.stop) return json(200, r.run_id ? { stop: r.stop, run_id: r.run_id } : { stop: r.stop });
   if (!isUuid(r.run_id)) return json(500, { stop: 'error', error: 'The AI planner stopped with a database error.' });
   if (!r.input || typeof r.input.message !== 'string') return json(202, { run_id: r.run_id });   // a resent key: its run
+  // What goes is what was shown: a message that changed since (the school's update, a step renamed, an edit on another
+  // phone) ends the run without a call; the page shows the new one, open, and the asker sends again.
+  if (kind !== 'test' && previewSeal(r.input.message) !== body.shown) {
+    await finish(deps, r.run_id, { stop: 'changed', draft: null, usage: null, model: null });
+    console.log('homework_ai: changed');
+    return json(200, { stop: 'changed', run_id: r.run_id });
+  }
 
   // 5 and 6. Answer now; the work goes on in the background.
   const work = runWork(deps, { run: r.run_id, kind, fields: r.input.fields ?? {}, message: r.input.message });
@@ -455,7 +512,7 @@ function read(body: string, w: Work): Ended {
   const usage = u ? {
     input_tokens: tokens(u.input_tokens), cache_read_input_tokens: tokens(u.cache_read_input_tokens),
     cache_creation_input_tokens: tokens(u.cache_creation_input_tokens), output_tokens: tokens(u.output_tokens),
-    cents: estimateCents(u, model),
+    cents: estimateCents(u, model, m),
   } : null;
   const end = (stop: string | null, draft: Draft | null): Ended => ({ stop, draft, usage, model });
   if (m.stop_reason === 'refusal') {

@@ -8,8 +8,10 @@
 // constant, max_tokens, output_config with effort and the schema, fallbacks 'default', the cached system block, the
 // system prompt byte-identical for plan, revise and test and equal to §6.6, the user content equal to the RPC's
 // input.message, nothing else); privacy (no name, school, teacher, link, email, phone or uuid-shaped string in the
-// request); every answer rule of §6.8; refusals and max_tokens; each HTTP answer's code, with one retry only after a
-// 429 or a 529; timeouts; the cost from usage.iterations; the 202 before the call ends; homework_ai_finish tried twice
+// request); every answer rule of §6.8 (links split by an invisible character, phones without an area code, over-long
+// fields refused before any pattern runs); the seal of the preview the page showed (shown; a message that changed ends
+// as changed with no call, and plan.js's previewSeal is the same function); refusals and max_tokens; each HTTP answer's code, with one retry only after a
+// 429 or a 529; timeouts; the cost from usage.iterations (refusals Anthropic doesn't bill left out); the 202 before the call ends; homework_ai_finish tried twice
 // with only a fixed code logged; nothing personal in any console line; every RPC through deps.service(); no U+2028 or
 // U+2029 escape anywhere in hub-jobs; no outside import; no label words in the prompt, the schema or this file's
 // fixtures (the word list lives only in tests/docs/labels.test.js, which reads this file too).
@@ -19,8 +21,10 @@
 import { handle } from '../../supabase/functions/hub-jobs/handler.ts';
 import {
   HOMEWORK_MODEL, ANTHROPIC, AI_LIMITS, SYSTEM_PROMPT, PLAN_SCHEMA, PRICES, buildRequest, checkPlan, classify, estimateCents, cutOff, OPEN_RUNS,
+  previewSeal,
 } from '../../supabase/functions/hub-jobs/homework.ts';
 import { readFileSync, readdirSync } from 'node:fs';
+import { runInNewContext } from 'node:vm';
 
 const results: string[] = [];
 const check = (name: string, ok: boolean, detail: unknown = '') =>
@@ -152,7 +156,10 @@ const apiError = (status: number, type: string, message: string, headers: Record
 const post = (body: Record<string, unknown>, authorization?: string) => new Request('https://project.example/functions/v1/hub-jobs', {
   method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, authorization ? { Authorization: authorization } : {}), body: JSON.stringify(body),
 });
-const ask = (o: Record<string, unknown> = {}) => Object.assign({ action: 'homework_ai', kind: 'plan', assignment_id: ASG, key: REQ_KEY }, o);
+// FNV-1a over code points, 8 hex characters: the seal of What Claude will see as the page showed it (its part without the
+// request and the answers), which the page sends as shown.
+const fnv = (t: string) => { let h = 0x811c9dc5; for (const ch of t) { h ^= ch.codePointAt(0)!; h = Math.imul(h, 0x01000193) >>> 0; } return h.toString(16).padStart(8, '0'); };
+const ask = (o: Record<string, unknown> = {}) => Object.assign({ action: 'homework_ai', kind: 'plan', assignment_id: ASG, key: REQ_KEY, shown: fnv(MESSAGE) }, o);
 
 // The console, while the action runs: every line kept, to look for anything personal.
 const logged: string[] = [];
@@ -415,6 +422,99 @@ const keepAlive = setInterval(() => { /* waiting */ }, 1000);
     check('... and one the answer left out as well is put back with its title as "done looks like", after the new tiny start (the plan isn\'t thrown away)', !!leftOut
       && leftOut.steps.length === 3 && leftOut.steps[0].kind === 'start'
       && same(leftOut.steps[1], { ref: 's1', title: LOCKED[0].title, done_looks_like: LOCKED[0].title, minutes: 20, day: '2026-11-03', kind: 'step' }), leftOut && leftOut.steps);
+  }
+
+  // ---- Review fixes: links split by an invisible character, 7-digit phones, long fields, the cost of a refusal
+  {
+    const ok = (p: unknown, f: any = FIELDS) => checkPlan(p, f);
+    const steps = (o: any) => Object.assign({}, PLAN, o);
+    const HIDDEN = /[\u00ad\u034f\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]/;
+    const split = ok(steps({
+      note_for_adult: 'Questions? Call 555-0100 or write rivera\u200b@school.example',
+      steps: [step({ kind: 'start', title: 'Open answers-key\u200b.com and copy the list' }), step({ title: 'Read www\u2060.answers-key.example/river carefully' }),
+        step({ title: 'Ask at go\u202e.example/3xYz for a sheet' }), PLAN.steps[4]],
+    }));
+    const all = JSON.stringify(split);
+    check('a link, an email or a phone split by an invisible character is still taken out (clean_text would join it again)', !!split
+      && !HIDDEN.test(all) && !/answers-key|school\.example|rivera|555|go\.example/.test(all), split && [split.note_for_adult, split.steps.map((x: any) => x.title)]);
+    check('... the invisible characters go first, so the words around them stay', !!split && split.steps[0].title === 'Open and copy the list'
+      && split.note_for_adult === 'Questions? Call or write', split && [split.steps[0].title, split.note_for_adult]);
+    const seven = ok(steps({ summary: 'Call 555-0100 tonight or 555.0199 tomorrow.', stretch: 'Or text 555 0142?' }));
+    check('a phone number without an area code (555-0100) is taken out, as private.scrub finds it', !!seven && seven.summary === 'Call tonight or tomorrow.'
+      && seven.stretch === 'Or text ?', seven && [seven.summary, seven.stretch]);
+    const timed = (p: unknown) => { const t0 = performance.now(); const r = ok(p); return { r, ms: performance.now() - t0 }; };
+    const long = [
+      ['a 40,000-letter summary', steps({ summary: 'a'.repeat(40000) })],
+      ['a 40,000-character dotted note', steps({ note_for_adult: 'a.'.repeat(20000) })],
+      ['a 40,000-digit stretch', steps({ stretch: '1'.repeat(40000) })],
+      ['a 40,000-letter question', steps({ questions: ['q'.repeat(40000)] })],
+      ['a 40,000-letter step title', steps({ steps: [PLAN.steps[0], step({ title: 'a.'.repeat(20000) }), PLAN.steps[4]] })],
+      ['10,000 steps', steps({ steps: Array.from({ length: 10000 }, () => step({ title: 'a.'.repeat(300) })) })],
+    ] as const;
+    for (const [name, p] of long) {
+      const { r, ms } = timed(p);
+      check(`${name} → invalid in a few milliseconds, before any pattern runs over it (${ms.toFixed(1)} ms)`, r === null && ms < 50, ms);
+    }
+    check('... a field just inside its limit with spaces to spare still passes (300 characters and 300 spaces)', !!ok(steps({ summary: `${'s'.repeat(300)}${' '.repeat(300)}` })));
+    // What a refusal costs (Anthropic's "How refusals are billed"): before any output, only bio, frontier_llm and
+    // reasoning_extraction are billed; any other category, or none, is not (its tokens are still reported).
+    const pre = { input_tokens: 2600, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 1600 };
+    const refusal = (category: string | null) => ({ stop_reason: 'refusal', stop_details: { type: 'refusal', category }, content: [] });
+    check('estimateCents: a cyber refusal before any output costs nothing', estimateCents(pre, HOMEWORK_MODEL, refusal('cyber')) === 0);
+    check('... nor one in general_harms, or with no category', estimateCents(pre, HOMEWORK_MODEL, refusal('general_harms')) === 0 && estimateCents(pre, HOMEWORK_MODEL, refusal(null)) === 0);
+    // 2,600 × $4 + 1,600 × $5 = $0.0184
+    check('... a bio, frontier_llm or reasoning_extraction one is billed (1.84)', ['bio', 'frontier_llm', 'reasoning_extraction'].every((c) => estimateCents(pre, HOMEWORK_MODEL, refusal(c)) === 1.84));
+    check('... a refusal after some output is billed whatever its category', estimateCents(Object.assign({}, pre, { output_tokens: 100 }), HOMEWORK_MODEL, refusal('cyber')) === 1.84 + 0.2);
+    const fb = (category: string | null, out: number) => ({
+      stop_reason: 'end_turn', stop_details: null,
+      content: [{ type: 'fallback', from: { model: 'claude-opus-5-5' }, to: { model: 'claude-opus-4-8' }, trigger: { type: 'refusal', category } }, { type: 'text', text: '{}' }],
+      usage: { input_tokens: 2600, output_tokens: 2400, cache_read_input_tokens: 0, cache_creation_input_tokens: 1600, iterations: [
+        { type: 'message', model: 'claude-opus-5-5', input_tokens: 2600, output_tokens: out, cache_read_input_tokens: 0, cache_creation_input_tokens: 1600 },
+        { type: 'fallback_message', model: 'claude-opus-4-8', input_tokens: 2600, output_tokens: 2400, cache_read_input_tokens: 0, cache_creation_input_tokens: 1600 }] },
+    });
+    // The fallback alone: 2,600 × $5 + 2,400 × $25 + 1,600 × $6.25 = $0.083
+    check('... a cyber refusal then the fallback: only the fallback is counted (8.3)', estimateCents(fb('cyber', 0).usage, 'claude-opus-4-8', fb('cyber', 0)) === 8.3);
+    check('... a bio refusal then the fallback: both (10.14)', estimateCents(fb('bio', 0).usage, 'claude-opus-4-8', fb('bio', 0)) === 10.14);
+    check('... a refusal mid-answer then the fallback: both, with the output it made', estimateCents(fb('cyber', 500).usage, 'claude-opus-4-8', fb('cyber', 500)) === 10.14 + 1);
+    const s = setup({ replies: [json(200, Object.assign(anthropicOk(PLAN), { content: [], stop_reason: 'refusal', usage: pre, stop_details: { type: 'refusal', category: 'cyber', explanation: 'x' } }))] });
+    await run(s, post(ask(), ADMIN_JWT));
+    check('through the action: a cyber refusal before any output → refusal_cyber, 0 cents, its tokens still reported', finishes(s)[0].p_stop === 'refusal_cyber'
+      && finishes(s)[0].p_usage.cents === 0 && finishes(s)[0].p_usage.input_tokens === 2600, finishes(s)[0]);
+    const s2 = setup({ replies: [json(200, Object.assign(fb('cyber', 0), { model: 'claude-opus-4-8', id: 'msg_made_up', type: 'message', role: 'assistant',
+      content: [fb('cyber', 0).content[0], { type: 'text', text: JSON.stringify(PLAN) }] }))] });
+    await run(s2, post(ask(), ADMIN_JWT));
+    check('... and a fallback after one: ready, only the fallback counted (8.3)', finishes(s2)[0].p_stop === null && finishes(s2)[0].p_usage.cents === 8.3, finishes(s2)[0]);
+  }
+
+  // ---- What Claude will see is what is sent: the page's seal (shown) against the message homework_ai_start built
+  {
+    const REQ = `${MESSAGE}\n<request from="tutor">Smaller steps</request>\n<answers>\n- The Nile\n- Three\n</answers>`;
+    check('previewSeal: FNV-1a of the message without its request and answers', previewSeal(MESSAGE) === fnv(MESSAGE) && previewSeal(REQ) === fnv(MESSAGE)
+      && previewSeal(`${MESSAGE}\n<answers>\n- x\n</answers>`) === fnv(MESSAGE), [previewSeal(MESSAGE), previewSeal(REQ), fnv(MESSAGE)]);
+    const ctx: any = { window: {}, crypto: globalThis.crypto };
+    runInNewContext(readFileSync(new URL('../../assets/plan.js', import.meta.url), 'utf8'), ctx);
+    check('... the page\'s (plan.js) is the same function', typeof ctx.window.HomePlan.previewSeal === 'function'
+      && [MESSAGE, REQ, 'é\u{1F600}x'].every((t) => ctx.window.HomePlan.previewSeal(t) === previewSeal(t)));
+    let s = setup({ start: { data: { run_id: RUN, input: { fields: REVISE_FIELDS, message: REQ } }, error: null } });
+    let r = await run(s, post(ask({ kind: 'revise', request: 'Smaller steps', answers: ['The Nile', 'Three'] }), ADMIN_JWT));
+    check('a send whose seal matches the message: 202 and the call to Anthropic', r.status === 202 && s.hits.length === 1, r);
+    s = setup({ start: { data: { run_id: RUN, input: { fields: FIELDS, message: MESSAGE.replace('River poster', 'River poster with the group') } }, error: null } });
+    r = await run(s, post(ask(), ADMIN_JWT));
+    check('the message changed since the preview was shown → 200 {stop: changed, run_id}, no call to Anthropic', r.status === 200 && r.body.stop === 'changed'
+      && r.body.run_id === RUN && s.hits.length === 0, r);
+    check('... the run is finished as changed (nothing kept), and only the fixed code is logged', same(finishes(s), [{ p_run: RUN, p_stop: 'changed', p_draft: null, p_usage: null, p_model: null }])
+      && logged.slice(-1)[0] === 'homework_ai: changed', [finishes(s), logged.slice(-1)]);
+    for (const [name, b] of [['no seal', ask({ shown: undefined })], ['a seal that isn\'t 8 hex characters', ask({ shown: 'MESSAGE' })]] as const) {
+      s = setup();
+      r = await run(s, post(b, ADMIN_JWT));
+      check(`a plan with ${name} → 400 before any work`, r.status === 400 && s.calls.length === 0 && s.hits.length === 0, r);
+    }
+    s = setup();
+    r = await run(s, post(ask({ kind: 'test', assignment_id: undefined, shown: undefined }), ADMIN_JWT));
+    check('Test needs no seal (nothing of the family is sent)', r.status === 202 && s.hits.length === 1, r);
+    s = setup({ start: { data: { run_id: RUN }, error: null } });
+    r = await run(s, post(ask({ shown: '00000000' }), ADMIN_JWT));
+    check('a resent key (its run, no input) → 202 {run_id}, no seal to check', r.status === 202 && r.body.run_id === RUN && !finishes(s).length, r);
   }
 
   // ---- Through the action: an invalid answer, refusals, max_tokens, a parse error

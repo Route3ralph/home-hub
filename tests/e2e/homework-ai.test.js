@@ -12,7 +12,10 @@
 // keeps source 'ai' and copies the stretch question; a person's step the server put back, with its id, stays typed); Ask again with a chip, a note and his answer (a revise, shown in the
 // preview first); Undo and Dismiss (saved in the database, so a reload doesn't bring them back); each stop's words with
 // the starter plans still there; a given plan's draft as "Suggested changes"; Sam sees no AI part; nothing before the AI
-// is on. Pat's link: the same editor with the link's token in the body of hub-jobs' call (never a sign-in), the server's
+// is on. The PR B review: a preview that changed after it was drawn is shown again, not sent (on the page, and when
+// hub-jobs finds it changed); Ask again waits for the preview while typing; a renamed locked step opens the fold; Use this
+// plan keeps a person's step (its id, its own words) when the draft's ids moved and its copy was scrubbed; the switch
+// while the AI is on; a dead run in the list; Test's words for a cap, the month and a refusal; a 503 isn't "offline". Pat's link: the same editor with the link's token in the body of hub-jobs' call (never a sign-in), the server's
 // preview with his request and answers added, the p_part 'ai' poll, Use this plan and Give Jordan this plan, Dismiss through
 // tutor_assignment_by_token's ai, "AI draft ready" under Plans to look at, Spanish words, no AI part while the switch or
 // the link's Can ask the AI is off, and only the tutor functions and hub-jobs called. Jordan's My day: a plan made with a
@@ -34,6 +37,8 @@ const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const CORS = { 'access-control-allow-origin': '*', 'access-control-allow-headers': '*', 'access-control-allow-methods': 'GET,POST,PATCH,DELETE,OPTIONS', 'access-control-expose-headers': '*' };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+// FNV-1a over code points (8 hex): the seal hub-jobs checks, of the preview without its request and answers.
+const fnv = (t) => { let h = 0x811c9dc5; for (const ch of String(t)) { h ^= ch.codePointAt(0); h = Math.imul(h, 0x01000193) >>> 0; } return h.toString(16).padStart(8, '0'); };
 
 // ---- The household (made up): Alex the parent, Sam, Jordan the kid, Taylor the helper; Pat Lee's link.
 const T = '2026-10-24T16:00:00.000000+00:00';
@@ -330,9 +335,11 @@ async function tokenRpcs(page, db) {
   await page.click('[data-act="ai-send"]');
   await until(page, () => /Thinking about a plan/.test(document.querySelector('.plan-editor').textContent), 3000);
   const send = aiCalls(db)[0];
-  check('Send to Claude: hub-jobs { action, kind: plan, assignment_id, request: null, answers: null, key } with the parent\'s sign-in', !!send
-    && same(Object.keys(send.body).sort(), ['action', 'answers', 'assignment_id', 'key', 'kind', 'request']) && send.body.kind === 'plan' && send.body.assignment_id === SCI
+  const rawPv = await page.$eval('.plan-ai-preview .plan-ai-text', (e) => e.textContent);
+  check('Send to Claude: hub-jobs { action, kind: plan, assignment_id, request: null, answers: null, key, shown } with the parent\'s sign-in', !!send
+    && same(Object.keys(send.body).sort(), ['action', 'answers', 'assignment_id', 'key', 'kind', 'request', 'shown']) && send.body.kind === 'plan' && send.body.assignment_id === SCI
     && send.body.request === null && send.body.answers === null && UUID.test(send.body.key) && send.email === 'alex@example.com', send && JSON.stringify(send));
+  check('... shown is the seal of the preview it showed (FNV-1a of its text: hub-jobs refuses a message that differs)', !!send && send.body.shown === fnv(rawPv), send && send.body.shown);
   check('... "Thinking about a plan… (usually under a minute)", and the editor stays usable', /Thinking about a plan… \(usually under a minute\)/.test(await text(page, '.plan-ai-status'))
     && !(await page.$eval('[data-act="starter"]', (b) => b.disabled)));
   const before = (db.rpcCalls || []).length;
@@ -448,6 +455,249 @@ async function tokenRpcs(page, db) {
       && same(sv2.body.p_steps.map((x) => [x.id || null, x.source]), [[null, 'ai'], [typed.id, 'typed'], [null, 'ai']]), sv2 && JSON.stringify(sv2.body.p_steps));
     await context.close();
   }
+
+  // =====================================================================
+  // 2b. What goes is what was shown; a person's step comes back as they left it (the PR B review)
+  // =====================================================================
+  const rawText = (pg) => pg.$eval('.plan-ai-preview .plan-ai-text', (e) => e.textContent).catch(() => '');
+  const seal = (t) => fnv(String(t).split('\n<request from="')[0].split('\n<answers>\n')[0]);
+  const isOpen = (pg) => pg.$eval('.plan-ai-preview', (d) => d.open).catch(() => null);
+  // The teacher's text changes in the database after the preview was drawn (the school feed's update, or Morgan on her
+  // phone): the tap reads it again, shows it open, and sends nothing until the next tap.
+  ({ page, db, context } = await open({ label: 'stale preview', db: parentsDb({ on: true, tested: true }), path: `/#/homework/${SCI}` }));
+  await until(page, () => !!document.querySelector('.plan-ai-preview .plan-ai-text'), 3000);
+  await sleep(200);
+  db.assignments.find((a) => a.id === SCI).details = `${TEXT}\nWork with the group on Tuesday.`;
+  await page.click('[data-act="ai-send"]');
+  await until(page, () => /group on Tuesday/.test((document.querySelector('.plan-ai-text') || {}).textContent || ''), 3000);
+  await sleep(200);
+  check('the message changed after the preview was drawn: the tap shows the new one, open, and sends nothing',
+    aiCalls(db).length === 0 && (await isOpen(page)) === true && /What Claude will see has changed\. Read it again above, then send\./.test(await text(page, '.plan-ai-status')),
+    [aiCalls(db).length, await isOpen(page), await text(page, '.plan-ai-status')]);
+  const shownNow = await rawText(page);
+  await page.click('[data-act="ai-send"]');
+  await thinking(page);
+  const sentNow = aiCalls(db)[0];
+  const runNow = db.ai_runs.find((r) => r.kind === 'plan');
+  check('... the next tap sends it, sealed with what is shown now', !!sentNow && sentNow.body.shown === fnv(shownNow) && !!runNow && runNow.status === 'running'
+    && /group on Tuesday/.test(runNow.message), sentNow && JSON.stringify(sentNow.body));
+  await context.close();
+
+  // It changes between the tap's read and hub-jobs: hub-jobs ends the run as changed and sends nothing; the page shows
+  // the new message, open.
+  ({ page, db, context } = await open({ label: 'changed at hub-jobs', db: parentsDb({ on: true, tested: true }), path: `/#/homework/${SCI}` }));
+  await until(page, () => !!document.querySelector('.plan-ai-preview .plan-ai-text'), 3000);
+  await sleep(200);
+  await page.route(`${SUPA}/functions/v1/hub-jobs`, (route) => {
+    if (route.request().method() === 'POST') db.assignments.find((a) => a.id === SCI).details = `${TEXT}\nBring the photos.`;
+    return route.fallback();
+  });
+  await page.click('[data-act="ai-send"]');
+  await until(page, () => /Bring the photos/.test((document.querySelector('.plan-ai-text') || {}).textContent || ''), 4000);
+  await sleep(200);
+  const changedRun = db.ai_runs.find((r) => r.kind === 'plan');
+  check('changed between the tap and hub-jobs: the run ends as changed with nothing sent, and the page shows the new message, open',
+    aiCalls(db).length === 1 && !!changedRun && changedRun.status === 'failed' && changedRun.stop === 'changed' && !(db.aiPending || []).length
+    && (await isOpen(page)) === true && /What Claude will see has changed/.test(await text(page, '.plan-ai-status')) && !(await page.$('.plan-ai-draft')),
+    [aiCalls(db).length, changedRun && changedRun.stop, await text(page, '.plan-ai-status')]);
+  await context.close();
+
+  // A note typed and Ask again tapped at once: Ask again waits until the preview shows the note.
+  {
+    const ndb = parentsDb({ on: true, tested: true });
+    Object.assign(ndb.assignments.find((a) => a.id === SCI), { ai_state: 'ready', ai_at: at('2026-11-04', '20:00'), ai_draft: {
+      steps: [{ ref: 'new', id: null, kind: 'start', title: 'List what is unclear', done_looks_like: 'a short list', minutes: 10, day: '2026-11-09', source: 'ai' },
+        { ref: 'new', id: null, kind: 'turn_in', title: 'Turn it in', done_looks_like: 'handed in', minutes: 5, day: '2026-11-13', source: 'ai' }],
+      summary: 'A poster.', questions: [], stretch: null, fits: true, over: 0, horizon: null, no_time: false, note_for_adult: null, model: 'claude-opus-5-5', at: at('2026-11-04', '20:00') } });
+    ({ page, db, context } = await open({ label: 'note at once', db: ndb, path: `/#/homework/${SCI}` }));
+    await until(page, () => !!document.querySelector('.plan-ai-ask') && !!document.querySelector('.plan-ai-text'), 4000);
+    await sleep(200);
+    await page.fill('.plan-ai-ask input[name="ai-note"]', 'Work on Tuesday');
+    const waiting = await page.$eval('[data-act="ai-again"]', (b) => b.disabled);
+    await page.evaluate(() => document.querySelector('[data-act="ai-again"]').click());
+    await sleep(200);
+    check('a note typed and Ask again tapped at once: Ask again waits (disabled) for the preview with the note; nothing sent', waiting === true && aiCalls(db).length === 0,
+      [waiting, aiCalls(db).length]);
+    await page.clock.runFor(800);
+    await until(page, () => /Work on Tuesday/.test((document.querySelector('.plan-ai-text') || {}).textContent || '') && !document.querySelector('[data-act="ai-again"]').disabled, 3000);
+    const withNote = await rawText(page);
+    await page.click('[data-act="ai-again"]');
+    await thinking(page);
+    const r = aiCalls(db)[0];
+    check('... then it sends exactly what the preview shows (the note in it), sealed', !!r && r.body.request === 'Work on Tuesday'
+      && /<request from="parent">Work on Tuesday<\/request>/.test(withNote) && r.body.shown === seal(withNote) && db.ai_runs.find((x) => x.kind === 'revise').message === withNote,
+      r && [r.body.request, r.body.shown, seal(withNote)]);
+    await context.close();
+  }
+
+  // A locked step renamed after a send (Jordan on My day: his renames are typed): What Claude will see opens again.
+  ({ page, db, context } = await open({ label: 'renamed step', db: parentsDb({ on: true, tested: true }), path: `/#/homework/${HIST}` }));
+  await until(page, () => !!document.querySelector('.plan-ai-preview .plan-ai-text'), 3000);
+  await sleep(200);
+  await page.click('[data-act="ai-send"]');
+  await thinking(page);
+  await page.clock.runFor(5000);
+  await until(page, () => !!document.querySelector('.plan-ai-draft'), 6000);
+  await sleep(300);
+  const foldedAfter = await isOpen(page);
+  db.homework_steps.find((x) => x.assignment_id === HIST && x.source === 'typed').title = 'Draw the timeline with the class photos';
+  await page.reload();
+  await until(page, () => /class photos/.test((document.querySelector('.plan-ai-text') || {}).textContent || ''), 4000);
+  await sleep(200);
+  check('a locked step renamed after a send: What Claude will see opens again (folded before the rename)', foldedAfter === false && (await isOpen(page)) === true,
+    [foldedAfter, await isOpen(page)]);
+  await context.close();
+
+  // Use this plan when the database's step ids moved under the draft (Jordan ticked a step while it ran) and the draft
+  // holds the scrubbed copy of a person's step: each person's step comes back with its own id and its own words.
+  {
+    const udb = parentsDb({ on: true, tested: true });
+    const A = 'a5c10000-0000-4000-8000-000000000007';
+    udb.assignments.push(assignmentRow({ id: A, kid_id: ID.jordan, title: 'River poster', subject: 'Science', due_date: '2026-11-13', created_by: 'alex@example.com',
+      created_at: T, plan_rev: 1 }));
+    const OWN = 'Ask Pat for the sheet <2 pages> at example.com/river';
+    const st = [
+      stepRow({ assignment_id: A, pos: 1, kind: 'start', title: 'Copy the requirements', done_looks_like: 'the list in your notes', minutes: 10, day: '2026-11-05', source: 'typed',
+        done_at: at('2026-11-05', '14:40'), done_by: 'Jordan Example (My day)' }),
+      stepRow({ assignment_id: A, pos: 2, kind: 'step', title: OWN, done_looks_like: 'the sheet in your folder', minutes: 15, day: '2026-11-09', source: 'typed' }),
+      stepRow({ assignment_id: A, pos: 3, kind: 'step', title: 'Glue the pictures on', done_looks_like: 'pictures on the poster', minutes: 20, day: '2026-11-10', source: 'template' }),
+      stepRow({ assignment_id: A, pos: 4, kind: 'turn_in', title: 'Turn it in', done_looks_like: 'handed in', minutes: 5, day: '2026-11-13', source: 'typed' }),
+    ];
+    udb.homework_steps.push(...st);
+    // As homework_ai_finish stored it: the refs numbered again after the tick point one step on (s1's copy has s2's id,
+    // s2's copy s3's, s4's none), and the locked step's copy is the one the AI was sent.
+    Object.assign(udb.assignments.find((a) => a.id === A), { ai_state: 'ready', ai_at: at('2026-11-05', '15:00'), ai_draft: {
+      steps: [
+        { ref: 's1', id: st[1].id, kind: 'start', title: 'Copy the requirements', done_looks_like: 'the list in your notes', minutes: 10, day: '2026-11-09', source: 'ai' },
+        { ref: 's2', id: st[2].id, kind: 'step', title: 'Ask [name] for the sheet ‹2 pages› at [link]', done_looks_like: 'the sheet in your folder', minutes: 15, day: '2026-11-09', source: 'ai' },
+        { ref: 'new', id: null, kind: 'step', title: 'Glue three pictures on', done_looks_like: 'three pictures on the poster', minutes: 20, day: '2026-11-10', source: 'ai' },
+        { ref: 's4', id: null, kind: 'turn_in', title: 'Turn it in', done_looks_like: 'handed in', minutes: 5, day: '2026-11-13', source: 'ai' },
+      ],
+      summary: 'A poster.', questions: [], stretch: null, fits: true, over: 0, horizon: null, no_time: false, note_for_adult: null, model: 'claude-opus-5-5', at: at('2026-11-05', '15:00') } });
+    ({ page, db, context } = await open({ label: 'use moved ids', db: udb, path: `/#/homework/${A}` }));
+    await until(page, () => !!document.querySelector('[data-act="ai-use"]'), 4000);
+    await page.click('[data-act="ai-use"]');
+    await sleep(300);
+    const rowsNow = await texts(page, '.plan-steps .plan-step');
+    check('Use this plan: a person\'s step shows in their own words, never the copy the AI was sent', rowsNow.some((x) => x.includes(OWN)) && !rowsNow.some((x) => /\[name\]|\[link\]|‹/.test(x)),
+      JSON.stringify(rowsNow));
+    await page.click('[data-act="save"]');
+    await settle(page);
+    const sv = calls(db, 'save_homework_plan').slice(-1)[0];
+    check('... Save: the done step as it was, then each person\'s step with its own id, words and source; the AI\'s new step; no step written over another',
+      !!sv && same(sv.body.p_steps.map((x) => [x.id || null, x.title, x.source]), [
+        [st[0].id, 'Copy the requirements', 'typed'], [st[1].id, OWN, 'typed'], [null, 'Glue three pictures on', 'ai'], [st[3].id, 'Turn it in', 'typed']]),
+      sv && JSON.stringify(sv.body.p_steps.map((x) => [x.id, x.title, x.source])));
+    await context.close();
+  }
+
+  // A person's step renamed while the AI was asked (the draft's copy has the old words), and one added meanwhile (not in
+  // the draft at all): Use this plan keeps both as the person left them, with no copy of the old words beside them.
+  {
+    const rdb = parentsDb({ on: true, tested: true });
+    const A = 'a5c10000-0000-4000-8000-000000000008';
+    rdb.assignments.push(assignmentRow({ id: A, kid_id: ID.jordan, title: 'Map project', subject: 'History', due_date: '2026-11-13', created_by: 'alex@example.com',
+      created_at: T, plan_rev: 2 }));
+    const st = [
+      stepRow({ assignment_id: A, pos: 1, kind: 'start', title: 'List the countries on the map', done_looks_like: 'a list', minutes: 10, day: '2026-11-09', source: 'template' }),
+      stepRow({ assignment_id: A, pos: 2, kind: 'step', title: 'Trace the coastline in pencil', done_looks_like: 'the coast traced', minutes: 20, day: '2026-11-09', source: 'typed' }),
+      stepRow({ assignment_id: A, pos: 3, kind: 'step', title: 'Label the five rivers', done_looks_like: 'five labels', minutes: 15, day: '2026-11-10', source: 'typed' }),
+      stepRow({ assignment_id: A, pos: 4, kind: 'turn_in', title: 'Turn it in', done_looks_like: 'handed in', minutes: 5, day: '2026-11-13', source: 'template' }),
+    ];
+    rdb.homework_steps.push(...st);
+    Object.assign(rdb.assignments.find((a) => a.id === A), { ai_state: 'ready', ai_at: at('2026-11-05', '15:00'), ai_draft: {
+      steps: [
+        { ref: 'new', id: null, kind: 'start', title: 'List what the map needs', done_looks_like: 'a short list', minutes: 10, day: '2026-11-09', source: 'ai' },
+        { ref: 's2', id: st[1].id, kind: 'step', title: 'Trace the coast', done_looks_like: 'the coast traced', minutes: 20, day: '2026-11-09', source: 'ai' },
+        { ref: 'new', id: null, kind: 'turn_in', title: 'Turn it in', done_looks_like: 'handed in', minutes: 5, day: '2026-11-13', source: 'ai' },
+      ],
+      summary: 'A map.', questions: [], stretch: null, fits: true, over: 0, horizon: null, no_time: false, note_for_adult: null, model: 'claude-opus-5-5', at: at('2026-11-05', '15:00') } });
+    ({ page, db, context } = await open({ label: 'use renamed and added', db: rdb, path: `/#/homework/${A}` }));
+    await until(page, () => !!document.querySelector('[data-act="ai-use"]'), 4000);
+    await page.click('[data-act="ai-use"]');
+    await sleep(300);
+    await page.click('[data-act="save"]');
+    await settle(page);
+    const sv = calls(db, 'save_homework_plan').slice(-1)[0];
+    check('Use this plan: a step renamed while the AI was asked keeps its new words (its id named it), one added meanwhile stays, before the turn-in',
+      !!sv && same(sv.body.p_steps.map((x) => [x.id || null, x.title, x.source]), [
+        [null, 'List what the map needs', 'ai'], [st[1].id, 'Trace the coastline in pencil', 'typed'], [st[2].id, 'Label the five rivers', 'typed'], [null, 'Turn it in', 'ai']]),
+      sv && JSON.stringify(sv.body.p_steps.map((x) => [x.id, x.title, x.source])));
+    await context.close();
+  }
+
+  // The switch is there whenever the AI is on, so a parent can always turn it off: with no Test run kept (the 90-day
+  // trim) and with the last Test failed.
+  for (const [label, test] of [['no Test run kept', null], ['the last Test failed', 'busy_api']]) {
+    const sdb = parentsDb({ on: true });
+    if (test) {
+      sdb.ai_runs.push({ id: crypto.randomUUID(), kid_id: null, assignment_id: null, link_id: null, kind: 'test', asked_by: 'alex@example.com', key: crypto.randomUUID(),
+        status: 'failed', stop: test, model: null, started_at: at('2026-11-05', '12:00'), lease_until: at('2026-11-05', '12:06'), finished_at: at('2026-11-05', '12:00'),
+        input_tokens: null, cache_read_tokens: null, cache_write_tokens: null, output_tokens: null, cents: null });
+    }
+    ({ page, db, context } = await open({ label: `switch: ${label}`, db: sdb }));
+    const on = await page.$eval('[data-row="ai"] input[data-act="ai-on"]', (i) => i.checked).catch(() => null);
+    if (on) {
+      await page.click('[data-row="ai"] input[data-act="ai-on"]');
+      await settle(page);
+    }
+    check(`the AI on, ${label}: its switch is there (on), and turns it off`, on === true && db.household[0].homework_ai === false, [on, db.household[0].homework_ai]);
+    await context.close();
+  }
+
+  // The list reads a run whose worker died (still 'running', its lease long past) as the editor does: not drafting.
+  {
+    const ldb = parentsDb({ on: true, tested: true });
+    ldb.assignments.find((a) => a.id === SCI).ai_state = 'running';
+    ldb.ai_runs.push({ id: crypto.randomUUID(), kid_id: ID.jordan, assignment_id: SCI, link_id: null, kind: 'plan', asked_by: 'alex@example.com', key: crypto.randomUUID(),
+      status: 'running', stop: null, model: null, started_at: at('2026-11-05', '13:00'), lease_until: at('2026-11-05', '13:06'), finished_at: null,
+      input_tokens: null, cache_read_tokens: null, cache_write_tokens: null, output_tokens: null, cents: null });
+    ({ page, db, context } = await open({ label: 'stale run', db: ldb }));
+    const rowState = await text(page, `a.hw-arow[href="#/homework/${SCI}"] .hw-arow-state`);
+    check('the list: a run whose lease ran out hours ago doesn\'t read "AI is drafting a plan…"', !!rowState && !/drafting/.test(rowState), rowState);
+    await context.close();
+  }
+
+  // Test the AI planner's line for a cap, the month and a refusal with a category.
+  {
+    ({ page, db, context } = await open({ label: 'test cap', db: Object.assign(parentsDb(), { aiCap: 'cap' }) }));
+    await page.click('[data-row="ai"] [data-act="ai-test"]');
+    await until(page, () => !/Testing/.test(document.querySelector('[data-row="ai"] .hw-ai-test').textContent), 3000);
+    check('Test with the day\'s runs used up: "Not run: AI help is used up for today (12 runs). Try again tomorrow."',
+      /Not run: AI help is used up for today \(12 runs\)\. Try again tomorrow\./.test(await text(page, '[data-row="ai"] .hw-ai-test')), await text(page, '[data-row="ai"] .hw-ai-test'));
+    await context.close();
+    ({ page, db, context } = await open({ label: 'test month', db: Object.assign(parentsDb(), { aiCap: 'month' }) }));
+    await page.click('[data-row="ai"] [data-act="ai-test"]');
+    await until(page, () => !/Testing/.test(document.querySelector('[data-row="ai"] .hw-ai-test').textContent), 3000);
+    check('... the month\'s: "Not run: AI help is used up for this month."', /Not run: AI help is used up for this month\./.test(await text(page, '[data-row="ai"] .hw-ai-test')),
+      await text(page, '[data-row="ai"] .hw-ai-test'));
+    await context.close();
+    const rdb = parentsDb();
+    rdb.ai_runs.push({ id: crypto.randomUUID(), kid_id: null, assignment_id: null, link_id: null, kind: 'test', asked_by: 'alex@example.com', key: crypto.randomUUID(),
+      status: 'failed', stop: 'refusal_cyber', model: 'claude-opus-5-5', started_at: at('2026-11-05', '12:00'), lease_until: at('2026-11-05', '12:06'), finished_at: at('2026-11-05', '12:00'),
+      input_tokens: 2600, cache_read_tokens: 0, cache_write_tokens: 0, output_tokens: 0, cents: 0 });
+    ({ page, db, context } = await open({ label: 'test refused', db: rdb }));
+    check('... a refusal with a category: "Not working: the AI declined the test (cyber)."', /Not working: the AI declined the test \(cyber\)\./.test(await text(page, '[data-row="ai"] .hw-ai-test')),
+      await text(page, '[data-row="ai"] .hw-ai-test'));
+    await context.close();
+  }
+
+  // hub-jobs answering an error (here 503, 0005 not applied) is "Try again later", never "Can't reach Home Hub".
+  ({ page, db, context } = await open({ label: 'hub-jobs 503', db: Object.assign(parentsDb({ on: true, tested: true }), { aiMode: 'no_schema' }), path: `/#/homework/${SCI}`,
+    allowConsole: /status of 503/ }));
+  await until(page, () => !!document.querySelector('.plan-ai-preview .plan-ai-text'), 3000);
+  await sleep(200);
+  await page.click('[data-act="ai-send"]');
+  await until(page, () => !!(document.querySelector('.plan-ai-status') || {}).textContent, 3000);
+  check('hub-jobs answers 503: "The AI couldn\'t make a plan just now. Try again later…", not a connection problem',
+    /Try again later/.test(await text(page, '.plan-ai-status')) && !/Can't reach|internet/.test(await text(page, '.plan-ai-status')), await text(page, '.plan-ai-status'));
+  await page.evaluate(() => { location.hash = '#/homework'; });
+  await until(page, () => !!document.querySelector('[data-row="ai"]'));
+  await page.click('[data-row="ai"] [data-act="ai-test"]');
+  await until(page, () => !/Testing/.test(document.querySelector('[data-row="ai"] .hw-ai-test').textContent), 3000);
+  check('... and Test says "Not working: try again later.", not "Couldn\'t reach Home Hub"', /Not working: try again later\./.test(await text(page, '[data-row="ai"] .hw-ai-test')),
+    await text(page, '[data-row="ai"] .hw-ai-test'));
+  await context.close();
 
   // =====================================================================
   // 3. Every failure leaves the starter plans, with its words
@@ -576,6 +826,27 @@ async function tokenRpcs(page, db) {
   await t.page.clock.runFor(800);
   await until(t.page, () => /Fewer steps/.test((document.querySelector('.plan-ai-text') || {}).textContent || ''), 3000);
   check('Pat\'s Ask again: the request in the preview (‹request from="tutor"›)', /<request from="tutor">Fewer steps<\/request>/.test(await text(t.page, '.plan-ai-text')), await text(t.page, '.plan-ai-text'));
+  await t.context.close();
+
+  // The link's Send to Claude reads the view again first: the teacher's text changed since it was drawn → shown, open,
+  // nothing sent; the next tap sends it, sealed.
+  t = await tutor({ label: 'pat stale', path: `/day.html?h=${PAT}#a/${hid(10)}` });
+  await until(t.page, () => !!document.querySelector('.plan-ai-preview .plan-ai-text'), 3000);
+  await sleep(200);
+  t.db.assignments.find((a) => a.id === hid(10)).details = `${TEXT}\nWork with the group on Tuesday.`;
+  const reads0 = tcalls(t.db, 'tutor_view_by_token').length;
+  await t.page.click('[data-act="ai-send"]');
+  await until(t.page, () => /group on Tuesday/.test((document.querySelector('.plan-ai-text') || {}).textContent || ''), 3000);
+  await sleep(200);
+  check('Pat\'s link: Send to Claude reads the view again; changed since drawn → shown open, nothing sent', aiCalls(t.db).length === 0
+    && tcalls(t.db, 'tutor_view_by_token').slice(reads0).some((c) => c.body.p_assignment === hid(10) && c.body.p_part === 'all')
+    && (await t.page.$eval('.plan-ai-preview', (d) => d.open)) === true && /What Claude will see has changed/.test(await text(t.page, '.plan-ai-status')),
+    [aiCalls(t.db).length, await text(t.page, '.plan-ai-status')]);
+  const tShown = await t.page.$eval('.plan-ai-preview .plan-ai-text', (e) => e.textContent);
+  await t.page.click('[data-act="ai-send"]');
+  await until(t.page, () => /Thinking about a plan/.test(document.querySelector('.plan-editor').textContent), 3000);
+  const tsend2 = aiCalls(t.db)[0];
+  check('... the next tap sends it with the token, sealed with what is shown', !!tsend2 && tsend2.body.token === PAT && tsend2.body.shown === fnv(tShown), tsend2 && JSON.stringify(tsend2.body));
   await t.context.close();
 
   // The switch off, or the link may not ask: nothing of the AI on the link.

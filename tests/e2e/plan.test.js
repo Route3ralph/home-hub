@@ -123,9 +123,10 @@ const WEEK = [
   });
   check('plan.js loads in day.html as window.HomePlan, frozen', basics.loaded === 'object' && basics.frozen);
   const API = ['HORIZON', 'KINDS', 'LENGTHS', 'LIMITS', 'PLAIN', 'STARTERS', 'WORDS', 'addDays', 'answer', 'audioAt', 'bars', 'check', 'clean',
-    // PR B adds hashText and previewMark (the AI preview's "last sent" mark).
+    // PR B adds hashText and previewMark (the AI preview's "last sent" mark); its review previewSeal (the seal hub-jobs
+    // checks) and aiFailure (a failed hub-jobs call as a stop).
     'cleanBlock', 'daysBetween', 'editor', 'ended', 'esc', 'estimate', 'firstDay', 'fmt', 'focused', 'friendly', 'fromRows', 'goalBar', 'guess', 'hashText', 'homeworkDays',
-    'horizon', 'isoWeekday', 'lastWorkDay', 'left', 'ms', 'newId', 'onTimeLine', 'pace', 'place', 'pointsLine', 'previewMark', 'ring', 'spare', 'starter',
+    'horizon', 'isoWeekday', 'lastWorkDay', 'left', 'ms', 'newId', 'onTimeLine', 'pace', 'place', 'pointsLine', 'previewMark', 'previewSeal', 'aiFailure', 'ring', 'spare', 'starter',
     't', 'timeLeft', 'timer', 'tutor', 'week', 'weekday', 'workLeft'];
   check('the documented API, and nothing else', same(basics.names, API.slice().sort()), JSON.stringify(basics.names));
   check('constants: lengths 10/15/20/25, the five kinds, the plain ones, 56 days, plan_check\'s limits',

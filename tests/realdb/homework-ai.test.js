@@ -16,6 +16,10 @@
 //            what his preview showed, with the typed step locked; the fake changes it and leaves the rest out, and the
 //            database's draft has the people's version back with its step's id; Use this plan, Give: still typed.
 //            Only the tutor functions and hub-jobs are called. Jordan's My day: "Plan by Pat, with AI help".
+//   locked   A revision whose run is open while Jordan ticks his first step (the database numbers the steps again when
+//            the answer comes, so the draft's ids point one step on), and whose locked step names Pat, a link and '<'
+//            (the draft holds the scrubbed copy the AI was sent): Use this plan, Save keeps each person's step as they
+//            left it, with its own id, and writes no step over another.
 //   stops    Through the API: a malformed token, Jordan's day token and a link that may not ask (not_found, nothing
 //            sent); the switch off; a refusal (refusal_cyber, the draft kept, the editor's words, the starter plans
 //            still there); a 401 (auth); a resent key (its run, no second request); no key (not_set_up, no run).
@@ -28,6 +32,10 @@ const at = (day, hm) => `${day}T${String(Number(hm.slice(0, 2)) + 5).padStart(2,
 const TEXT = 'Make a poster about one river for North Field School.\nAsk Ms. Rivera if you are stuck: rivera@school.example, (201) 555-0100,'
   + ' https://example.com/rubric.\nJordan: two sources at least.';
 const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+// The seal hub-jobs checks (plan.js's previewSeal): FNV-1a over the code points of the message without its request and
+// answers, 8 hex characters.
+const fnv = (t) => { let h = 0x811c9dc5; for (const ch of String(t)) { h ^= ch.codePointAt(0); h = Math.imul(h, 0x01000193) >>> 0; } return h.toString(16).padStart(8, '0'); };
+const seal = (t) => fnv(String(t).split('\n<request from="')[0].split('\n<answers>\n')[0]);
 const TUTOR_OR_JOBS = /^\/(rest\/v1\/rpc\/(tutor_view_by_token|tutor_assignment_by_token|tutor_plan_by_token|tutor_step_by_token)|functions\/v1\/hub-jobs)$/;
 
 (async () => {
@@ -261,6 +269,64 @@ const TUTOR_OR_JOBS = /^\/(rest\/v1\/rpc\/(tutor_view_by_token|tutor_assignment_
   });
 
   // ===================================================================
+  // A person's locked step, and a tick while the run is open: Use this plan keeps each person's step as they left it
+  // ===================================================================
+  await flow('locked', async () => {
+    await h.setClock(at(MON, '09:25'));
+    const own = 'Ask Pat for the sheet <2 pages> at example.com/volcano';
+    const b = await one(`insert into assignments (kid_id, title, subject, due_date, details, created_by)
+      values ('${P.jordan.id}', 'Volcano model', 'Science', '2026-11-13', 'Build a model volcano.', 'alex@example.com') returning id`);
+    const saved = await rpcAs('alex@example.com', 'save_homework_plan', { p_assignment: b.id, p_rev: 0, p_give: false, p_steps: [
+      { kind: 'start', title: 'Copy the requirements', done_looks_like: 'the list in your notes', minutes: 10, day: null, source: 'typed' },
+      { kind: 'step', title: own, done_looks_like: 'the sheet in your folder', minutes: 15, day: null, source: 'typed' },
+      { kind: 'step', title: 'Paint the cone', done_looks_like: 'the cone painted', minutes: 20, day: null, source: 'template' },
+      { kind: 'turn_in', title: 'Turn it in', done_looks_like: 'handed in', minutes: 5, day: null, source: 'typed' }] });
+    const before = await sql(`select id, kind, title, source from homework_steps where assignment_id = '${b.id}' order by pos`);
+    check('locked: the plan saved (four steps, three typed, one with Pat, a link and \'<\' in it)', saved.status === 200 && before.length === 4 && before[1].title === own, [saved.status, saved.body, before]);
+    const preview = (await rpcAs('alex@example.com', 'homework_ai_preview', { p_assignment: b.id, p_kind: 'revise' })).body;
+    // While "Claude is thinking", Jordan ticks his first step; the answer returns the locked steps as they were sent.
+    h.anthropic.next(async (req) => {
+      await sql(`update homework_steps set done_at = now(), done_by = 'Jordan Example (My day)' where id = '${before[0].id}'`);
+      let cur = [];
+      try { cur = JSON.parse((/<current_plan>([^]*?)<\/current_plan>/.exec(userOf(req)) || [])[1] || '[]'); } catch (e) { cur = []; }
+      const back = (i) => ({ ref: cur[i].ref, kind: cur[i].kind, title: cur[i].title, done_looks_like: cur[i].done_looks_like, minutes: cur[i].minutes, day: cur[i].day });
+      const answer = { summary: 'Build a model volcano.', questions: [], stretch: '', fits: true, note_for_adult: '',
+        steps: [back(0), back(1), { ref: 'new', kind: 'step', title: 'Paint the cone in two colors', done_looks_like: 'the cone painted', minutes: 20, day: null }, back(3)] };
+      return { status: 200, body: { id: 'msg_realdb_locked', type: 'message', role: 'assistant', model: req.body.model, content: [{ type: 'text', text: JSON.stringify(answer) }],
+        stop_reason: 'end_turn', usage: { input_tokens: 1000, cache_creation_input_tokens: 0, cache_read_input_tokens: 1600, output_tokens: 900 } } };
+    });
+    const go1 = await h.hubJobsAs('alex@example.com', { action: 'homework_ai', kind: 'revise', assignment_id: b.id, request: null, answers: null,
+      key: require('crypto').randomUUID(), shown: seal(preview) });
+    await h.aiDone();
+    const r = sent().slice(-1)[0];
+    check('locked: the run went with the preview\'s seal, and the AI got the scrubbed copy of the locked step', go1.status === 202 && userOf(r) === preview
+      && /Ask \[name\] for the sheet ‹2 pages› at \[link\]/.test(preview) && !/Pat|example\.com|</.test(JSON.parse((/<current_plan>([^]*?)<\/current_plan>/.exec(preview) || [])[1] || '[]').map((x) => x.title).join(' ')),
+      [go1.status, go1.body, String(preview).slice(-500)]);
+    const d = JSON.parse((await one(`select ai_draft from assignments where id = '${b.id}'`)).ai_draft || 'null');
+    check('locked: the database\'s draft has the ids one step on (numbered again after the tick) and the copy with [name] and [link]',
+      !!d && d.steps.length === 4 && d.steps[0].id === before[1].id && d.steps[1].id === before[2].id && /\[name\]/.test(d.steps[1].title),
+      d && d.steps.map((x) => [x.title, x.id && before.findIndex((y) => y.id === x.id)]));
+    await h.mark();
+    const { page, context } = await open({ email: 'alex@example.com', path: `/#/homework/${b.id}`, label: 'ai-alex-locked' });
+    await page.waitForSelector('[data-act="ai-use"]', { timeout: 8000 });
+    await page.click('[data-act="ai-use"]');
+    await h.settle(page, 200);
+    const shown = await texts(page, '.plan-steps .plan-step-title');
+    check('locked: Use this plan shows the person\'s step in their own words (no [name], [link] or ‹›)', shown.some((x) => x.includes(own)) && !shown.some((x) => /\[name\]|\[link\]|‹/.test(x)), shown);
+    await page.click('[data-act="save"]');
+    await until(async () => (await sql(`select 1 from homework_steps where assignment_id = '${b.id}' and title = 'Paint the cone in two colors'`)).length === 1, 6000);
+    await h.settle(page);
+    const after = await sql(`select id, kind, title, source, done_at is not null as done from homework_steps where assignment_id = '${b.id}' order by pos`);
+    check('locked: Save: the ticked step still done, each person\'s step with its own id, words and source typed, the AI\'s new step; nothing written over another',
+      same(after.map((x) => [before.findIndex((y) => y.id === x.id), x.kind, x.title, x.source, x.done]), [
+        [0, 'start', 'Copy the requirements', 'typed', 't'], [1, 'step', own, 'typed', 'f'], [-1, 'step', 'Paint the cone in two colors', 'ai', 'f'], [3, 'turn_in', 'Turn it in', 'typed', 'f']]),
+      after.map((x) => [before.findIndex((y) => y.id === x.id), x.title, x.source, x.done]));
+    const f = await failures();
+    check('locked: no API request failed', !f.length, f);
+    await context.close();
+  });
+
+  // ===================================================================
   // Through the API: who may not ask, the stops, a resent key, no key
   // ===================================================================
   await flow('stops', async () => {
@@ -269,14 +335,16 @@ const TUTOR_OR_JOBS = /^\/(rest\/v1\/rpc\/(tutor_view_by_token|tutor_assignment_
     const key = () => require('crypto').randomUUID();
     const n0 = sent().length;
     const r0 = (await runs()).length;
-    const bad = await jobs({ token: 'not-a-token', kind: 'plan', assignment_id: sci, key: key() });
-    const day = await jobs({ token: P.jordan.day_token, kind: 'plan', assignment_id: sci, key: key() });
-    const cant = await jobs({ token: noAi.token, kind: 'plan', assignment_id: sci, key: key() });
+    // What Pat's link or a parent sees for a revision now (no request): the seal every send below carries.
+    const shown = seal((await rpcAs('alex@example.com', 'homework_ai_preview', { p_assignment: sci, p_kind: 'revise' })).body);
+    const bad = await jobs({ token: 'not-a-token', kind: 'plan', assignment_id: sci, key: key(), shown });
+    const day = await jobs({ token: P.jordan.day_token, kind: 'plan', assignment_id: sci, key: key(), shown });
+    const cant = await jobs({ token: noAi.token, kind: 'plan', assignment_id: sci, key: key(), shown });
     await h.aiDone();
     check('a malformed token, Jordan\'s day token and a link that may not ask: 200 not_found, nothing sent to Anthropic, no run',
       [bad, day, cant].every((x) => x.status === 200 && same(x.body, { stop: 'not_found' })) && sent().length === n0 && (await runs()).length === r0, [bad, day, cant].map((x) => x.body));
     await sql('update household set homework_ai = false');
-    const off = await h.hubJobsAs('alex@example.com', { action: 'homework_ai', kind: 'plan', assignment_id: sci, key: key() });
+    const off = await h.hubJobsAs('alex@example.com', { action: 'homework_ai', kind: 'plan', assignment_id: sci, key: key(), shown });
     await sql('update household set homework_ai = true');
     check('the switch off: 200 off, nothing sent', off.status === 200 && same(off.body, { stop: 'off' }) && sent().length === n0, off.body);
 
@@ -284,7 +352,7 @@ const TUTOR_OR_JOBS = /^\/(rest\/v1\/rpc\/(tutor_view_by_token|tutor_assignment_
     const draftBefore = (await one(`select ai_draft from assignments where id = '${sci}'`)).ai_draft;
     h.anthropic.next({ status: 200, body: { id: 'msg_realdb_refusal', type: 'message', role: 'assistant', model: 'claude-opus-5-5', content: [], stop_reason: 'refusal',
       stop_details: { type: 'refusal', category: 'cyber', explanation: null }, usage: { input_tokens: 900, cache_creation_input_tokens: 0, cache_read_input_tokens: 1600, output_tokens: 3 } } });
-    const ref = await h.hubJobsAs('alex@example.com', { action: 'homework_ai', kind: 'revise', assignment_id: sci, request: null, answers: null, key: key() });
+    const ref = await h.hubJobsAs('alex@example.com', { action: 'homework_ai', kind: 'revise', assignment_id: sci, request: null, answers: null, key: key(), shown });
     await h.aiDone();
     const rr = (await runs()).slice(-1)[0];
     const ra = await one(`select ai_state, ai_stop, ai_draft from assignments where id = '${sci}'`);
@@ -301,7 +369,7 @@ const TUTOR_OR_JOBS = /^\/(rest\/v1\/rpc\/(tutor_view_by_token|tutor_assignment_
 
     // A 401: auth.
     h.anthropic.next({ status: 401, body: { type: 'error', error: { type: 'authentication_error', message: 'invalid x-api-key' } } });
-    const auth = await jobs({ token: link.token, kind: 'revise', assignment_id: sci, key: key() });
+    const auth = await jobs({ token: link.token, kind: 'revise', assignment_id: sci, key: key(), shown });
     await h.aiDone();
     const ar = (await runs()).slice(-1)[0];
     check('a 401 from Anthropic: the run failed with auth (nothing else of the answer kept)', auth.status === 202 && ar.id === auth.body.run_id && same([ar.status, ar.stop, ar.model, ar.cents], ['failed', 'auth', null, null]), ar);
@@ -309,9 +377,9 @@ const TUTOR_OR_JOBS = /^\/(rest\/v1\/rpc\/(tutor_view_by_token|tutor_assignment_
     // A resent key: its run, and no second request.
     const k = key();
     const n1 = sent().length;
-    const first = await jobs({ token: link.token, kind: 'revise', assignment_id: sci, key: k });
+    const first = await jobs({ token: link.token, kind: 'revise', assignment_id: sci, key: k, shown });
     await h.aiDone();
-    const again = await jobs({ token: link.token, kind: 'revise', assignment_id: sci, key: k });
+    const again = await jobs({ token: link.token, kind: 'revise', assignment_id: sci, key: k, shown });
     await h.aiDone();
     check('the same key sent twice: the same run both times, one request to Anthropic', first.status === 202 && again.status === 202 && first.body.run_id === again.body.run_id
       && sent().length === n1 + 1 && (await sql(`select 1 from ai_runs where key = '${k}'`)).length === 1, [first.body, again.body, sent().length - n1]);

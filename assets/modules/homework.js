@@ -437,9 +437,14 @@
   };
   const aiOn = (st) => !!(st.household && st.household.homework_ai);
   // hub-jobs' homework_ai, with the parent's sign-in: { run_id } | { stop, run_id? } | { error }.
+  // An answer that isn't a 2xx (a database error, no service key, 0005 not applied) is its stop, never "Can't reach
+  // Home Hub": only a request that got no answer is offline (P.aiFailure).
   async function invokeAi(body) {
     const r = await sb().functions.invoke('hub-jobs', { body: Object.assign({ action: 'homework_ai' }, body) });
-    if (r.error) return { error: r.error };
+    if (r.error) {
+      const stop = await P.aiFailure(r.error);
+      return stop === 'offline' ? { error: r.error } : { stop };
+    }
     return r.data && typeof r.data === 'object' ? r.data : { error: { message: 'No answer.' } };
   }
   // plan.js's editor's AI parts for one assignment, or null (Sam, or the AI off with nothing to show).
@@ -459,7 +464,7 @@
       on: aiOn(st),
       sent: SENT,
       preview: ({ kind, request, answers }) => run(sb().rpc('homework_ai_preview', { p_assignment: id, p_kind: kind, p_request: request, p_answers: answers })),
-      send: ({ kind, request, answers, key }) => invokeAi({ kind, assignment_id: id, request, answers, key }),
+      send: ({ kind, request, answers, key, shown }) => invokeAi({ kind, assignment_id: id, request, answers, key, shown }),
       state: fresh,
       draft: async (action) => {
         try { await run(sb().rpc('homework_ai_draft', { p_assignment: id, p_action: action })); } catch (err) { return { error: err }; }
@@ -495,7 +500,14 @@
       const secs = Math.max(1, Math.round((Date.parse(r.finished_at) - Date.parse(r.started_at)) / 1000)) || 0;
       return `Working · ${r.model || 'claude'} · ${secs} s · ${aboutCents(r.cents)}`;
     }
-    return `Not working: ${AI_KEY_LINE[r.stop] || ({ timeout: 'it took too long.', refusal: 'the AI declined the test.' }[r.stop] || 'try again later.')}`;
+    const stop = String(r.stop || '');
+    if (stop === 'cap') return 'Not run: AI help is used up for today (12 runs). Try again tomorrow.';
+    if (stop === 'month') return 'Not run: AI help is used up for this month. It starts again next month.';
+    if (/^refusal/.test(stop)) {
+      const cat = /^refusal_[a-z_]+$/.test(stop) ? stop.slice('refusal_'.length).replace(/_/g, ' ') : '';
+      return `Not working: the AI declined the test${cat ? ` (${cat})` : ''}.`;
+    }
+    return `Not working: ${AI_KEY_LINE[stop] || ({ timeout: 'it took too long.' }[stop] || 'try again later.')}`;
   }
   function aiRowHTML(st) {
     const hh = st.household;
@@ -518,7 +530,7 @@
     const words = hh.homework_never_send || [];
     const busyTest = st.aiTest && st.aiTest.state === 'running';
     return `<div class="hw-switch-row" data-row="ai"><p class="hw-switch-title">AI planner</p>
-      ${tested ? `<label class="hw-switch"><input type="checkbox" data-act="ai-on"${on ? ' checked' : ''}><span>${on ? 'On' : 'Off'}</span></label>` : ''}
+      ${on || tested ? `<label class="hw-switch"><input type="checkbox" data-act="ai-on"${on ? ' checked' : ''}><span>${on ? 'On' : 'Off'}</span></label>` : ''}
       <small class="hw-switch-line">When on, Pat and the parents can send an assignment (its title, class, dates and text), ${esc(kid)}'s free minutes per day, how long his steps take against the plan, and his short answers to the AI's questions, with the names Home Hub knows taken out, to Anthropic (Claude) to draft a plan. What Claude will see shows exactly what goes. Anthropic doesn't train on it. It may keep it up to 30 days, or up to 2 years if its safety checks flag it. About 6 cents a plan; never more than the $15 monthly limit.</small>
       <p class="hw-ai-state">${esc(`AI planner: ${on ? 'on' : 'off'}`)}</p>
       ${warn.map((x) => `<p class="hw-feed-error hw-ai-key" role="status">${esc(x)}</p>`).join('')}
@@ -677,7 +689,7 @@
     else if (a.added_by === 'school') sub.push(...schoolMarks(st, a));
     let state;
     if (a.status !== 'open') state = a.status === 'done' ? 'Done' : 'Dropped';
-    else if (!a.given_at && a.ai_state === 'running') state = 'AI is drafting a plan… ›';
+    else if (!a.given_at && (aiOf(st, a, true) || {}).state === 'running') state = 'AI is drafting a plan… ›';
     else if (!a.given_at && a.ai_draft) state = 'AI draft ready ›';
     else if (!steps.length) state = 'No plan yet ›';
     else if (!a.given_at) state = 'Plan not given yet ›';
