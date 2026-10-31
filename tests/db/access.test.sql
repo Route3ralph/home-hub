@@ -81,7 +81,7 @@ select test.is((select string_agg(p.proname, ', ' order by p.proname) from pg_pr
                 where p.pronamespace = 'public'::regnamespace and p.prosecdef),
                'add_to_list, add_to_list_by_token, assignment_by_token, buy_item, buy_item_by_token, complete_by_token, complete_task, '
                'confirm_digest, decide_reward, erase_homework, focus_by_token, get_list_by_token, get_person_day, get_shared_project, '
-               'give_points, homework_ai_finish, homework_ai_preview, homework_ai_start, homework_by_token, homework_prefs_by_token, '
+               'give_points, homework_ai_draft, homework_ai_finish, homework_ai_preview, homework_ai_start, homework_by_token, homework_prefs_by_token, '
                'homework_step, hook_family_only_signup, mark_signed_in, new_tutor_token, plan_by_token, remove_person, reward_by_token, '
                'rotate_day_token, save_homework_kid, save_homework_plan, save_person, save_tutor_link, skip_task, step_by_token, '
                'stop_digest, tutor_assignment_by_token, tutor_plan_by_token, tutor_step_by_token, tutor_view_by_token, undo_by_token, '
@@ -97,7 +97,7 @@ select test.is((select string_agg(p.proname, ', ' order by p.proname) from pg_pr
                                     -- 0005: every homework helper but free_minutes, clean_block, homework_word and the triggers
                                     'homework_kid_by_token', 'tutor_link_by_token', 'count_homework', 'place_steps', 'plan_check',
                                     'plan_save', 'step_act', 'award', 'points_balance', 'homework_pace', 'focus_act', 'ai_sweep',
-                                    'homework_trim', 'homework_view_kid', 'homework_card', 'homework_view_tutor', 'scrub', 'ai_input')),
+                                    'ai_draft_act', 'homework_trim', 'homework_view_kid', 'homework_card', 'homework_view_tutor', 'scrub', 'ai_input')),
                null, 'members cannot call the private helpers that act for someone else');
 -- What 0005 grants members in private: free_minutes (homework_week runs as the member), and clean_block
 -- and homework_word (the tidy triggers and add_homework_time run as the parent who saves).
@@ -105,7 +105,7 @@ select test.is((select string_agg(p.proname, ', ' order by p.proname) from pg_pr
                 where p.pronamespace = 'private'::regnamespace and has_function_privilege('authenticated', p.oid, 'execute')
                   and p.proname in ('free_minutes', 'clean_block', 'homework_word', 'homework_kid_by_token', 'tutor_link_by_token',
                                     'count_homework', 'place_steps', 'plan_check', 'plan_save', 'step_act', 'award', 'points_balance',
-                                    'homework_pace', 'focus_act', 'ai_sweep', 'homework_trim', 'homework_view_kid', 'homework_card',
+                                    'homework_pace', 'focus_act', 'ai_sweep', 'ai_draft_act', 'homework_trim', 'homework_view_kid', 'homework_card',
                                     'homework_view_tutor', 'scrub', 'ai_input')),
                'clean_block, free_minutes, homework_word', '0005''s private functions members may call: free_minutes, clean_block, homework_word');
 select test.is((select string_agg(p.proname, ', ' order by p.proname) from pg_proc p
@@ -630,6 +630,7 @@ insert into rpc values
   ('new_tutor_token',    $$select new_tutor_token((select id from tutor_links limit 1))$$,                  'denied', 'denied', 'denied', 'denied', 'ok',     'denied'),
   ('homework_ai_preview',$$select homework_ai_preview((select id from assignments limit 1))$$,             'denied', 'denied', 'denied', 'denied', 'ok',     'denied'),
   ('erase_homework',     $$select erase_homework(test.person('Taylor'), 'ERASE')$$,                         'denied', 'denied', 'denied', 'denied', 'ok',     'denied'),
+  ('homework_ai_draft',  $$select homework_ai_draft((select id from assignments limit 1), 'dismiss')$$,     'denied', 'denied', 'denied', 'denied', 'ok',     'denied'),
   ('homework_by_token',  $$select homework_by_token(test.token('Taylor'))$$,                                'ok',     'ok',     'ok',     'ok',     'ok',     'denied'),
   ('step_by_token',      $$select step_by_token(repeat('0', 32), gen_random_uuid(), 'done')$$,             'ok',     'ok',     'ok',     'ok',     'ok',     'denied'),
   ('plan_by_token',      $$select plan_by_token(repeat('0', 32), gen_random_uuid(), '[]', 0)$$,            'ok',     'ok',     'ok',     'ok',     'ok',     'denied'),

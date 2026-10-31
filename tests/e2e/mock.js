@@ -788,7 +788,7 @@ function personDayFood(db, person, answer) {
 //   tutor_links     admins read (members get no rows); written by save_tutor_link and new_tutor_token
 //   assignments     members read; admins insert, change and delete the page's columns, through the
 //                   tidy trigger (title, class and stretch on one line, the teacher's text with its
-//                   lines, '' as null, done_at from status) and the stamp (updated_at, updated_by)
+//                   lines, '' as null, done_at and dropped_at from status) and the stamp (updated_at, updated_by)
 //   rewards         members read; admins insert, change and delete (title, cost, active, sort_order)
 //   homework_steps, focus_sessions, reward_asks, points_ledger: members read, nobody signed in writes;
 //   ai_runs: admins read; homework_use: no privilege at all
@@ -836,7 +836,7 @@ const tutorLinkRow = (o) => Object.assign({
 }, o);
 const assignmentRow = (o) => Object.assign({
   id: uuid(), kid_id: null, kind: 'assignment', added_by: 'family', title: '', subject: null, due_date: null, details: null, stretch: null,
-  status: 'open', done_at: null, given_at: null, given_by: null, plan_rev: 0, ai_state: null, ai_stop: null, ai_draft: null, ai_prev: null,
+  status: 'open', done_at: null, dropped_at: null, given_at: null, given_by: null, plan_rev: 0, ai_state: null, ai_stop: null, ai_draft: null, ai_prev: null,
   ai_at: null, created_at: now(), created_by: null, updated_at: now(), updated_by: null,
 }, o);
 const stepRow = (o) => Object.assign({
@@ -1122,6 +1122,9 @@ function hwStepAct(db, stepId, action, text, who) {
     if (s.checked_at) {
       if (s.checked_by !== who || !within(db, s.checked_at, 15 * 60e3)) throw new Raise('42501', 'Only the one who checked it can take it back, for 15 minutes.');
       const paid = db.points_ledger.filter((l) => l.step_id === s.id && l.kind === 'milestone').map((l) => l.id);
+      const net = db.points_ledger.filter((l) => paid.includes(l.id) || (l.kind === 'void' && paid.includes(l.void_of))).reduce((n, l) => n + l.delta, 0);
+      const kid = db.assignments.find((x) => x.id === s.assignment_id).kid_id;
+      if (hwBalance(db, kid).balance - net < 0) throw new Raise('P0001', 'Those points are already spent.');   // never below zero, as void_points
       db.points_ledger = db.points_ledger.filter((l) => !paid.includes(l.id) && !(l.kind === 'void' && paid.includes(l.void_of)));
       Object.assign(s, { checked_at: null, checked_by: null });
       changed = true;
@@ -1307,7 +1310,8 @@ const homeworkRpc = {
     const ends = b.p_expires_on || HP.addDays(today, 180);
     if (!label || Array.from(label).length > 60) throw new Raise('22023', 'A link\'s name is 1 to 60 characters.');
     if (!['en', 'es'].includes(b.p_language || 'en')) throw new Raise('22023', 'Choose English or Spanish.');
-    if (ends < today || ends > HP.addDays(today, 400)) throw new Raise('22023', 'A link ends from today to 400 days from now.');
+    const kept = b.p_link != null && db.tutor_links.some((x) => x.id === b.p_link && x.expires_on === ends);   // a change keeps its own end date, even past
+    if ((ends < today || ends > HP.addDays(today, 400)) && !kept) throw new Raise('22023', 'A link ends from today to 400 days from now.');
     const t = foodStamp(db);
     if (b.p_link == null) {
       if (!db.homework_kids.some((k) => k.kid_id === b.p_kid)) throw new Raise('22023', 'Turn on homework for this kid first.');
@@ -1362,6 +1366,7 @@ function tidyAssignment(r, old) {
   if ('stretch' in t) t.stretch = cleanText(t.stretch, 160) || null;
   const status = 'status' in t ? t.status : old ? old.status : 'open';
   t.done_at = status !== 'done' ? null : old && old.status === 'done' ? old.done_at : null;
+  t.dropped_at = status !== 'dropped' ? null : old && old.status === 'dropped' ? old.dropped_at : null;
   return t;
 }
 function assignmentProblem(r) {
@@ -1426,6 +1431,7 @@ function homeworkTables(db, table, method, body, member, rows) {
           const t = foodStamp(db);
           const row = assignmentRow(Object.assign(tidyAssignment(Object.assign({ kind: 'assignment', status: 'open' }, r)), { created_at: t, created_by: email, updated_at: t, updated_by: email }));
           if (row.status === 'done') row.done_at = t;
+          if (row.status === 'dropped') row.dropped_at = t;
           const bad = assignmentProblem(row);
           if (bad) throw bad;
           return row;
@@ -1439,6 +1445,7 @@ function homeworkTables(db, table, method, body, member, rows) {
         const next = rows.map((r) => {
           const n = Object.assign({}, r, tidyAssignment(body, r), { updated_at: foodStamp(db), updated_by: email });
           if (n.status === 'done' && !n.done_at) n.done_at = n.updated_at;
+          if (n.status === 'dropped' && !n.dropped_at) n.dropped_at = n.updated_at;
           const bad = assignmentProblem(n);
           if (bad) throw bad;
           return n;
@@ -1751,7 +1758,7 @@ const tkLinkRow = (o) => Object.assign({
 }, o);
 const tkAssignmentRow = (o) => Object.assign({
   id: uuid(), kid_id: null, kind: 'assignment', added_by: 'family', title: '', subject: null, due_date: null, details: null, stretch: null,
-  status: 'open', done_at: null, given_at: null, given_by: null, plan_rev: 0, ai_state: null, ai_stop: null, ai_draft: null, ai_prev: null,
+  status: 'open', done_at: null, dropped_at: null, given_at: null, given_by: null, plan_rev: 0, ai_state: null, ai_stop: null, ai_draft: null, ai_prev: null,
   ai_at: null, created_at: now(), created_by: null, updated_at: now(), updated_by: null,
 }, o);
 const tkStepRow = (o) => Object.assign({
@@ -2151,7 +2158,11 @@ function tkStepAct(db, stepId, action, text, day, key, role, who) {
   } else if (action === 'uncheck') {
     if (s.checked_at != null) {
       if (s.checked_by !== who || db.hwNow - tkMs(s.checked_at) > 15 * 60000) throw new Raise('42501', 'Only the one who checked it can take it back, for 15 minutes.');
-      db.points_ledger = db.points_ledger.filter((l) => !(l.step_id === s.id && l.kind === 'milestone'));
+      const paid = db.points_ledger.filter((l) => l.step_id === s.id && l.kind === 'milestone').map((l) => l.id);
+      const net = db.points_ledger.filter((l) => paid.includes(l.id) || (l.kind === 'void' && paid.includes(l.void_of))).reduce((n, l) => n + l.delta, 0);
+      const kid = db.assignments.find((x) => x.id === s.assignment_id).kid_id;
+      if (tkBalance(db, kid).balance - net < 0) throw new Raise('P0001', 'Those points are already spent.');   // never below zero, as void_points
+      db.points_ledger = db.points_ledger.filter((l) => !paid.includes(l.id) && !(l.kind === 'void' && paid.includes(l.void_of)));
       Object.assign(s, { checked_at: null, checked_by: null });
       changed = true;
     }
@@ -2575,16 +2586,18 @@ const homeworkTokenRpc = {
         throw new Raise('42501', 'Plan this one with Pat.');
       } else {
         const placed = tkPlace(db, me.id, a, [{ kind: 'step', minutes: b.p_minutes, day: null }]);
-        if (placed.no_time) throw new Raise('22023', 'Set a homework time first.');
-        const at = tkStamp(db.hwNow);
-        db.homework_steps.push(tkStepRow({ assignment_id: a.id, pos: 1, kind: 'step', title: tkLen(a.title) >= 3 ? Array.from(a.title).slice(0, 80).join('') : `Homework: ${a.title}`,
-          minutes: b.p_minutes, day: placed.steps[0].day, source: 'typed', updated_at: at, updated_by: who }));
-        Object.assign(a, { given_at: at, given_by: who, plan_rev: a.plan_rev + 1, updated_by: who });
-        changed = true;
+        if (placed.no_time && b.p_action === 'quick') throw new Raise('22023', 'Set a homework time first.');
+        if (!placed.no_time) {   // 'add' with no homework time at all: his homework is kept, with no plan
+          const at = tkStamp(db.hwNow);
+          db.homework_steps.push(tkStepRow({ assignment_id: a.id, pos: 1, kind: 'step', title: tkLen(a.title) >= 3 ? Array.from(a.title).slice(0, 80).join('') : `Homework: ${a.title}`,
+            minutes: b.p_minutes, day: placed.steps[0].day, source: 'typed', updated_at: at, updated_by: who }));
+          Object.assign(a, { given_at: at, given_by: who, plan_rev: a.plan_rev + 1, updated_by: who });
+          changed = true;
+        }
       }
     } else if (b.p_action === 'drop') {
       if (a.added_by !== 'kid' || db.homework_steps.some((s) => s.assignment_id === a.id && s.done_at)) throw new Raise('42501', 'Only homework you added, with nothing ticked, can be dropped.');
-      if (a.status !== 'dropped') { Object.assign(a, { status: 'dropped', updated_by: who, updated_at: tkStamp(db.hwNow) }); changed = true; }
+      if (a.status !== 'dropped') { Object.assign(a, { status: 'dropped', dropped_at: tkStamp(db.hwNow), updated_by: who, updated_at: tkStamp(db.hwNow) }); changed = true; }
     }
     if (changed) tkCount(db, me.id, 'writes', 150);
     return Object.assign({ assignment_id: a.id }, tkViewKid(db, me.id));
@@ -2613,6 +2626,7 @@ const homeworkTokenRpc = {
     const who = `${l.label} (tutor link)`;
     if (!f || typeof f !== 'object' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(f.id || '')) throw new Raise('22023', 'An assignment needs its id.');
     if (tkLen(f.title) > 120 || tkLen(f.subject) > 40 || tkLen(f.details) > 4000 || tkLen(f.stretch) > 160) throw tkTooLong();
+    if ('title' in f && !tkClean(f.title, 120)) throw new Raise('22023', 'An assignment needs a title and a due date.');   // on a change too
     let a = db.assignments.find((x) => x.id === f.id);
     if (a && a.kid_id !== l.kid_id) throw new Raise('42501', "That assignment isn't on this link.");
     const pick = (key, clean) => (key in f ? clean(f[key]) : a ? a[key] : null);
@@ -2620,6 +2634,8 @@ const homeworkTokenRpc = {
       if (!tkClean(f.title, 120) || !f.due_date) throw new Raise('22023', 'An assignment needs a title and a due date.');
       a = tkAssignmentRow({ id: f.id, kid_id: l.kid_id, kind: f.kind || 'assignment', added_by: 'tutor', title: tkClean(f.title, 120), subject: tkClean(f.subject, 40),
         due_date: f.due_date, details: f.details || null, stretch: tkClean(f.stretch, 160), status: f.status || 'open', created_by: who, updated_by: who });
+      if (a.status === 'done') a.done_at = tkStamp(db.hwNow);
+      if (a.status === 'dropped') a.dropped_at = tkStamp(db.hwNow);
       db.assignments.push(a);
     } else {
       Object.assign(a, { kind: pick('kind', (x) => x), title: pick('title', (x) => tkClean(x, 120)), subject: pick('subject', (x) => tkClean(x, 40)),
@@ -2627,6 +2643,8 @@ const homeworkTokenRpc = {
         status: pick('status', (x) => x), updated_by: who, updated_at: tkStamp(db.hwNow) });
       if (a.status === 'done' && !a.done_at) a.done_at = tkStamp(db.hwNow);
       if (a.status !== 'done') a.done_at = null;
+      if (a.status === 'dropped' && !a.dropped_at) a.dropped_at = tkStamp(db.hwNow);
+      if (a.status !== 'dropped') a.dropped_at = null;
     }
     tkCount(db, l.id, 'writes', 200);
     return Object.assign({ assignment_id: a.id, moved: 0 }, tkViewTutor(db, l, a.id, 'all'));

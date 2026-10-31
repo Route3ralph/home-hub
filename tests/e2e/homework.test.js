@@ -501,6 +501,24 @@ const emailOf = (req) => {
   await settle(page);
   check('Off: save_tutor_link with p_active false; the row says Off', lastCall(db, 'save_tutor_link').body.p_active === false && /Off/.test(await tc(page, '.hw-link .hw-link-meta'))
     && !!(await page.$('.hw-link [data-act="link-on"]')), await tc(page, '.hw-link .hw-link-meta'));
+  // A link that has ended (Oct 30) can still be turned off and renamed: its own end date is kept, and it stays ended.
+  {
+    const edb = fullDb();
+    edb.tutor_links[0].expires_on = '2026-10-30';
+    const e = await open({ label: 'ended link', db: edb });
+    await e.page.click('.hw-link [data-act="link-off"]');
+    await settle(e.page);
+    check('an ended link: Off sends its own end date and the row says "Off · Ended Oct 30"', lastCall(e.db, 'save_tutor_link').body.p_expires_on === '2026-10-30'
+      && e.db.tutor_links[0].active === false && /Off · Ended Oct 30/.test(await tc(e.page, '.hw-link .hw-link-meta')),
+      `${await tc(e.page, '.hw-link .hw-link-meta')} ${JSON.stringify(await toasts(e.page))}`);
+    await e.page.click('.hw-link [data-act="edit-link"]');
+    await e.page.fill('form[data-form="link"] [name="label"]', 'Pat Lee, old tutor');
+    await e.page.click('form[data-form="link"] button[type="submit"]');
+    await settle(e.page);
+    check('... and a new name is saved, still ending Oct 30', e.db.tutor_links[0].label === 'Pat Lee, old tutor' && e.db.tutor_links[0].expires_on === '2026-10-30'
+      && e.db.tutor_links[0].active === false && (await tc(e.page, '.hw-link .hw-link-label')) === 'Pat Lee, old tutor', JSON.stringify(await toasts(e.page)));
+    await e.context.close();
+  }
   // Points values and both caps, saved with the updated_at check.
   await page.fill('form[data-form="values"] [name="pts_day_cap"]', '25');
   await page.fill('form[data-form="values"] [name="pts_milestone_week"]', '60');
