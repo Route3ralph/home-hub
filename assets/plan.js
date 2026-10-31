@@ -108,6 +108,46 @@
      focused(week, lang)        '1 h 40 focused this week (last week 1 h 15)' from the view's week
      ring(fraction, o)          the timer's shrinking ring, an SVG (class is-done when empty)
 
+   TIMELINES (HTML strings; user text escaped; '' when there is nothing to draw). Days are columns counted
+   in whole days from o.today ('YYYY-MM-DD'), so the Nov 1 clock change moves nothing; a header of days
+   (the month on the first day and each 1st, the weekday's letter, the date; each week from its Monday;
+   today marked); plan.css draws them light and dark, a box too narrow scrolls inside itself.
+     overview(items, o)         the parents' Homework page and Pat's link: a row per open assignment (status open
+                                or none), by due date, over o.days (21) days. A bar from its first step day (today
+                                when it has no plan or that day is earlier) to its due date, the done share filled;
+                                milestones as diamonds (filled when done) on their days when the steps are known,
+                                else next_milestone's; one not done whose day has passed on today's column (is-behind);
+                                the due date a flag; a due date past the days an arrow and "due <day>" in its line;
+                                an overdue one marked late (is-late, on today's column only). Each row links to
+                                o.link(id) when it gives an href, and carries its label for screen readers ("Essay ·
+                                steps from Mon Nov 2 · milestone Outline Thu Nov 5 · due Fri Nov 13 · 2 of 9 steps
+                                done"); the line under its name: class · 2 of 9 · due Fri Nov 13. '' with no open one.
+                                items: [{ id, kind, title, subject, due_date, status, steps, steps_done?,
+                                next_milestone? }], steps either [{ kind, day, done }] (fromRows', his view's once
+                                given, Pat's assignment's) or Pat's list's count with steps_done; o: { today, days,
+                                lang, link }
+     chart(a, o)                one assignment's chart (the parents' #/homework/<id>, Pat's assignment): days from
+                                its first step's day (or today, when earlier) to the due date, at most 63 (past them
+                                an arrow and "due <day>"); a row per phase, the steps up to and including each
+                                milestone (its title, with a diamond), then "Check and turn in" ("The plan" with no
+                                milestone), each "4 steps · 1 h 05"; each step a block on its day with its minutes
+                                (a day's stacked), done filled, a milestone's diamond, the turn-in's flag, one not
+                                done whose day has passed behind ("from earlier"); today's line; days without
+                                homework time shaded when o.week (homework_week's or Pat's week rows, as
+                                homeworkDays reads them) has any. '' for a plan on fewer than 2 distinct days.
+                                a: { kind, due_date, steps: [{ kind, title, minutes, day, done }] }; o: { today,
+                                lang, week }
+     path(a, o)                 Jordan's path (My day): a dot a day from today ("Today") to the due date (a star),
+                                at most 14 (then "… due <day>"); flags on the milestones' days (filled when done;
+                                one not done whose day has passed on today's; those done before today counted
+                                first); days with his open steps marked (has-work). One line on top: "Next flag:
+                                Outline · Thu (3 days) · +20 points now" (today, tomorrow, a weekday and its days,
+                                "in 9 days", "from Fri"); the points only with o.points, what his tick pays (his view
+                                doesn't carry it: left out rather than guessed); every flag done: "Every flag done!
+                                Due Fri Nov 13 (11 days)"; no milestones: "Due …". '' without steps, once done, or
+                                past its due date (his screen never says late). a: his view's assignment ({ status,
+                                due_date, steps }); o: { today, lang, points }
+
    THE TIMER (§7.2): never the device's clock
      ms(ts)                     a database timestamp ('…Z', '…+00:00', microseconds) → epoch ms, NaN otherwise
      timer(x, perf)             { endLocal, totalMs }, endLocal = perf + (ends_at − server_now), on the
@@ -262,6 +302,15 @@
       chk_due_day: 'Only the turn-in goes on the due date.', chk_in_past: "A new or moved step can't go in the past.",
       // The week strip
       w_free: '{n} free', w_free_planned: '{n} free · {m} planned', w_over: '{n} min over', w_busy: 'Busy',
+      // The timelines: the overview, an assignment's chart, his path
+      tl_next_weeks: 'Next {n} weeks', tl_overview: 'Open assignments, {from} to {to}', tl_chart: 'Plan by day, {from} to {to}',
+      tl_from: 'steps from {day}', tl_no_plan: 'no plan yet', tl_ms: 'milestone {title} {day}', tl_ms_done: 'milestone {title} done',
+      tl_steps_done: '{n} of {m} steps done', tl_late: 'late', tl_behind: 'from earlier',
+      tl_phase_end: 'Check and turn in', tl_phase_all: 'The plan', tl_n_steps: '{n} steps', tl_n_steps_one: '1 step',
+      tl_key_due: 'due date', tl_key_done: 'done', tl_key_off: 'no homework time',
+      tl_next_flag: 'Next flag: {title}', tl_points_now: '+{n} points now', tl_all_flags: 'Every flag done!', tl_due_when: 'Due {when}',
+      tl_in_days: 'in {n} days', tl_today: 'Today', tl_path: 'From today to {to}', tl_flag: 'flag {title} {day}', tl_flag_done: 'flag {title} done',
+      tl_flags_won: '{n} flags done', tl_flags_won_one: '1 flag done',
       // Pat's link (§9.5)
       tutor_title: 'Homework · {kid}', tutor_hi: 'Hi {label} · Link ends {day}',
       tutor_coach: "Start with what he did. Ask what's next and when he'll start it.",
@@ -385,6 +434,14 @@
       chk_minutes_range: 'Un paso dura de 5 a 60 minutos.', chk_after_due: 'Un paso no puede ir después de la fecha de entrega.',
       chk_due_day: 'Solo la entrega va en la fecha de entrega.', chk_in_past: 'Un paso nuevo o movido no puede ir en el pasado.',
       w_free: '{n} libres', w_free_planned: '{n} libres · {m} planeados', w_over: '{n} min de más', w_busy: 'Ocupado',
+      tl_next_weeks: 'Las próximas {n} semanas', tl_overview: 'Trabajos abiertos, del {from} al {to}', tl_chart: 'Plan por días, del {from} al {to}',
+      tl_from: 'pasos desde {day}', tl_no_plan: 'todavía sin plan', tl_ms: 'hito {title} {day}', tl_ms_done: 'hito {title} hecho',
+      tl_steps_done: '{n} de {m} pasos hechos', tl_late: 'con retraso', tl_behind: 'de antes',
+      tl_phase_end: 'Revisar y entregar', tl_phase_all: 'El plan', tl_n_steps: '{n} pasos', tl_n_steps_one: '1 paso',
+      tl_key_due: 'entrega', tl_key_done: 'hecho', tl_key_off: 'sin tiempo de tarea',
+      tl_next_flag: 'Siguiente bandera: {title}', tl_points_now: '+{n} puntos ahora', tl_all_flags: '¡Todas las banderas hechas!', tl_due_when: 'Se entrega {when}',
+      tl_in_days: 'en {n} días', tl_today: 'Hoy', tl_path: 'De hoy al {to}', tl_flag: 'bandera {title} {day}', tl_flag_done: 'bandera {title} hecha',
+      tl_flags_won: '{n} banderas hechas', tl_flags_won_one: '1 bandera hecha',
       tutor_title: 'Tarea · {kid}', tutor_hi: 'Hola, {label} · El enlace vence el {day}',
       tutor_coach: 'Empieza por lo que hizo. Pregunta qué sigue y cuándo lo empezará.',
       sec_check: 'Por revisar', sec_talk: 'Para hablar', sec_questions: 'Preguntas', sec_plans: 'Planes por mirar',
@@ -1149,6 +1206,254 @@
   }
 
   // ============================================
+  // TIMELINES: the overview of open assignments, an assignment's chart, his path
+  // ============================================
+  // Whole days from o.today, as everywhere here: a column a day, never the device's clock or zone.
+  const LETTERS = Object.freeze({ en: Object.freeze(['S', 'M', 'T', 'W', 'T', 'F', 'S']), es: Object.freeze(['D', 'L', 'M', 'X', 'J', 'V', 'S']) });
+  const TL_DAYS = 21;      // the overview's days (3 weeks)
+  const TL_MAX = 63;       // the most days the overview or a chart draws (9 weeks)
+  const PATH_MAX = 14;     // the most dots on his path
+  const isDay = (iso) => Number.isFinite(dayNumber(iso));
+  // A day inside a sentence: Spanish takes its article ('para el vie 13 nov', 'hito Esquema el jue 5 nov').
+  const dayIn = (iso, l) => (l === 'es' ? `el ${fmt.day(iso, l)}` : fmt.day(iso, l));
+  const monthOf = (iso, l) => { const p = parts(iso); return p ? MONTHS[l][p.month].slice(0, 3) : ''; };
+  const isOpen = (a) => !!a && (a.status == null || a.status === 'open');
+  const stepsOf = (a) => (Array.isArray(a && a.steps) ? a.steps.filter((s) => s && typeof s === 'object') : null);
+  const earliest = (days) => days.reduce((m, d) => (m == null || d < m ? d : m), null);
+  const latest = (days) => days.reduce((m, d) => (m == null || d > m ? d : m), null);
+  const minutesText = (m) => fmt.duration(Math.max(0, Math.round(Number(m) || 0)));
+  const str = (v) => (v == null ? '' : String(v));   // a title in t()'s vars (null would leave '{title}')
+
+  // The days across the top: the month on the first day and on each 1st, the weekday's letter and the
+  // date; each week from its Monday; today, the due day and (o.off) days without homework time marked;
+  // o.arrow: an arrow after the last day (the due date is past it).
+  function tlHead(from, n, o, l) {
+    let html = '';
+    for (let i = 0; i < n; i++) {
+      const d = addDays(from, i);
+      const p = parts(d);
+      const cls = ['plan-tl-hday'];
+      if (d === o.today) cls.push('is-today');
+      if (p.weekday === 1) cls.push('is-mon');
+      if (o.off && o.off.has(d)) cls.push('is-off');
+      if (d === o.due) cls.push('is-due');
+      const month = i === 0 || p.day === 1 ? `<span class="plan-tl-month">${esc(monthOf(d, l))}</span>` : '';
+      html += `<span class="${cls.join(' ')}">${month}<span class="plan-tl-letter">${LETTERS[l][p.weekday]}</span>`
+        + `<span class="plan-tl-date">${p.day}</span></span>`;
+    }
+    const more = o.arrow ? `<span class="plan-tl-arrow">${ICON.arrow}</span>` : '';
+    return `<div class="plan-tl-head" aria-hidden="true"><span class="plan-tl-corner"></span><span class="plan-tl-days">${html}</span>${more}</div>`;
+  }
+  // A row's background: a cell a day (today's line, each Monday's edge, days without homework time).
+  function tlCells(from, n, o) {
+    let html = '';
+    for (let i = 0; i < n; i++) {
+      const d = addDays(from, i);
+      const cls = ['plan-tl-cell'];
+      if (d === o.today) cls.push('is-today');
+      if (weekday(d) === 1) cls.push('is-mon');
+      if (o.off && o.off.has(d)) cls.push('is-off');
+      html += `<span class="${cls.join(' ')}" style="grid-column:${i + 1}"></span>`;
+    }
+    return html;
+  }
+  const tlKey = (items) => `<p class="plan-tl-key" aria-hidden="true">${items.map(([cls, icon, text]) => `<span class="${cls}">${icon}${esc(text)}</span>`).join(' ')}</p>`;
+
+  // The overview: a row per open assignment by due date, across o.days days from o.today.
+  function overview(items, o) {
+    const x = o || {};
+    const l = langOf(x.lang);
+    const today = x.today;
+    if (!isDay(today)) return '';
+    const n = Math.max(7, Math.min(TL_MAX, Math.round(Number(x.days)) || TL_DAYS));
+    const end = addDays(today, n - 1);
+    const open = (Array.isArray(items) ? items : []).map((a, i) => ({ a, i }))
+      .filter(({ a }) => isOpen(a) && isDay(a.due_date))
+      .sort((p, q) => (p.a.due_date < q.a.due_date ? -1 : p.a.due_date > q.a.due_date ? 1 : p.i - q.i));
+    if (!open.length) return '';
+    const colOf = (d) => Math.max(0, Math.min(n - 1, daysBetween(today, d)));
+    const cells = tlCells(today, n, { today });
+    const rows = open.map(({ a }) => {
+      const steps = stepsOf(a);
+      const total = steps ? steps.length : Math.max(0, Math.round(Number(a.steps)) || 0);
+      const done = steps ? steps.filter((s) => s.done).length : Math.max(0, Math.min(total, Math.round(Number(a.steps_done)) || 0));
+      const first = steps ? earliest(steps.filter((s) => isDay(s.day)).map((s) => s.day)) : null;
+      const due = a.due_date;
+      const late = due < today;
+      const past = due > end;
+      let start = first && first > today ? first : today;
+      if (start > due) start = due < today ? today : due;
+      const c0 = late ? 0 : colOf(start);
+      const c1 = late ? 0 : colOf(due);
+      // Milestones: every one the plan has (with its day) or, without the steps, only the next.
+      let ms = steps ? steps.filter((s) => s.kind === 'milestone') : [];
+      if (!ms.length && a.next_milestone && a.next_milestone.title != null) ms = [{ title: a.next_milestone.title, day: a.next_milestone.day, done: false }];
+      const marks = ms.map((m) => {
+        if (!isDay(m.day) || m.day > end || (m.day < today && m.done)) return '';
+        const behind = m.day < today;
+        return `<span class="plan-tl-ms${m.done ? ' is-done' : ''}${behind ? ' is-behind' : ''}" style="grid-column:${behind ? 1 : colOf(m.day) + 1}">${ICON.diamond}</span>`;
+      }).join('');
+      const dueWords = t(a.kind === 'lesson' ? 'do_by' : 'due_on', { day: dayIn(due, l) }, l);
+      const label = [str(a.title), !late && first ? t('tl_from', { day: dayIn(start, l) }, l) : total ? null : t('tl_no_plan', null, l),
+        ...ms.map((m) => (m.done ? t('tl_ms_done', { title: str(m.title) }, l) : isDay(m.day) ? t('tl_ms', { title: str(m.title), day: dayIn(m.day, l) }, l) : null)),
+        late ? t('tl_late', null, l) : null, dueWords, total ? t('tl_steps_done', { n: done, m: total }, l) : null].filter((v) => v != null && v !== '').join(' · ');
+      // Each piece of the line kept whole, so a narrow name column breaks it between them, never inside a date.
+      const sub = [a.subject, total ? t('n_of_m', { n: done, m: total }, l) : t('tl_no_plan', null, l), late ? t('tl_late', null, l) : null, dueWords]
+        .filter((v) => v != null && v !== '').map((v) => `<span>${esc(v)}</span>`).join(' · ');
+      const href = typeof x.link === 'function' ? x.link(a.id) : null;
+      const name = `<span class="sr-only">${esc(label)}</span><span class="plan-tl-title" aria-hidden="true">${esc(a.title)}</span>`
+        + `<span class="plan-tl-sub" aria-hidden="true">${sub}</span>`;
+      const bar = `<span class="plan-tl-bar${late ? ' is-late' : ''}${past ? ' is-past' : ''}" style="grid-column:${c0 + 1} / ${c1 + 2}">`
+        + `${total ? `<span class="plan-tl-fill" style="width:${pct(done, total)}"></span>` : ''}</span>`;
+      const tail = past ? `<span class="plan-tl-arrow" style="grid-column:${n}">${ICON.arrow}</span>`
+        : late ? '' : `<span class="plan-tl-due" style="grid-column:${c1 + 1}">${ICON.flag}</span>`;
+      return `<li class="plan-tl-row${late ? ' is-late' : ''}" data-id="${esc(a.id)}">`
+        + `${href ? `<a class="plan-tl-name" href="${esc(href)}">${name}</a>` : `<div class="plan-tl-name">${name}</div>`}`
+        + `<span class="plan-tl-track" aria-hidden="true">${cells}${bar}${marks}${tail}</span></li>`;
+    }).join('');
+    const label = t('tl_overview', { from: fmt.day(today, l), to: fmt.day(end, l) }, l);
+    return `<div class="plan-tl plan-tl-overview" role="group" aria-label="${esc(label)}" style="--tl-days:${n}">`
+      + `<div class="plan-tl-scroll"><div class="plan-tl-grid">${tlHead(today, n, { today }, l)}<ul class="plan-tl-rows">${rows}</ul></div></div>`
+      + `${tlKey([['k-ms', ICON.diamond, t('tag_milestone', null, l)], ['k-due', ICON.flag, t('tl_key_due', null, l)], ['k-today', '<i></i>', t('rel_today', null, l)]])}</div>`;
+  }
+
+  // An assignment's chart: its days, a row per phase (the steps up to and including each milestone, then
+  // the rest), each step a block on its day.
+  function chart(a, o) {
+    const x = o || {};
+    const l = langOf(x.lang);
+    const steps = stepsOf(a);
+    if (!steps || !steps.length || !isDay(a.due_date)) return '';
+    const days = steps.filter((s) => isDay(s.day)).map((s) => s.day);
+    if (new Set(days).size < 2) return '';
+    const today = isDay(x.today) ? x.today : null;
+    const due = a.due_date;
+    const first = earliest(days);
+    const lo = today && today < first ? today : first;
+    let hi = latest(days.concat([due]));
+    const cut = daysBetween(lo, hi) + 1 > TL_MAX;
+    if (cut) hi = addDays(lo, TL_MAX - 1);
+    const n = daysBetween(lo, hi) + 1;
+    // Days without homework time, from the page's week (and its weekdays past it), when it has any.
+    const week = (Array.isArray(x.week) ? x.week : []).filter((d) => d && isDay(d.day));
+    let off = null;
+    if (hasWindow(week)) {
+      const yes = new Set(homeworkDays(week, lo, hi));
+      off = new Set();
+      for (let i = 0; i < n; i++) { const d = addDays(lo, i); if (!yes.has(d)) off.add(d); }
+    }
+    const mark = { today, due, off };
+    const cells = tlCells(lo, n, mark);
+    const phases = [];
+    let cur = [];
+    steps.forEach((s) => { cur.push(s); if (s.kind === 'milestone') { phases.push({ ms: s, steps: cur }); cur = []; } });
+    if (cur.length) phases.push({ ms: null, steps: cur });
+    const anyMs = phases.some((p) => p.ms);
+    const block = (s) => {
+      const kind = KINDS.includes(s.kind) ? s.kind : 'step';
+      const done = !!s.done;
+      const behind = !done && !!today && s.day < today;
+      const m = Math.max(0, Math.round(Number(s.minutes) || 0));
+      const icon = kind === 'milestone' ? ICON.diamond : kind === 'turn_in' ? ICON.flag : '';
+      const sr = [str(s.title), kind === 'step' ? null : t(`tag_${kind}`, null, l), fmt.day(s.day, l), minutesText(m),
+        done ? t('tl_key_done', null, l) : behind ? t('tl_behind', null, l) : null].filter((v) => v != null && v !== '').join(' · ');
+      return `<span class="plan-tl-step k-${kind}${done ? ' is-done' : ''}${behind ? ' is-behind' : ''}" title="${esc(`${str(s.title)} · ${minutesText(m)}`)}">`
+        + `<span class="plan-tl-min" aria-hidden="true">${icon}${m}</span><span class="sr-only">${esc(sr)}</span></span>`;
+    };
+    const rows = phases.map((p) => {
+      const slots = new Map();
+      p.steps.forEach((s) => {
+        if (!isDay(s.day)) return;
+        const c = Math.max(0, Math.min(n - 1, daysBetween(lo, s.day)));
+        if (!slots.has(c)) slots.set(c, []);
+        slots.get(c).push(s);
+      });
+      const blocks = [...slots.keys()].sort((u, v) => u - v)
+        .map((c) => `<span class="plan-tl-slot" style="grid-column:${c + 1}">${slots.get(c).map(block).join('')}</span>`).join('');
+      const title = p.ms ? p.ms.title : t(anyMs ? 'tl_phase_end' : 'tl_phase_all', null, l);
+      const count = p.steps.length;
+      const sub = `${count === 1 ? t('tl_n_steps_one', null, l) : t('tl_n_steps', { n: count }, l)} · ${minutesText(p.steps.reduce((v, s) => v + (Number(s.minutes) || 0), 0))}`;
+      const dia = p.ms ? `<span class="plan-tl-dia${p.ms.done ? ' is-done' : ''}" aria-hidden="true">${ICON.diamond}</span>` : '';
+      return `<li class="plan-tl-row${p.ms ? ' is-ms' : ''}"><div class="plan-tl-name"><span class="plan-tl-title">${dia}${esc(title)}</span>`
+        + `<span class="plan-tl-sub">${esc(sub)}</span></div><span class="plan-tl-track">${cells}${blocks}</span></li>`;
+    }).join('');
+    const head = tlHead(lo, n, Object.assign({ arrow: cut }, mark), l);
+    const label = t('tl_chart', { from: fmt.day(lo, l), to: fmt.day(hi, l) }, l);
+    const key = [['k-done', '<i></i>', t('tl_key_done', null, l)], ['k-behind', '<i></i>', t('tl_behind', null, l)], ['k-ms', ICON.diamond, t('tag_milestone', null, l)],
+      ['k-due', ICON.flag, t('tag_turn_in', null, l)]].concat(off ? [['k-off', '<i></i>', t('tl_key_off', null, l)]] : []);
+    return `<div class="plan-tl plan-tl-chart" role="group" aria-label="${esc(label)}" style="--tl-days:${n}">`
+      + `<div class="plan-tl-scroll"><div class="plan-tl-grid">${head}<ul class="plan-tl-rows">${rows}</ul></div></div>`
+      + `${cut ? `<p class="plan-tl-foot">${esc(`${t(a.kind === 'lesson' ? 'do_by' : 'due_on', { day: dayIn(due, l) }, l)} →`)}</p>` : ''}${tlKey(key)}</div>`;
+  }
+
+  // His path: a dot a day from today to the due date (at most 14), flags on the milestones' days, and one
+  // line on top: the next flag, when, and the points his tick pays (o.points, when his view gives it).
+  function path(a, o) {
+    const x = o || {};
+    const l = langOf(x.lang);
+    const today = x.today;
+    const steps = stepsOf(a);
+    if (!isOpen(a) || !steps || !steps.length || !isDay(today) || !isDay(a.due_date) || a.due_date < today) return '';
+    const due = a.due_date;
+    const span = daysBetween(today, due) + 1;
+    const n = Math.min(PATH_MAX, span);
+    const when = (day, isDue) => {
+      const d = daysBetween(today, day);
+      if (!Number.isFinite(d)) return '';
+      if (d < 0) return t('from_day', { day: fmt.rel(day, today, l) }, l);
+      if (d === 0) return t('rel_today', null, l);
+      if (d === 1) return t('rel_tomorrow', null, l);
+      if (d <= 6 || isDue) return `${fmt.rel(day, today, l)} ${t('in_days', { n: d }, l)}`;
+      return t('tl_in_days', { n: d }, l);
+    };
+    const ms = steps.filter((s) => s.kind === 'milestone');
+    const next = ms.find((s) => !s.done) || null;
+    const points = Math.round(Number(x.points));
+    // The line's pieces: [class, text]; the when and the points are kept whole when it wraps.
+    let line;
+    if (next) {
+      line = [['plan-path-what', t('tl_next_flag', { title: str(next.title) }, l)], ['plan-path-when', isDay(next.day) ? when(next.day) : ''],
+        ['plan-path-pts', points > 0 ? t('tl_points_now', { n: points }, l) : '']].filter((p) => p[1]);
+    } else {
+      line = [['plan-path-cheer', ms.length ? t('tl_all_flags', null, l) : ''], ['plan-path-when', t('tl_due_when', { when: when(due, true) }, l)]].filter((p) => p[1]);
+    }
+    const lineHtml = line.map(([cls, text]) => `<span class="${cls}">${esc(text)}</span>`).join(next ? ' · ' : ' ');
+    // Flags on their days; a done one before today is counted at the start, one not done whose day has
+    // passed is today's (it is what's next).
+    const flags = new Map();
+    let won = 0;
+    ms.forEach((m) => {
+      if (!isDay(m.day)) return;
+      const d = daysBetween(today, m.day);
+      if (d < 0 && m.done) { won++; return; }
+      const i = d < 0 ? 0 : d;
+      if (i >= n) return;
+      if (!flags.has(i)) flags.set(i, []);
+      flags.get(i).push({ done: !!m.done, earlier: d < 0 });
+    });
+    const work = new Set(steps.filter((s) => !s.done && isDay(s.day) && s.day >= today).map((s) => daysBetween(today, s.day)));
+    let dots = won ? `<li class="plan-path-won">${Array.from({ length: Math.min(won, 4) }, () => `<span class="plan-path-flag is-done">${ICON.flag}</span>`).join('')}</li>` : '';
+    for (let i = 0; i < n; i++) {
+      const day = addDays(today, i);
+      const f = flags.get(i) || [];
+      const cls = ['plan-path-day'];
+      if (i === 0) cls.push('is-today');
+      if (day === due) cls.push('is-due');
+      if (work.has(i)) cls.push('has-work');
+      if (f.length) cls.push('has-flag');
+      const flag = f.length ? `<span class="plan-path-flag${f.every((m) => m.done) ? ' is-done' : ''}${f.some((m) => m.earlier) ? ' is-earlier' : ''}">${ICON.flag}</span>` : '';
+      dots += `<li class="${cls.join(' ')}">${flag}<span class="plan-path-dot">${day === due ? ICON.star : ''}</span>`
+        + `<span class="plan-path-name">${esc(i === 0 ? t('tl_today', null, l) : LETTERS[l][weekday(day)])}</span></li>`;
+    }
+    const fold = span > PATH_MAX ? `<p class="plan-path-fold" aria-hidden="true">… ${esc(t('due_on', { day: fmt.rel(due, today, l) }, l))}</p>` : '';
+    const sr = [t('tl_path', { to: fmt.day(due, l) }, l), won ? (won === 1 ? t('tl_flags_won_one', null, l) : t('tl_flags_won', { n: won }, l)) : '',
+      ...ms.filter((m) => !(m.done && isDay(m.day) && m.day < today)).map((m) => (m.done ? t('tl_flag_done', { title: str(m.title) }, l)
+        : isDay(m.day) ? t('tl_flag', { title: str(m.title), day: dayIn(m.day, l) }, l) : ''))].filter(Boolean).join(' · ');
+    return `<div class="plan-path${span > PATH_MAX ? ' is-folded' : ''}"><p class="plan-path-line">${lineHtml}</p>`
+      + `<ol class="plan-path-days" aria-hidden="true">${dots}</ol>${fold}<p class="sr-only">${esc(sr)}</p></div>`;
+  }
+
+  // ============================================
   // THE HOMEWORK PAGE'S ROWS → THE EDITOR'S ASSIGNMENT
   // ============================================
   // done_by and given_by are "Pat Lee, tutor (tutor link)", "Jordan (My day)" or an email.
@@ -1186,6 +1491,10 @@
     dots: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg>',
     lock: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10.5" width="14" height="10" rx="2.2"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/></svg>',
     diamond: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5l8.5 8.5-8.5 8.5L3.5 12z"/></svg>',
+    // The timelines: a flag (a milestone on his path, a due date), the star at his path's end, the arrow past the last day.
+    flag: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 21V3.5M6.5 4.5h11l-2.6 4 2.6 4h-11"/></svg>',
+    star: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5l2.6 5.4 5.9.8-4.3 4.1 1 5.8L12 16.8l-5.2 2.8 1-5.8-4.3-4.1 5.9-.8z"/></svg>',
+    arrow: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h15M13 6l6 6-6 6"/></svg>',
   };
 
   // ============================================
@@ -2476,7 +2785,7 @@
     addDays, daysBetween, weekday, isoWeekday, fmt: Object.freeze(fmt),
     ended, firstDay, lastWorkDay, horizon, homeworkDays, place, timeLeft, workLeft, spare,
     guess, starter, check,
-    bars, week, pace, focused, ring,
+    bars, week, pace, focused, ring, overview, chart, path,
     ms, timer, left, audioAt, pointsLine, onTimeLine, estimate, goalBar,
     fromRows, editor, tutor,
   });
