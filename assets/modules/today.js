@@ -12,9 +12,11 @@
    Tacos · Sam cooks ›", to the Food page), or a quiet "What's for dinner? ›"
    when the family planned one in the last two weeks. With schema 5, for the
    parents: one line per reward a kid asked for ("Jordan asks: Pick the
-   movie · 100 · balance 118 (this week: …) Yes · Not now"), and one for
-   questions and milestones waiting ("Homework: 1 question · 2 milestones to
-   check ›", to the Homework page).
+   movie · 100 · balance 118 (this week: …) Yes · Not now"), one per instant
+   reward a kid cashed in today, which needed no yes ("Jordan cashed in: 15
+   minutes of extra game time · 15 · 4:52pm"), and one for questions and
+   milestones waiting ("Homework: 1 question · 2 milestones to check ›", to
+   the Homework page).
    Dates and times are the household's (core.v2).
    ===================================================================== */
 (function () {
@@ -181,22 +183,27 @@
   }
 
   // What waits for a parent in homework (schema 5): the kids' waiting asks, with each one's points (all
-  // of them, a page at a time: the balance and this week's sources), and how many questions and
+  // of them, a page at a time: the balance and this week's sources), the instant rewards a kid cashed in
+  // today (decided by him at once: the parents see them here, as a decided ask), and how many questions and
   // milestones to check (one steps request, of steps touched in the last 30 days). Never throws: a
   // failed read (null) leaves the lines out. No request for Sam, or below schema 5.
   async function loadHomework(today) {
     if (!(core.schemaVersion >= 5) || !(core.me && core.me.role === 'admin')) return null;
     try {
-      const [asks, steps] = await Promise.all([
+      const [asks, steps, cashed] = await Promise.all([
         q(core.sb.from('reward_asks').select('id,kid_id,title,cost,asked_at').eq('status', 'waiting').order('asked_at')),
         q(core.sb.from('homework_steps').select('id,kind,done_at,checked_at,question,answer').gte('updated_at', dates.addDays(today, -30))
           .or('and(kind.eq.milestone,done_at.not.is.null,checked_at.is.null),and(question.not.is.null,answer.is.null)')),
+        q(core.sb.from('reward_asks').select('id,kid_id,title,cost,decided_at').eq('status', 'cashed').gte('decided_at', dates.addDays(today, -1))
+          .order('decided_at')),
       ]);
       const kids = [...new Set((asks || []).map((x) => x.kid_id))];
       const ledger = kids.length ? await readAll(() => core.sb.from('points_ledger').select('id,kid_id,kind,delta,day,who').in('kid_id', kids)
         .order('at').order('id')) : [];
       return {
         asks: asks || [],
+        // The household's today (the read reaches back a day, so a cash-in just after midnight is never missed).
+        cashed: (cashed || []).filter((x) => fmt.relDay(x.decided_at) === 'Today'),
         ledger: ledger || [],
         questions: (steps || []).filter((x) => x.question && !x.answer).length,
         milestones: (steps || []).filter((x) => x.kind === 'milestone' && x.done_at && !x.checked_at).length,
@@ -570,6 +577,8 @@
     }))];
     const parts = [];
     if (total(['focus', 'on_time'])) parts.push(`${signed(total(['focus', 'on_time']))} focus and on time`);
+    // A milestone pays half at his tick, the rest at the check.
+    if (total(['milestone_done'])) parts.push(`${signed(total(['milestone_done']))} milestones ticked`);
     if (total(['milestone'])) parts.push(`${signed(total(['milestone']))} milestones checked${checkers.length ? ` by ${checkers.join(' and ')}` : ''}`);
     if (total(['given'])) parts.push(`${signed(total(['given']))} given`);
     if (total(['void'])) parts.push(`${signed(total(['void']))} voided`);
@@ -577,10 +586,11 @@
   }
 
   // The parents' homework lines (schema 5), the same under every chip: each waiting ask with Yes · Not now,
-  // then what waits to be answered or checked, to the Homework page.
+  // today's instant cash-ins (nothing to decide: he took them on the spot, the points already taken), then
+  // what waits to be answered or checked, to the Homework page.
   function homeworkHTML(d) {
     const h = d.homework;
-    if (!h || (!h.asks.length && !h.questions && !h.milestones)) return '';
+    if (!h || (!h.asks.length && !h.cashed.length && !h.questions && !h.milestones)) return '';
     const asks = h.asks.map((x) => {
       const kid = activePerson(x.kid_id) || v2.person(x.kid_id);
       const rows = h.ledger.filter((l) => l.kid_id === x.kid_id);
@@ -589,9 +599,13 @@
         <div class="today-hw-btns"><button type="button" class="btn btn-sm btn-primary" data-act="hw-yes" data-ask="${esc(x.id)}">Yes</button>
         <button type="button" class="btn btn-sm" data-act="hw-not-now" data-ask="${esc(x.id)}">Not now</button></div></div>`;
     });
+    const cashed = h.cashed.map((x) => {
+      const kid = activePerson(x.kid_id) || v2.person(x.kid_id);
+      return `<p class="today-hw-line today-hw-cashed">${esc(`${kid ? firstName(kid.name) : 'A kid'} cashed in: ${x.title} · ${x.cost} · ${fmt.time(x.decided_at)}`)}</p>`;
+    });
     const waiting = [h.questions ? plural(h.questions, 'question') : '', h.milestones ? `${plural(h.milestones, 'milestone')} to check` : ''].filter(Boolean);
     const count = waiting.length ? `<a class="today-hw-count" href="#/homework">Homework: ${esc(waiting.join(' · '))} <span aria-hidden="true">›</span></a>` : '';
-    return `<div class="today-hw" aria-label="Homework">${asks.join('')}${count}</div>`;
+    return `<div class="today-hw" aria-label="Homework">${asks.join('')}${cashed.join('')}${count}</div>`;
   }
 
   // Yes or Not now on a kid's ask (decide_reward), one tap; the database's own words when it refuses.

@@ -30,6 +30,15 @@
   .plan-bar-track { grid-column: 1 / -1; grid-row: 2; }
 }
 
+/* ---------- The next-reward bar: "6 points to …" or "You can get … now!" ---------- */
+.plan-goal { display: grid; gap: 4px; margin: 8px 0 2px; min-width: 0; }
+.plan-goal-text { margin: 0; color: var(--text); font-size: 14px; font-weight: 650; overflow-wrap: anywhere; }
+.plan-goal.is-now .plan-goal-text { color: var(--accent); }
+.plan-goal-track { position: relative; display: block; height: 8px; border-radius: 999px; background: var(--surface-2); overflow: hidden; }
+.plan-goal-fill { position: absolute; inset: 0 auto 0 0; border-radius: inherit; background: var(--accent); transition: width 0.4s ease; }
+.plan-goal-next { margin: 0; color: var(--text-3); font-size: 13px; overflow-wrap: anywhere; }
+@media (prefers-reduced-motion: reduce) { .plan-goal-fill { transition: none; } }
+
 /* ---------- The week strip: seven days, today first ---------- */
 .plan-week { list-style: none; margin: 6px 0 0; padding: 0; display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 6px; }
 .plan-wday {

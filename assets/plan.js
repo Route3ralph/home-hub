@@ -112,9 +112,15 @@
      left(tm, perf)             { ms, seconds, minutes (rounded up), fraction (of the ring), done }
      audioAt(tm, perf, now)     the AudioContext time to start the chime at, given its currentTime now
      pointsLine(end, lang)      the end screen's line from what the server saw, end: { seen, focus, on_time,
-                                capped }: '+2 · 12 minutes', '+4 · 20 minutes · +5 on time', 'Under 5 minutes:
+                                capped }: '+12 · 12 minutes', '+20 · 20 minutes · +10 on time', 'Under a minute:
                                 no points this time.', "Today's limit reached."
-     onTimeLine(onTime, lang)   'start by 4:40pm for +5' from his view's on_time ({ until, done, points? })
+     onTimeLine(onTime, lang)   'start by 4:40pm for +10' from his view's on_time ({ until, done, points? })
+     estimate(earn, s, minutes) what his timer counts up to while a block runs, from his view's session.earn
+                                ({ per_minute, on_time, room }) and the seconds since its start by the server's
+                                clock: a point a minute, the on-time points once 5 minutes are seen, never past
+                                the block's length or the day's cap (room); 0 without earn
+     goalBar(goal, o)           the next-reward bar from his view's goal: "You can get <reward> now!" or "6 points
+                                to <reward>", with a bar; o: { lang, extra (points his timer counts, not paid yet) }
 
    THE PLAN EDITOR (§9.4)
      fromRows(row, stepRows, o) the Homework page's assignments row and homework_steps rows → the editor's
@@ -180,7 +186,7 @@
     en: {
       // His screens (§9.7)
       homework: 'Homework', now: 'Now', tonight: 'Tonight', due_soon: 'Due soon', start_n: 'Start · {n} min',
-      on_time: 'On time · +{n} once 8 minutes are done', start_by: 'start by {time} for +{n}',
+      on_time: 'On time · +{n} once 5 minutes are done', start_by: 'start by {time} for +{n}',
       stuck: "I'm stuck", make_smaller: 'Make it smaller',
       ask_tutor: 'Ask {tutor}', ask_tutor_none: 'Ask for help',
       next_step: 'Next step', keep_going: 'Keep going: {title}', end_block: 'End the block', step_done: 'Step done',
@@ -193,10 +199,13 @@
       plan_with_tutor: 'Plan this one with {tutor}.', plan_with_tutor_none: 'Plan this one with your parents.',
       no_plan: 'No plan yet', being_planned: 'Being planned', work_left: 'Work left', time_left: 'Homework time left',
       waiting_check: '+{n} when {tutor} checks it', waiting_check_none: "+{n} when it's checked",
+      milestone_now: '+{n} now · +{m} more when {tutor} checks it', milestone_now_none: "+{n} now · +{m} more when it's checked",
       not_yet: 'Not yet: {note}', coach_note: '{who}: {note}',
       milestone_lock: 'Milestones are checkpoints you set with {tutor}. Change them together.',
       milestone_lock_none: 'Milestones are checkpoints you set with your parents. Change them together.',
-      under_five: 'Under 5 minutes: no points this time.', limit_reached: "Today's limit reached.",
+      under_minute: 'Under a minute: no points this time.', limit_reached: "Today's limit reached.",
+      goal_need: '{n} points to {title}', goal_need_one: '1 point to {title}', goal_now: 'You can get {title} now!',
+      goal_after: '{title} when this block ends!', so_far: '+{n} so far', res_time: "Time's up",
       waiting_parent: 'Waiting for a parent', suggest_reward: 'Suggest a reward', tell_parent: 'Tell a parent you asked.',
       who_sees: '{tutor} and the grown-ups in your family see your plan and your notes. The grown-ups see your points.',
       who_sees_none: 'The grown-ups in your family see your plan, your notes and your points.',
@@ -274,10 +283,12 @@
       asks_full: 'Three asks are waiting already. Wait for a parent first.', suggest_full: 'Five suggestions are waiting already. Wait for a parent first.',
       own_full: 'Fifteen of your own are open already.',
       points_spent: 'Those points are already spent.', cant_save: "That can't be saved.",
+      ask_parent: 'Ask a parent for that one.', instant_done: "That's all the instant rewards for today. Ask a parent for this one.",
+      price_changed: "That reward's price changed. Look again before you get it.",
     },
     es: {
       homework: 'Tarea', now: 'Ahora', tonight: 'Esta tarde', due_soon: 'Para pronto', start_n: 'Empezar · {n} min',
-      on_time: 'A tiempo · +{n} cuando lleves 8 minutos', start_by: 'empieza antes de las {time} para +{n}',
+      on_time: 'A tiempo · +{n} cuando lleves 5 minutos', start_by: 'empieza antes de las {time} para +{n}',
       stuck: 'Estoy atascado', make_smaller: 'Hazlo más pequeño',
       ask_tutor: 'Preguntar a {tutor}', ask_tutor_none: 'Pedir ayuda',
       next_step: 'Siguiente paso', keep_going: 'Sigue con: {title}', end_block: 'Terminar el bloque', step_done: 'Paso hecho',
@@ -290,10 +301,13 @@
       plan_with_tutor: 'Planéalo con {tutor}.', plan_with_tutor_none: 'Planéalo con tus padres.',
       no_plan: 'Todavía sin plan', being_planned: 'En preparación', work_left: 'Trabajo pendiente', time_left: 'Tiempo de tarea que queda',
       waiting_check: '+{n} cuando {tutor} lo revise', waiting_check_none: '+{n} cuando lo revisen',
+      milestone_now: '+{n} ahora · +{m} más cuando {tutor} lo revise', milestone_now_none: '+{n} ahora · +{m} más cuando lo revisen',
       not_yet: 'Todavía no: {note}', coach_note: '{who}: {note}',
       milestone_lock: 'Los hitos son puntos de control que fijaste con {tutor}. Cámbienlos juntos.',
       milestone_lock_none: 'Los hitos son puntos de control que fijaste con tus padres. Cámbienlos juntos.',
-      under_five: 'Menos de 5 minutos: esta vez sin puntos.', limit_reached: 'Llegaste al límite de hoy.',
+      under_minute: 'Menos de un minuto: esta vez sin puntos.', limit_reached: 'Llegaste al límite de hoy.',
+      goal_need: '{n} puntos para {title}', goal_need_one: '1 punto para {title}', goal_now: '¡Ya puedes conseguir {title}!',
+      goal_after: '¡{title} al terminar este bloque!', so_far: '+{n} hasta ahora', res_time: 'Se acabó el tiempo',
       waiting_parent: 'Esperando a tus padres', suggest_reward: 'Proponer un premio', tell_parent: 'Avisa a tus padres de que lo pediste.',
       who_sees: '{tutor} y los adultos de tu familia ven tu plan y tus notas. Los adultos ven tus puntos.',
       who_sees_none: 'Los adultos de tu familia ven tu plan, tus notas y tus puntos.',
@@ -366,6 +380,8 @@
       asks_full: 'Ya hay tres pedidos esperando. Espera primero a tus padres.', suggest_full: 'Ya hay cinco propuestas esperando. Espera primero a tus padres.',
       own_full: 'Ya tienes quince tareas tuyas abiertas.',
       points_spent: 'Esos puntos ya se gastaron.', cant_save: 'Eso no se puede guardar.',
+      ask_parent: 'Ese pídeselo a tus padres.', instant_done: 'Ya usaste los premios al momento de hoy. Este pídeselo a tus padres.',
+      price_changed: 'El precio de ese premio cambió. Míralo otra vez antes de conseguirlo.',
     },
   };
 
@@ -480,6 +496,11 @@
     // (a constraint error said without its detail).
     [/Those points are already spent/i, 'points_spent'],
     [/That can't be saved/i, 'cant_save'],
+    // Instant rewards: one that needs a parent's yes, and the day's limit on cashing them.
+    [/Ask a parent for that one/i, 'ask_parent'],
+    [/That's all the instant rewards for today/i, 'instant_done'],
+    // An instant reward re-priced after his screen showed it: the cash-in names the price it showed (p_cost).
+    [/That reward's price changed/i, 'price_changed'],
   ];
   const messageOf = (err) => String((err && (err.message || err.error_description)) || err || '');
   function friendly(err, lang, tutor) {
@@ -962,7 +983,7 @@
   function pointsLine(end, lang) {
     const e = end || {};
     const seen = Math.max(0, Math.floor(Number(e.seen) || 0));
-    if (seen < 5) return t('under_five', null, lang);
+    if (seen < 1) return t('under_minute', null, lang);
     const focus = Number(e.focus) || 0;
     const onTime = Number(e.on_time) || 0;
     const out = [];
@@ -974,7 +995,38 @@
   }
   function onTimeLine(x, lang) {
     if (!x || x.done || !x.until) return '';
-    return t('start_by', { time: fmt.time(x.until, lang), n: x.points != null ? x.points : 5 }, lang);
+    return t('start_by', { time: fmt.time(x.until, lang), n: x.points != null ? x.points : 10 }, lang);
+  }
+  // What his timer counts up to while a block runs: an estimate from the server's start time (seconds since
+  // it, by the server's clock), one per minute, never past the block's length, the on-time points once 5
+  // minutes are seen, and never past what is left of the day's cap (earn.room), so it never shows more than
+  // the end pays. earn: his view's session.earn ({ per_minute, on_time, room }), or null (his own block).
+  function estimate(earn, seconds, minutes) {
+    if (!earn) return 0;
+    const m = Math.max(0, Math.min(Math.floor((Number(seconds) || 0) / 60), Number(minutes) || 0));
+    const n = (Number(earn.per_minute) || 0) * m + (m >= 5 ? Number(earn.on_time) || 0 : 0);
+    return Math.max(0, Math.min(n, Number(earn.room) || 0));
+  }
+  // The next-reward bar (his view's goal: { next: { title, cost, need }, now: { title, cost, instant } }):
+  // "You can get <now> now!" when he can get one, else "<need> points to <next>" (the cheapest he can't
+  // afford yet), with a bar of his free points against its cost; with both, the bar and its small line show
+  // the way to the next. o.extra: points his timer counts that aren't paid yet (the bar moves on; "<next>
+  // when this block ends!" once they would reach it). '' without a goal.
+  function goalBar(goal, o) {
+    const x = o || {};
+    const l = langOf(x.lang);
+    if (!goal || (!goal.next && !goal.now)) return '';
+    const extra = Math.max(0, Math.floor(Number(x.extra) || 0));
+    const next = goal.next;
+    const need = next ? Math.max(0, (Number(next.need) || 0) - extra) : 0;
+    const toNext = next ? (need > 0 ? t(need === 1 ? 'goal_need_one' : 'goal_need', { n: need, title: next.title }, l) : t('goal_after', { title: next.title }, l)) : '';
+    const text = goal.now ? t('goal_now', { title: goal.now.title }, l) : toNext;
+    const cost = next ? Number(next.cost) || 0 : 0;
+    const fill = next && cost > 0 ? Math.min(1, Math.max(0, (cost - need) / cost)) : 1;
+    return `<div class="plan-goal${goal.now ? ' is-now' : ''}${next && need <= 0 ? ' is-reached' : ''}">`
+      + `<p class="plan-goal-text">${esc(text)}</p>`
+      + `<span class="plan-goal-track" aria-hidden="true"><span class="plan-goal-fill" style="width:${Number((fill * 100).toFixed(1))}%"></span></span>`
+      + `${goal.now && next ? `<p class="plan-goal-next">${esc(toNext)}</p>` : ''}</div>`;
   }
 
   // ============================================
@@ -1631,7 +1683,8 @@
       if (record.length || paceLine) {
         const lines = [];
         record.forEach((d) => (d.sessions || []).forEach((s) => {
-          const result = s.result === 'done' ? w('step_done') : s.result === 'more' ? w('more_to_do') : s.result === 'stopped' ? w('res_stopped') : w('res_expired');
+          const result = s.result === 'done' ? w('step_done') : s.result === 'more' ? w('more_to_do') : s.result === 'stopped' ? w('res_stopped')
+            : s.result === 'time' ? w('res_time') : w('res_expired');
           const day = rel(d.day);
           const bits = [day.charAt(0).toUpperCase() + day.slice(1), fmt.duration(s.minutes)];
           if (s.with_tutor === true) bits.push(w('with_you'));
@@ -1889,7 +1942,7 @@
     ended, firstDay, lastWorkDay, horizon, homeworkDays, place, timeLeft, workLeft, spare,
     guess, starter, check,
     bars, week, pace, focused, ring,
-    ms, timer, left, audioAt, pointsLine, onTimeLine,
+    ms, timer, left, audioAt, pointsLine, onTimeLine, estimate, goalBar,
     fromRows, editor, tutor,
   });
 })();

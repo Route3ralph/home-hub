@@ -216,10 +216,10 @@ A secret is the only key: the person's My day token (`people.day_token`) for fou
 - `add_to_list_by_token(p_token text, p_name text, p_key uuid default null) returns jsonb` (v1.2) → her add, while `helper_list` is `'add'`: `{result, item_id, name, seen}` (`seen`: the line's `added_at`) and her list. Only ever finds or makes an unlocked line; anything over 200 characters is refused before any work; counted (30 changes a day) and capped (150 things to buy). `p_key` is her phone's key for the add: a second try gets the first answer, changes nothing and isn't counted again (§9, `private.list_done`).
 - `buy_item_by_token(p_token text, p_item uuid, p_bought boolean, p_seen timestamptz, p_key uuid default null) returns jsonb` (v1.2) → her tick, or the Undo of her own tick within 15 minutes: `{changed, seen}` (`seen`: the one it gave the line, when it changed it) and her list. `p_seen` is the row's state as her phone saw it, so a tick that waited offline never buys a line put back since; a locked line's id answers as an unknown id (`false`); counted (100 ticks a day). `p_key` as for her add.
 - `homework_by_token(p_token text) returns jsonb` (v1.3) → a kid's homework view (`docs/v1.3-homework.md` §3.4): his steps, his homework time, the block running, his points and rewards, with no name but his own first name and the tutor's first word, no teacher's text and no AI draft. Null for an unknown token, an inactive person, anyone who isn't a kid, or a kid whose homework is off; the same for each of the seven.
-- `step_by_token(p_token text, p_step uuid, p_action text, p_text text default null, p_day date default null, p_key uuid default null) returns jsonb` (v1.3) → his tick, Undo (his own, 15 minutes), Not today, Ask and Make it smaller on one step of a plan given to him; any other step is 42501 "That step isn't on your plan.".
+- `step_by_token(p_token text, p_step uuid, p_action text, p_text text default null, p_day date default null, p_key uuid default null) returns jsonb` (v1.3) → his tick (a milestone's tick pays half its points at once, answered as `paid`), Undo (his own, 15 minutes; on a milestone it takes that half back), Not today, Ask and Make it smaller on one step of a plan given to him; any other step is 42501 "That step isn't on your plan.".
 - `plan_by_token(p_token text, p_assignment uuid, p_steps jsonb, p_rev int) returns jsonb` (v1.3) → his own changes to a plan given to him (milestones and the turn-in stay as they are); `p_steps` null is Re-plan.
-- `focus_by_token(p_token text, p_action text, p_session uuid, p_minutes int default null, p_step uuid default null, p_assignment uuid default null, p_with text default null, p_result text default null, p_note text default null) returns jsonb` (v1.3) → the timer: start, switch and end a block; only the database's clock counts, and the points follow from it.
-- `reward_by_token(p_token text, p_action text, p_reward uuid default null, p_text text default null, p_key uuid default null) returns jsonb` (v1.3) → ask for a reward, cancel his own ask, or suggest one.
+- `focus_by_token(p_token text, p_action text, p_session uuid, p_minutes int default null, p_step uuid default null, p_assignment uuid default null, p_with text default null, p_result text default null, p_note text default null) returns jsonb` (v1.3) → the timer: start, switch and end a block; only the database's clock counts, and the points follow from it, paid at the block's end. `p_result` `'time'` is the phone's End the second the ring runs out (paid then); his answer (`'done'`, `'more'`, `'stopped'`) follows as a second End that pays nothing more.
+- `reward_by_token(p_token text, p_action text, p_reward uuid default null, p_text text default null, p_key uuid default null, p_cost int default null) returns jsonb` (v1.3) → ask for a reward, cash an instant one on the spot (`'cash'`: from his free points, at most `homework_kids.instant_day` a day, at the price his button showed, `p_cost`, else 22023 "That reward's price changed."; the ask is `'cashed'` and the trade written at once), cancel his own ask, or suggest one.
 - `assignment_by_token(p_token text, p_action text, p_assignment uuid, p_title text default null, p_subject text default null, p_due_date date default null, p_minutes int default null) returns jsonb` (v1.3) → homework he writes down himself: add, Quick (one step, given at once), drop.
 - `homework_prefs_by_token(p_token text, p_cue text, p_if_stuck text, p_minutes int) returns jsonb` (v1.3) → his start cue, his if-stuck line and his first length.
 - `tutor_view_by_token(p_token text, p_assignment uuid default null, p_part text default 'all') returns jsonb` (v1.3) → the tutor's view of one kid's homework: plans, steps to check, questions, his free minutes (no titles) and a 14-day record of finished blocks; never a block running now, points, rewards, other people, family event titles or any token. Null for an unknown or replaced token, a link that is off or past its end date, or a kid whose homework is off or who is no longer active; the same for each of the four.
@@ -546,14 +546,15 @@ create table public.homework_kids (
   kid_id             uuid primary key references public.people (id) on delete cascade,
   active             boolean not null default true,     -- off: no card on his My day, his tutor links answer null, the AI refuses; nothing deleted
   points_on          boolean not null default true,     -- off: nothing earned; points, rewards and asks hidden on My day
-  focus_minutes      int not null default 20 check (focus_minutes in (10, 15, 20, 25)),   -- the length offered first
+  focus_minutes      int not null default 10 check (focus_minutes in (10, 15, 20, 25)),   -- the length offered first
   cue                text check (cue is null or char_length(cue) between 1 and 120),           -- his start cue, in his words
   if_stuck           text check (if_stuck is null or char_length(if_stuck) between 1 and 120), -- his if-then line
-  pts_focus          int not null default 1 check (pts_focus between 0 and 5),                -- per 5 minutes of a block
-  pts_on_time        int not null default 5 check (pts_on_time between 0 and 50),
-  pts_milestone      int not null default 20 check (pts_milestone between 0 and 100),
-  pts_day_cap        int not null default 20 check (pts_day_cap between 0 and 300),           -- focus and on-time points a day
-  pts_milestone_week int not null default 80 check (pts_milestone_week between 0 and 400),    -- milestone points a household week (Mon–Sun)
+  pts_focus          int not null default 1 check (pts_focus between 0 and 5),                -- per focused minute of a block
+  pts_on_time        int not null default 10 check (pts_on_time between 0 and 50),
+  pts_milestone      int not null default 40 check (pts_milestone between 0 and 100),         -- half at his tick, the rest at the check
+  pts_day_cap        int not null default 60 check (pts_day_cap between 0 and 300),           -- focus and on-time points a day
+  pts_milestone_week int not null default 160 check (pts_milestone_week between 0 and 400),   -- milestone points a household week (Mon–Sun)
+  instant_day        int not null default 2 check (instant_day between 0 and 10),             -- instant rewards he may cash a day
   created_at         timestamptz not null default now(),
   created_by         text,
   updated_at         timestamptz not null default now(),
@@ -669,7 +670,7 @@ create table public.focus_sessions (
   started_at    timestamptz not null,            -- private.now()
   ends_at       timestamptz not null,            -- started_at + minutes
   ended_at      timestamptz,
-  result        text check (result in ('done', 'more', 'stopped', 'expired')),
+  result        text check (result in ('done', 'more', 'stopped', 'time', 'expired')),   -- time: the ring ran out, his answer to come
   seen_minutes  int check (seen_minutes is null or seen_minutes between 0 and 25),   -- whole minutes the server saw
   on_time       boolean not null default false,  -- the day's first block, started in the on-time window
   points        int not null default 0,          -- what it earned (focus and on-time), for the record
@@ -687,6 +688,7 @@ create table public.rewards (
   title      text not null check (char_length(title) between 1 and 60),   -- "Choose Friday's dinner"
   cost       int check (cost is null or cost between 1 and 10000),         -- null: a suggestion nobody has priced yet
   active     boolean not null default true,
+  instant    boolean not null default false,     -- he cashes it on the spot (no parent's yes), at most instant_day a day
   suggested  boolean not null default false,     -- he suggested it
   sort_order int not null default 0,
   created_at timestamptz not null default now(),
@@ -703,7 +705,8 @@ create table public.reward_asks (
   reward_id  uuid references public.rewards (id) on delete set null,
   title      text not null,                     -- copied when asked, so a later edit doesn't change a trade
   cost       int not null,
-  status     text not null default 'waiting' check (status in ('waiting', 'approved', 'declined', 'cancelled')),
+  status     text not null default 'waiting' check (status in ('waiting', 'approved', 'declined', 'cancelled', 'cashed')),
+                                                -- cashed: an instant reward he took on the spot (decided at once, by him)
   asked_at   timestamptz not null,
   decided_at timestamptz,
   decided_by text,
@@ -712,14 +715,16 @@ create table public.reward_asks (
 create unique index reward_asks_waiting on public.reward_asks (kid_id, reward_id) where status = 'waiting';
 create index reward_asks_kid on public.reward_asks (kid_id, asked_at desc);
 
--- Every point earned, given, voided and traded. Rows are never changed; the only delete is a
--- milestone check taken back within 15 minutes (a mis-tap).
+-- Every point earned, given, voided and traded. Rows are never changed; the only deletes are a
+-- milestone check taken back within 15 minutes (a mis-tap), and the half a milestone paid at his
+-- tick when he unticks it himself.
 create table public.points_ledger (
   id         uuid primary key default gen_random_uuid(),   -- given points: the parent's page's key
   kid_id     uuid not null references public.homework_kids (kid_id) on delete cascade,
   at         timestamptz not null,              -- private.now()
   day        date not null,                     -- the household's day it counts for: a block's start day for focus and on_time
-  kind       text not null check (kind in ('focus', 'on_time', 'milestone', 'given', 'void', 'trade')),
+  kind       text not null check (kind in ('focus', 'on_time', 'milestone_done', 'milestone', 'given', 'void', 'trade')),
+                                                -- milestone_done: half a milestone, at his tick; milestone: the rest, at the check
   delta      int not null check (delta <> 0 and delta between -10000 and 1000),
   session_id uuid references public.focus_sessions (id) on delete set null,
   step_id    uuid references public.homework_steps (id) on delete set null,
@@ -732,6 +737,7 @@ create table public.points_ledger (
 create unique index points_focus_once on public.points_ledger (session_id) where kind = 'focus';
 create unique index points_on_time_once on public.points_ledger (kid_id, day) where kind = 'on_time';
 create unique index points_milestone_once on public.points_ledger (step_id) where kind = 'milestone';
+create unique index points_milestone_done_once on public.points_ledger (step_id) where kind = 'milestone_done';
 create unique index points_void_once on public.points_ledger (void_of) where kind = 'void';
 create index points_ledger_kid on public.points_ledger (kid_id, at desc);
 
@@ -784,11 +790,11 @@ alter table public.household
 - `focus_sessions`: the unique index `focus_sessions_open` on `(kid_id)` where it is still open (one block at a time), and `focus_sessions_kid` on `(kid_id, started_at desc)`. RLS: members select; no write policy.
 - `rewards`: triggers `rewards_stamp` and `rewards_tidy` (the title on one line, at most 60). RLS: members select, admins insert, update and delete.
 - `reward_asks`: the unique index `reward_asks_waiting` on `(kid_id, reward_id)` while waiting, and `reward_asks_kid` on `(kid_id, asked_at desc)`. RLS: members select; no write policy.
-- `points_ledger`: each focus block, each day's on-time start, each milestone and each void is paid once (unique indexes `points_focus_once`, `points_on_time_once`, `points_milestone_once`, `points_void_once`), and `points_ledger_kid` on `(kid_id, at desc)`. Rows are never changed; the only delete is a milestone check taken back within 15 minutes. RLS: members select; no write policy.
+- `points_ledger`: each focus block, each day's on-time start, each milestone's two halves (`milestone_done` at his tick, `milestone` at the check) and each void is paid once (unique indexes `points_focus_once`, `points_on_time_once`, `points_milestone_done_once`, `points_milestone_once`, `points_void_once`), and `points_ledger_kid` on `(kid_id, at desc)`. Rows are never changed; the only deletes are a milestone check taken back within 15 minutes, and the half his tick paid when he unticks it himself. RLS: members select; no write policy.
 - `homework_use`: RLS on, no policies and no privileges (`revoke all … from public, anon, authenticated, service_role`): only `private.count_homework` (a definer function) writes and reads it, as `my_day_use` (§9).
 - `ai_runs`: one row per AI request, never the prompt or the answer. Indexes `ai_runs_started` on `(started_at)` and `ai_runs_assignment` on `(assignment_id, started_at)`. RLS: admins select; `homework_ai_start` and `homework_ai_finish` write.
 - `household`'s three columns follow its policies (members read, admins update). The trigger `household_homework_check` (`private.household_homework_check()`, plain SQL and no other function, as it runs as the parent who saves) refuses a never-send word that isn't 2 to 40 characters on one line (22023 "Words never to send: each 2 to 40 characters, one line.") and the AI turned on with no such word (22023 "Add the school's name to Words never to send first.").
-- Grants: all eleven start from `revoke all … from public, anon, authenticated`. Signed-in users then get select on all but `homework_use` (row-level security decides: `tutor_links` and `ai_runs` are the parents' only); update of `active, points_on, focus_minutes, pts_focus, pts_on_time, pts_milestone, pts_day_cap, pts_milestone_week` on `homework_kids` (never `cue` or `if_stuck`, which are his); insert of `event_id, kid_id` and delete on `homework_times`; insert of `kid_id, kind, title, subject, due_date, details, stretch, status`, update of the same less `kid_id`, and delete on `assignments` (never `added_by`, `given_*`, `plan_rev`, `done_at`, the AI's columns or the audit columns); and insert of `kid_id, title, cost, active, sort_order`, update of the same less `kid_id`, and delete on `rewards`. Steps, blocks, asks, points and AI runs have no write grant at all. Anon has no privilege on any of them. service_role keeps the defaults on all but `homework_use`.
+- Grants: all eleven start from `revoke all … from public, anon, authenticated`. Signed-in users then get select on all but `homework_use` (row-level security decides: `tutor_links` and `ai_runs` are the parents' only); update of `active, points_on, focus_minutes, pts_focus, pts_on_time, pts_milestone, pts_day_cap, pts_milestone_week, instant_day` on `homework_kids` (never `cue` or `if_stuck`, which are his); insert of `event_id, kid_id` and delete on `homework_times`; insert of `kid_id, kind, title, subject, due_date, details, stretch, status`, update of the same less `kid_id`, and delete on `assignments` (never `added_by`, `given_*`, `plan_rev`, `done_at`, the AI's columns or the audit columns); and insert of `kid_id, title, cost, active, instant, sort_order`, update of the same less `kid_id`, and delete on `rewards`. Steps, blocks, asks, points and AI runs have no write grant at all. Anon has no privilege on any of them. service_role keeps the defaults on all but `homework_use`.
 
 ### Functions
 Page read (`authenticated`; STABLE, SECURITY INVOKER, so row-level security decides and a non-member gets empty days):
@@ -799,9 +805,9 @@ Signed-in actions (`authenticated` only; SECURITY DEFINER unless said, in `publi
 - `add_homework_time(p_kid uuid, p_weekdays int[], p_start time, p_end time)` returns uuid (the event's id): SECURITY INVOKER. One weekly event in his name, titled `private.homework_word('homework', <his language>)`, on the ISO weekdays `p_weekdays` (1 = Monday to 7 = Sunday, as `events.repeat_weekdays`), from `p_start` to `p_end` (after it, at most 4 hours), skipping days off, starting on the first day from today on one of those weekdays; and its `homework_times` row.
 - `save_homework_plan(p_assignment uuid, p_steps jsonb, p_rev int, p_give boolean default false)` returns jsonb → `private.plan_save` as the family. `p_rev` is required (0 for a first plan).
 - `homework_step(p_step uuid, p_action text, p_text text default null)` returns jsonb → `private.step_act` as the family: `'check'`, `'not_yet'`, `'uncheck'`, `'answer'`, `'clear'`, `'done'`, `'undo'`.
-- `decide_reward(p_ask uuid, p_approve boolean, p_note text default null)` returns jsonb `{ask, balance}`: Yes checks his free points again and writes a `'trade'` of −cost; Not now takes nothing and can carry a word he sees (at most 120). An ask already decided answers as it is.
+- `decide_reward(p_ask uuid, p_approve boolean, p_note text default null)` returns jsonb `{ask, balance}`: Yes checks his free points again, under his `homework_kids` row's lock (as every writer of his balance), and writes a `'trade'` of −cost; Not now takes nothing and can carry a word he sees (at most 120). An ask already decided answers as it is.
 - `give_points(p_kid uuid, p_points int, p_note text, p_key uuid)` returns jsonb: 1 to 200, with a note he sees; `p_key` is the ledger row's id, so a resend writes nothing more. Refused while points are off.
-- `void_points(p_entry uuid, p_note text)` returns jsonb: one `focus`, `on_time`, `milestone` or `given` entry gets a `'void'` of the same size with a reason he sees; refused when it would take his balance below zero ("Those points are already spent.").
+- `void_points(p_entry uuid, p_note text)` returns jsonb: one `focus`, `on_time`, `milestone_done`, `milestone` or `given` entry gets a `'void'` of the same size with a reason he sees; refused when it would take his balance below zero ("Those points are already spent.").
 - `save_tutor_link(p_link uuid, p_kid uuid, p_label text, p_language text, p_expires_on date, p_can_ai boolean, p_active boolean)` returns uuid: makes (`p_link` null) or changes a link. At most 3 per kid; the end date from today to today + 400 (a change may keep the link's own end date, even a past one: Off, On or a new name on a link that has ended), null meaning today + 180.
 - `new_tutor_token(p_link uuid)` returns void: a new token; the old link stops at once.
 - `homework_ai_preview(p_assignment uuid, p_kind text default 'plan', p_request text default null, p_answers text[] default null)` returns text: exactly the message the AI would get (`private.ai_input`'s `message`, as a parent asks), the same text `homework_ai_start` hands `hub-jobs`; no run, nothing counted.
@@ -816,7 +822,7 @@ My day and the tutor link (`anon`, `authenticated`; SECURITY DEFINER): the seven
 
 Replaced, with the same signatures (`create or replace`, so they keep their grants):
 - `hub_schema_version()` returns 5.
-- `get_person_day(p_token text)`: 0004's body plus one top-level key, `homework`, left out unless the person is a kid with homework on, so with homework off for everyone it is exactly 0004's answer: the card from `private.homework_card` (the next step, today's steps and minutes, his homework time, a block running, his points). Its lines are marked "v1.3" in the body.
+- `get_person_day(p_token text)`: 0004's body plus one top-level key, `homework`, left out unless the person is a kid with homework on, so with homework off for everyone it is exactly 0004's answer: the card from `private.homework_card` (the next step, today's steps and minutes, his homework time, a block running or one whose answer is still due, his points and the next-reward bar). Its lines are marked "v1.3" in the body.
 
 New in private (revoked from public and anon; "nobody" means also from authenticated, so only the definer functions above call them):
 - `private.homework_word(p_key text, p_lang text)`: v1.3's fixed words ("Homework" / "Tarea", "Turn it in" / "Entregarlo"), falling back to `private.food_word`, and so to `calendar_word` and `word`, all unchanged. IMMUTABLE. Authenticated, service_role (`add_homework_time` runs as the parent).
@@ -829,7 +835,7 @@ New in private (revoked from public and anon; "nobody" means also from authentic
 - `private.plan_check(p_steps jsonb, p_due date, p_ai boolean)` returns jsonb: a plan's shape (§4.2 there), every text through `clean_text`; 22023 with a fixed message, or the cleaned steps. IMMUTABLE. Nobody.
 - `private.plan_save(p_assignment uuid, p_steps jsonb, p_give boolean, p_rev int, p_role text, p_who text)` returns jsonb: the one save rule for parents, the tutor and the kid, and Re-plan (`p_steps` null); P0001 "This plan was changed since you opened it." on an old `p_rev`. Nobody.
 - `private.step_act(p_step uuid, p_action text, p_text text, p_day date, p_key uuid, p_role text, p_who text)` returns jsonb: the one step rule: ticks, Undo, Not today, checks with notes, Not yet, questions, answers, Make it smaller, and milestone points. Nobody.
-- `private.award(p_kid uuid, p_kind text, p_delta int, p_day date, p_session uuid, p_step uuid, p_ask uuid, p_void_of uuid, p_note text, p_who text)` returns int: one ledger row, paid once, within the day's cap (`focus` and `on_time`) or the week's (`milestone`); nothing earned or given while points are off. Answers the points written. Nobody.
+- `private.award(p_kid uuid, p_kind text, p_delta int, p_day date, p_session uuid, p_step uuid, p_ask uuid, p_void_of uuid, p_note text, p_who text)` returns int: one ledger row, paid once, within the day's cap (`focus` and `on_time`) or the week's (`milestone_done` and `milestone` together); nothing earned or given while points are off. Answers the points written. Nobody.
 - `private.points_balance(p_kid uuid, out balance int, out held int)`: his balance and what his waiting asks hold. STABLE. Nobody.
 - `private.homework_pace(p_kid uuid)` returns numeric: the median of worked ÷ planned minutes over his last 10 done steps with blocks, 0.5 to 3; null with fewer than 5. STABLE. Nobody.
 - `private.focus_act(p_kid uuid, p_action text, p_session uuid, p_minutes int, p_step uuid, p_assignment uuid, p_with text, p_result text, p_note text)` returns jsonb: the timer's rules and their points (§7.1 and §8.1 there). Nobody.

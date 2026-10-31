@@ -789,7 +789,7 @@ function personDayFood(db, person, answer) {
 //   assignments     members read; admins insert, change and delete the page's columns, through the
 //                   tidy trigger (title, class and stretch on one line, the teacher's text with its
 //                   lines, '' as null, done_at and dropped_at from status) and the stamp (updated_at, updated_by)
-//   rewards         members read; admins insert, change and delete (title, cost, active, sort_order)
+//   rewards         members read; admins insert, change and delete (title, cost, active, instant, sort_order)
 //   homework_steps, focus_sessions, reward_asks, points_ledger: members read, nobody signed in writes;
 //   ai_runs: admins read; homework_use: no privilege at all
 // homeworkRpc has the signed-in functions (§3.5) with the migration's shapes and rules:
@@ -802,9 +802,10 @@ function personDayFood(db, person, answer) {
 // My day's and the tutor link's functions are the day pages' own (day.test.js routes them).
 const HW_TABLES = ['homework_kids', 'homework_times', 'tutor_links', 'assignments', 'homework_steps', 'focus_sessions', 'rewards',
   'reward_asks', 'points_ledger', 'homework_use', 'ai_runs'];
-const HW_KID_UPDATE = ['active', 'points_on', 'focus_minutes', 'pts_focus', 'pts_on_time', 'pts_milestone', 'pts_day_cap', 'pts_milestone_week'];
+const HW_KID_UPDATE = ['active', 'points_on', 'focus_minutes', 'pts_focus', 'pts_on_time', 'pts_milestone', 'pts_day_cap', 'pts_milestone_week',
+  'instant_day'];
 const HW_ASSIGNMENT_INSERT = ['kid_id', 'kind', 'title', 'subject', 'due_date', 'details', 'stretch', 'status'];
-const HW_REWARD_INSERT = ['kid_id', 'title', 'cost', 'active', 'sort_order'];
+const HW_REWARD_INSERT = ['kid_id', 'title', 'cost', 'active', 'instant', 'sort_order'];
 let homePlanCache = null;
 // assets/plan.js (window.HomePlan) in a vm, for its placement and dates.
 function homePlan() {
@@ -827,8 +828,8 @@ function withHomework(db, opts) {
 }
 // Rows with the tables' defaults.
 const hwKidRow = (o) => Object.assign({
-  kid_id: null, active: true, points_on: true, focus_minutes: 20, cue: null, if_stuck: null, pts_focus: 1, pts_on_time: 5, pts_milestone: 20,
-  pts_day_cap: 20, pts_milestone_week: 80, created_at: now(), created_by: null, updated_at: now(), updated_by: null,
+  kid_id: null, active: true, points_on: true, focus_minutes: 10, cue: null, if_stuck: null, pts_focus: 1, pts_on_time: 10, pts_milestone: 40,
+  pts_day_cap: 60, pts_milestone_week: 160, instant_day: 2, created_at: now(), created_by: null, updated_at: now(), updated_by: null,
 }, o);
 const tutorLinkRow = (o) => Object.assign({
   id: uuid(), kid_id: null, token: crypto.randomBytes(16).toString('hex'), label: 'Pat Lee, tutor', language: 'en', active: true, expires_on: null,
@@ -854,7 +855,7 @@ const sessionRow = (o) => {
   return r;
 };
 const rewardRow = (o) => Object.assign({
-  id: uuid(), kid_id: null, title: '', cost: null, active: true, suggested: false, sort_order: 0, created_at: now(), created_by: null,
+  id: uuid(), kid_id: null, title: '', cost: null, active: true, instant: false, suggested: false, sort_order: 0, created_at: now(), created_by: null,
   updated_at: now(), updated_by: null,
 }, o);
 const askRow = (o) => Object.assign({
@@ -946,24 +947,25 @@ const hwBalance = (db, kid) => ({
 });
 
 // private.award: one ledger row, with the daily cap (focus and on-time, on p_day) and the weekly
-// milestone cap (p_day's Mon–Sun); nothing earned or given while points are off; each block, day's
-// on-time start, milestone and void paid once. Answers the points written.
+// milestone cap (both halves, p_day's Mon–Sun); nothing earned or given while points are off; each
+// block, day's on-time start, milestone half and void paid once. Answers the points written.
 function hwAward(db, kid, kind, delta, day, o) {
   const HP = homePlan();
   const k = db.homework_kids.find((x) => x.kid_id === kid);
   const x = o || {};
-  if (!k || (['focus', 'on_time', 'milestone', 'given'].includes(kind) && !k.points_on)) return 0;
+  if (!k || (['focus', 'on_time', 'milestone_done', 'milestone', 'given'].includes(kind) && !k.points_on)) return 0;
   let d = delta;
   const mine = db.points_ledger.filter((l) => l.kid_id === kid);
   if (kind === 'focus' || kind === 'on_time') {
     const used = mine.filter((l) => l.day === day && (l.kind === 'focus' || l.kind === 'on_time')).reduce((n, l) => n + l.delta, 0);
     d = Math.min(d, Math.max(k.pts_day_cap - used, 0));
   }
-  if (kind === 'milestone') {
+  if (kind === 'milestone' || kind === 'milestone_done') {
     const mon = HP.addDays(day, 1 - HP.isoWeekday(day));
-    const used = mine.filter((l) => l.kind === 'milestone' && l.day >= mon && l.day <= HP.addDays(mon, 6)).reduce((n, l) => n + l.delta, 0);
+    const used = mine.filter((l) => (l.kind === 'milestone' || l.kind === 'milestone_done') && l.day >= mon && l.day <= HP.addDays(mon, 6))
+      .reduce((n, l) => n + l.delta, 0);
     d = Math.min(d, Math.max(k.pts_milestone_week - used, 0));
-    if (mine.some((l) => l.kind === 'milestone' && l.step_id === x.step)) return 0;
+    if (mine.some((l) => l.kind === kind && l.step_id === x.step)) return 0;
   }
   if (kind === 'void' && mine.some((l) => l.kind === 'void' && l.void_of === x.voidOf)) return 0;
   if (!d) return 0;
@@ -971,6 +973,9 @@ function hwAward(db, kid, kind, delta, day, o) {
     ask_id: x.ask || null, void_of: x.voidOf || null, note: x.note || null, who: x.who }));
   return d;
 }
+
+// A ledger entry a parent voided (its 'void' stands: nobody's take-back deletes it).
+const hwVoided = (db, l) => db.points_ledger.some((x) => x.kind === 'void' && x.void_of === l.id);
 
 // private.plan_save, as the family saves (§4.4): the whole plan in order; steps with an id changed
 // (a done one kept as it is), without one added, the plan's others deleted (never a done one); steps
@@ -1081,16 +1086,29 @@ function hwStepAct(db, stepId, action, text, who) {
   const add = [];
   const noteEntry = () => ({ note: s.coach_note, at: s.coach_note_at, by: s.coach_note_by });
   let changed = false;
+  let untick = false;   // an uncheck: the check itself ticked the milestone
   let out = {};
+  const half = Math.floor((k.pts_milestone + 1) / 2);   // a milestone's first half, at the tick (rounded up)
   if (action === 'done') {
+    out = { paid: 0 };
     if (!s.done_at) {
       if (s.coach_note) add.push(noteEntry());
       Object.assign(s, { done_at: at, done_by: who, not_yet_at: null, coach_note: null, coach_note_by: null, coach_note_at: null });
+      if (s.kind === 'milestone') out = { paid: hwAward(db, a.kid_id, 'milestone_done', half, hwToday(db), { step: s.id, note: s.title, who }) };
       changed = true;
     }
   } else if (action === 'undo') {
     if (s.done_at) {
       if (s.checked_at) throw new Raise('42501', 'That milestone is checked: take the check back first.');
+      if (s.kind === 'milestone' && s.done_by === who) {
+        // The parent's own tick: the half this tick paid goes with it, never below zero; never a half an earlier
+        // tick paid, nor one a parent voided (a Void is never deleted).
+        const mine = db.points_ledger.find((l) => l.step_id === s.id && l.kind === 'milestone_done' && micros(l.at) >= micros(s.done_at) && !hwVoided(db, l));
+        if (mine) {
+          if (hwBalance(db, a.kid_id).balance - mine.delta < 0) throw new Raise('P0001', 'Those points are already spent.');
+          db.points_ledger = db.points_ledger.filter((l) => l !== mine);
+        }
+      }
       Object.assign(s, { done_at: null, done_by: null });
       changed = true;
     }
@@ -1100,10 +1118,15 @@ function hwStepAct(db, stepId, action, text, who) {
     if (!s.checked_at) {
       const t = cleanText(text, 160) || null;
       if (s.coach_note) add.push(noteEntry());
+      const ticked = !!s.done_at;
+      const has = (kind) => db.points_ledger.some((l) => l.step_id === s.id && l.kind === kind);
+      // What the check has to pay: its half (unless paid already), and the first half when nobody ticked it and no tick paid it.
+      const want = (has('milestone') ? 0 : k.pts_milestone - half) + (!ticked && !has('milestone_done') ? half : 0);
       Object.assign(s, { done_at: s.done_at || at, done_by: s.done_by || who, checked_at: at, checked_by: who, not_yet_at: null,
         coach_note: t, coach_note_by: t ? 'family' : null, coach_note_at: t ? at : null });
-      const paid = hwAward(db, a.kid_id, 'milestone', k.pts_milestone, hwToday(db), { step: s.id, note: s.title, who });
-      out = { paid, used_up: k.points_on && k.pts_milestone > 0 && paid < k.pts_milestone };
+      const first = ticked ? 0 : hwAward(db, a.kid_id, 'milestone_done', half, hwToday(db), { step: s.id, note: s.title, who });
+      const paid = first + hwAward(db, a.kid_id, 'milestone', k.pts_milestone - half, hwToday(db), { step: s.id, note: s.title, who });
+      out = { paid, used_up: k.points_on && want > 0 && paid < want };
       changed = true;
     }
   } else if (action === 'not_yet') {
@@ -1121,12 +1144,14 @@ function hwStepAct(db, stepId, action, text, who) {
   } else if (action === 'uncheck') {
     if (s.checked_at) {
       if (s.checked_by !== who || !within(db, s.checked_at, 15 * 60e3)) throw new Raise('42501', 'Only the one who checked it can take it back, for 15 minutes.');
-      const paid = db.points_ledger.filter((l) => l.step_id === s.id && l.kind === 'milestone').map((l) => l.id);
-      const net = db.points_ledger.filter((l) => paid.includes(l.id) || (l.kind === 'void' && paid.includes(l.void_of))).reduce((n, l) => n + l.delta, 0);
-      const kid = db.assignments.find((x) => x.id === s.assignment_id).kid_id;
-      if (hwBalance(db, kid).balance - net < 0) throw new Raise('P0001', 'Those points are already spent.');   // never below zero, as void_points
-      db.points_ledger = db.points_ledger.filter((l) => !paid.includes(l.id) && !(l.kind === 'void' && paid.includes(l.void_of)));
-      Object.assign(s, { checked_at: null, checked_by: null });
+      // What the check did goes: its half, and when the check itself ticked it, the tick and the first half that check paid;
+      // never a voided half (a Void is never deleted); never below zero, as void_points.
+      untick = s.done_at === s.checked_at && s.done_by === s.checked_by;
+      const back = db.points_ledger.filter((l) => l.step_id === s.id && !hwVoided(db, l)
+        && (l.kind === 'milestone' || (untick && l.kind === 'milestone_done' && micros(l.at) >= micros(s.checked_at))));
+      if (hwBalance(db, a.kid_id).balance - back.reduce((n, l) => n + l.delta, 0) < 0) throw new Raise('P0001', 'Those points are already spent.');
+      db.points_ledger = db.points_ledger.filter((l) => !back.includes(l));
+      Object.assign(s, { checked_at: null, checked_by: null }, untick ? { done_at: null, done_by: null } : {});
       changed = true;
     }
   } else if (action === 'answer') {
@@ -1163,7 +1188,7 @@ function hwStepAct(db, stepId, action, text, who) {
     a.plan_rev += 1;
     const rest = db.homework_steps.filter((x) => x.assignment_id === a.id && !x.done_at);
     if ((action === 'done' || action === 'check') && a.status === 'open' && (s.kind === 'turn_in' || !rest.length)) Object.assign(a, { status: 'done', done_at: at });
-    else if ((action === 'undo' || action === 'not_yet') && a.status === 'done') Object.assign(a, { status: 'open', done_at: null });
+    else if ((action === 'undo' || action === 'not_yet' || (action === 'uncheck' && untick)) && a.status === 'done') Object.assign(a, { status: 'open', done_at: null });
     Object.assign(a, { updated_at: foodStamp(db), updated_by: who });
   }
   return Object.assign(out, { step_id: s.id });
@@ -1294,7 +1319,7 @@ const homeworkRpc = {
     const note = cleanText(b.p_note, 120);
     if (!note) throw new Raise('22023', 'Say why.');
     const l = db.points_ledger.find((x) => x.id === b.p_entry);
-    if (!l || !['focus', 'on_time', 'milestone', 'given'].includes(l.kind)) throw new Raise('22023', 'Only earned or given points can be voided.');
+    if (!l || !['focus', 'on_time', 'milestone_done', 'milestone', 'given'].includes(l.kind)) throw new Raise('22023', 'Only earned or given points can be voided.');
     if (!db.points_ledger.some((x) => x.kind === 'void' && x.void_of === l.id)) {
       if (hwBalance(db, l.kid_id).balance - l.delta < 0) throw new Raise('P0001', 'Those points are already spent.');
       hwAward(db, l.kid_id, 'void', -l.delta, hwToday(db), { voidOf: l.id, note, who: email });
@@ -1384,7 +1409,7 @@ function rewardProblem(r) {
 }
 function hwKidProblem(r) {
   if (![10, 15, 20, 25].includes(r.focus_minutes)) return hwCheck('homework_kids', 'homework_kids_focus_minutes_check');
-  const range = { pts_focus: [0, 5], pts_on_time: [0, 50], pts_milestone: [0, 100], pts_day_cap: [0, 300], pts_milestone_week: [0, 400] };
+  const range = { pts_focus: [0, 5], pts_on_time: [0, 50], pts_milestone: [0, 100], pts_day_cap: [0, 300], pts_milestone_week: [0, 400], instant_day: [0, 10] };
   const bad = Object.keys(range).find((k) => !(Number.isInteger(r[k]) && r[k] >= range[k][0] && r[k] <= range[k][1]));
   return bad ? hwCheck('homework_kids', `homework_kids_${bad}_check`) : null;
 }
@@ -1730,10 +1755,11 @@ async function signIn(context, email) {
 //               his homework time (the events homework_times links), each day's first start to last end
 //   db.hwBusy   { <kid id>: { 'YYYY-MM-DD': [{ starts, ends, title }] } }: his timed items (private.person_items)
 //   db.hwPace   { ratio, steps } or null: private.homework_pace's answer, set by the test
-// Free minutes (§5.3), placement (§5.4, with the steps' fixed and done flags), points (§8.1: whole 5-minute
-// units seen, the on-time window around the first free minute, the daily cap on the block's start day, the
-// weekly milestone cap) and the caps on writes (150 and 20 starts a day for his link, 200 for the tutor's)
-// follow the migration. A refusal undoes the whole call, as a transaction does.
+// Free minutes (§5.3), placement (§5.4, with the steps' fixed and done flags), points (§8.1: a point per whole
+// minute seen, the on-time window around the first free minute and its points once 5 minutes are seen, a
+// block ended 'time' then answered, the daily cap on the block's start day, a milestone's two halves and the
+// weekly milestone cap, instant rewards cashed on the spot, the next-reward bar) and the caps on writes (150
+// and 20 starts a day for his link, 200 for the tutor's) follow the migration. A refusal undoes the whole call, as a transaction does.
 // Its names start with tk (the token side), apart from the Homework page's signed-in fakes; its rows (tkKidRow,
 // tkLinkRow, tkAssignmentRow, tkStepRow, tkSessionRow, tkRewardRow, tkLedgerRow) have the tables' defaults.
 const TK_TABLES = ['homework_kids', 'homework_times', 'tutor_links', 'assignments', 'homework_steps', 'focus_sessions', 'rewards',
@@ -1752,8 +1778,8 @@ function withHomeworkTokens(db, opts) {
 }
 // Rows with the tables' defaults.
 const tkKidRow = (o) => Object.assign({
-  kid_id: null, active: true, points_on: true, focus_minutes: 20, cue: null, if_stuck: null, pts_focus: 1, pts_on_time: 5,
-  pts_milestone: 20, pts_day_cap: 20, pts_milestone_week: 80, created_at: now(), created_by: null, updated_at: now(), updated_by: null,
+  kid_id: null, active: true, points_on: true, focus_minutes: 10, cue: null, if_stuck: null, pts_focus: 1, pts_on_time: 10,
+  pts_milestone: 40, pts_day_cap: 60, pts_milestone_week: 160, instant_day: 2, created_at: now(), created_by: null, updated_at: now(), updated_by: null,
 }, o);
 const tkLinkRow = (o) => Object.assign({
   id: uuid(), kid_id: null, token: crypto.randomBytes(16).toString('hex'), label: 'Pat Lee, tutor', language: 'en', active: true,
@@ -1775,7 +1801,7 @@ const tkSessionRow = (o) => Object.assign({
   ended_at: null, result: null, seen_minutes: null, on_time: false, points: 0, note: null,
 }, o);
 const tkRewardRow = (o) => Object.assign({
-  id: uuid(), kid_id: null, title: '', cost: null, active: true, suggested: false, sort_order: 0,
+  id: uuid(), kid_id: null, title: '', cost: null, active: true, instant: false, suggested: false, sort_order: 0,
   created_at: now(), created_by: null, updated_at: now(), updated_by: null,
 }, o);
 const tkLedgerRow = (o) => Object.assign({
@@ -1922,14 +1948,15 @@ function tkAward(db, kid, kind, delta, day, o) {
   const led = db.points_ledger.filter((l) => l.kid_id === kid);
   if (kind === 'focus' && led.some((l) => l.kind === 'focus' && l.session_id === x.session)) return 0;
   if (kind === 'on_time' && led.some((l) => l.kind === 'on_time' && l.day === day)) return 0;
-  if (kind === 'milestone' && led.some((l) => l.kind === 'milestone' && l.step_id === x.step)) return 0;
+  if ((kind === 'milestone' || kind === 'milestone_done') && led.some((l) => l.kind === kind && l.step_id === x.step)) return 0;
   let n = delta;
   if (kind === 'focus' || kind === 'on_time') {
     const used = led.filter((l) => (l.kind === 'focus' || l.kind === 'on_time') && l.day === day).reduce((s, l) => s + l.delta, 0);
     n = Math.min(n, k.pts_day_cap - used);
-  } else if (kind === 'milestone') {
+  } else if (kind === 'milestone' || kind === 'milestone_done') {
     const mon = tkMonday(day);
-    const used = led.filter((l) => l.kind === 'milestone' && l.day >= mon && l.day <= tkAdd(mon, 6)).reduce((s, l) => s + l.delta, 0);
+    const used = led.filter((l) => (l.kind === 'milestone' || l.kind === 'milestone_done') && l.day >= mon && l.day <= tkAdd(mon, 6))
+      .reduce((s, l) => s + l.delta, 0);
     n = Math.min(n, k.pts_milestone_week - used);
   }
   if (n <= 0) return 0;
@@ -1942,6 +1969,10 @@ function tkBalance(db, kid) {
   const held = db.reward_asks.filter((q) => q.kid_id === kid && q.status === 'waiting').reduce((s, q) => s + q.cost, 0);
   return { balance, held };
 }
+// A milestone's two halves: at the tick (rounded up) and at the check.
+const tkHalf = (k) => Math.floor((k.pts_milestone + 1) / 2);
+// The instant rewards he cashed today.
+const tkCashedToday = (db, kid) => db.reward_asks.filter((q) => q.kid_id === kid && q.status === 'cashed' && tkDayOf(db, q.decided_at) === tkToday(db)).length;
 
 // ---- Jordan's view (private.homework_view_kid) and the card (private.homework_card)
 const tkStepsOf = (db, aid) => db.homework_steps.filter((s) => s.assignment_id === aid).sort((x, y) => (x.pos - y.pos) || (x.id < y.id ? -1 : 1));
@@ -1965,7 +1996,7 @@ function tkViewKid(db, kid) {
     minutes: st.minutes, day: st.day, from_day: st.day < today ? st.day : null, moved: st.moved_from != null, done: st.done_at != null,
     undo: st.done_at != null && st.checked_at == null && st.done_by === who && nowMs - tkMs(st.done_at) <= 15 * 60000,
     checked: st.checked_at != null,
-    waiting: st.kind === 'milestone' && st.done_at != null && st.checked_at == null && k.points_on ? k.pts_milestone : null,
+    waiting: st.kind === 'milestone' && st.done_at != null && st.checked_at == null && k.points_on ? k.pts_milestone - tkHalf(k) : null,
     not_yet: st.not_yet_at != null, coach: st.coach_note ? { by: st.coach_note_by, text: st.coach_note } : null,
     question: st.question, answer: st.answer, _open: st.done_at == null && a.status === 'open',
   })));
@@ -2005,6 +2036,13 @@ function tkViewKid(db, kid) {
   const mon = tkMonday(today);
   const focusedIn = (a, b) => db.focus_sessions.filter((f) => f.kid_id === kid && f.ended_at && tkDayOf(db, f.started_at) >= a && tkDayOf(db, f.started_at) <= b)
     .reduce((n, f) => n + (f.seen_minutes || 0), 0);
+  const cashed = tkCashedToday(db, kid);
+  const rewards = k.points_on ? db.rewards.filter((r) => r.kid_id === kid && r.active && r.cost != null)
+    .sort((x, y) => (x.sort_order - y.sort_order) || (x.cost - y.cost) || x.title.localeCompare(y.title))
+    .map((r) => ({ id: r.id, title: r.title, cost: r.cost, instant: !!r.instant,
+      can_ask: balance - held >= r.cost && db.reward_asks.filter((q) => q.kid_id === kid && q.status === 'waiting').length < 3
+        && !db.reward_asks.some((q) => q.kid_id === kid && q.reward_id === r.id && q.status === 'waiting'),
+      can_cash: !!r.instant && balance - held >= r.cost && cashed < k.instant_day })) : null;
   return {
     language: lang, as_of: tkAsOf(db), today, server_now: tkServerNow(db),
     me: { first_name: String(me.name).split(' ')[0], tutor: tkTutorWord(db, kid), cue: k.cue, if_stuck: k.if_stuck, length: k.focus_minutes,
@@ -2013,26 +2051,55 @@ function tkViewKid(db, kid) {
     on_time: k.points_on && win && win.first_free ? { from: tkHHMM(tkMin(win.first_free) - 30), until: tkHHMM(tkMin(win.first_free) + 10),
       done: startedToday, points: k.pts_on_time } : null,
     session: open ? { id: open.id, step_id: open.step_id, assignment_id: open.assignment_id, title: titleOf(open), minutes: open.minutes,
-      started_at: open.started_at, ends_at: open.ends_at, with: open.with_whom } : null,
+      started_at: open.started_at, ends_at: open.ends_at, with: open.with_whom, on_time: !!open.on_time,
+      earn: k.points_on && (open.step_id || open.assignment_id) && nowMs - tkMs(open.started_at) < 86400000 ? {
+        per_minute: k.pts_focus, on_time: open.on_time ? k.pts_on_time : 0,
+        room: Math.max(k.pts_day_cap - ledger.filter((l) => (l.kind === 'focus' || l.kind === 'on_time') && l.day === tkDayOf(db, open.started_at))
+          .reduce((n, l) => n + l.delta, 0), 0) } : null } : null,
+    answer_due: tkAnswerDue(db, kid, k),
     now: nowStep ? bare(nowStep) : null,
     tonight: tonight.map(bare),
     load: { planned: tonight.filter((x) => x._open).reduce((n, x) => n + x.minutes, 0), free: win ? win.free : 0 },
     earlier: earlier.map(bare),
     assignments,
     points: k.points_on ? { balance, held, today: ledger.filter((l) => l.day === today && l.delta > 0).reduce((n, l) => n + l.delta, 0),
-      capped: ledger.filter((l) => l.day === today && (l.kind === 'focus' || l.kind === 'on_time')).reduce((n, l) => n + l.delta, 0) >= k.pts_day_cap } : null,
-    rewards: k.points_on ? db.rewards.filter((r) => r.kid_id === kid && r.active && r.cost != null)
-      .sort((x, y) => (x.sort_order - y.sort_order) || (x.cost - y.cost) || x.title.localeCompare(y.title))
-      .map((r) => ({ id: r.id, title: r.title, cost: r.cost,
-        can_ask: balance - held >= r.cost && db.reward_asks.filter((q) => q.kid_id === kid && q.status === 'waiting').length < 3
-          && !db.reward_asks.some((q) => q.kid_id === kid && q.reward_id === r.id && q.status === 'waiting') })) : null,
+      capped: ledger.filter((l) => l.day === today && (l.kind === 'focus' || l.kind === 'on_time')).reduce((n, l) => n + l.delta, 0) >= k.pts_day_cap,
+      cash_left: Math.max(k.instant_day - cashed, 0) } : null,
+    rewards,
+    goal: rewards && rewards.length ? tkGoal(rewards, balance - held, db.reward_asks.filter((q) => q.kid_id === kid && q.status === 'waiting').map((q) => q.reward_id)) : null,
     asks: k.points_on ? db.reward_asks.filter((q) => q.kid_id === kid && (q.status === 'waiting'
-      || (['approved', 'declined'].includes(q.status) && nowMs - tkMs(q.decided_at) <= 7 * 86400000)))
+      || (['approved', 'declined', 'cashed'].includes(q.status) && nowMs - tkMs(q.decided_at) <= 7 * 86400000)))
       .sort((x, y) => tkMs(y.asked_at) - tkMs(x.asked_at))
       .map((q) => ({ id: q.id, reward_id: q.reward_id, title: q.title, cost: q.cost, status: q.status, asked_at: q.asked_at, decided_at: q.decided_at, note: q.note })) : null,
     recent: k.points_on ? ledger.slice().sort((x, y) => tkMs(y.at) - tkMs(x.at)).slice(0, 10).map((l) => ({ day: l.day, kind: l.kind, delta: l.delta, note: l.note })) : null,
     pace: db.hwPace || null,
     week: { focused: focusedIn(mon, tkAdd(mon, 6)), last_week: focusedIn(tkAdd(mon, -7), tkAdd(mon, -1)) },
+  };
+}
+// The next-reward bar: the cheapest reward his free points don't cover yet (never one he asked for: its points
+// are held already), and the dearest he can get now (cash or ask), the one he can cash first at the same cost.
+function tkGoal(rewards, free, asked) {
+  const next = rewards.map((r, n) => ({ r, n })).filter((x) => x.r.cost > free && !(asked || []).includes(x.r.id))
+    .sort((x, y) => (x.r.cost - y.r.cost) || (x.n - y.n))[0];
+  const now = rewards.map((r, n) => ({ r, n })).filter((x) => x.r.can_cash || x.r.can_ask)
+    .sort((x, y) => (y.r.cost - x.r.cost) || (Number(y.r.can_cash) - Number(x.r.can_cash)) || (x.n - y.n))[0];
+  return {
+    next: next ? { id: next.r.id, title: next.r.title, cost: next.r.cost, need: next.r.cost - free } : null,
+    now: now ? { id: now.r.id, title: now.r.title, cost: now.r.cost, instant: now.r.can_cash } : null,
+  };
+}
+// His latest block, when its ring ran out (paid, result 'time') within 24 hours of its start and his answer is
+// still to come: { block, earned } as focus_by_token's End answered it; else null.
+function tkAnswerDue(db, kid, k) {
+  const f = db.focus_sessions.filter((x) => x.kid_id === kid).sort((x, y) => (tkMs(y.started_at) - tkMs(x.started_at)) || (x.id < y.id ? -1 : 1))[0];
+  if (!f || f.result !== 'time' || db.hwNow - tkMs(f.started_at) >= 86400000) return null;
+  const led = db.points_ledger.filter((l) => l.kid_id === kid);
+  const sum = (kind) => led.filter((l) => l.session_id === f.id && l.kind === kind).reduce((n, l) => n + l.delta, 0);
+  return {
+    block: { id: f.id, step_id: f.step_id, assignment_id: f.assignment_id, minutes: f.minutes, with: f.with_whom, started_at: f.started_at, ends_at: f.ends_at,
+      ended_at: f.ended_at, result: f.result, seen_minutes: f.seen_minutes, on_time: !!f.on_time, points: f.points },
+    earned: { focus: sum('focus'), on_time: sum('on_time'),
+      capped: !!k.points_on && led.filter((l) => (l.kind === 'focus' || l.kind === 'on_time') && l.day === tkDayOf(db, f.started_at)).reduce((n, l) => n + l.delta, 0) >= k.pts_day_cap },
   };
 }
 // The first word of his active tutor link's label ("Pat"), or null.
@@ -2053,7 +2120,9 @@ function tkCard(db, kid) {
   if (v.window && v.earlier.length) card.earlier = v.earlier.length;
   if (v.window) card.window = v.window;
   if (v.session) card.session = { ends_in_s: Math.max(0, Math.ceil((tkMs(v.session.ends_at) - db.hwNow) / 1000)) };
+  if (v.answer_due) card.answer_due = true;
   if (v.points) card.points = v.points.balance;
+  if (v.goal) card.goal = v.goal;
   return card;
 }
 // get_person_day's v1.3 key (§3.4): only for a kid with an active homework_kids row.
@@ -2078,19 +2147,32 @@ function tkStepAct(db, stepId, action, text, day, key, role, who) {
   const at = tkStamp(db.hwNow);
   const coach = role === 'tutor' ? 'tutor' : 'family';
   let changed = false;
+  let untick = false;   // an uncheck: the check itself ticked the milestone
   let out = {};
   let add = [];
   const keepNote = () => { if (s.coach_note) add = [{ note: s.coach_note, at: s.coach_note_at, by: s.coach_note_by }]; };
   if (action === 'done') {
+    out = { paid: 0 };
     if (s.done_at == null) {
       keepNote();
       Object.assign(s, { done_at: at, done_by: who, not_yet_at: null, coach_note: null, coach_note_by: null, coach_note_at: null });
+      // A milestone pays half at once (rounded up); the rest at the check.
+      if (s.kind === 'milestone') out = { paid: tkAward(db, a.kid_id, 'milestone_done', tkHalf(k), today, { step: s.id, note: s.title, who }) };
       changed = true;
     }
   } else if (action === 'undo') {
     if (s.done_at != null) {
       if (s.checked_at != null || (role === 'kid' && (s.done_by !== who || db.hwNow - tkMs(s.done_at) > 15 * 60000))) {
         throw new Raise('42501', 'Only your own tick can be undone, for 15 minutes.');
+      }
+      if (s.kind === 'milestone' && s.done_by === who) {
+        // His own Undo: the half this tick paid goes with it, never below zero; never a half an earlier tick paid
+        // (kept by Not yet or a parent's Undo), nor one a parent voided (a Void is never deleted).
+        const mine = db.points_ledger.find((l) => l.step_id === s.id && l.kind === 'milestone_done' && micros(l.at) >= micros(s.done_at) && !hwVoided(db, l));
+        if (mine) {
+          if (tkBalance(db, a.kid_id).balance - mine.delta < 0) throw new Raise('P0001', 'Those points are already spent.');
+          db.points_ledger = db.points_ledger.filter((l) => l !== mine);
+        }
       }
       Object.assign(s, { done_at: null, done_by: null });
       changed = true;
@@ -2142,10 +2224,16 @@ function tkStepAct(db, stepId, action, text, day, key, role, who) {
     if (s.checked_at == null) {
       const note = tkClean(text, 160);
       keepNote();
+      const ticked = s.done_at != null;
+      const has = (kind) => db.points_ledger.some((l) => l.step_id === s.id && l.kind === kind);
+      // What the check has to pay: its half (unless paid already), and the first half when nobody ticked it and no tick paid it.
+      const want = (has('milestone') ? 0 : k.pts_milestone - tkHalf(k)) + (!ticked && !has('milestone_done') ? tkHalf(k) : 0);
       Object.assign(s, { done_at: s.done_at || at, done_by: s.done_by || who, checked_at: at, checked_by: who, not_yet_at: null,
         coach_note: note, coach_note_by: note ? coach : null, coach_note_at: note ? at : null });
-      const paid = tkAward(db, a.kid_id, 'milestone', k.pts_milestone, today, { step: s.id, note: s.title, who });
-      out = { paid, used_up: k.points_on && k.pts_milestone > 0 && paid < k.pts_milestone };
+      // Not ticked yet (the work was seen): its first half too; then the rest.
+      const first = ticked ? 0 : tkAward(db, a.kid_id, 'milestone_done', tkHalf(k), today, { step: s.id, note: s.title, who });
+      const paid = first + tkAward(db, a.kid_id, 'milestone', k.pts_milestone - tkHalf(k), today, { step: s.id, note: s.title, who });
+      out = { paid, used_up: k.points_on && want > 0 && paid < want };
       changed = true;
     }
   } else if (action === 'not_yet') {
@@ -2161,12 +2249,14 @@ function tkStepAct(db, stepId, action, text, day, key, role, who) {
   } else if (action === 'uncheck') {
     if (s.checked_at != null) {
       if (s.checked_by !== who || db.hwNow - tkMs(s.checked_at) > 15 * 60000) throw new Raise('42501', 'Only the one who checked it can take it back, for 15 minutes.');
-      const paid = db.points_ledger.filter((l) => l.step_id === s.id && l.kind === 'milestone').map((l) => l.id);
-      const net = db.points_ledger.filter((l) => paid.includes(l.id) || (l.kind === 'void' && paid.includes(l.void_of))).reduce((n, l) => n + l.delta, 0);
-      const kid = db.assignments.find((x) => x.id === s.assignment_id).kid_id;
-      if (tkBalance(db, kid).balance - net < 0) throw new Raise('P0001', 'Those points are already spent.');   // never below zero, as void_points
-      db.points_ledger = db.points_ledger.filter((l) => !paid.includes(l.id) && !(l.kind === 'void' && paid.includes(l.void_of)));
-      Object.assign(s, { checked_at: null, checked_by: null });
+      // What the check did goes: its half, and when the check itself ticked it, the tick and the first half that check paid;
+      // never a voided half (a Void is never deleted); never below zero, as void_points.
+      untick = s.done_at === s.checked_at && s.done_by === s.checked_by;
+      const back = db.points_ledger.filter((l) => l.step_id === s.id && !hwVoided(db, l)
+        && (l.kind === 'milestone' || (untick && l.kind === 'milestone_done' && micros(l.at) >= micros(s.checked_at))));
+      if (tkBalance(db, a.kid_id).balance - back.reduce((n, l) => n + l.delta, 0) < 0) throw new Raise('P0001', 'Those points are already spent.');
+      db.points_ledger = db.points_ledger.filter((l) => !back.includes(l));
+      Object.assign(s, { checked_at: null, checked_by: null }, untick ? { done_at: null, done_by: null } : {});
       changed = true;
     }
   } else if (action === 'answer') {
@@ -2189,7 +2279,7 @@ function tkStepAct(db, stepId, action, text, day, key, role, who) {
     a.updated_by = who;
     const allDone = !db.homework_steps.some((x) => x.assignment_id === a.id && x.done_at == null);
     if ((action === 'done' || action === 'check') && a.status === 'open' && (s.kind === 'turn_in' || allDone)) Object.assign(a, { status: 'done', done_at: at });
-    else if ((action === 'undo' || action === 'not_yet') && a.status === 'done') Object.assign(a, { status: 'open', done_at: null });
+    else if ((action === 'undo' || action === 'not_yet' || (action === 'uncheck' && untick)) && a.status === 'done') Object.assign(a, { status: 'open', done_at: null });
   }
   return Object.assign(out, { step_id: s.id, _changed: changed });
 }
@@ -2334,24 +2424,33 @@ function tkFocusAct(db, kid, action, id, minutes, stepId, asgId, withWhom, resul
     }
   } else {
     if (!f) throw new Raise('42501', "That block isn't yours.");
-    if (f.ended_at == null) {
-      if (!['done', 'more', 'stopped'].includes(result)) throw new Raise('22023', 'Choose step done, more to do or stop.');
+    if ((f.ended_at == null || f.result === 'time') && !['done', 'more', 'stopped', 'time'].includes(result)) {
+      throw new Raise('22023', 'Choose step done, more to do or stop.');
+    }
+    const tick = () => {
+      if (result !== 'done') return;
+      if (f.step_id) tkStepAct(db, f.step_id, 'done', null, null, null, 'kid', who);
+      else if (f.assignment_id) {
+        const a = db.assignments.find((x) => x.id === f.assignment_id);
+        if (a && a.status === 'open' && !db.homework_steps.some((s) => s.assignment_id === a.id)) Object.assign(a, { status: 'done', done_at: at, updated_by: who });
+      }
+    };
+    if (f.result === 'time' && result !== 'time') {
+      // His answer after the ring ran out: the result, the note and the tick; the points stay as paid.
+      Object.assign(f, { result, note: tkClean(note, 120) || f.note });
+      tick();
+      changed = true;
+    } else if (f.ended_at == null) {
       const seen = Math.max(0, Math.min(Math.floor((db.hwNow - tkMs(f.started_at)) / 60000), f.minutes));
       const day = tkDayOf(db, f.started_at);
       Object.assign(f, { ended_at: at, result, seen_minutes: seen, note: tkClean(note, 120) });
-      if (result === 'done') {
-        if (f.step_id) tkStepAct(db, f.step_id, 'done', null, null, null, 'kid', who);
-        else if (f.assignment_id) {
-          const a = db.assignments.find((x) => x.id === f.assignment_id);
-          if (a && a.status === 'open' && !db.homework_steps.some((s) => s.assignment_id === a.id)) Object.assign(a, { status: 'done', done_at: at, updated_by: who });
-        }
-      }
+      tick();
       if ((f.step_id || f.assignment_id) && db.hwNow - tkMs(f.started_at) <= 24 * 3600000) {
         const s = db.homework_steps.find((x) => x.id === f.step_id);
         const a = db.assignments.find((x) => x.id === f.assignment_id);
         const title = (s && s.title) || (a && a.title) || null;
-        tkAward(db, kid, 'focus', k.pts_focus * Math.floor(seen / 5), day, { session: f.id, step: f.step_id, note: title, who });
-        if (f.on_time && seen >= 8) tkAward(db, kid, 'on_time', k.pts_on_time, day, { session: f.id, step: f.step_id, note: title, who });
+        tkAward(db, kid, 'focus', k.pts_focus * seen, day, { session: f.id, step: f.step_id, note: title, who });
+        if (f.on_time && seen >= 5) tkAward(db, kid, 'on_time', k.pts_on_time, day, { session: f.id, step: f.step_id, note: title, who });
         f.points = db.points_ledger.filter((l) => l.session_id === f.id && (l.kind === 'focus' || l.kind === 'on_time')).reduce((n, l) => n + l.delta, 0);
       }
       changed = true;
@@ -2517,11 +2616,11 @@ const homeworkTokenRpc = {
     delete r._changed;
     return Object.assign(r, tkViewKid(db, me.id));
   }),
-  reward_by_token: tkCall('reward_by_token', ['p_token', 'p_action'], ['p_reward', 'p_text', 'p_key'], (db, b) => {
+  reward_by_token: tkCall('reward_by_token', ['p_token', 'p_action'], ['p_reward', 'p_text', 'p_key', 'p_cost'], (db, b) => {
     const me = tkKidByToken(db, b.p_token);
     if (!me) return null;
     const who = tkKidWho(db, me);
-    if (!['ask', 'cancel', 'suggest'].includes(b.p_action)) throw new Raise('22023', 'Choose ask, cancel or suggest.');
+    if (!['ask', 'cash', 'cancel', 'suggest'].includes(b.p_action)) throw new Raise('22023', 'Choose ask, cash, cancel or suggest.');
     if (tkLen(b.p_text) > 60) throw tkTooLong();
     if (!tkKidOf(db, me.id).points_on) throw new Raise('42501', 'Points are off.');
     let changed = false;
@@ -2539,6 +2638,23 @@ const homeworkTokenRpc = {
           db.reward_asks.push({ id: b.p_key, kid_id: me.id, reward_id: r.id, title: r.title, cost: r.cost, status: 'waiting', asked_at: tkStamp(db.hwNow), decided_at: null, decided_by: null, note: null });
           changed = true;
         }
+      }
+    } else if (b.p_action === 'cash') {
+      if (!b.p_key) throw new Raise('22023', 'An ask needs its id.');
+      const q = db.reward_asks.find((x) => x.id === b.p_key);
+      if (q && (q.kid_id !== me.id || q.status !== 'cashed')) throw new Raise('42501', "That reward isn't on your list.");
+      if (!q) {
+        const r = db.rewards.find((x) => x.id === b.p_reward && x.kid_id === me.id && x.active && x.cost != null);
+        if (!r) throw new Raise('42501', "That reward isn't on your list.");
+        if (!r.instant) throw new Raise('42501', 'Ask a parent for that one.');
+        if (b.p_cost !== r.cost) throw new Raise('22023', "That reward's price changed.");   // the price his button showed
+        if (tkCashedToday(db, me.id) >= tkKidOf(db, me.id).instant_day) throw new Raise('P0001', "That's all the instant rewards for today. Ask a parent for this one.");
+        const { balance, held } = tkBalance(db, me.id);
+        if (balance - held < r.cost) throw new Raise('42501', 'Not enough points yet.');
+        const at = tkStamp(db.hwNow);
+        db.reward_asks.push({ id: b.p_key, kid_id: me.id, reward_id: r.id, title: r.title, cost: r.cost, status: 'cashed', asked_at: at, decided_at: at, decided_by: who, note: null });
+        db.points_ledger.push(tkLedgerRow({ kid_id: me.id, at, day: tkToday(db), kind: 'trade', delta: -r.cost, ask_id: b.p_key, note: r.title, who }));
+        changed = true;
       }
     } else if (b.p_action === 'cancel') {
       const q = db.reward_asks.filter((x) => (b.p_key ? x.id === b.p_key : x.reward_id === b.p_reward && x.kid_id === me.id && x.status === 'waiting'))[0];
