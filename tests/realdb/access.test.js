@@ -249,7 +249,8 @@ const emptyLists = (b) => !!b && typeof b === 'object' && !Array.isArray(b)
   // question, the turn-in), a finished block, a reward, his ask, his points, a day's count and an AI
   // run. Signed out, every table, every write and every signed-in or job function is refused (401);
   // Jordan's token gets his own view and Pat's link its own, neither with anyone else's name, an
-  // email, a token or a person's id, and Pat's never points, rewards, asks, busy titles or a block;
+  // email (Alex gave the plan and ticked its turn-in, so given_by and done_by hold Alex's), a token or
+  // a person's id, and Pat's never points, rewards, asks, busy titles or a block;
   // Pat's token opens nothing else (every other anonymous function answers it with null, false or a
   // refusal), and Jordan's token opens no tutor function. A stranger gets no rows, an empty week and
   // refusals; Sam (a member) reads it all but the links, the AI runs and the counter, and every write
@@ -277,7 +278,7 @@ const emptyLists = (b) => !!b && typeof b === 'object' && !Array.isArray(b)
       insert into homework_steps (id, assignment_id, pos, kind, title, done_looks_like, minutes, day, done_at, done_by, question, question_at) values
         ('${I.s1}', '${I.asg}', 1, 'milestone', 'Outline with 3 main points', 'an outline you can show', 20, '2026-10-27', private.now(), 'Jordan Example (My day)', null, null),
         ('${I.s2}', '${I.asg}', 2, 'step', 'Find 2 sources and save their links', null, 20, '2026-10-28', null, null, 'Does the poster need a title?', private.now()),
-        ('${I.s3}', '${I.asg}', 3, 'turn_in', 'Turn it in', 'handed in', 5, '2026-11-13', null, null, null, null);
+        ('${I.s3}', '${I.asg}', 3, 'turn_in', 'Turn it in', 'handed in', 5, '2026-11-13', private.now(), 'alex@example.com', null, null);
       insert into focus_sessions (id, kid_id, assignment_id, step_id, minutes, started_at, ends_at, ended_at, result, seen_minutes, points)
         values ('${I.block}', '${jordan.id}', '${I.asg}', '${I.s1}', 20, private.now() - interval '1 hour', private.now() - interval '40 minutes',
                 private.now() - interval '40 minutes', 'done', 20, 4);
