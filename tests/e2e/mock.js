@@ -1350,7 +1350,86 @@ const homeworkRpc = {
     db.homework_steps = db.homework_steps.filter((s) => !mine.has(s.assignment_id));
     ['assignments', 'focus_sessions', 'points_ledger', 'rewards', 'reward_asks', 'tutor_links', 'ai_runs', 'homework_times', 'homework_kids']
       .forEach((t) => { db[t] = db[t].filter((x) => (x.kid_id) !== kid); });
+    if (db.schoolLinks) db.schoolLinks = db.schoolLinks.filter((x) => x.kid_id !== kid);
     return counts;
+  }),
+};
+
+// ---- Schema 6 (0006_homework_school.sql, docs/v1.3-homework.md §11, §12): the school's Blackbaud calendar
+// links, the parents' side. withSchool(db) is for a schema-6 database (after withHomework): db.schoolLinks holds
+// what the database keeps per kid and feed, { kid_id, feed, url, read_at, items, error }, where url stands for
+// the address in private.school_feed_urls, which no API role can read: no table route reaches db.schoolLinks
+// (it isn't a table name) and no answer below carries url. read_at, items and error are what hub-jobs' hourly
+// read leaves (a test sets them; error is one of the read's fixed codes). schoolRpc fakes the three functions:
+//   save_school_link(p_kid, p_feed, p_url) → { feed, set: true }: Add link and Replace (a replaced link's read
+//     status starts again); the address is checked as the database checks it: webcal:// becomes https://,
+//     https only, port 443, no user info, a host ending in db.schoolSuffix (the constant .myschoolapp.com,
+//     replaced in tests by .school.example), the path /podium/feed/iCal.aspx, a z value, at most 500 characters
+//   remove_school_link(p_kid, p_feed) → null (void): Remove
+//   school_status(p_kid) → { feeds: [{ feed, set, read_at, items, error }] } (assignments, schedule, games), or
+//     null for a kid without homework
+// Each is for parents only (42501 "Only a parent can change homework."); p_feed is 'assignments', 'schedule'
+// or 'games' (22023 otherwise). Without withSchool (schema 5) they answer 404 PGRST202, as live.
+const SCHOOL_FEEDS = ['assignments', 'schedule', 'games'];
+function withSchool(db, opts) {
+  db.schoolLinks = db.schoolLinks || [];
+  db.schoolSuffix = (opts && opts.suffix) || '.school.example';
+  return db;
+}
+const SCHOOL_BAD_LINK = "That isn't a school calendar link. Copy it again from the calendar's feed button (it has /podium/feed/iCal.aspx in it).";
+// private.school_url: the address as stored, or a 22023 refusal.
+function schoolUrl(db, raw) {
+  let s = String(raw == null ? '' : raw).trim();
+  if (/^webcal:\/\//i.test(s)) s = `https://${s.slice('webcal://'.length)}`;
+  let u = null;
+  try { u = new URL(s); } catch (e) { u = null; }
+  if (!u || s.length > 500 || u.protocol !== 'https:' || (u.port && u.port !== '443') || u.username || u.password
+    || !u.hostname.endsWith(db.schoolSuffix) || u.hostname === db.schoolSuffix.slice(1) || u.pathname.toLowerCase() !== '/podium/feed/ical.aspx'
+    || !u.searchParams.get('z')) throw new Raise('22023', SCHOOL_BAD_LINK);
+  return s;
+}
+function scCall(name, args, run) {
+  return (db, b, email) => {
+    const sent = Object.keys(b || {});
+    if (!db.schoolLinks || !db.homework_kids || sent.some((k) => !args.includes(k)) || args.some((k) => !sent.includes(k))) {
+      return { __status: 404, body: { code: 'PGRST202', message: `Could not find the function public.${name}(${sent.sort().join(', ')}) in the schema cache`, details: null, hint: null } };
+    }
+    if (db.schoolFail && db.schoolFail[name]) return db.schoolFail[name];
+    const saved = JSON.stringify(db.schoolLinks);
+    try {
+      return run(db, b || {}, email);
+    } catch (e) {
+      if (!(e instanceof Raise)) throw e;
+      db.schoolLinks = JSON.parse(saved);
+      return raised(e, false);
+    }
+  };
+}
+const schoolFeed = (b) => { if (!SCHOOL_FEEDS.includes(b.p_feed)) throw new Raise('22023', 'Choose assignments, schedule or games.'); return b.p_feed; };
+const schoolKid = (db, kid) => { if (!db.homework_kids.some((k) => k.kid_id === kid)) throw new Raise('22023', 'Turn on homework for him first.'); return kid; };
+const schoolRpc = {
+  save_school_link: scCall('save_school_link', ['p_kid', 'p_feed', 'p_url'], (db, b, email) => {
+    parentOnly(db, email);
+    const feed = schoolFeed(b);
+    const kid = schoolKid(db, b.p_kid);
+    const url = schoolUrl(db, b.p_url);
+    db.schoolLinks = db.schoolLinks.filter((x) => !(x.kid_id === kid && x.feed === feed));
+    db.schoolLinks.push({ kid_id: kid, feed, url, read_at: null, items: null, error: null, saved_by: email });
+    return { feed, set: true };
+  }),
+  remove_school_link: scCall('remove_school_link', ['p_kid', 'p_feed'], (db, b, email) => {
+    parentOnly(db, email);
+    const feed = schoolFeed(b);
+    db.schoolLinks = db.schoolLinks.filter((x) => !(x.kid_id === b.p_kid && x.feed === feed));
+    return null;
+  }),
+  school_status: scCall('school_status', ['p_kid'], (db, b, email) => {
+    parentOnly(db, email);
+    if (!db.homework_kids.some((k) => k.kid_id === b.p_kid)) return null;
+    return { feeds: SCHOOL_FEEDS.map((feed) => {
+      const x = db.schoolLinks.find((l) => l.kid_id === b.p_kid && l.feed === feed);
+      return { feed, set: !!x, read_at: x ? x.read_at : null, items: x ? x.items : null, error: x ? x.error : null };
+    }) };
   }),
 };
 
@@ -1736,6 +1815,9 @@ async function signIn(context, email) {
 // follow the migration. A refusal undoes the whole call, as a transaction does.
 // Its names start with tk (the token side), apart from the Homework page's signed-in fakes; its rows (tkKidRow,
 // tkLinkRow, tkAssignmentRow, tkStepRow, tkSessionRow, tkRewardRow, tkLedgerRow) have the tables' defaults.
+// Schema 6 (0006): withSchoolTokens(db) adds his view's from_school (the school's assignments he hasn't planned, with
+// new for the last 24 hours) and the card's from_school count, and lets his writers take an assignment marked from
+// school: Quick whatever its due date, and drop ("Not homework").
 const TK_TABLES = ['homework_kids', 'homework_times', 'tutor_links', 'assignments', 'homework_steps', 'focus_sessions', 'rewards',
   'reward_asks', 'points_ledger', 'homework_use', 'ai_runs'];
 const TK_WRITES = ['homework_kids', 'tutor_links', 'assignments', 'homework_steps', 'focus_sessions', 'rewards', 'reward_asks',
@@ -2005,7 +2087,7 @@ function tkViewKid(db, kid) {
   const mon = tkMonday(today);
   const focusedIn = (a, b) => db.focus_sessions.filter((f) => f.kid_id === kid && f.ended_at && tkDayOf(db, f.started_at) >= a && tkDayOf(db, f.started_at) <= b)
     .reduce((n, f) => n + (f.seen_minutes || 0), 0);
-  return {
+  return Object.assign({
     language: lang, as_of: tkAsOf(db), today, server_now: tkServerNow(db),
     me: { first_name: String(me.name).split(' ')[0], tutor: tkTutorWord(db, kid), cue: k.cue, if_stuck: k.if_stuck, length: k.focus_minutes,
       lengths: [10, 15, 20, 25], points_on: k.points_on },
@@ -2033,7 +2115,22 @@ function tkViewKid(db, kid) {
     recent: k.points_on ? ledger.slice().sort((x, y) => tkMs(y.at) - tkMs(x.at)).slice(0, 10).map((l) => ({ day: l.day, kind: l.kind, delta: l.delta, note: l.note })) : null,
     pace: db.hwPace || null,
     week: { focused: focusedIn(mon, tkAdd(mon, 6)), last_week: focusedIn(tkAdd(mon, -7), tkAdd(mon, -1)) },
-  };
+  }, db.school ? { from_school: tkFromSchool(db, kid) } : {});
+}
+// Schema 6 (0006, docs/v1.3-homework.md §11.4): his view's from_school, the school's assignments not planned yet:
+// open, marked from school (added_by 'school'), no steps, not given, due from today; soonest first. new: it
+// came in the last 24 hours (db.hwNow). withSchoolTokens(db) turns it on (a schema-6 database); without it the key
+// isn't there, as on 0005.
+function tkFromSchool(db, kid) {
+  const today = tkToday(db);
+  return db.assignments.filter((a) => a.kid_id === kid && a.added_by === 'school' && a.status === 'open' && !a.given_at && a.due_date >= today
+    && !db.homework_steps.some((s) => s.assignment_id === a.id))
+    .sort((x, y) => (x.due_date < y.due_date ? -1 : x.due_date > y.due_date ? 1 : x.title < y.title ? -1 : x.title > y.title ? 1 : x.id < y.id ? -1 : 1))
+    .map((a) => ({ id: a.id, title: a.title, subject: a.subject, due_date: a.due_date, new: db.hwNow - tkMs(a.created_at) <= 86400000 }));
+}
+function withSchoolTokens(db) {
+  db.school = true;
+  return db;
 }
 // The first word of his active tutor link's label ("Pat"), or null.
 function tkTutorWord(db, kid) {
@@ -2054,6 +2151,7 @@ function tkCard(db, kid) {
   if (v.window) card.window = v.window;
   if (v.session) card.session = { ends_in_s: Math.max(0, Math.ceil((tkMs(v.session.ends_at) - db.hwNow) / 1000)) };
   if (v.points) card.points = v.points.balance;
+  if (v.from_school && v.from_school.length) card.from_school = v.from_school.length;   // 0006: how many are new from school
   return card;
 }
 // get_person_day's v1.3 key (§3.4): only for a kid with an active homework_kids row.
@@ -2585,7 +2683,7 @@ const homeworkTokenRpc = {
       const own = db.homework_steps.filter((s) => s.assignment_id === a.id);
       if (a.status === 'open' && a.given_by === who && own.length === 1) {
         // his Quick, done already (a resend)
-      } else if (a.status !== 'open' || a.given_at || tkBetween(today, a.due_date) > 3 || own.length) {
+      } else if (a.status !== 'open' || a.given_at || (tkBetween(today, a.due_date) > 3 && !(db.school && a.added_by === 'school')) || own.length) {
         throw new Raise('42501', 'Plan this one with Pat.');
       } else {
         const placed = tkPlace(db, me.id, a, [{ kind: 'step', minutes: b.p_minutes, day: null }]);
@@ -2599,7 +2697,7 @@ const homeworkTokenRpc = {
         }
       }
     } else if (b.p_action === 'drop') {
-      if (a.added_by !== 'kid' || db.homework_steps.some((s) => s.assignment_id === a.id && s.done_at)) throw new Raise('42501', 'Only homework you added, with nothing ticked, can be dropped.');
+      if (!(a.added_by === 'kid' || (db.school && a.added_by === 'school')) || db.homework_steps.some((s) => s.assignment_id === a.id && s.done_at)) throw new Raise('42501', 'Only homework you added, with nothing ticked, can be dropped.');
       if (a.status !== 'dropped') { Object.assign(a, { status: 'dropped', dropped_at: tkStamp(db.hwNow), updated_by: who, updated_at: tkStamp(db.hwNow) }); changed = true; }
     }
     if (changed) tkCount(db, me.id, 'writes', 150);
@@ -2706,4 +2804,5 @@ function stubShare(page) {
 module.exports = { makeDb, install, signIn, expectedConsoleError, SUPA, withCalendars, calendarRow, linkRow, googleEventRow, calendarRpc, md5uuid,
   withFood, mealRow, shopItem, foodRpc, personDayFood, foodStamp,
   withHomework, homeworkRpc, homePlan, hwKidRow, tutorLinkRow, assignmentRow, stepRow, sessionRow, rewardRow, askRow, ledgerRow,
-  withHomeworkTokens, homeworkTokenRpc, personDayHomework, tkKidRow, tkLinkRow, tkAssignmentRow, tkStepRow, tkSessionRow, tkRewardRow, tkLedgerRow, stubShare };
+  withHomeworkTokens, homeworkTokenRpc, personDayHomework, tkKidRow, tkLinkRow, tkAssignmentRow, tkStepRow, tkSessionRow, tkRewardRow, tkLedgerRow, stubShare,
+  withSchool, schoolRpc, withSchoolTokens };

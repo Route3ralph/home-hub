@@ -24,6 +24,13 @@
      (assets/plan.js, role 'family'); its questions, answers and notes;
      its blocks. A due date moved here places again the steps it leaves
      behind (save_homework_plan with their days left out).
+   - From 0006 (schema 6; §11, §12), the School links row of the switches,
+     for the parents: the school's Blackbaud calendar feeds (Assignments,
+     Schedule, Games/Practices), each with its status (last read, items,
+     the last read's stop in words), Add link / Replace / Remove, and the
+     plain how-to-copy steps. A link goes to the database once and never
+     comes back: no answer carries it, and the page keeps no copy of it.
+     Assignments the feed brought say "from school".
    - Reads on open, on focus and after each write; nothing else polls.
    Only the parents change anything (the database refuses Sam anyway): Sam
    sees it all with no buttons. Dates are the household's (core.v2).
@@ -173,6 +180,30 @@
     } catch (err) { return { rows: [], failed: true }; }
   }
 
+  // ---------- School links (0006, schema 6; docs/v1.3-homework.md §11, §12)
+  // The database's names for them are here and in schoolHTML's writes only: save_school_link(p_kid, p_feed,
+  // p_url), remove_school_link(p_kid, p_feed), school_status(p_kid) → { feeds: [{ feed, set, read_at, items, error }] }.
+  const FEEDS = [
+    ['assignments', 'Assignments', (kid) => `${kid}'s assignments, as homework marked "from school"`],
+    ['schedule', 'Schedule', () => 'His classes, as busy time'],
+    ['games', 'Games/Practices', () => 'Games and practices, as busy time'],
+  ];
+  const FEED_LABEL = Object.fromEntries(FEEDS.map(([f, label]) => [f, label]));
+  // One feed's status as the page uses it; anything else in the answer is left out.
+  const feedOf = (feed, x) => {
+    const o = x || {};
+    return { feed, set: !!o.set, read_at: o.read_at || null, items: o.items != null && Number.isFinite(Number(o.items)) ? Number(o.items) : null, error: o.error || null };
+  };
+  // The parents' status of his school links: { feeds, failed }. Never throws; nothing on schema 5 or for Sam.
+  async function readSchool(kid) {
+    if (!(core.schemaVersion >= 6) || !isAdmin()) return { feeds: null, failed: false };
+    try {
+      const v = await run(sb().rpc('school_status', { p_kid: kid }));
+      const list = v && Array.isArray(v.feeds) ? v.feeds : [];
+      return { feeds: FEEDS.map(([feed]) => feedOf(feed, list.find((x) => x && x.feed === feed))), failed: false };
+    } catch (err) { return { feeds: null, failed: true }; }
+  }
+
   async function load(st) {
     const today = dates.today();
     // An assignment's address opens it whoever's it is: its kid becomes the one on screen.
@@ -193,10 +224,10 @@
     const kid = chosen;
     const fresh = { today, kids: known, kid, row: known.find((k) => k.kid_id === kid) || null, times: (times || []).filter((t) => t.kid_id === kid),
       links: (links || []).filter((l) => l.kid_id === kid), events: [], assignments: [], steps: [], sessions: [], ledger: [], rewards: [], asks: [],
-      week: [], weekFailed: false };
+      week: [], weekFailed: false, school: null, schoolFailed: false };
     if (kid) {
       const ids = fresh.times.map((t) => t.event_id);
-      const [events, assignments, sessions, ledger, rewards, asks, week] = await Promise.all([
+      const [events, assignments, sessions, ledger, rewards, asks, week, school] = await Promise.all([
         ids.length ? q(sb().from('events').select('id,title,start_date,start_time,end_time,repeat,repeat_weekdays,repeat_until').in('id', ids)) : Promise.resolve([]),
         q(sb().from('assignments').select(A_COLS).eq('kid_id', kid).order('due_date')),
         q(sb().from('focus_sessions').select('*').eq('kid_id', kid).order('started_at', { ascending: false })),
@@ -205,11 +236,12 @@
         q(sb().from('rewards').select('*').eq('kid_id', kid).order('sort_order').order('cost')),
         q(sb().from('reward_asks').select('*').eq('kid_id', kid).order('asked_at', { ascending: false })),
         readWeek(kid, today),
+        readSchool(kid),
       ]);
       const aIds = (assignments || []).map((a) => a.id);
       const steps = aIds.length ? await q(sb().from('homework_steps').select('*').in('assignment_id', aIds).order('pos')) : [];
       Object.assign(fresh, { events: events || [], assignments: assignments || [], steps: steps || [], sessions: sessions || [], ledger: ledger || [],
-        rewards: rewards || [], asks: asks || [], week: week.rows, weekFailed: week.failed });
+        rewards: rewards || [], asks: asks || [], week: week.rows, weekFailed: week.failed, school: school.feeds, schoolFailed: school.failed });
     }
     Object.assign(st, fresh, { loaded: true, failed: false });
   }
@@ -441,6 +473,7 @@
     sub.push(`${a.kind === 'lesson' ? 'do by' : 'due'} ${rel(st, a.due_date)}`);
     if (a.added_by === 'kid') sub.push(`added by ${kidName(st)}`);
     else if (a.added_by === 'tutor') sub.push(`added by ${tutor || 'the tutor'}`);
+    else if (a.added_by === 'school') sub.push('from school');
     let state;
     if (a.status !== 'open') state = a.status === 'done' ? 'Done' : 'Dropped';
     else if (!steps.length) state = 'No plan yet ›';
@@ -592,12 +625,68 @@
           <small class="hw-switch-line">A link with no sign-in that shows only ${esc(kid)}'s homework. Send it to the tutor; it ends after 180 days. New link stops the old one at once.</small>
           ${st.links.length ? `<ul class="hw-links">${st.links.map((l) => linkHTML(st, l)).join('')}</ul>` : ''}
           ${st.form && st.form.key === 'link:new' ? linkFormHTML(null) : st.links.length < 3 ? btn('add-link', '+ Tutor link') : ''}</div>`);
+        if (core.schemaVersion >= 6) rows.push(schoolHTML(st));
         rows.push(`<div class="hw-switch-row" data-row="erase">${btn('erase', `Erase ${kid}'s homework…`, '', 'btn-danger')}
           <small class="hw-switch-line">Deletes all of it, for good. His homework-time events stay on the calendar.</small></div>`);
       }
     }
     if (!admin) rows.push('<p class="hw-switch-note">Only parents can change these.</p>');
     return section('switches', 'Switches', `<div class="hw-card hw-switches">${rows.join('')}</div>`);
+  }
+
+  // ---------- School links (§11, §12): the parents only, on schema 6
+  // The last read's stop (one of hub-jobs' fixed codes), in words. The last good read stays shown beside it.
+  const STOP = {
+    bad_link: 'Home Hub can\'t use this link. Copy it again and use Replace.',
+    redirect: 'The school\'s site sent the read somewhere else. Copy the link again and use Replace.',
+    unreachable: 'The school\'s site couldn\'t be reached. Home Hub tries again within the hour.',
+    timeout: 'The school\'s site took too long to answer. Home Hub tries again within the hour.',
+    down: 'The school\'s site is having trouble. Home Hub tries again within the hour.',
+    http: 'The school\'s site answered with an error. Home Hub tries again within the hour.',
+    refused: 'The school\'s site refused the link. Copy it again and use Replace.',
+    gone: 'Blackbaud doesn\'t know this link any more. Copy it again and use Replace.',
+    sign_in: 'Blackbaud answered with a sign-in page: the link may have been replaced. Copy it again and use Replace.',
+    not_calendar: 'That link isn\'t a calendar. Copy the one under Individual Filter Feeds and use Replace.',
+    too_big: 'The calendar is too big to read, so nothing was changed.',
+    too_many: 'It holds more than Home Hub can use, so nothing was changed.',
+    empty: 'It came back empty (a new school year?), so nothing was changed.',
+  };
+  const stopWords = (code) => (Object.prototype.hasOwnProperty.call(STOP, code) ? STOP[code] : 'The last read didn\'t work. Home Hub tries again within the hour.');
+  function schoolFormHTML(f, label) {
+    return `<form class="hw-schoolform" data-form="school" data-feed="${esc(f.feed)}" novalidate autocomplete="off">
+      <label class="field"><span>${esc(f.set ? `Paste the new ${label} link` : `Paste the ${label} link`)}</span>
+        <input type="url" name="url" inputmode="url" maxlength="500" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="done" placeholder="webcal://…"></label>
+      <p class="form-error" role="alert" hidden></p>
+      <div class="form-actions"><button type="button" class="btn" data-act="cancel-note">Cancel</button><button type="submit" class="btn btn-primary">${f.set ? 'Replace' : 'Save'}</button></div></form>`;
+  }
+  function feedHTML(st, f, label, what) {
+    let state;
+    if (!f.set) state = 'Not added';
+    else if (f.read_at) state = `Last read ${when(st, f.read_at)} · ${plural(f.items || 0, 'item')}`;
+    else state = f.error ? 'Added · not read yet' : 'Added · first read within the hour';
+    const open = !!(st.form && st.form.key === `school:${f.feed}`);
+    const at = ` data-feed="${esc(f.feed)}"`;
+    const acts = open ? '' : f.set ? `${btn('school-replace', 'Replace', at)}${btn('school-remove', 'Remove', at)}` : btn('school-add', 'Add link', at, 'btn-primary');
+    return `<li class="hw-feed" data-feed="${esc(f.feed)}"><div class="hw-feed-head"><b class="hw-feed-name">${esc(label)}</b><span class="hw-feed-state">${esc(state)}</span></div>
+      <small class="hw-feed-what">${esc(what)}</small>
+      ${f.set && f.error ? `<p class="hw-feed-error" role="status">${esc(stopWords(f.error))}</p>` : ''}
+      ${acts ? `<div class="hw-feed-acts">${acts}</div>` : ''}${open ? schoolFormHTML(f, label) : ''}</li>`;
+  }
+  function schoolHTML(st) {
+    const kid = kidName(st);
+    const how = `<details class="hw-school-how"${st.schoolHow ? ' open' : ''}><summary>How to copy a link</summary><ol>
+        <li>On a computer, sign in to the school's Blackbaud site with your own parent login (${esc(kid)}'s isn't needed).</li>
+        <li>${esc(`Under ${kid}'s Calendars, open Calendar.`)}</li>
+        <li>Click the feed button. A box opens: “WebCal Feed for External Calendar”.</li>
+        <li>Under Individual Filter Feeds, right-click Assignments and choose Copy Link Address (Copy Link in some browsers). Schedule and Games/Practices go the same way, if you want them as busy time.</li>
+        <li>Here, tap Add link next to the same name, paste it and tap Save.</li>
+      </ol><p>${esc(`The feed holds the past 2 months and the next 12, and a change on the school's site can take up to an hour to reach it. Don't paste a link anywhere else: anyone who has it can read ${kid}'s calendar.`)}</p></details>`;
+    const body = st.schoolFailed || !st.school
+      ? '<p class="hw-fail" role="status">School links couldn\'t be loaded. <button type="button" class="linkbtn hw-retry" data-act="retry">Try again</button></p>'
+      : `<ul class="hw-feeds">${FEEDS.map(([feed, label, what]) => feedHTML(st, st.school.find((f) => f.feed === feed) || feedOf(feed, null), label, what(kid))).join('')}</ul>`;
+    return `<div class="hw-switch-row" data-row="school"><p class="hw-switch-title">School links</p>
+      <small class="hw-switch-line">${esc(`${kid}'s calendars from the school's Blackbaud site. Home Hub reads them every hour. A link works like a password: once saved it is never shown again, here or anywhere.`)}</small>
+      ${body}${how}</div>`;
   }
 
   // The first visit: homework on, his homework time, three rewards (the parents).
@@ -656,7 +745,7 @@
     main.innerHTML = `<div class="hw-page">${head}${kidLine(st)}${st.failed ? '' : setupHTML(st)}${body}</div>`;
     st.typing = false;   // the homework time, rewards, points values and link forms are drawn afresh from what was read
     if (window.scrollY !== y) window.scrollTo(window.scrollX, y);
-    const input = st.form && main.querySelector(`form[data-key="${CSS.escape(st.form.key)}"] input, form[data-link] input[name="label"]`);
+    const input = st.form && main.querySelector(`form[data-key="${CSS.escape(st.form.key)}"] input, form[data-link] input[name="label"], form[data-form="school"] input[name="url"]`);
     if (input && st.form.focus) { input.focus(); st.form.focus = false; }
   }
 
@@ -722,6 +811,7 @@
     const bits = [a.subject, `${a.kind === 'lesson' ? 'do by' : 'due'} ${fmt.day(a.due_date)}`];
     if (a.added_by === 'kid') bits.push(`added by ${kidName(st)}`);
     else if (a.added_by === 'tutor') bits.push(`added by ${tutor || 'the tutor'}`);
+    else if (a.added_by === 'school') bits.push('from school');
     bits.push({ open: 'Open', done: 'Done', dropped: 'Dropped' }[a.status]);
     return bits.filter(Boolean).join(' · ');
   }
@@ -1127,6 +1217,58 @@
       p_can_ai: true, p_active: true })), () => toast(`Link made for ${label}. Send it with WhatsApp or Text.`));
   }
 
+  // ---------- School links: Add link, Replace, Remove
+  // The pasted link as it is sent: trimmed, webcal:// as https://. The database checks it again (the school's host,
+  // the feed's path, its z value) and refuses anything else in its own words. The box is emptied once it is saved,
+  // and nothing keeps it: not st, not storage, not a toast.
+  const BAD_LINK = 'That isn\'t a calendar feed link: it starts with webcal:// or https://. Copy it again with right-click, then Copy Link Address.';
+  function schoolLink(raw) {
+    let s = String(raw || '').trim();
+    if (!s) return { error: 'Paste the link first.' };
+    if (/^webcal:\/\//i.test(s)) s = `https://${s.slice('webcal://'.length)}`;
+    let u = null;
+    try { u = new URL(s); } catch (e) { u = null; }
+    if (!u || u.protocol !== 'https:' || /\s/.test(s)) return { error: BAD_LINK };
+    if (s.length > 500) return { error: 'That link is too long for a school calendar link. Copy it again.' };
+    return { url: s };
+  }
+  async function saveSchool(st, form) {
+    const feed = form.dataset.feed;
+    const label = FEED_LABEL[feed];
+    if (!label || st.busy) return;
+    const err = form.querySelector('.form-error');
+    const box = form.elements.url;
+    const buttons = [...form.querySelectorAll('button')];
+    const fail = (m) => { err.textContent = m; err.hidden = false; box.focus(); };
+    const link = schoolLink(box.value);
+    if (link.error) { fail(link.error); return; }
+    const replacing = !!(st.school || []).some((f) => f.feed === feed && f.set);
+    err.hidden = true;
+    setBusy(st, true);
+    buttons.forEach((b) => { b.disabled = true; });
+    let res;
+    try { res = await sb().rpc('save_school_link', { p_kid: st.kid, p_feed: feed, p_url: link.url }); } catch (e) { res = { error: e }; }
+    if (st.ctx.stale()) return;
+    if (res.error) {
+      setBusy(st, false);
+      buttons.forEach((b) => { b.disabled = false; });
+      fail(hwError(res.error));
+      return;
+    }
+    box.value = '';
+    st.form = null;
+    await reload(st, true);
+    setBusy(st, false);
+    toast(`${label} link ${replacing ? 'replaced' : 'saved'}. Home Hub reads it within the hour.`);
+  }
+  function removeSchool(st, feed) {
+    const label = FEED_LABEL[feed];
+    if (!label) return;
+    const what = feed === 'assignments' ? `What it already brought stays on ${kidName(st)}'s list.` : 'His busy time from it goes too.';
+    if (!window.confirm(`Remove the ${label} link? Home Hub stops reading it. ${what}`)) return;
+    write(st, () => run(sb().rpc('remove_school_link', { p_kid: st.kid, p_feed: feed })), () => toast(`${label} link removed`));
+  }
+
   // ---------- The assignment's own writes
   // Only the fields that changed; a due date moved places again the steps it leaves behind (§4.1).
   async function saveFields(st, form) {
@@ -1283,6 +1425,8 @@
         break;
       }
       case 'edit-link': open(`link:${d.link}`, 'link', d.link); break;
+      case 'school-add': case 'school-replace': if (FEED_LABEL[d.feed]) open(`school:${d.feed}`, 'school', d.feed); break;
+      case 'school-remove': removeSchool(st, d.feed); break;
       case 'add-link': open('link:new', 'link', null); break;
       case 'erase': eraseDialog(st); break;
       case 'mark-done': setStatus(st, 'done'); break;
@@ -1304,6 +1448,7 @@
     else if (form.dataset.form === 'rewards') addRewards(st, form);
     else if (form.dataset.form === 'values') savePoints(st, form);
     else if (form.dataset.form === 'link') submitLink(st, form);
+    else if (form.dataset.form === 'school') saveSchool(st, form);
     else if (form.classList.contains('hw-afields')) saveFields(st, form);
   }
 
@@ -1312,8 +1457,8 @@
   // ============================================
   async function renderHomework(main, ctx) {
     const st = { main, ctx, params: ctx.params, today: dates.today(), kids: [], kid: null, row: null, times: [], links: [], events: [], assignments: [], steps: [],
-      sessions: [], ledger: [], rewards: [], asks: [], week: [], weekFailed: false, loaded: false, failed: false, busy: false, form: null, editor: null, fieldsDirty: false,
-      typing: false };
+      sessions: [], ledger: [], rewards: [], asks: [], week: [], weekFailed: false, school: null, schoolFailed: false, schoolHow: false, loaded: false, failed: false,
+      busy: false, form: null, editor: null, fieldsDirty: false, typing: false };
     ctx.signal.addEventListener('abort', () => stopEditor(st));
     main.innerHTML = '<p class="loading">Loading…</p>';
     main.addEventListener('click', (e) => onClick(st, e), { signal: ctx.signal });
@@ -1337,6 +1482,9 @@
       if (x.closest('form[data-form]')) st.typing = true;
       if (x.closest('form.hw-afields')) st.fieldsDirty = true;
     }, { signal: ctx.signal });
+    // The how-to stays open while a link is pasted beside it (each write draws the page again).
+    main.addEventListener('toggle', (e) => { if (e.target.classList && e.target.classList.contains('hw-school-how')) st.schoolHow = e.target.open; },
+      { capture: true, signal: ctx.signal });
     // On focus: read again, unless something is being typed (st.typing: the forms drawList draws afresh).
     window.addEventListener('focus', () => {
       if (ctx.stale() || st.busy || st.fieldsDirty || st.typing || (st.form && st.form.text) || (st.editor && st.editor.dirty())) return;
