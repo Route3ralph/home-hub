@@ -398,6 +398,10 @@
   function refreshSoon() {
     if (document.visibilityState === 'hidden') return;
     if (outbox) outbox.kick();
+    // A block runs on any view (#homework, the day, not only #focus): coming back to whichever, the wake lock the
+    // browser let go of while the page was hidden is taken again, and the chime is set on the audio clock again.
+    if (hv && hv.session) keepAwakeAgain();
+    chimeAgain();
     if (view === 'list') { pollList(); return; }
     if (HW_VIEWS.has(view)) { homeworkSoon(); return; }
     if (busy) return;
@@ -1448,7 +1452,7 @@
     try {
       const AC = window.AudioContext || window.webkitAudioContext;
       if (!AC) return;
-      if (!audio) audio = { ctx: new AC(), session: null, at: null, nodes: [], loudTimer: null };
+      if (!audio) audio = { ctx: new AC(), session: null, at: null, nodes: [], loudTimer: null, endTimer: null };
       const p = audio.ctx.resume && audio.ctx.resume();
       if (p && p.then) p.then(() => scheduleChime(), () => {});
       else scheduleChime();
@@ -1484,6 +1488,8 @@
       });
       audio.session = s.id;
       audio.at = at;
+      // When the ring runs out, whatever is on screen: tones still more than a moment away are called off.
+      audio.endTimer = setTimeout(lateChimeOff, l.ms + 100);
       // Chime even on silent (§7.2): 'playback' just for the chime, from a few seconds before it until its
       // last tone has stopped (or it is called off), never for the whole block (it may pause his music).
       if (readSilent() && navigator.audioSession) {
@@ -1497,11 +1503,25 @@
     if (!audio) return;
     clearTimeout(audio.loudTimer);
     audio.loudTimer = null;
+    clearTimeout(audio.endTimer);
+    audio.endTimer = null;
     audio.nodes.forEach((o) => { try { o.stop(0); } catch (e) { /* already stopped */ } });
     audio.nodes = [];
     audio.session = null;
     audio.at = null;
     loudChime(false);
+  }
+  // Tones still more than a moment away once the ring has run out (an audio clock that stood still while he
+  // was away) are called off, so no chime comes long after the end, whatever is on screen.
+  function lateChimeOff() {
+    try { if (audio && audio.at != null && audio.at - audio.ctx.currentTime > 2) cancelChime(); } catch (e) { /* visual all the same */ }
+  }
+  // Coming back into view, on any view (a block runs on #homework and the day too): the Start tap unlocked the
+  // audio, so wake it (iOS stops a hidden page's) and set the chime on its clock again; once the ring has run
+  // out, call off what is still to come.
+  function chimeAgain() {
+    if (!audio || !hv || !hv.session || fx.end || fx.result) return;
+    if (blockRunning()) armAudio(); else lateChimeOff();
   }
   function loudChime(on) {
     if (!navigator.audioSession || loud === on) return;
@@ -1924,7 +1944,7 @@
   // long after the end.
   function timeUp() {
     releaseWake();
-    try { if (audio && audio.at != null && audio.at - audio.ctx.currentTime > 2) cancelChime(); } catch (e) { /* visual all the same */ }
+    lateChimeOff();
     try { if (navigator.vibrate) navigator.vibrate([200, 100, 200]); } catch (e) { /* no buzz */ }
     try {
       if (!phoneKind() && document.visibilityState === 'hidden' && typeof window.Notification === 'function' && window.Notification.permission === 'granted') {
@@ -2286,14 +2306,10 @@
     hvDrawn = '';
   }
   // Focus, coming back into view, coming back online: an End that waits goes again; the view is read again
-  // (the ring takes the server's clock again), never under a finger or an unsaved plan.
+  // (the ring takes the server's clock again), never under a finger or an unsaved plan. The wake lock and the
+  // chime are taken and set again in refreshSoon, on every view.
   function homeworkSoon() {
     if (fx.end) sendEnd();
-    if (view === 'focus' && hv && hv.session) {
-      keepAwakeAgain();
-      // The Start tap unlocked the audio: wake it (iOS stops a hidden page's) and set the chime on its clock again.
-      if (audio && blockRunning() && !fx.end && !fx.result) armAudio();
-    }
     if (hwBusy || Date.now() - hvLast < 1000) return;
     if (view === 'plan' && ed && ed.dirty()) return;
     if (view === 'homework' && (addOpen || sheet)) return;

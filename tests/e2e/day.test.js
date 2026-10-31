@@ -39,10 +39,12 @@
 // suggest, decided, the last entries, points off); #plan/<id> in his role; every new word and database message
 // in Spanish; no tutor link; homework off while open; hostile text; a phone where plan.js didn't load (the day as
 // before, with no card). Then (18b) a second tap on an End on its way (one End, its screen drawn), the wake lock
-// held while the ring runs on any view and let go of at its end or for a Start with no block, the stuck sheet on
-// a block with no plan (Quick and 'switch' first), Make it smaller sent twice (one key, one step), Chime even on
-// silent ('playback' just for the chime) and the chime set again after time away and made at the first tap after a
-// reload (HW_CLOCKED: an AudioContext on the page's clock that stands still while the page is hidden); "Pasado al mié".
+// held while the ring runs on any view, taken again on coming back to any view after the browser let go of it
+// while the page was hidden (HW_WAKE_DROP), and let go of at its end or for a Start with no block, the stuck sheet
+// on a block with no plan (Quick and 'switch' first), Make it smaller sent twice (one key, one step), Chime even on
+// silent ('playback' just for the chime) and the chime set again after time away on any view (#focus, #homework,
+// the day), called off when the ring ran out meanwhile, and made at the first tap after a reload (HW_CLOCKED: an
+// AudioContext on the page's clock that stands still while the page is hidden); "Pasado al mié".
 // mock.js answers RPCs for signed-in members only, so the token functions (called signed out) are
 // answered by a route added here; everything else (config.js, supabase-js) comes from mock.js.
 // The browser runs in Pacific/Kiritimati (UTC+14) with its clock set so the device's date is a day
@@ -500,6 +502,26 @@ const HW_CLOCKED = () => {
   };
 };
 const HW_AUDIO = `(${HW_STUBS})(); (${HW_CLOCKED})();`;
+// After HW_STUBS and HW_CLOCKED: a wake lock the browser lets go of when the page is hidden, as browsers do (its
+// 'release' listeners called; rec.dropped counts them). window.__hide() / __show() hide the page and bring it back.
+const HW_WAKE_DROP = () => {
+  const rec = window.__hw;
+  rec.dropped = 0;
+  const live = [];
+  Object.defineProperty(navigator, 'wakeLock', { configurable: true, value: { request(type) {
+    rec.wake.push({ type, active: !!(navigator.userActivation && navigator.userActivation.isActive) });
+    const ls = [];
+    const s = { released: false, release() { if (!s.released) { s.released = true; rec.released += 1; } return Promise.resolve(); },
+      addEventListener(kind, f) { if (kind === 'release') ls.push(f); } };
+    live.push({ s, ls });
+    return Promise.resolve(s);
+  } } });
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'hidden') return;
+    live.splice(0).forEach(({ s, ls }) => { if (s.released) return; s.released = true; rec.dropped += 1; ls.forEach((f) => f(new Event('release'))); });
+  }, true);
+};
+const HW_AUDIO_DROP = `(${HW_STUBS})(); (${HW_CLOCKED})(); (${HW_WAKE_DROP})();`;
 
 (async () => {
   fs.mkdirSync(SHOTS, { recursive: true });
@@ -2185,6 +2207,27 @@ const HW_AUDIO = `(${HW_STUBS})(); (${HW_CLOCKED})();`;
       await until(async () => !!(await page.$('.hw-ring'))) && (await held(page)) === 1 && (await hwRec(page)).wake.length === 2, JSON.stringify(await hwRec(page)));
     await page.context().close();
   }
+  for (const where of ['focus', 'homework', 'day']) {
+    // The browser lets go of the lock while the page is hidden: coming back with the ring still running takes it
+    // again on whatever view he comes back to, not only on #focus.
+    const held = async (pg) => { const r = await hwRec(pg); return r.wake.length - r.released - r.dropped; };
+    ({ page, db } = await open({ label: `hw-wake-back-${where}`, path: `/day.html?t=${JORDAN}`, db: hwDb(), device: HW_DEVICE, init: HW_AUDIO_DROP }));
+    await page.click('.hw-card [data-act="hw-card-start"]');
+    await until(async () => (await page.evaluate(() => location.hash)) === '#focus' && !!(await page.$('.hw-ring')));
+    if (where !== 'focus') { await page.click('.hw-head a.list-back[href="#homework"]'); await page.waitForSelector('.hw-tonight'); }
+    if (where === 'day') { await page.click('[data-act="hw-day"]'); await page.waitForSelector('.hw-card'); }
+    await hwPause(page);
+    await hwTick(page, db, 60 * 1000);
+    const before = await held(page);
+    await page.evaluate(() => window.__hide());
+    const hidden = await held(page);
+    await hwTick(page, db, 60 * 1000);
+    await page.evaluate(() => window.__show());
+    await hwTick(page, db, 2000);
+    check(`the wake lock: let go of by the browser while hidden, taken again on coming back to ${where === 'day' ? 'the day view' : `#${where}`} with the ring running`,
+      before === 1 && hidden === 0 && await until(async () => (await held(page)) === 1) && (await hwRec(page)).wake.length === 2, JSON.stringify(await hwRec(page)));
+    await page.context().close();
+  }
   for (const first of ['smaller', 'ask']) {
     // A block on an assignment with no plan (Start on a Tonight row) has no step: Make it smaller or Ask Pat
     // first gives it one (Quick, the block's length; the block moves to it), then acts on that step.
@@ -2304,6 +2347,39 @@ const HW_AUDIO = `(${HW_STUBS})(); (${HW_CLOCKED})();`;
     const late = await chimeIn(page);
     check('back after the ring ran out while away: the end screen, and no chime still to come', late === null || late <= 2, String(late));
     await page.context().close();
+    // ... and the same on #homework and on the day: the block runs there too (the lock follows it), so the chime
+    // is set again on coming back whatever is on screen, and a ring that ran out meanwhile leaves none to come.
+    for (const where of ['homework', 'day']) {
+      const on = where === 'day' ? 'on the day' : 'on #homework';
+      ({ page, db } = await open({ label: `hw-chime-away-${where}`, path: `/day.html?t=${JORDAN}`, db: hwDb(), device: HW_DEVICE, init: HW_AUDIO, ctx: phone() }));
+      await page.click('.hw-card [data-act="hw-card-start"]');
+      await until(async () => !!(await page.$('.hw-ring')));
+      await hwPause(page);
+      await hwTick(page, db, 2 * 60 * 1000);
+      await page.click('.hw-head a.list-back');
+      await until(async () => (await page.evaluate(() => location.hash)) === '#homework');
+      if (where === 'day') {
+        await page.click('.hw-head [data-act="hw-day"]');
+        await page.waitForSelector('.hw-card', { timeout: 3000 });
+      }
+      await page.waitForTimeout(200);
+      await page.evaluate(() => window.__hide());
+      await hwTick(page, db, 5 * 60 * 1000);
+      await page.evaluate(() => window.__show());
+      await page.waitForTimeout(200);
+      check(`…${on}, back after 5 minutes away: the chime set again for the ring's end, 13 minutes on`, Math.abs((await chimeIn(page)) - 780) < 2,
+        String(await chimeIn(page)));
+      await page.evaluate(() => window.__hide());
+      await hwTick(page, db, 20 * 60 * 1000);
+      // The ring ran out while away (iOS: the audio clock stood still): its tones are called off when it runs out.
+      const away = await chimeIn(page);
+      await page.evaluate(() => window.__show());
+      await page.waitForTimeout(200);
+      const back = await chimeIn(page);
+      check(`…${on}, the ring ran out while away: no chime still to come, before or after coming back`,
+        (away === null || away <= 2) && (back === null || back <= 2), JSON.stringify({ away, back }));
+      await page.context().close();
+    }
     ({ page, db } = await open({ label: 'hw-chime-reload', path: `/day.html?t=${JORDAN}`, db: hwDb(), device: HW_DEVICE, init: HW_AUDIO, ctx: phone() }));
     await page.click('.hw-card [data-act="hw-card-start"]');
     await until(async () => !!(await page.$('.hw-ring')));
