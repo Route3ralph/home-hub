@@ -19,7 +19,9 @@
 //                      he ticks it again, Pat answers and checks it: +20. He asks for a reward; Sam can't
 //                      decide it; Alex taps Yes on Today, with the balance and this week's points beside it.
 //   Then Pat's link Off and On again, New link, past its end date, and homework off: the link stops
-//   at once each time, and Jordan's card goes.
+//   at once each time, and Jordan's card goes. Last, homework on again with 1,200 more ledger rows (the
+//   stand-in cuts a read at 1,000, as Supabase's API does) and an ask: Today and the Homework page show
+//   the balance his view has, 1215.
 // Pat Lee is also the made-up electrician contractor in seed_v1.sql: the tutor is only ever looked for
 // inside the tutor link's row and Pat's page. Screenshots: tests/e2e/shots/realdb-homework-*.png.
 const { setup, HOMEWORK_CALLS } = require('./lib');
@@ -536,6 +538,33 @@ const PAT_WHO = 'Pat Lee, tutor (tutor link)';
     await a.context.close();
     const f = await failures();
     check('link stops: no API request failed (a link that stops answers null, not an error)', !f.length, f);
+  });
+
+  // A ledger past the API's 1,000 rows (the stand-in cuts a read at 1,000, as Supabase does): 1,200 points
+  // given last school year, then an ask. Today and the Homework page add up every row, as his view does.
+  await flow('a long ledger', async () => {
+    await h.mark();
+    await rpcAs('alex@example.com', 'save_homework_kid', { p_kid: P.jordan.id, p_active: true });
+    await sql(`insert into points_ledger (kid_id, at, day, kind, delta, note, who)
+      select '${P.jordan.id}', timestamptz '2025-09-08 21:00:00+00' + i * interval '5 hours', (timestamptz '2025-09-08 21:00:00+00' + i * interval '5 hours')::date,
+             'given', 1, 'Old points', 'alex@example.com'
+      from generate_series(1, 1200) i`);
+    const rid = (await one(`select id from rewards where kid_id = '${P.jordan.id}' and cost = 60`)).id;
+    const asked = await anonRpc('reward_by_token', { p_token: P.jordan.day_token, p_action: 'ask', p_reward: rid, p_key: '00000000-0000-4000-8000-00000000a5c1' });
+    const pts = ((await view()) || {}).points || {};
+    const rows = Number((await one(`select count(*) as n from points_ledger where kid_id = '${P.jordan.id}'`)).n);
+    check('a long ledger: more than 1,000 rows, his view\'s balance 1215, the ask waiting', rows > 1000 && pts.balance === 1215 && asked.status === 200, { rows, pts, asked: asked.status });
+    const a = await open({ email: 'alex@example.com', path: '/', label: 'hw-alex-long' });
+    await a.page.waitForSelector('.today-hw-ask', { timeout: 8000 });
+    const line = await tc(a.page, '.today-hw-ask');
+    check('a long ledger, Today: "Jordan asks: Choose Friday\'s dinner · 60 · balance 1215 (this week: …)", every row counted', /^Jordan asks: Choose Friday's dinner · 60 · balance 1215 \(this week: /.test(line), line);
+    await go(a.page, '#/homework');
+    await a.page.waitForSelector('.hw-ask', { timeout: 8000 });
+    check('a long ledger, the Homework page: "Jordan · 1215 points" and the ask with "balance 1215"', /^Jordan · 1215 points/.test(await tc(a.page, '.hw-kidline'))
+      && / · balance 1215 \(/.test(await tc(a.page, '.hw-ask .hw-ask-line')), [await tc(a.page, '.hw-kidline'), await tc(a.page, '.hw-ask .hw-ask-line')]);
+    await a.context.close();
+    const f = await failures();
+    check('a long ledger: no API request failed', !f.length, f);
   });
 
   await h.finish();

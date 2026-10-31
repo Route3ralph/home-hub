@@ -18,8 +18,9 @@
      LENGTHS [10, 15, 20, 25]   the focus lengths; KINDS the five step kinds; PLAIN ['start', 'step', 'check']
                                 (the kinds Jordan may change); HORIZON 56 (days placement looks ahead, today first)
      LIMITS                     plan_check's: { steps 20, milestones 4, title [3, 80], dll 160, minutes [5, 60] },
-                                and the texts': question 200, answer 200, note 160, assignment_title 120,
-                                subject 40, details 4000, stretch 160
+                                and the texts': question 200, answer 200, note 160, decline 120 (Not now's
+                                word, decide_reward's), assignment_title 120, subject 40, details 4000,
+                                stretch 160
      STARTERS                   ['essay', 'test', 'reading', 'practice', 'short']
 
    WORDS AND TEXT
@@ -80,7 +81,8 @@
                                 'template' }], in o.lang; minutes cut to o.length (his first length; the
                                 turn-in stays 5). Reading: o.parts parts (1–10, 2 when none). Practice: one
                                 block a day on his homework days up to the do-by day (o.today, o.due, o.asOf,
-                                o.week), each with its day, the last a milestone.
+                                o.week), each with its day, the last a milestone; with o.kind 'assignment', up
+                                to its last work day (lastWorkDay: never on the due date, the turn-in's day).
      check(steps, o)            null, or { key, i }: the first rule the plan breaks (plan_check's, and
                                 plan_save's "nothing new or moved in the past" and "only the turn-in on the
                                 due date"): too_many_steps, too_many_milestones, one_turn_in, turn_in_last,
@@ -166,7 +168,7 @@
   const HORIZON = 56;
   const LIMITS = Object.freeze({
     steps: 20, milestones: 4, title: Object.freeze([3, 80]), dll: 160, minutes: Object.freeze([5, 60]),
-    question: 200, answer: 200, note: 160, assignment_title: 120, subject: 40, details: 4000, stretch: 160,
+    question: 200, answer: 200, note: 160, decline: 120, assignment_title: 120, subject: 40, details: 4000, stretch: 160,
   });
   const STARTERS = Object.freeze(['essay', 'test', 'reading', 'practice', 'short']);
   const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -269,6 +271,8 @@
       set_time_first: 'Set a homework time first.', not_on_link: "That assignment isn't on this link.", say_missing: "Say what's missing.",
       step_not_on_link: "That step isn't on this link.", plan_not_yours: "That plan isn't on your list.",
       closed: 'This assignment is done or dropped. Open it again first.', plan_too_long: 'That plan is too long.',
+      asks_full: 'Three asks are waiting already. Wait for a parent first.', suggest_full: 'Five suggestions are waiting already. Wait for a parent first.',
+      own_full: 'Fifteen of your own are open already.',
     },
     es: {
       homework: 'Tarea', now: 'Ahora', tonight: 'Esta tarde', due_soon: 'Para pronto', start_n: 'Empezar · {n} min',
@@ -358,6 +362,8 @@
       set_time_first: 'Primero hay que poner un tiempo de tarea.', not_on_link: 'Ese trabajo no está en este enlace.', say_missing: 'Di qué falta.',
       step_not_on_link: 'Ese paso no está en este enlace.', plan_not_yours: 'Ese plan no está en tu lista.',
       closed: 'Este trabajo está terminado o descartado. Vuelve a abrirlo primero.', plan_too_long: 'Ese plan es demasiado largo.',
+      asks_full: 'Ya hay tres pedidos esperando. Espera primero a tus padres.', suggest_full: 'Ya hay cinco propuestas esperando. Espera primero a tus padres.',
+      own_full: 'Ya tienes quince tareas tuyas abiertas.',
     },
   };
 
@@ -462,6 +468,12 @@
     [/is done or dropped/i, 'closed'],
     [/That plan is too long/i, 'plan_too_long'],
     [/Say what's missing/i, 'say_missing'],
+    // His limits on My day: a plan's 20 steps (Make it smaller), his waiting asks and suggestions, his own homework.
+    // The 20 is matched whole: another number (PR B's "At most 12 steps.") isn't given these words.
+    [/^At most 20 steps\.?$/i, 'chk_too_many_steps'],
+    [/Three asks are waiting already/i, 'asks_full'],
+    [/Five suggestions are waiting already/i, 'suggest_full'],
+    [/Fifteen of your own are open already/i, 'own_full'],
   ];
   const messageOf = (err) => String((err && (err.message || err.error_description)) || err || '');
   function friendly(err, lang, tutor) {
@@ -804,7 +816,10 @@
         const rows = (x.week || []).filter(Boolean);
         const todayRow = rows.find((d) => d.day === x.today);
         const lo = firstDay(x.today, ended(x.today, x.asOf, todayRow && todayRow.window));
-        const hi = x.due > horizon(x.today) ? horizon(x.today) : x.due;
+        // The last work day as placement has it (§5.4): a lesson's do-by day; an assignment's day before
+        // its due date (two before when that is 7 or more days away), as only the turn-in goes on it.
+        const end = x.kind === 'assignment' ? lastWorkDay(x.due, x.today, x.kind) : x.due;
+        const hi = end > horizon(x.today) ? horizon(x.today) : end;
         days = homeworkDays(rows, lo, hi).slice(0, LIMITS.steps);
       }
       const n = Math.max(1, days.length);
@@ -1032,9 +1047,11 @@
       ((a && a.steps) || []).forEach((s) => { if (s.id) out[s.id] = s.day || null; });
       return out;
     };
+    // A done step goes without a day: the database keeps it as it is whatever the list says (§4.4), and
+    // one ticked early can sit after a due date moved before it, which the save's day check would refuse.
     const payload = (placeAgain) => steps.map((s) => {
       const x = { kind: s.kind, title: clean(s.title, LIMITS.title[1]), done_looks_like: clean(s.done_looks_like, LIMITS.dll) || null, minutes: s.minutes,
-        day: placeAgain && !s.done ? null : s.day || null, source: changed(s) ? 'typed' : s.source };
+        day: placeAgain || s.done ? null : s.day || null, source: changed(s) ? 'typed' : s.source };
       return s.id ? Object.assign({ id: s.id }, x) : x;
     });
     const say = (err) => (o.friendly ? o.friendly(err) : friendly(err, L(), o.tutor || null));
@@ -1055,7 +1072,8 @@
       const l = L();
       const today = o.today;
       const due = a.due_date;
-      const max = s.kind === 'turn_in' ? due : addDays(due, -1);
+      // Only the turn-in goes on an assignment's due date; a lesson's do-by day is a work day (§5.4).
+      const max = s.kind === 'turn_in' || a.kind === 'lesson' ? due : addDays(due, -1);
       const days = [];
       for (let d = today; d && max && d <= max && days.length < 120; d = addDays(d, 1)) days.push(d);
       const hw = o.week && o.week.length ? new Set(homeworkDays(o.week, today, max)) : null;
@@ -1264,7 +1282,7 @@
 
     function applyStarter(key) {
       if (!a || busy) return;
-      const fresh = starter(key, { lang: L(), length: o.length, parts, today: o.today, due: a.due_date, asOf: o.asOf, week: o.week });
+      const fresh = starter(key, { lang: L(), length: o.length, parts, today: o.today, due: a.due_date, kind: a.kind, asOf: o.asOf, week: o.week });
       steps = steps.filter((s) => s.done).concat(fresh.map((s) => copy(s, 'template')));
       picking = false;
       open = -1;

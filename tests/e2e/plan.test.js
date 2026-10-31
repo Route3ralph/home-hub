@@ -299,6 +299,9 @@ const WEEK = [
         bad([st({ day: '2026-11-02' })], { due: '2026-11-02' }), bad([st({ day: '2026-11-02' })], { due: '2026-10-30' }), bad([st({ day: '2026-11-03' })], { due: '2026-10-30' })],
       practiceThu: ((steps) => [steps[steps.length - 1].day, bad(steps, { due: '2026-11-05', kind: 'lesson' }), bad(steps, { due: '2026-11-05', kind: 'assignment' })])(
         P.starter('practice', { lang: 'en', length: 15, today: '2026-11-02', due: '2026-11-05', asOf: '2026-11-02T16:31', week: WEEK })),
+      // With the kind: an assignment's blocks end at its last work day (never its due date), a lesson's on its do-by day.
+      practiceKind: [['2026-11-05', 'assignment'], ['2026-11-12', 'assignment'], ['2026-11-05', 'lesson']].map(([due, kind]) => ((steps) => [steps.map((x) => x.day).join(' '),
+        steps[steps.length - 1].kind, bad(steps, { due, kind })])(P.starter('practice', { lang: 'en', length: 15, today: '2026-11-02', due, kind, asOf: '2026-11-02T16:31', week: WEEK }))),
     };
   }, WEEK);
   check('every starter plan, in both languages and at every length, passes plan_check\'s rules: a "done looks like" on every step, minutes cut to his first length (the turn-in stays 5), source template, no days but Practice\'s',
@@ -337,6 +340,9 @@ const WEEK = [
     same(starters.dueRules, [null, 'after_due@0', null, 'due_day@0', null, null, 'after_due@0']), JSON.stringify(starters.dueRules));
   check('Practice for a lesson whose do-by day is a homework day (Thu): its last block on Thu passes check() as a lesson (an assignment due Thu couldn\'t have it)',
     same(starters.practiceThu, ['2026-11-05', null, 'due_day@3']), JSON.stringify(starters.practiceThu));
+  check('Practice with the kind: an assignment\'s last block on its last work day (Wed for due Thu; Tue for due Thu next week, two days before), never its due date; a lesson\'s on Thu',
+    same(starters.practiceKind, [['2026-11-02 2026-11-03 2026-11-04', 'milestone', null], ['2026-11-02 2026-11-03 2026-11-04 2026-11-05 2026-11-08 2026-11-09 2026-11-10', 'milestone', null],
+      ['2026-11-02 2026-11-03 2026-11-04 2026-11-05', 'milestone', null]]), JSON.stringify(starters.practiceKind));
 
   // =====================================================================
   // 5. The two bars, the week strip, pace and focused minutes
@@ -734,7 +740,23 @@ const WEEK = [
   check('editor: Practice for a lesson due Thu saves at once, its last block (the milestone) on Thu, with no "Only the turn-in goes on the due date."',
     lc.length === 1 && same(lc[0][1].steps.map((s) => [s.day, s.kind]), [['2026-11-02', 'step'], ['2026-11-03', 'step'], ['2026-11-04', 'step'], ['2026-11-05', 'milestone']])
     && !/due date/.test(lmsg), JSON.stringify([lc, lmsg]));
+  const lessonDays = await page.$eval('#edl .plan-step[data-i="0"] select[name="day"]', (sel) => Array.from(sel.options).map((x) => x.value).filter(Boolean)).catch(() => []);
+  check('a lesson\'s day picker: plain steps up to its do-by day (Thu), a work day', lessonDays.includes('2026-11-05') && !lessonDays.includes('2026-11-06'), JSON.stringify(lessonDays));
   await ev(() => { window.edl.ed.stop(); document.getElementById('edl').remove(); });
+  // An assignment due Thu: Practice ends on Wed, its last work day (only the turn-in goes on the due date), and
+  // the editor saves it at once, with no "Only the turn-in goes on the due date.".
+  const AT = Object.assign({}, LT, { id: 'a-9', kind: 'assignment', title: 'Spelling practice' });
+  await ev(({ AT }) => window.mountEditor('eda', 'family', AT), { AT });
+  await page.click('#eda [data-act="starter"]');
+  await page.click('#eda [data-starter="practice"]');
+  await settle();
+  const ac = await ev(() => window.eda.f.calls);
+  const amsg = await page.$eval('#eda', (b) => (b.querySelector('.plan-msg') || {}).textContent || '');
+  const asgDays = await page.$eval('#eda .plan-step[data-i="0"] select[name="day"]', (sel) => Array.from(sel.options).map((x) => x.value).filter(Boolean)).catch(() => []);
+  check('editor: Practice for an assignment due Thu saves at once, its last block (the milestone) on Wed; its day picker stops before the due date',
+    ac.length === 1 && same(ac[0][1].steps.map((x) => [x.day, x.kind]), [['2026-11-02', 'step'], ['2026-11-03', 'step'], ['2026-11-04', 'milestone']])
+    && !/due date/.test(amsg) && asgDays.includes('2026-11-04') && !asgDays.includes('2026-11-05'), JSON.stringify([ac, amsg, asgDays]));
+  await ev(() => { window.eda.ed.stop(); document.getElementById('eda').remove(); });
 
   // =====================================================================
   // 9. The editor with Jordan's rules (#plan/<id>)

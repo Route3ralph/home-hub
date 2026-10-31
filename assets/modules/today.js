@@ -163,10 +163,27 @@
     } catch (err) { return null; }
   }
 
-  // What waits for a parent in homework (schema 5): the kids' waiting asks, with each one's points (for
-  // the balance and this week's sources), and how many questions and milestones to check (one steps
-  // request, of steps touched in the last 30 days). Never throws: a failed read (null) leaves the lines
-  // out. No request for Sam, or below schema 5.
+  // Every row a read matches, page by page. The API answers at most its "Max rows" (Supabase's Settings
+  // → API, 1,000 unless changed) and cuts the rest without an error, and a kid's points ledger is never
+  // trimmed (his balance is the sum of all of it). build() makes the read afresh, ordered oldest first
+  // and ending in a unique column, so a row written between two pages lands on the last one; pages until
+  // one comes back empty (or brings nothing new), whatever the cap is. (homework.js has the same.)
+  async function readAll(build) {
+    const out = [];
+    const seen = new Set();
+    for (let from = 0; ;) {
+      const page = (await q(build().range(from, from + 999))) || [];
+      const fresh = page.filter((r) => !seen.has(r.id));
+      if (!fresh.length) return out;
+      fresh.forEach((r) => { seen.add(r.id); out.push(r); });
+      from += page.length;
+    }
+  }
+
+  // What waits for a parent in homework (schema 5): the kids' waiting asks, with each one's points (all
+  // of them, a page at a time: the balance and this week's sources), and how many questions and
+  // milestones to check (one steps request, of steps touched in the last 30 days). Never throws: a
+  // failed read (null) leaves the lines out. No request for Sam, or below schema 5.
   async function loadHomework(today) {
     if (!(core.schemaVersion >= 5) || !(core.me && core.me.role === 'admin')) return null;
     try {
@@ -176,7 +193,8 @@
           .or('and(kind.eq.milestone,done_at.not.is.null,checked_at.is.null),and(question.not.is.null,answer.is.null)')),
       ]);
       const kids = [...new Set((asks || []).map((x) => x.kid_id))];
-      const ledger = kids.length ? await q(core.sb.from('points_ledger').select('kid_id,kind,delta,day,who').in('kid_id', kids)) : [];
+      const ledger = kids.length ? await readAll(() => core.sb.from('points_ledger').select('id,kid_id,kind,delta,day,who').in('kid_id', kids)
+        .order('at').order('id')) : [];
       return {
         asks: asks || [],
         ledger: ledger || [],
@@ -575,19 +593,30 @@
   }
 
   // Yes or Not now on a kid's ask (decide_reward), one tap; the database's own words when it refuses.
+  // Both of the ask's buttons wait for the answer, so a quick second tap can't send the other one. An
+  // ask someone already decided (the other parent, a moment ago) or that he cancelled comes back as it
+  // is, with no error: the toast says what it is, not what was tapped.
   async function decide(st, id, approve, btn) {
     const x = ((st.data.homework && st.data.homework.asks) || []).find((a) => a.id === id);
     const kid = x && v2.person(x.kid_id);
-    btn.disabled = true;
+    const box = btn.closest('.today-hw-ask');
+    const btns = box ? Array.from(box.querySelectorAll('button')) : [btn];
+    btns.forEach((b) => { b.disabled = true; });
+    let res;
     try {
-      if (approve) await call('decide_reward', { p_ask: id, p_approve: true });
-      else await call('decide_reward', { p_ask: id, p_approve: false });
+      if (approve) res = await call('decide_reward', { p_ask: id, p_approve: true });
+      else res = await call('decide_reward', { p_ask: id, p_approve: false });
     } catch (err) {
-      btn.disabled = false;
+      btns.forEach((b) => { b.disabled = false; });
       toast(err && ['42501', '22023', 'P0001'].includes(err.code) && err.message ? err.message : friendly(err), { error: true });
       return;
     }
-    toast(approve ? `Yes: ${x ? x.title : 'the reward'}${kid ? ` for ${firstName(kid.name)}` : ''}` : `Not now: ${x ? x.title : 'the reward'}`);
+    const what = x ? x.title : 'the reward';
+    const was = res && res.ask && res.ask.status;
+    toast(was === 'approved' && !approve ? `Already approved: ${what}`
+      : was === 'declined' && approve ? `Already answered Not now: ${what}`
+        : was === 'cancelled' ? `${kid ? firstName(kid.name) : 'He'} cancelled that ask: ${what}`
+          : approve ? `Yes: ${what}${kid ? ` for ${firstName(kid.name)}` : ''}` : `Not now: ${what}`);
     if (!st.ctx.stale()) refresh(st);
   }
 

@@ -1014,10 +1014,13 @@ const emailOf = (req) => {
   check('the lines sit under the person chips, before the day', await page.$eval('.today-hw', (e) => !!e.previousElementSibling && (e.previousElementSibling.classList.contains('today-chips')
     || e.previousElementSibling.classList.contains('today-dinner'))));
   const reads5 = hwReads(log);
-  check('reads: waiting asks, one steps request (milestones to check, open questions, touched in 30 days), and the ask\'s kid\'s points', reads5.length === 3
+  // The ask's kid's points: all of them, a page at a time (the API's Max rows cuts a read short without an
+  // error), oldest first, until a page comes back empty: here his 8 rows, then an empty page.
+  check('reads: waiting asks, one steps request (milestones to check, open questions, touched in 30 days), and the ask\'s kid\'s points, page by page', reads5.length === 4
     && reads5.some((l) => /^GET \/rest\/v1\/reward_asks\?.*status=eq\.waiting/.test(l))
     && reads5.some((l) => /^GET \/rest\/v1\/homework_steps\?.*updated_at=gte\.2026-09-25.*or=\(and\(kind\.eq\.milestone,done_at\.not\.is\.null,checked_at\.is\.null\),and\(question\.not\.is\.null,answer\.is\.null\)\)/.test(l))
-    && reads5.some((l) => l.startsWith(`GET /rest/v1/points_ledger?select=kid_id,kind,delta,day,who&kid_id=in.(${ID.jordan})`)), JSON.stringify(reads5));
+    && same(reads5.filter((l) => l.includes('/points_ledger?')), [0, 8].map((n) => `GET /rest/v1/points_ledger?select=id,kid_id,kind,delta,day,who&kid_id=in.(${ID.jordan})&order=at.asc,id.asc&offset=${n}&limit=1000`)),
+    JSON.stringify(reads5));
   await chip(page, 'Jordan').click();
   await page.waitForTimeout(100);
   check('the same lines under every chip', same(await hwLines(page), hl));
@@ -1033,6 +1036,38 @@ const emailOf = (req) => {
   check('Yes: decide_reward(ask, true); the trade is written and the line goes', same((calls(db, 'decide_reward')[1] || {}).body, { p_ask: ASK, p_approve: true })
     && db.points_ledger.some((l) => l.kind === 'trade' && l.delta === -100) && (await hwLines(page)).length === 1 && /Yes: Pick the movie for Jordan/.test(await lastToast(page)),
     JSON.stringify([await hwLines(page), await lastToast(page)]));
+  await page.context().close();
+  // Yes, then Not now before the answer comes: both buttons wait, so only the Yes is sent.
+  ({ page, db } = await open({ label: 'hw-double', rpc: hRpc, db: hwDb() }));
+  await page.route('**/rest/v1/rpc/decide_reward', async (route) => { if (route.request().method() !== 'OPTIONS') await new Promise((r) => setTimeout(r, 500)); return route.fallback(); });
+  await page.click('.today-hw [data-act="hw-yes"]');
+  const both = await page.$$eval('.today-hw-ask button', (bs) => bs.map((b) => b.disabled));
+  await page.$eval('.today-hw [data-act="hw-not-now"]', (b) => b.click()).catch(() => {});
+  await page.waitForTimeout(1000);
+  check('Yes then Not now before the answer: both buttons wait, one decide_reward (the Yes), the trade, and only "Yes: Pick the movie for Jordan"', same(both, [true, true])
+    && calls(db, 'decide_reward').length === 1 && db.reward_asks[0].status === 'approved' && db.points_ledger.filter((l) => l.kind === 'trade').length === 1
+    && same((await page.$$eval('.toasts .toast', (es) => es.map((e) => e.textContent.trim()))), ['Yes: Pick the movie for Jordan']),
+    JSON.stringify([both, calls(db, 'decide_reward').map((c) => c.body), await page.$$eval('.toasts .toast', (es) => es.map((e) => e.textContent.trim()))]));
+  await page.context().close();
+  // An ask the other parent answered Not now a moment ago: Yes here keeps her answer (the database answers
+  // it as it is, with no error), and the toast says so, not "Yes".
+  ({ page, db } = await open({ label: 'hw-stale', rpc: hRpc, db: hwDb() }));
+  Object.assign(db.reward_asks[0], { status: 'declined', decided_at: '2026-10-25T15:00:00.000000+00:00', decided_by: 'morgan@example.com' });
+  await page.click('.today-hw [data-act="hw-yes"]');
+  await page.waitForTimeout(500);
+  check('Yes on an ask already answered Not now: "Already answered Not now: Pick the movie", no trade, the line goes',
+    (await lastToast(page)) === 'Already answered Not now: Pick the movie' && !db.points_ledger.some((l) => l.kind === 'trade') && (await hwLines(page)).length === 1,
+    JSON.stringify([await lastToast(page), await hwLines(page)]));
+  await page.context().close();
+  // A ledger past the API's 1,000 rows (he never loses a row: about two school years of homework): 1,200
+  // older +1s before this week's. The balance and this week's sources count every row.
+  const long = hwDb();
+  long.points_ledger.unshift(...Array.from({ length: 1200 }, (x, i) => ledgerRow({ kid_id: ID.jordan, kind: 'focus', delta: 1,
+    at: new Date(Date.UTC(2025, 0, 3) + i * 3600000).toISOString().replace('Z', '000+00:00'), day: new Date(Date.UTC(2025, 0, 3) + i * 3600000).toISOString().slice(0, 10) })));
+  ({ page, db, log } = await open({ label: 'hw-long', rpc: hRpc, db: long }));
+  check('1,208 ledger rows (past the API\'s 1,000): "balance 1318 (this week: +24 focus and on time, +40 milestones checked by Pat)", from two full pages and an empty one',
+    (await hwLines(page))[0] === 'Jordan asks: Pick the movie · 100 · balance 1318 (this week: +24 focus and on time, +40 milestones checked by Pat) Yes Not now'
+    && same(hwReads(log).filter((l) => l.includes('/points_ledger?')).map((l) => /offset=(\d+)/.exec(l)[1]), ['0', '1000', '1208']), JSON.stringify([(await hwLines(page))[0], hwReads(log).filter((l) => l.includes('/points_ledger?'))]));
   await page.context().close();
   // Not enough points: the database's words.
   const poor = hwDb();
