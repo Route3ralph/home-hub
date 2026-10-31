@@ -326,7 +326,10 @@ const emailOf = (req) => {
   check('Add: add_homework_time with ISO weekdays 1–4 (Monday is 1), 16:30 and 17:15', same(lastCall(db, 'add_homework_time').body, { p_kid: ID.jordan, p_weekdays: [1, 2, 3, 4], p_start: '16:30', p_end: '17:15' })
     && db.events.length === 1 && db.homework_times.length === 1, JSON.stringify(lastCall(db, 'add_homework_time').body));
   const rw = await page.$$eval('.hw-setup form[data-form="rewards"] .hw-rw', (rs) => rs.map((r) => [r.querySelector('[name="title"]').placeholder, r.querySelector('[name="cost"]').value])).catch(() => []);
-  check('then "Add 3 rewards" in three sizes (about 15, 60 and 150)', same(rw.map((r) => r[1]), ['15', '60', '150']) && rw.every((r) => r[0].length > 3), JSON.stringify(rw));
+  // The owner changed the sizes: an instant one he gets after one block (about 15), one a week (about 200), a bigger one (about 500).
+  const rwInstant = await page.$$eval('.hw-setup form[data-form="rewards"] .hw-rw [name="instant"]', (is) => is.map((i) => i.checked)).catch(() => []);
+  check('then "Add 3 rewards" in three sizes (about 15, instant; 200; 500)', same(rw.map((r) => r[1]), ['15', '200', '500']) && rw.every((r) => r[0].length > 3)
+    && same(rwInstant, [true, false, false]), JSON.stringify([rw, rwInstant]));
   const titles = ['15 minutes of extra game time', 'Choose Friday\'s dinner', 'A new book'];
   for (let i = 0; i < 3; i++) await page.fill(`.hw-setup form[data-form="rewards"] .hw-rw:nth-child(${i + 1}) [name="title"]`, titles[i]);
   // A window focus (back from asking Jordan what he'd like) while they are being typed: no read, nothing lost.
@@ -339,7 +342,8 @@ const emailOf = (req) => {
   await page.click('.hw-setup form[data-form="rewards"] button[type="submit"]');
   await settle(page);
   const rpost = writes(db, 'rewards', 'POST')[0] || {};
-  check('Add rewards: one insert of three, his, priced, on, in order', same(rpost.body, titles.map((title, i) => ({ kid_id: ID.jordan, title, cost: [15, 60, 150][i], active: true, sort_order: i + 1 }))), JSON.stringify(rpost.body));
+  check('Add rewards: one insert of three, his, priced, on, the first instant, in order',
+    same(rpost.body, titles.map((title, i) => ({ kid_id: ID.jordan, title, cost: [15, 200, 500][i], active: true, instant: i === 0, sort_order: i + 1 }))), JSON.stringify(rpost.body));
   check('the setup is done: no setup card; the kid line names his homework time', !(await page.$('.hw-setup'))
     && (await tc(page, '.hw-kidline')) === 'Jordan · 0 points · Homework time Mon–Thu 4:30–5:15pm ›', await tc(page, '.hw-kidline'));
   check('now the sections: Assignments and lessons, This week, Points and rewards, Switches', same(await secs(page), ['assignments', 'week', 'points', 'switches']), JSON.stringify(await secs(page)));
@@ -522,7 +526,7 @@ const emailOf = (req) => {
     && blocks.includes('Mon 4:45pm · 20 min · More to do · Find 2 sources and save their links · “found 2 sources” ›') && blocks.length === 5, JSON.stringify(blocks));
 
   // ---------- Points and rewards
-  check('points: "18 · today +2 of 20 · milestones this week 20 of 80"', (await tc(page, '.hw-points-line')) === '18 · today +2 of 20 · milestones this week 20 of 80', await tc(page, '.hw-points-line'));
+  check('points: "18 · today +2 of 60 · milestones this week 20 of 160" (the owner\'s caps)', (await tc(page, '.hw-points-line')) === '18 · today +2 of 60 · milestones this week 20 of 160', await tc(page, '.hw-points-line'));
   check('the rewards in order, with the off one marked', same(await texts(page, '.hw-rewards li .hw-rw-line'), ['15 minutes of extra game time · 15', 'Choose Friday\'s dinner · 60', 'Skip one chore · 40', 'Pick the movie · 100', 'A new book · 150'])
     || same(await texts(page, '.hw-rewards li .hw-rw-line'), ['15 minutes of extra game time · 15', 'Choose Friday\'s dinner · 60', 'Pick the movie · 100', 'A new book · 150', 'Skip one chore · 40']),
     JSON.stringify(await texts(page, '.hw-rewards li .hw-rw-line')));
@@ -548,7 +552,32 @@ const emailOf = (req) => {
   await page.click('#formDialog form.hw-reward button[type="submit"]');
   await settle(page);
   const radd = writes(db, 'rewards', 'POST').slice(-1)[0] || {};
-  check('+ Reward: one insert, his, priced, on, last in order', same(radd.body, { kid_id: ID.jordan, title: 'Stay up 30 minutes later', cost: 80, active: true, sort_order: 6 }), JSON.stringify(radd.body));
+  check('+ Reward: one insert, his, priced, on, not instant, last in order', same(radd.body, { kid_id: ID.jordan, title: 'Stay up 30 minutes later', cost: 80, active: true, instant: false, sort_order: 6 }), JSON.stringify(radd.body));
+  // An instant reward (the owner's "immediate gratification"): he cashes it on the spot, no ask; the parents see it.
+  await page.click('[data-act="add-reward"]');
+  check('the reward dialog: "Instant: he gets it on the spot, no ask", with his limit a day', /Instant: he gets it on the spot, no ask \(you see it on Today; at most 2 a day\)/.test(await tc(page, '#formDialog form.hw-reward')),
+    await tc(page, '#formDialog form.hw-reward'));
+  await page.fill('#formDialog form.hw-reward [name="title"]', 'Ten minutes of music');
+  await page.fill('#formDialog form.hw-reward [name="cost"]', '12');
+  await page.check('#formDialog form.hw-reward [name="instant"]');
+  await page.click('#formDialog form.hw-reward button[type="submit"]');
+  await settle(page);
+  const rinst = writes(db, 'rewards', 'POST').slice(-1)[0] || {};
+  check('+ Reward, instant: one insert with instant on, and the list marks it', same(rinst.body, { kid_id: ID.jordan, title: 'Ten minutes of music', cost: 12, active: true, instant: true, sort_order: 7 })
+    && (await texts(page, '.hw-rewards li .hw-rw-line')).includes('Ten minutes of music · 12 · instant'), JSON.stringify([rinst.body, await texts(page, '.hw-rewards li .hw-rw-line')]));
+  // He cashed it in on his My day (decided by him at once): Recent says so, beside a milestone's first half. (Their
+  // times are after the seeded 3:05pm block and apart from each other: rows at one time are ordered by their random ids.)
+  const cashedAsk = 'a5c00000-0000-4000-8000-0000000000c1';
+  db.reward_asks.push(askRow({ id: cashedAsk, kid_id: ID.jordan, title: 'Ten minutes of music', cost: 12, status: 'cashed', asked_at: at(TODAY, '15:07'),
+    decided_at: at(TODAY, '15:07'), decided_by: 'Jordan (My day)' }));
+  db.points_ledger.push(ledgerRow({ kid_id: ID.jordan, at: at(TODAY, '15:06'), day: TODAY, kind: 'milestone_done', delta: 20, note: 'Timeline draft', who: 'Jordan (My day)' }),
+    ledgerRow({ kid_id: ID.jordan, at: at(TODAY, '15:07'), day: TODAY, kind: 'trade', delta: -12, ask_id: cashedAsk, note: 'Ten minutes of music', who: 'Jordan (My day)' }));
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await settle(page);
+  check('Recent: "−12 Ten minutes of music (instant, cashed in by Jordan)" and "+20 Ticked: Timeline draft" (half a milestone, at his tick)',
+    ((l) => { const i = l.indexOf('−12 Ten minutes of music (instant, cashed in by Jordan) · today'); return i >= 0 && l[i + 1] === '+20 Ticked: Timeline draft · today'; })(await texts(page, '.hw-ledger li .hw-ledger-line')),
+    JSON.stringify(await texts(page, '.hw-ledger li .hw-ledger-line')));
+  check('the points line counts both halves of milestones this week', /milestones this week 40 of 160/.test(await tc(page, '.hw-points-line')), await tc(page, '.hw-points-line'));
 
   // ---------- Switches
   const linkMeta = await tc(page, '.hw-link .hw-link-meta');
@@ -605,7 +634,7 @@ const emailOf = (req) => {
   weekReads = calls(db, 'homework_week').length;
   await page.evaluate(() => window.dispatchEvent(new Event('focus')));
   await settle(page);
-  check('... after Cancel, a window focus reads again', calls(db, 'homework_week').length === weekReads + 1 && (await page.inputValue('form[data-form="values"] [name="pts_on_time"]')) === '5',
+  check('... after Cancel, a window focus reads again', calls(db, 'homework_week').length === weekReads + 1 && (await page.inputValue('form[data-form="values"] [name="pts_on_time"]')) === '10',
     `reads ${weekReads}->${calls(db, 'homework_week').length}`);
   // Points values and both caps, saved with the updated_at check.
   await page.fill('form[data-form="values"] [name="pts_day_cap"]', '25');
@@ -613,9 +642,10 @@ const emailOf = (req) => {
   await page.click('form[data-form="values"] button[type="submit"]');
   await settle(page);
   const vals = writes(db, 'homework_kids', 'PATCH').slice(-1)[0] || {};
-  check('points values: the daily cap and the weekly milestone cap saved, with the updated_at check', same(vals.body, { pts_focus: 1, pts_on_time: 5, pts_milestone: 20, pts_day_cap: 25, pts_milestone_week: 60, focus_minutes: 20 })
+  check('points values: the daily cap and the weekly milestone cap saved, with the updated_at check (and the instant rewards a day)',
+    same(vals.body, { pts_focus: 1, pts_on_time: 10, pts_milestone: 40, pts_day_cap: 25, pts_milestone_week: 60, instant_day: 2, focus_minutes: 10 })
     && /kid_id=eq\./.test(vals.query) && /updated_at=eq\./.test(vals.query) && db.homework_kids[0].pts_day_cap === 25, JSON.stringify(vals));
-  check('the parents keep "of 25" in the points line', /today \+2 of 25 · milestones this week 20 of 60/.test(await tc(page, '.hw-points-line')), await tc(page, '.hw-points-line'));
+  check('the parents keep "of 25" in the points line', /today \+2 of 25 · milestones this week 40 of 60/.test(await tc(page, '.hw-points-line')), await tc(page, '.hw-points-line'));
   // Someone else changed it a moment ago: refused, said, and read again.
   db.homework_kids[0].updated_at = '2026-11-05T20:11:00.000000+00:00';
   await page.fill('form[data-form="values"] [name="pts_day_cap"]', '30');

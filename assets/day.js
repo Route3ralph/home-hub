@@ -155,6 +155,8 @@
       hw_school_for_pat_none: 'On your homework, to plan with your parents: {title}', hw_school_hidden: 'Hidden: {title}. A parent can bring it back.',
       hw_school_more: '{n} more', hw_school_gone: 'No longer on the school site', hw_school_moved: 'The school moved it to {day}',
       hw_school_not_yours: "That isn't on your list from school any more.", hw_school_already: 'That one is on your homework already.',
+      hw_cash_btn: 'Get it now', hw_cash_sure: 'Yes, get it · −{n}', hw_cashed_toast: 'Got it: {title}. Tell a parent.', hw_instant: 'instant',
+      hw_got: 'Got it', hw_k_milestone_done: 'Milestone done', hw_cash_none: 'No more instant rewards today: ask a parent.',
     },
     es: {
       my_day: 'Mi día', hi: 'Hola, {name}', today: 'Hoy', tomorrow: 'Mañana', yesterday: 'Ayer', late: 'Atrasado',
@@ -234,6 +236,8 @@
       hw_school_for_pat_none: 'En tu tarea, para planear con tus padres: {title}', hw_school_hidden: 'Oculta: {title}. Tus padres pueden recuperarla.',
       hw_school_more: '{n} más', hw_school_gone: 'Ya no está en el sitio de la escuela', hw_school_moved: 'La escuela la pasó a {day}',
       hw_school_not_yours: 'Eso ya no está en tu lista de la escuela.', hw_school_already: 'Esa ya está en tu tarea.',
+      hw_cash_btn: 'Conseguir ya', hw_cash_sure: 'Sí, conseguirlo · −{n}', hw_cashed_toast: 'Conseguido: {title}. Avisa a tus padres.', hw_instant: 'al momento',
+      hw_got: 'Conseguido', hw_k_milestone_done: 'Hito hecho', hw_cash_none: 'Hoy no quedan premios al momento: pídeselo a tus padres.',
     },
   };
   // Until the person is known (or when the link doesn't work), the device's language is a guess.
@@ -628,7 +632,7 @@
     stopViews('day');
     view = 'day';
     const count = listCount();
-    const json = JSON.stringify([state, count]);
+    const json = JSON.stringify([state, count, !!cheer]);
     if (!force && json === drawn && root.querySelector('.day-sec')) return;
     drawn = json;
     dayTitle();
@@ -671,6 +675,10 @@
       ${parts.join('')}
       ${footerHTML()}`;
     root.querySelectorAll('.irow[data-i]').forEach((r) => { r.dataset.key = keys[Number(r.dataset.i)]; });
+    dayFollow();
+    // A block paid while he is on the day: the card's balance celebrates (and with no card, the celebration goes).
+    playCheer();
+    cheer = null;
 
     if (focusKey) {
       const again = [...root.querySelectorAll('.irow')].find((r) => r.dataset.key === focusKey);
@@ -1199,7 +1207,12 @@
   // link no longer works. The timer counts from the server's clock (plan.js timer(): the answer's ends_at less
   // its server_now, kept on performance.now()), never the phone's; the chime is scheduled on the audio clock
   // at Start (and set again when the ring and the audio clock drift apart, as after time away), and the
-  // screen kept awake while a block's ring runs, on any view. Points are only ever what the server answered.
+  // screen kept awake while a block's ring runs, on any view. Points are only ever what the server answered,
+  // and the block is paid the moment its ring runs out (an End 'time', sent at once on any view; his answer
+  // comes after): a small celebration then (the ★ counter ticks up, "+N", a short sound). While the ring runs,
+  // #focus counts the points up from the server's start time (plan.js estimate(), never past what the end
+  // pays), and the card, #homework, #focus and #points show the next-reward bar (plan.js goalBar()).
+  // Instant rewards are cashed on #points (reward_by_token 'cash'); the rest are asked for.
   // Rows the page makes (a block, a smaller step, his own homework, an ask, a suggestion) take their id
   // from the page, so a resend finds them: a Start or an End with no answer is sent again with the same id.
   // From 0006 (schema 6), New from school: the view's from_school, the school's items he hasn't planned or hidden, as a
@@ -1244,6 +1257,13 @@
   let ed = null;            // the plan editor on #plan/<id>
   let edFor = null;
   let dayAt = 0;            // performance.now() when get_person_day answered (the card's ends_in_s)
+  let cheer = null;         // { from, to }: a balance that went up, to tick up on the next view that draws it
+  let autoTimer = null;     // sends End 'time' when the ring runs out, whatever is on screen
+  let dayTimer = null;      // the day view (no view read yet): reads his view when the card's block runs out
+  let cashOpen = null;      // the instant reward whose "Yes, get it" is showing
+  let cashArmed = false;    // its Yes takes a tap only a moment after it was drawn (never the second tap of a double tap)
+  let cashArmTimer = null;
+  const cashKeys = {};      // reward id → its cash-in's id, kept until an answer, or a read showing it landed (a tap again finds the row)
   const perfNow = () => (window.performance && performance.now ? performance.now() : Date.now());
 
   function readLength() {
@@ -1272,7 +1292,7 @@
   const hwRel = (iso) => plan.fmt.rel(iso, hv ? hv.today : state && state.today, lang);
   // The database's homework messages in his words (plan.js), before anything else: "Only your own tick…" is
   // the shopping list's too, where it has its own words.
-  const HW_MESSAGES = /That step isn't on your plan|Only your own tick|That's a checkpoint|Finish the block you started first|That block isn't yours|That's a lot for one day|No homework day before it's due has room|was changed since you opened it|Not enough points yet|Points are off|Choose 10, 15, 20 or 25|Plan this one with|Set a homework time first|That plan isn't on your list|is done or dropped|That's too long|That plan is too long|^At most 20 steps\.?$|Three asks are waiting already|Five suggestions are waiting already|Fifteen of your own are open already|That can't be saved/i;
+  const HW_MESSAGES = /That step isn't on your plan|Only your own tick|That's a checkpoint|Finish the block you started first|That block isn't yours|That's a lot for one day|No homework day before it's due has room|was changed since you opened it|Not enough points yet|Points are off|Choose 10, 15, 20 or 25|Plan this one with|Set a homework time first|That plan isn't on your list|is done or dropped|That's too long|That plan is too long|^At most 20 steps\.?$|Three asks are waiting already|Five suggestions are waiting already|Fifteen of your own are open already|That can't be saved|Those points are already spent|Ask a parent for that one|That's all the instant rewards for today|That reward's price changed/i;
   function hwFriendly(err) {
     const msg = String((err && (err.message || err.error_description)) || err || '');
     if (plan && HW_MESSAGES.test(msg)) return plan.friendly(err, lang, hwTutor());
@@ -1290,7 +1310,18 @@
     hvAt = perfNow();
     lang = data.language === 'es' ? 'es' : 'en';
     document.documentElement.lang = lang;
+    // A block paid when its ring ran out, his answer still to come, after a reload (or a page the phone dropped):
+    // its end screen again, from the view's answer_due (the End's own block and earned).
+    const due = data.answer_due;
+    if (!data.session && due && due.block && !fx.result && !fx.end) fx = { id: due.block.id, step: due.block.step_id, result: { block: due.block, earned: due.earned } };
+    // A cash-in whose answer was lost shows on a read: it landed, and its key is done (no Yes left to tap twice).
+    Object.keys(cashKeys).forEach((rid) => {
+      if (!(data.asks || []).some((q) => q.id === cashKeys[rid])) return;
+      delete cashKeys[rid];
+      if (cashOpen === rid) cashOpen = null;
+    });
     wakeFollow();
+    autoFollow();
     return true;
   }
   // One homework_by_token at a time; resolves to the view, null (homework off, or the link gone) or throws.
@@ -1364,7 +1395,9 @@
     p_result: o.result, p_note: o.note,
   }), quiet);
   const planCall = (assignment, steps, rev) => hwWrite(() => sb.rpc('plan_by_token', { p_token: token, p_assignment: assignment, p_steps: steps, p_rev: rev }));
-  const rewardCall = (action, o) => hwWrite(() => sb.rpc('reward_by_token', { p_token: token, p_action: action, p_reward: o.reward, p_text: o.text, p_key: o.key }));
+  const rewardCall = (action, o) => hwWrite(() => sb.rpc('reward_by_token', {
+    p_token: token, p_action: action, p_reward: o.reward, p_text: o.text, p_key: o.key, p_cost: o.cost,
+  }));
   const asgCall = (action, o) => hwWrite(() => sb.rpc('assignment_by_token', {
     p_token: token, p_action: action, p_assignment: o.assignment, p_title: o.title, p_subject: o.subject, p_due_date: o.due, p_minutes: o.minutes,
   }));
@@ -1394,8 +1427,14 @@
     return (i >= 0 ? list.slice(i + 1).concat(list.slice(0, i)) : list).find((s) => s.id !== id) || null;
   }
   const isPlain = (s) => ['start', 'step', 'check'].includes(s.kind);
-  const lengthOf = () => lengthPick || (hv && hv.me && hv.me.length) || (state && state.homework && state.homework.length) || 20;
+  const lengthOf = () => lengthPick || (hv && hv.me && hv.me.length) || (state && state.homework && state.homework.length) || 10;
   const balanceLine = (n) => `★ ${n}`;
+  // A balance as drawn: the one a celebration ticks up from, until it plays (playCheer).
+  const balanceHTML = (cls, n, href) => (href
+    ? `<a class="${cls}" href="${href}" data-cheer>${esc(balanceLine(cheer ? cheer.from : n))}</a>`
+    : `<span class="${cls}" data-cheer>${esc(balanceLine(cheer ? cheer.from : n))}</span>`);
+  // The block ran out of time and was paid ('time'): his answer (how did it go?) is still to come.
+  const timeAnswer = () => !!(fx.result && fx.result.block && fx.result.block.result === 'time');
   // A milestone note or an answer, as he reads it: "Pat: Clear outline…", "Not yet: …", "Answer: …".
   function whoOf(by) {
     if (by === 'tutor') return hwTutor() || hw('hw_from_tutor_none');
@@ -1420,10 +1459,11 @@
     if (c.window) head.push(plan.fmt.time(c.window.starts, lang));
     if (c.steps) head.push(c.steps === 1 ? hw('hw_one_step') : hw('hw_n_steps', { n: c.steps }), plan.fmt.duration(c.minutes));
     if (c.earlier) head.push(hw('hw_n_earlier', { n: c.earlier }));
-    const pts = c.points != null ? `<a class="hw-card-points" href="#points">${esc(balanceLine(c.points))}</a>` : '';
+    // The balance as balanceHTML draws it: a block paid while he is on the day celebrates here (playCheer).
+    const pts = c.points != null ? balanceHTML('hw-card-points', c.points, '#points') : '';
     let acts;
-    if (c.session) {
-      const left = Math.ceil(((Number(c.session.ends_in_s) || 0) * 1000 - (perfNow() - dayAt)) / 60000);
+    if (c.session || c.answer_due || timeAnswer()) {
+      const left = c.session ? Math.ceil(((Number(c.session.ends_in_s) || 0) * 1000 - (perfNow() - dayAt)) / 60000) : 0;
       acts = `<a class="btn btn-primary hw-card-focus" href="#focus">${esc(left > 0 ? `${plan.t('focus_left', { n: left }, lang)} ›` : hw('hw_block_done'))}</a>`;
     } else {
       acts = c.next ? `<button type="button" class="btn btn-primary hw-start" data-act="hw-card-start">${esc(plan.t('start_n', { n: lengthPick || c.length }, lang))}</button>` : '';
@@ -1435,8 +1475,22 @@
       <div class="hw-card-top"><h2 class="hw-card-head" id="hw-card-h">${esc(head.join(' · '))}</h2>${pts}</div>
       <p class="hw-card-next">${esc(next)}</p>
       ${fromSchool ? `<p class="hw-card-school-p"><a class="hw-card-school" href="#homework" data-act="hw-school-open">${esc(hw('hw_school_card', { n: fromSchool }))}</a></p>` : ''}
+      ${c.goal ? plan.goalBar(c.goal, { lang }) : ''}
       <div class="hw-card-acts">${acts}<a class="btn hw-open" href="#homework">${esc(hw('hw_open'))}</a></div>
     </section>`;
+  }
+  // The day view with a block running and no view read yet (a reload on the day): when the card's ring runs
+  // out, his view is read once, so the block is paid then (autoFollow sends its End 'time').
+  function dayFollow() {
+    clearTimeout(dayTimer);
+    dayTimer = null;
+    const c = state && state.homework;
+    if (!plan || !c || !c.session || hv) return;
+    const ms = (Number(c.session.ends_in_s) || 0) * 1000 - (perfNow() - dayAt);
+    dayTimer = setTimeout(() => {
+      dayTimer = null;
+      if (view === 'day' && !hv) readHomework().then((v) => { if (v) take(v); }).catch(() => {});
+    }, Math.max(0, ms) + 500);
   }
 
   // ---------- Starting a block: one tap, on the card, Now, a step or an assignment ----------
@@ -1448,6 +1502,7 @@
     armAudio();
     starting = true;
     keepAwake();
+    cheer = null;
     const same = pendingStart && pendingStart.step === (o.step || null) && pendingStart.assignment === (o.assignment || null);
     const id = same ? pendingStart.id : plan.newId();
     pendingStart = { id, step: o.step || null, assignment: o.assignment || null };
@@ -1609,13 +1664,15 @@
   // The heading: #homework goes back to the day (in place of this address, so Back doesn't return here), the
   // rest back to #homework.
   function homeworkHead(kind) {
-    const pts = kind === 'homework' && hv.points ? `<a class="hw-points" href="#points">${esc(balanceLine(hv.points.balance))}</a>` : '';
+    const pts = kind === 'homework' && hv.points ? balanceHTML('hw-points', hv.points.balance, '#points') : '';
     const link = kind === 'homework'
       ? `<a class="list-back" href="${esc(dayHref)}" data-act="hw-day">${esc(t('back_to_day'))}</a>`
       : `<a class="list-back" href="#homework">${esc(hw('hw_back_home'))}</a>`;
     const title = kind === 'homework' ? `<div class="hw-head-row"><h1>${esc(hw('homework'))}</h1>${pts}</div>`
       : kind === 'points' ? `<h1>${esc(hw('hw_points'))}</h1>` : '';
-    return `<header class="day-head hw-head">${link}${title}</header>`;
+    // The next-reward bar, under the heading of #homework and #points.
+    const goal = kind !== 'focus' && hv.points ? plan.goalBar(hv.goal, { lang }) : '';
+    return `<header class="day-head hw-head">${link}${title}${goal}</header>`;
   }
   function stepRowHTML(s, where) {
     const i = Number(s.minutes) || 0;
@@ -1769,6 +1826,7 @@
   }
   function blockBanner() {
     const s = hv.session;
+    if (!s && timeAnswer()) return `<p class="hw-block"><a class="btn btn-primary day-big" href="#focus">${esc(hw('hw_block_done'))}</a></p>`;
     if (!s) return '';
     const tm = plan.timer({ ends_at: s.ends_at, server_now: hv.server_now, started_at: s.started_at, minutes: s.minutes }, hvAt);
     const left = plan.left(tm, perfNow());
@@ -1786,7 +1844,7 @@
   function renderHomework(force) {
     if (!hv) { hwFrame('homework'); return; }
     const key = JSON.stringify([Object.assign({}, hv, { as_of: null, server_now: null }), nowId, menuOpen, quickOpen, addOpen, earlierOpen, lengthPick, withPick, lang, notifyAsked,
-      schoolMoreOpen, [...schoolBusy]]);
+      schoolMoreOpen, [...schoolBusy], timeAnswer(), !!cheer]);
     if (!force && key === hvDrawn && root.querySelector('.hw-tonight')) return;
     if (!force && (addOpen || sheet) && root.querySelector('.hw-tonight')) return;   // never under his fingers
     hvDrawn = key;
@@ -1835,6 +1893,7 @@
       const sec = root.querySelector('.hw-school');
       if (sec) sec.scrollIntoView({ block: 'start' });
     }
+    playCheer();
   }
   function startPoll() {
     if (hwPollTimer) return;
@@ -1854,7 +1913,7 @@
   function renderPoints(force) {
     if (!hv) { hwFrame('points'); return; }
     if (!hv.points) { try { history.replaceState(null, '', '#homework'); } catch (e) { /* drawn all the same */ } renderHomeworkView('homework'); return; }
-    const key = JSON.stringify(['points', hv.points, hv.rewards, hv.asks, hv.recent, lang]);
+    const key = JSON.stringify(['points', hv.points, hv.rewards, hv.asks, hv.recent, hv.goal, lang, cashOpen, !!cheer]);
     if (!force && key === hvDrawn && root.querySelector('.hw-balance-big')) return;
     if (!force && root.querySelector('.hw-suggest-form input') && root.querySelector('.hw-suggest-form input').value) return;
     hvDrawn = key;
@@ -1862,25 +1921,40 @@
     const p = hv.points;
     const free = p.balance - p.held;
     const waiting = (hv.asks || []).filter((q) => q.status === 'waiting');
-    const decided = (hv.asks || []).filter((q) => q.status === 'approved' || q.status === 'declined');
+    const decided = (hv.asks || []).filter((q) => q.status === 'approved' || q.status === 'declined' || q.status === 'cashed');
     const asked = new Set(waiting.map((q) => q.reward_id));
-    const kindWord = { focus: 'hw_k_focus', on_time: 'hw_k_on_time', milestone: 'hw_k_milestone', given: 'hw_k_given', void: 'hw_k_void', trade: 'hw_k_trade' };
+    const kindWord = { focus: 'hw_k_focus', on_time: 'hw_k_on_time', milestone_done: 'hw_k_milestone_done', milestone: 'hw_k_milestone', given: 'hw_k_given',
+      void: 'hw_k_void', trade: 'hw_k_trade' };
     const signed = (n) => (n < 0 ? `−${-n}` : `+${n}`);
+    // An instant reward he can cash: "Get it now", then "Yes, get it · −15" (one more tap, so a slip can't spend
+    // his points; drawn where "Get it now" was, it takes a tap only a moment later, so the second tap of a double
+    // tap lands on nothing); past today's instant rewards, it can still be asked for.
+    const rewardAct = (r) => {
+      if (r.instant && r.can_cash) {
+        return cashOpen === r.id
+          ? `<button type="button" class="btn btn-sm btn-primary" data-act="hw-cash-yes" data-reward="${esc(r.id)}"${cashArmed ? '' : ' disabled'}>${esc(hw('hw_cash_sure', { n: r.cost }))}</button>
+            <button type="button" class="btn btn-sm" data-act="hw-cash-no">${esc(hw('hw_cancel'))}</button>`
+          : `<button type="button" class="btn btn-sm btn-primary" data-act="hw-cash" data-reward="${esc(r.id)}">${esc(hw('hw_cash_btn'))}</button>`;
+      }
+      if (r.can_ask) return `<button type="button" class="btn btn-sm" data-act="hw-ask-reward" data-reward="${esc(r.id)}">${esc(hw('hw_ask_btn'))}</button>`;
+      if (asked.has(r.id)) return `<span class="hw-more-needed">${esc(hw('hw_asked'))}</span>`;
+      return r.cost > free ? `<span class="hw-more-needed">${esc(hw('hw_n_more', { n: r.cost - free }))}</span>` : '';
+    };
+    const cashNone = (hv.rewards || []).some((r) => r.instant) && p.cash_left === 0;
+    const status = (q) => (q.status === 'approved' ? hw('hw_yes') : q.status === 'cashed' ? hw('hw_got') : q.note ? hw('hw_not_now_note', { note: q.note }) : hw('hw_not_now'));
     root.innerHTML = `${homeworkHead('points')}
-      <p class="hw-balance-big">${esc(balanceLine(p.balance))}</p>
+      <p class="hw-balance-big">${balanceHTML('hw-balance-num', p.balance)}</p>
       <p class="hw-today">${esc(hw('hw_today_plus', { n: p.today }))}${p.capped ? ` · ${esc(plan.t('limit_reached', null, lang))}` : ''}</p>
       ${waiting.length ? `<section class="hw-asks day-sec" aria-labelledby="hw-asks-h"><h2 class="sec-head" id="hw-asks-h">${esc(plan.t('waiting_parent', null, lang))}</h2>
         <div class="hw-list">${waiting.map((q) => `<div class="hw-ask" data-ask="${esc(q.id)}"><span>${esc(`${q.title} · ${q.cost}`)}</span>
           <button type="button" class="btn btn-sm" data-act="hw-cancel-ask" data-ask="${esc(q.id)}">${esc(hw('hw_cancel'))}</button></div>`).join('')}
           <p class="hw-free">${esc(hw('hw_free', { n: free }))}</p><p class="hw-tell">${esc(plan.t('tell_parent', null, lang))}</p></div></section>` : ''}
       <section class="hw-rewards day-sec" aria-labelledby="hw-rewards-h"><h2 class="sec-head" id="hw-rewards-h">${esc(hw('hw_rewards'))}</h2>
-        <div class="hw-list">${(hv.rewards || []).length ? hv.rewards.map((r) => `<div class="hw-reward" data-reward="${esc(r.id)}"><span class="hw-reward-t">${esc(`${r.title} · ${r.cost}`)}</span> ${
-          r.can_ask ? `<button type="button" class="btn btn-sm" data-act="hw-ask-reward" data-reward="${esc(r.id)}">${esc(hw('hw_ask_btn'))}</button>`
-            : asked.has(r.id) ? `<span class="hw-more-needed">${esc(hw('hw_asked'))}</span>`
-              : r.cost > free ? `<span class="hw-more-needed">${esc(hw('hw_n_more', { n: r.cost - free }))}</span>` : ''}</div>`).join('')
-          : `<p class="empty-line">${esc(hw('hw_no_rewards'))}</p>`}</div></section>
+        <div class="hw-list">${(hv.rewards || []).length ? hv.rewards.map((r) => `<div class="hw-reward${r.instant ? ' is-instant' : ''}" data-reward="${esc(r.id)}"><span class="hw-reward-t">${esc(`${r.title} · ${r.cost}${r.instant ? ` · ${hw('hw_instant')}` : ''}`)}</span> ${rewardAct(r)}</div>`).join('')
+          : `<p class="empty-line">${esc(hw('hw_no_rewards'))}</p>`}
+          ${cashNone ? `<p class="hw-cash-none">${esc(hw('hw_cash_none'))}</p>` : ''}</div></section>
       ${decided.length ? `<section class="hw-decided day-sec" aria-labelledby="hw-decided-h"><h2 class="sec-head" id="hw-decided-h">${esc(hw('hw_decided'))}</h2>
-        <ul class="hw-lines">${decided.map((q) => `<li>${esc(`${q.title} · ${q.cost} · ${q.status === 'approved' ? hw('hw_yes') : q.note ? hw('hw_not_now_note', { note: q.note }) : hw('hw_not_now')}`)}</li>`).join('')}</ul></section>` : ''}
+        <ul class="hw-lines">${decided.map((q) => `<li>${esc(`${q.title} · ${q.cost} · ${status(q)}`)}</li>`).join('')}</ul></section>` : ''}
       <section class="hw-suggest day-sec" aria-labelledby="hw-suggest-h"><h2 class="sec-head" id="hw-suggest-h">${esc(plan.t('suggest_reward', null, lang))}</h2>
         <form class="hw-inline hw-suggest-form" novalidate autocomplete="off"><input type="text" name="text" maxlength="60" aria-label="${esc(plan.t('suggest_reward', null, lang))}">
         <button type="submit" class="btn btn-primary">${esc(hw('hw_suggest_btn'))}</button></form>
@@ -1888,6 +1962,7 @@
       ${(hv.recent || []).length ? `<section class="hw-recent day-sec" aria-labelledby="hw-recent-h"><h2 class="sec-head" id="hw-recent-h">${esc(hw('hw_recent'))}</h2>
         <ul class="hw-lines">${hv.recent.map((l) => `<li>${esc([`${signed(l.delta)} ${hw(kindWord[l.kind] || 'hw_k_given')}`, l.note, hwRel(l.day)].filter(Boolean).join(' · '))}</li>`).join('')}</ul></section>` : ''}
       ${footerHTML()}`;
+    playCheer();
   }
 
   // ---------- #focus: the ring, the stuck sheet, the end screen, the break ----------
@@ -1916,8 +1991,7 @@
     const sub = step ? step.assignment : (a && a.subject) || '';
     const ended = !s || fx.result || fx.end;
     let body;
-    if (ended) body = endHTML(null, true);
-    else if (left.done) body = endHTML(s, false);
+    if (ended || left.done) body = endHTML(s);
     else if (fx.afterDone) {
       const next = nextStep(s.step_id);
       body = `<div class="hw-after-done">${next ? `<button type="button" class="btn btn-primary day-big" data-act="hw-keep" data-step="${esc(next.id)}">${esc(plan.t('keep_going', { title: next.title }, lang))}</button>` : ''}
@@ -1931,46 +2005,72 @@
     const typed = root.querySelector('.hw-end input[name="note"]');
     const note = typed ? typed.value : '';
     const showCue = s && !ended && me.cue && elapsed(s) < 60;
-    const onTime = s && !ended && fx.onTime && hv.points ? plan.t('on_time', { n: (hv.on_time && hv.on_time.points) || 5 }, lang) : '';
+    const running = !!s && !ended && !left.done;
+    const onTime = running && (fx.onTime || s.on_time) && hv.points ? plan.t('on_time', { n: (s.earn && s.earn.on_time) || (hv.on_time && hv.on_time.points) || 10 }, lang) : '';
+    // The points ticking up while the block runs: an estimate from the server's start time, a point a minute,
+    // never past what the end pays; the next-reward bar moves with it.
+    const est = running && s.earn && hv.points ? plan.estimate(s.earn, elapsed(s), s.minutes) : null;
+    fx.est = est;
+    const live = est != null ? `<p class="hw-live" aria-live="off"><span class="hw-live-bal">${esc(balanceLine(hv.points.balance + est))}</span>
+        <span class="hw-sofar">${esc(plan.t('so_far', { n: est }, lang))}</span></p>` : '';
+    // The next-reward bar, always on the timer screen: while the ring runs (moving with the count), at the end, after
+    // his answer and on the break (the points as paid).
+    const goal = hv.points ? plan.goalBar(hv.goal, { lang, extra: running ? est || 0 : 0 }) : '';
     root.innerHTML = `<header class="day-head hw-head"><a class="list-back" href="#homework">${esc(hw('hw_back_home'))}</a></header>
       <section class="hw-focus" aria-labelledby="hw-focus-h">
-        ${fx.breakTm ? breakHTML() : `<p class="hw-focus-sub">${esc(sub)}</p>
+        ${fx.breakTm ? `${breakHTML()}${goal}` : `<p class="hw-focus-sub">${esc(sub)}</p>
         <h1 class="hw-focus-title" id="hw-focus-h">${esc(title)}</h1>
         ${step && step.done_looks_like && !ended ? `<p class="hw-focus-dll">${esc(plan.t('dll_line', { text: step.done_looks_like }, lang))}</p>` : ''}
         <p class="hw-focus-cue"${showCue ? '' : ' hidden'}>${esc(me.cue ? `“${me.cue}”` : '')}</p>
         ${onTime ? `<p class="hw-ontime">${esc(onTime)}</p>` : ''}
         <div class="hw-ring">${plan.ring(ended ? 0 : left.fraction)}<span class="hw-left">${esc(ended || left.done ? '' : `${left.minutes} min`)}</span></div>
+        ${live}${goal}
         <p class="hw-tip"${wakeOk === false && !ended ? '' : ' hidden'}>${esc(plan.t('keep_screen', null, lang))}</p>
         ${body}`}
       </section>`;
     const again = root.querySelector('.hw-end input[name="note"]');
     if (again && note) again.value = note;
     drawSheet();
+    playCheer();
     if (s && !ended && !left.done) { scheduleChime(); keepAwakeAgain(); startRing(); } else stopRing();
     if (fx.breakTm) startRing();
   }
-  function endHTML(s, ended) {
-    if (fx.end && !fx.result) {
+  // The end screen. The block is paid the moment it ends: an End he tapped (Stop, End the block), or, when the
+  // ring runs out, the End 'time' the page sends at once; then "Time. How did it go?" with what it paid, and
+  // his answer (Step done, More to do, his note) is a second End that changes the result, never the points.
+  function endHTML(s) {
+    const r = fx.result;
+    const e = fx.end;
+    const asking = timeAnswer() || (e && e.result === 'time') || (!r && !e && s);   // the ring ran out: how did it go?
+    if (e && !r && e.result !== 'time') {
       return `<div class="hw-end"><h2>${esc(hw('hw_time_up'))}</h2><p class="banner banner-warn hw-unsent" role="status">${esc(hw('hw_not_sent'))}</p></div>`;
     }
-    if (ended && fx.result) {
-      const r = fx.result;
+    const pointsHTML = () => {
+      if (!r) return e && fx.unsent ? `<p class="banner banner-warn hw-unsent" role="status">${esc(hw('hw_not_sent'))}</p>` : '';
       const line = plan.pointsLine({ seen: r.block.seen_minutes, focus: r.earned.focus, on_time: r.earned.on_time, capped: r.earned.capped }, lang);
+      return `<p class="hw-end-points"><span class="hw-points-line">${esc(line)}</span>${hv.points ? ` ${balanceHTML('hw-end-balance', hv.points.balance)}` : ''}</p>`;
+    };
+    if (r && !asking) {
       const next = nextStep(r.block.step_id);
       return `<div class="hw-end"><h2>${esc(hw('hw_finished'))}</h2>
-        <p class="hw-end-points"><span class="hw-points-line">${esc(line)}</span>${hv.points ? ` <span class="hw-end-balance">${esc(balanceLine(hv.points.balance))}</span>` : ''}</p>
+        ${pointsHTML()}
         <div class="hw-end-next"><button type="button" class="btn day-big" data-act="hw-break">${esc(hw('hw_break_btn'))}</button>
         ${next ? `<button type="button" class="btn btn-primary day-big" data-act="hw-next" data-step="${esc(next.id)}">${esc(hw('hw_next_btn', { title: next.title }))}</button>` : ''}</div></div>`;
     }
-    // The ring ran out (or he came back to a block that ended): how did it go?
-    const late = s && hv && plan.ms(hv.server_now) - plan.ms(s.ends_at) > 2 * 60 * 1000;
-    const q = late ? hw('block_ended', { n: s.minutes, time: plan.fmt.time(localTime(s.ends_at), lang) }) : hw('hw_time_up');
-    const step = s && stepById(s.step_id);
+    // The ring ran out (or he came back to a block that ended): what it paid, and how did it go?
+    const b = s || (r && r.block) || null;
+    const lateMs = r ? plan.ms(r.block.ended_at) - plan.ms(r.block.ends_at) : b ? plan.ms(hv.server_now) - plan.ms(b.ends_at) : 0;
+    const q = b && lateMs > 2 * 60 * 1000 ? hw('block_ended', { n: b.minutes, time: plan.fmt.time(localTime(b.ends_at), lang) }) : hw('hw_time_up');
+    const step = stepById((b && b.step_id) || fx.step);
     const done = step && step.done;
+    // His answer is on its way (or waits for the time End): the buttons wait.
+    const busy = !!fx.answer || (e && e.result !== 'time');
+    const dis = busy ? ' disabled' : '';
     return `<div class="hw-end"><h2>${esc(q)}</h2>
+      ${pointsHTML()}
       <label class="field"><span>${esc(plan.t('what_done', null, lang))}</span><input type="text" name="note" maxlength="120" autocomplete="off" enterkeyhint="done"></label>
-      <div class="hw-end-acts"><button type="button" class="btn btn-primary day-big" data-act="hw-end" data-result="done">${esc(hw('hw_done_check'))}</button>
-      ${done ? '' : `<button type="button" class="btn day-big" data-act="hw-end" data-result="more">${esc(plan.t('more_to_do', null, lang))}</button>`}</div></div>`;
+      <div class="hw-end-acts"><button type="button" class="btn btn-primary day-big" data-act="hw-end" data-result="done"${dis}>${esc(hw('hw_done_check'))}</button>
+      ${done ? '' : `<button type="button" class="btn day-big" data-act="hw-end" data-result="more"${dis}>${esc(plan.t('more_to_do', null, lang))}</button>`}</div></div>`;
   }
   function breakHTML() {
     const l = plan.left(fx.breakTm, perfNow());
@@ -2000,11 +2100,23 @@
     const tm = focusTimer();
     if (!s || !tm || fx.result || fx.end) { stopRing(); return; }
     const l = plan.left(tm, perfNow());
-    if (l.done) { stopRing(); renderFocus(); return; }
+    if (l.done) { stopRing(); renderFocus(); timeEnd(); return; }
     const ring = root.querySelector('.hw-focus > .hw-ring');
     if (ring) ring.innerHTML = `${plan.ring(l.fraction)}<span class="hw-left">${esc(`${l.minutes} min`)}</span>`;
     const cue = root.querySelector('.hw-focus-cue');
     if (cue && !cue.hidden && elapsed(s) >= 60) cue.hidden = true;
+    // The points counted up, once a minute (by the server's clock), and the bar with them.
+    const live = root.querySelector('.hw-live');
+    if (live && s.earn && hv.points) {
+      const est = plan.estimate(s.earn, elapsed(s), s.minutes);
+      if (est !== fx.est) {
+        fx.est = est;
+        live.querySelector('.hw-live-bal').textContent = balanceLine(hv.points.balance + est);
+        live.querySelector('.hw-sofar').textContent = plan.t('so_far', { n: est }, lang);
+        const g = root.querySelector('.hw-focus .plan-goal');
+        if (g) g.outerHTML = plan.goalBar(hv.goal, { lang, extra: est });
+      }
+    }
   }
   // The ring ran out: always visual; a buzz where there is one; a notification only on a computer that asked,
   // while the page is hidden. The chime was scheduled at Start (and again on coming back); tones still more
@@ -2036,6 +2148,50 @@
     releaseWake();
     sendEnd();
   }
+  // The payout the second a block ends (the owner's "immediate gratification"): when its ring runs out, on any
+  // view, the page sends End 'time' at once, and the server pays the minutes it saw; his answer (Step done, More
+  // to do, his note) comes after. A block he ended himself (Stop, End the block) was paid by that End.
+  function autoFollow() {
+    clearTimeout(autoTimer);
+    autoTimer = null;
+    const s = hv && hv.session;
+    if (!s || (fx.end && fx.end.session === s.id) || (fx.result && fx.result.block && fx.result.block.id === s.id)) return;
+    const tm = focusTimer();
+    const l = tm ? plan.left(tm, perfNow()) : null;
+    if (l && l.done) Promise.resolve().then(timeEnd);   // ended already (a read after time away): paid now
+    else if (l) autoTimer = setTimeout(timeEnd, l.ms + 500);
+  }
+  function timeEnd() {
+    clearTimeout(autoTimer);
+    autoTimer = null;
+    const s = hv && hv.session;
+    if (!s || starting) return;
+    if (blockRunning()) { autoFollow(); return; }
+    if ((fx.end && fx.end.session === s.id) || (fx.result && fx.result.block && fx.result.block.id === s.id)) return;
+    if (fx.id !== s.id) fx = { id: s.id };
+    fx.end = { session: s.id, step: s.step_id, result: 'time' };
+    fx.step = s.step_id;
+    releaseWake();
+    lateChimeOff();
+    sendEnd();
+  }
+  // His answer on the end screen: after the time End (a second End, the points as paid); tapped while the time End
+  // is on its way, it waits for it; before any End went (the ring ran out a moment ago), it is the End.
+  function answerBlock(result) {
+    const r = fx.result;
+    const e = fx.end;
+    if (fx.answer || (e && e.result !== 'time')) return;   // his answer is on its way already
+    const input = root.querySelector('.hw-end input[name="note"]');
+    const note = input ? plan.clean(input.value, 120) : '';
+    root.querySelectorAll('.hw-end-acts button').forEach((b) => { b.disabled = true; });
+    if (e && e.result === 'time') { fx.answer = { result, note: note || undefined }; return; }
+    if (timeAnswer()) {
+      fx.end = { session: r.block.id, step: r.block.step_id, result, note: note || undefined, answer: true };
+      sendEnd();
+      return;
+    }
+    endBlock(result);
+  }
   async function sendEnd() {
     const e = fx.end;
     if (!e || fx.sending) return;
@@ -2045,15 +2201,85 @@
     if (fx.end !== e) return;
     if (r.data) {
       fx.end = null;
+      fx.unsent = false;
       fx.result = { block: r.data.block, earned: r.data.earned };
-      if (view === 'focus') renderFocus();
+      // The celebration: what this End paid (its earned; his answer after a 'time' End pays nothing more), ticked
+      // up to the balance on the view he is on, whatever else moved the balance during the block.
+      const after = hv && hv.points ? hv.points.balance : null;
+      const earned = r.data.earned || {};
+      const paid = e.answer ? 0 : (Number(earned.focus) || 0) + (Number(earned.on_time) || 0);
+      if (paid > 0 && after != null) cheer = { from: after - paid, to: after };
+      if (fx.answer && timeAnswer()) {
+        const a = fx.answer;
+        fx.answer = null;
+        fx.end = { session: fx.result.block.id, step: fx.result.block.step_id, result: a.result, note: a.note, answer: true };
+        sendEnd();
+      }
+      fx.answer = null;
+      afterEnd();
       return;
     }
     if (r.gone) return;
-    if (r.kind === 'retry') { if (view === 'focus') renderFocus(); return; }
+    if (r.kind === 'retry') { fx.unsent = true; if (view === 'focus') renderFocus(); return; }
     fx.end = null;
+    fx.answer = null;
     toast(hwFriendly(r.error), { error: true });
     hwRead();
+  }
+  // Drawn where he is: the end screen, #homework (its "How did it go?" line), #points, or the day (read again; the
+  // card celebrates). Anywhere else (his plan) nothing shows his balance: no celebration, then or later.
+  function afterEnd() {
+    if (view === 'focus') renderFocus();
+    else if (view === 'homework') renderHomework(true);
+    else if (view === 'points') renderPoints(true);
+    else if (view === 'day') refresh();
+    else cheer = null;
+  }
+  // The small celebration (the owner's "immediate gratification"): the ★ counter ticks up to the new total, a
+  // visible "+N", and a short sound through the AudioContext his Start tap made (the silent switch mutes it).
+  // Played once, on the view he is on when the points come (the day's card too); at once with reduced motion. A
+  // view drawn without it lets it go, so it never plays later, out of context.
+  function playCheer() {
+    const c = cheer;
+    const el = c && root.querySelector('[data-cheer]');
+    if (!el) return;
+    cheer = null;
+    const plus = c.to - c.from;
+    el.insertAdjacentHTML('afterend', ` <span class="hw-plus" aria-hidden="true">+${plus}</span>`);
+    const reduce = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+    if (reduce) {
+      el.textContent = balanceLine(c.to);
+    } else {
+      const steps = Math.max(1, Math.min(plus, 20));
+      let i = 0;
+      el.textContent = balanceLine(c.from);
+      const tick = setInterval(() => {
+        i += 1;
+        el.textContent = balanceLine(i >= steps ? c.to : Math.round(c.from + (plus * i) / steps));
+        if (i >= steps) clearInterval(tick);
+      }, 40);
+    }
+    cheerSound();
+  }
+  function cheerSound() {
+    try {
+      if (!audio || audio.ctx.state === 'closed') return;
+      const ctx = audio.ctx;
+      const at = ctx.currentTime + 0.02;
+      [[784, 0], [1047, 0.1]].forEach(([freq, delay]) => {
+        const o = ctx.createOscillator();
+        const g = ctx.createGain();
+        o.type = 'triangle';
+        o.frequency.value = freq;
+        g.gain.setValueAtTime(0.0001, at + delay);
+        g.gain.exponentialRampToValueAtTime(0.18, at + delay + 0.02);
+        g.gain.exponentialRampToValueAtTime(0.0001, at + delay + 0.15);
+        o.connect(g);
+        g.connect(ctx.destination);
+        o.start(at + delay);
+        o.stop(at + delay + 0.18);
+      });
+    } catch (e) { /* the screen says it */ }
   }
   async function doneStep() {
     const s = hv && hv.session;
@@ -2063,6 +2289,10 @@
     if (!r.data) return;
     fx.afterDone = true;
     renderFocus();
+    // A milestone done mid-block pays its first half at once.
+    const paid = Number(r.data.paid) || 0;
+    const after = stepById(s.step_id);
+    if (paid > 0) { toast(hw('milestone_now', { n: paid, m: (after && after.waiting) || 0 })); cheerSound(); }
   }
   async function switchTo(stepId) {
     const s = hv && hv.session;
@@ -2203,7 +2433,11 @@
     const r = await stepCall(id, 'done');
     if (!r.data) { renderHomework(true); return; }
     const after = stepById(id);
-    const msg = after && after.kind === 'milestone' && after.waiting ? hw('waiting_check', { n: after.waiting }) : t('ticked', { title: s.title });
+    // A milestone pays half at once: "+20 now · +20 more when Pat checks it", and the counter ticks up by what it paid.
+    const paid = Number(r.data.paid) || 0;
+    if (paid > 0 && hv.points) cheer = { from: hv.points.balance - paid, to: hv.points.balance };
+    const msg = after && after.kind === 'milestone' && paid > 0 && after.waiting ? hw('milestone_now', { n: paid, m: after.waiting })
+      : after && after.kind === 'milestone' && after.waiting ? hw('waiting_check', { n: after.waiting }) : t('ticked', { title: s.title });
     toast(msg, { ms: UNDO_MS, action: { label: t('undo'), onClick: () => undoStep(id) } });
     renderHomework(true);
   }
@@ -2297,12 +2531,45 @@
     return undefined;
   }
 
-  // ---------- #points: Ask, Cancel, Suggest ----------
+  // ---------- #points: Ask, Cash (an instant reward, on the spot), Cancel, Suggest ----------
+  // "Get it now": its "Yes, get it" where it was, taking a tap a moment later.
+  function openCash(id) {
+    cashOpen = id;
+    cashArmed = false;
+    clearTimeout(cashArmTimer);
+    cashArmTimer = setTimeout(() => {
+      cashArmed = true;
+      const yes = root.querySelector('[data-act="hw-cash-yes"]');
+      if (yes && view === 'points') yes.disabled = false;
+    }, 400);
+    renderPoints(true);
+  }
+  // Yes: the cash-in, with the price his button showed (a price changed since is refused). Its key is the reward's
+  // until an answer comes, or a read shows it landed: a tap again after a lost answer, after Cancel or another view,
+  // finds the cash-in it made (never two). A refusal, or no answer, reads his view again, so the buttons say what
+  // the server says (and a cash-in that did land shows as got).
+  async function cashReward(id) {
+    const rw = ((hv && hv.rewards) || []).find((x) => x.id === id);
+    if (!rw) return;
+    const key = cashKeys[id] || (cashKeys[id] = plan.newId());
+    root.querySelectorAll(`.hw-reward[data-reward="${id}"] button`).forEach((b) => { b.disabled = true; });
+    const r = await rewardCall('cash', { reward: id, key, cost: rw.cost });
+    if (r.data || r.kind === 'refused') {
+      if (cashKeys[id] === key) delete cashKeys[id];
+      if (cashOpen === id) cashOpen = null;
+    }
+    if (r.data) { toast(hw('hw_cashed_toast', { title: rw.title })); renderPoints(true); return; }
+    renderPoints(true);
+    if (r.gone) return;
+    await hwRead();
+    if (r.kind !== 'refused' && cashKeys[id] !== key) toast(hw('hw_cashed_toast', { title: rw.title }));   // the read found it landed
+  }
   async function askReward(id) {
     const r = await rewardCall('ask', { reward: id, key: plan.newId() });
     const rw = ((hv && hv.rewards) || []).find((x) => x.id === id);
     if (r.data && rw) toast(hw('hw_asked_toast', { title: rw.title }));
     renderPoints(true);
+    if (r.kind === 'refused') hwRead();   // what can be asked for now, from the server
   }
   async function cancelAsk(id) {
     await rewardCall('cancel', { key: id });
@@ -2342,6 +2609,7 @@
     return a ? { assignment: a } : { gone: true };
   }
   function renderPlan(id) {
+    cheer = null;   // no balance here: a celebration never waits for a later view
     if (!hv) { hwFrame('plan'); return; }
     if (ed && edFor === id && root.querySelector('.hw-plan .plan-editor')) return;
     if (ed) { ed.stop(); ed = null; }
@@ -2389,8 +2657,10 @@
     clearInterval(hwPollTimer);
     hwPollTimer = null;
     stopRing();
-    // Leaving #focus: a finished block's screen goes (an End still waiting stays, to be sent again).
-    if (next !== 'focus' && !fx.end) fx = hv && hv.session ? Object.assign(fx, { breakTm: null, result: null }) : {};
+    // Leaving #focus: a finished block's screen goes (an End still waiting stays, to be sent again, and so does a
+    // block paid when its ring ran out, until he says how it went).
+    if (next !== 'focus' && !fx.end && !timeAnswer()) fx = hv && hv.session ? Object.assign(fx, { breakTm: null, result: null }) : {};
+    if (next !== 'points') cashOpen = null;   // its key stays until an answer (cashKeys)
     if (ed && next !== 'plan') { ed.stop(); ed = null; edFor = null; }
     if (sheet && next !== view) sheet = null;
     menuOpen = null;
@@ -2480,13 +2750,16 @@
       case 'hw-keep': switchTo(stepId); break;
       case 'hw-next-step': switchTo(stepId); break;
       case 'hw-end-block': endBlock('done'); break;
-      case 'hw-end': endBlock(el.dataset.result === 'more' ? 'more' : 'done'); break;
+      case 'hw-end': answerBlock(el.dataset.result === 'more' ? 'more' : 'done'); break;
       case 'hw-break': fx.breakTm = plan.timer({ ends_in_s: 300, minutes: 5 }, perfNow()); renderFocus(); break;
       case 'hw-skip-break': fx.breakTm = null; stopRing(); renderFocus(); break;
       case 'hw-next': fx = {}; nowId = stepId; location.hash = '#homework'; break;
       case 'hw-sheet-close': closeSheet(); break;
       case 'hw-sheet-send': { const i = root.querySelector('.hw-sheet input[name="text"]'); sheetSend(i ? i.value : ''); break; }
       case 'hw-ask-reward': askReward(el.dataset.reward); break;
+      case 'hw-cash': openCash(el.dataset.reward); break;
+      case 'hw-cash-no': cashOpen = null; renderPoints(true); break;
+      case 'hw-cash-yes': cashReward(el.dataset.reward); break;
       case 'hw-cancel-ask': cancelAsk(el.dataset.ask); break;
       default: return false;
     }
