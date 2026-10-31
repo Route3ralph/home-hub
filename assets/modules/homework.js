@@ -623,7 +623,8 @@
     const keep = `coach:${l.id}`;
     return `<div class="hw-link-coach"><label class="hw-switch"><input type="checkbox" data-act="link-coach" data-link="${esc(l.id)}"${l.coach ? ' checked' : ''}><span>Coach view</span></label>
         <small class="hw-switch-line">${esc(`Also shows ${tutor} ${kid}'s points and rewards (this week's and last week's points, and the last 30 days), his focus sessions, `
-          + `his own calendar (the next 14 days and the last 7) and his daily tasks, read-only, and lets ${tutor} leave you a note here. Never the rest of the family: `
+          + `his own calendar (the next 14 days and the last 7) and his daily tasks, read-only, and lets ${tutor} leave you a note here. `
+          + 'Private items and health tasks show as “Private item”. Never the rest of the family: '
           + "no one else's events, tasks or names, no dinners, shopping list or contacts.")}</small></div>`
       + (st.coachFailed ? `<p class="hw-switch-line">${esc(`${tutor}'s notes couldn't be loaded.`)}</p>` : '')
       + (open.length || done.length ? `<div class="hw-coach-notes"><p class="hw-coach-head">${esc(`Notes from ${l.label} (${open.length})`)}</p>`

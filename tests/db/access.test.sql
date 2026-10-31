@@ -109,8 +109,8 @@ select test.is((select string_agg(p.proname, ', ' order by p.proname) from pg_pr
                                     'school_host_suffix', 'school_url', 'safe_instant', 'school_rows', 'school_assignment', 'school_apply',
                                     'school_marks', 'school_new', 'school_failed', 'school_trim', 'school_feeds_due',
                                     'homework_view_kid_v5', 'homework_view_tutor_v5', 'homework_card_v5',
-                                    -- 0007: the coach view
-                                    'coach_view')),
+                                    -- 0007: the coach view, and its stamp triggers
+                                    'coach_view', 'task_log_in_charge', 'tasks_in_charge_since', 'events_people_since')),
                null, 'members cannot call the private helpers that act for someone else');
 -- What 0005 grants members in private: free_minutes (homework_week runs as the member), and clean_block
 -- and homework_word (the tidy triggers and add_homework_time run as the parent who saves).

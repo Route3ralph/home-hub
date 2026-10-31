@@ -1367,7 +1367,8 @@ const emailOf = (req) => {
       && (await page.$eval('.hw-link [data-act="link-coach"]', (x) => x.checked === false)), await tc(page, '.hw-link .hw-link-coach'));
     check('... with exactly what it shows, in plain words', (await tc(page, '.hw-link .hw-link-coach .hw-switch-line'))
       === "Also shows Pat Jordan's points and rewards (this week's and last week's points, and the last 30 days), his focus sessions, his own calendar "
-      + '(the next 14 days and the last 7) and his daily tasks, read-only, and lets Pat leave you a note here. Never the rest of the family: no one '
+      + '(the next 14 days and the last 7) and his daily tasks, read-only, and lets Pat leave you a note here. Private items and health tasks show as '
+      + '“Private item”. Never the rest of the family: no one '
       + "else's events, tasks or names, no dinners, shopping list or contacts.", await tc(page, '.hw-link .hw-link-coach .hw-switch-line'));
     check('the coach\'s notes under the link: the open one with Done, its lines kept', same(await texts(page, '.hw-coach-notes > ul > li .hw-coach-note'),
       ['Yesterday 6:30pm · “Suggest lowering the on-time bonus. He starts on time anyway.”'])

@@ -158,7 +158,7 @@
       hw_cash_btn: 'Get it now', hw_cash_sure: 'Yes, get it · −{n}', hw_cashed_toast: 'Got it: {title}. Tell a parent.', hw_instant: 'instant',
       hw_got: 'Got it', hw_k_milestone_done: 'Milestone done', hw_cash_none: 'No more instant rewards today: ask a parent.',
       // 0007: his screen when a tutor link of his has the coach view on ({coach}: its label's first word).
-      hw_who_sees_coach: '{tutor} and the grown-ups in your family see your plan and your notes. The grown-ups and {coach} see your points.',
+      hw_who_sees_coach: '{tutor} and the grown-ups in your family see your plan and your notes. The grown-ups and {coach} see your points and rewards, your focus sessions, your own calendar and your daily tasks.',
       // 0007: the tutor link's Coach section (docs/v1.3-homework.md §20.6). {kid} is the kid's first name.
       coach_title: 'Coach', coach_lead: "{kid}'s family lets you see his points, rewards, focus sessions, his own calendar and his daily tasks. Read-only.",
       coach_points: 'Points', coach_balance: '{n} points', coach_points_off: 'Points are off for {kid}.',
@@ -173,8 +173,9 @@
       coach_focus: 'Focus sessions (30 days)', coach_no_focus: 'No focus sessions in the last 30 days.', coach_chosen: '{n} min chosen', coach_seen: '{n} seen',
       coach_r_done: 'Step done', coach_r_more: 'More to do', coach_r_stopped: 'Stopped', coach_r_time: 'Time ran out', coach_r_expired: 'Not ended',
       coach_cal: 'His calendar', coach_cal_next: 'Next 14 days', coach_cal_last: 'Last 7 days', coach_cal_none: 'Nothing.', coach_all_day: 'All day',
-      coach_tasks: 'His daily tasks (today and the last 7 days)', coach_no_tasks: 'No tasks.',
+      coach_tasks: 'His daily tasks (late ones, today and the last 7 days)', coach_no_tasks: 'No tasks.',
       coach_t_open_today: 'Not done yet', coach_t_open: 'Not done', coach_t_done: 'Done', coach_t_skipped: 'Skipped', coach_t_missed: 'Missed',
+      coach_t_late: 'Late since {day}',
       coach_note_label: "A note for {kid}'s family", coach_note_hint: 'Only his parents see it, on their Homework page. For example: "suggest lowering the on-time bonus".',
       coach_send: 'Send to the family', coach_sent: 'Sent to the family.', coach_note_empty: 'Write a note first.', coach_note_long: 'At most 500 characters.',
       coach_note_limit: "That's a lot of notes for one day. Try again tomorrow.", coach_your_notes: 'Your notes to the family (30 days)',
@@ -259,7 +260,7 @@
       hw_school_not_yours: 'Eso ya no está en tu lista de la escuela.', hw_school_already: 'Esa ya está en tu tarea.',
       hw_cash_btn: 'Conseguir ya', hw_cash_sure: 'Sí, conseguirlo · −{n}', hw_cashed_toast: 'Conseguido: {title}. Avisa a tus padres.', hw_instant: 'al momento',
       hw_got: 'Conseguido', hw_k_milestone_done: 'Hito hecho', hw_cash_none: 'Hoy no quedan premios al momento: pídeselo a tus padres.',
-      hw_who_sees_coach: '{tutor} y los adultos de tu familia ven tu plan y tus notas. Los adultos y {coach} ven tus puntos.',
+      hw_who_sees_coach: '{tutor} y los adultos de tu familia ven tu plan y tus notas. Los adultos y {coach} ven tus puntos y premios, tus sesiones de concentración, tu propio calendario y tus tareas diarias.',
       coach_title: 'Coach', coach_lead: 'La familia de {kid} te deja ver sus puntos, premios, sesiones de concentración, su propio calendario y sus tareas diarias. Solo lectura.',
       coach_points: 'Puntos', coach_balance: '{n} puntos', coach_points_off: 'Los puntos están desactivados para {kid}.',
       coach_this_week: 'Esta semana', coach_last_week: 'La semana pasada',
@@ -273,8 +274,9 @@
       coach_focus: 'Sesiones de concentración (30 días)', coach_no_focus: 'Ninguna sesión en los últimos 30 días.', coach_chosen: '{n} min elegidos', coach_seen: '{n} vistos',
       coach_r_done: 'Paso hecho', coach_r_more: 'Queda más', coach_r_stopped: 'Parado', coach_r_time: 'Se acabó el tiempo', coach_r_expired: 'Sin terminar',
       coach_cal: 'Su calendario', coach_cal_next: 'Próximos 14 días', coach_cal_last: 'Últimos 7 días', coach_cal_none: 'Nada.', coach_all_day: 'Todo el día',
-      coach_tasks: 'Sus tareas diarias (hoy y los últimos 7 días)', coach_no_tasks: 'Ninguna tarea.',
+      coach_tasks: 'Sus tareas diarias (atrasadas, hoy y los últimos 7 días)', coach_no_tasks: 'Ninguna tarea.',
       coach_t_open_today: 'Sin hacer todavía', coach_t_open: 'Sin hacer', coach_t_done: 'Hecha', coach_t_skipped: 'Saltada', coach_t_missed: 'No hecha',
+      coach_t_late: 'Atrasada desde {day}',
       coach_note_label: 'Una nota para la familia de {kid}', coach_note_hint: 'Solo la ven sus padres, en su página de Tarea. Por ejemplo: "propongo bajar el extra por empezar a tiempo".',
       coach_send: 'Enviar a la familia', coach_sent: 'Enviado a la familia.', coach_note_empty: 'Escribe una nota primero.', coach_note_long: 'Como mucho 500 caracteres.',
       coach_note_limit: 'Son muchas notas para un día. Vuelve a intentarlo mañana.', coach_your_notes: 'Tus notas a la familia (30 días)',
@@ -2891,6 +2893,7 @@
     let cv = null;            // the last coach view
     let draft = '';           // the note being typed
     let key = null;           // the note's key, until its answer
+    let keyFor = null;        // the words that key was made for: other words are another note, with a key of their own
     let sending = false;
     let error = '';
     const kid = () => (cv && cv.kid) || '';
@@ -2955,10 +2958,11 @@
         + `<h4>${esc(w('coach_cal_next'))}</h4>${next.length ? `<ul class="coach-list coach-cal-next">${next.map(item).join('')}</ul>` : `<p class="empty-line">${esc(w('coach_cal_none'))}</p>`}`
         + `<h4>${esc(w('coach_cal_last'))}</h4>${last.length ? `<ul class="coach-list coach-cal-last">${last.map(item).join('')}</ul>` : `<p class="empty-line">${esc(w('coach_cal_none'))}</p>`}`
         + '</div>');
-      // His daily tasks.
+      // His daily tasks: the late ones first ("Late since Thu Oct 22", as the database orders them), then the days.
       const tasks = Array.isArray(v.tasks) ? v.tasks : [];
       out.push(`<div class="coach-part" data-part="tasks"><h3>${esc(w('coach_tasks'))}</h3>`
         + (tasks.length ? `<ul class="coach-list coach-tasks">${tasks.map((x) => {
+          if (x.status === 'late') return `<li class="coach-task is-late">${esc([w('coach_t_late', { day: rel(x.day) }), x.title].join(' · '))}</li>`;
           const st = x.status === 'open' ? (x.day === v.today ? w('coach_t_open_today') : w('coach_t_open')) : w(`coach_t_${x.status}`);
           return `<li class="coach-task is-${esc(x.status)}">${esc([rel(x.day), st, x.title].join(' · '))}</li>`;
         }).join('')}</ul>` : `<p class="empty-line">${esc(w('coach_no_tasks'))}</p>`)
@@ -2993,7 +2997,9 @@
       sending = true;
       error = '';
       draw();
-      if (!key) key = plan.newId();
+      // A key whose answer never came stays with its words: sent again as they are, the database finds the note it
+      // made (changed: false); changed since, they are a new note (the first one may have landed: it stays).
+      if (!key || keyFor !== draft) { key = plan.newId(); keyFor = draft; }
       let r;
       try { r = await one(() => sb.rpc('coach_note_by_token', { p_token: tutorToken, p_key: key, p_note: draft })); } catch (err) { r = { error: err }; }
       sending = false;

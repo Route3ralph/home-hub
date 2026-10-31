@@ -14,11 +14,15 @@
 --     sessions of the last 30 days, his own calendar (the last 7 and the next 14 days: the events and
 --     Google events he is in charge of, or is the only one on with nobody in charge, as agenda() and
 --     google_for() have them that day; private ones as "Private item") and his daily tasks (his My day
---     tasks of today and the last 7 days, done or not); and coach_note_by_token (a note for the parents).
---     Twenty-two token functions for anon in all.
+--     tasks of today and the last 7 days, done or not, and the late ones; private and health ones as
+--     "Private item"); and coach_note_by_token (a note for the parents). Twenty-two token functions for anon in all.
+--   • Who was in charge (so a chore or a series handed to him doesn't bring someone else's days):
+--     task_log.responsible_id (each entry's task's person in charge as it is written), tasks.responsible_changed_at
+--     and events.people_changed_at (when the person in charge last changed), kept by three triggers. The coach
+--     view shows a past day only when they say it was his; nothing from before 0007 is.
 --   • Replaced, with the same signatures: private.homework_view_tutor (0006's wrapper, which adds
 --     coach: true for a link with the coach view on), private.homework_view_kid (0006's wrapper, which adds
---     me.coach, the coach link's first word, so his screen says who sees his points), each otherwise
+--     me.coach, the coach link's first word, so his screen says what that link sees), each otherwise
 --     0006's body (0005's _v5 bodies aren't touched), and hub_schema_version() (7).
 --
 -- Rules
@@ -52,6 +56,10 @@ begin
   -- What this migration changes, replaces and reads is as 0006 left it.
   if to_regclass('public.tutor_links') is null
      or exists (select 1 from pg_attribute a where a.attrelid = 'public.tutor_links'::regclass and a.attname = 'coach' and not a.attisdropped)
+     or exists (select 1 from pg_attribute a
+                where (a.attrelid, a.attname) in (('public.task_log'::regclass, 'responsible_id'), ('public.tasks'::regclass, 'responsible_changed_at'),
+                                                  ('public.events'::regclass, 'people_changed_at'))
+                  and not a.attisdropped)
      or to_regprocedure('private.homework_view_tutor(uuid, uuid, text)') is null
      or to_regprocedure('private.homework_view_tutor_v5(uuid, uuid, text)') is null
      or to_regprocedure('private.homework_view_kid(uuid, text)') is null
@@ -101,6 +109,76 @@ revoke all on public.coach_notes from public, anon, authenticated;
 grant select on public.coach_notes to authenticated;
 
 -- ---------------------------------------------------------------------
+-- Whose days they were (§20.3): who was in charge when the hub wrote it
+-- ---------------------------------------------------------------------
+-- The coach view shows a past day of a task or an event only when the hub knows it was his. A task's entry keeps
+-- the task's person in charge as it is written, so a chore handed to him doesn't bring the other person's days
+-- with it; a task keeps when its person in charge last changed, and an event when its person in charge (or, with
+-- nobody in charge, its people) did, so a missed day logged after a hand-over, or a series' days before it, aren't
+-- his. Entries from before 0007 have no stamp, and the tasks and events already there take 0007's time: nothing
+-- from before 0007 is taken for his. (The default is only for the rows already there: it is dropped at once.)
+alter table public.task_log
+  add column responsible_id uuid references public.people (id) on delete set null;
+alter table public.tasks
+  add column responsible_changed_at timestamptz default now();
+alter table public.events
+  add column people_changed_at timestamptz default now();
+alter table public.tasks alter column responsible_changed_at drop default;
+alter table public.events alter column people_changed_at drop default;
+
+-- An entry takes its task's person in charge as it is written, whatever it is given. Runs as its owner, so the
+-- stamp never depends on who writes the entry (the definer functions, the daily job).
+create function private.task_log_in_charge()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  new.responsible_id := (select t.responsible_id from public.tasks t where t.id = new.task_id);
+  return new;
+end;
+$$;
+create trigger task_log_in_charge before insert on public.task_log
+  for each row execute function private.task_log_in_charge();
+
+-- A task whose person in charge changes notes when (private.now()); any other save keeps the time, whatever it
+-- sends, so a page can't clear it. A new task keeps what it is given: none, or the time of a task a page puts back
+-- with Undo after deleting it.
+create function private.tasks_in_charge_since()
+returns trigger
+language plpgsql
+set search_path = ''
+as $$
+begin
+  new.responsible_changed_at := case when new.responsible_id is distinct from old.responsible_id then private.now()
+                                     else old.responsible_changed_at end;
+  return new;
+end;
+$$;
+create trigger tasks_in_charge_since before update on public.tasks
+  for each row execute function private.tasks_in_charge_since();
+
+-- The same for an event: its person in charge changes, or, with nobody in charge before and after, its people do
+-- (as a set). The people along don't count while someone is in charge: whose it is doesn't change.
+create function private.events_people_since()
+returns trigger
+language plpgsql
+set search_path = ''
+as $$
+begin
+  new.people_changed_at := case when new.responsible_id is distinct from old.responsible_id
+                                  or (new.responsible_id is null
+                                      and not (new.participant_ids @> old.participant_ids and new.participant_ids <@ old.participant_ids))
+                                then private.now()
+                                else old.people_changed_at end;
+  return new;
+end;
+$$;
+create trigger events_people_since before update on public.events
+  for each row execute function private.events_people_since();
+
+-- ---------------------------------------------------------------------
 -- What the coach sees (§20.3)
 -- ---------------------------------------------------------------------
 
@@ -111,15 +189,19 @@ grant select on public.coach_notes to authenticated;
 --      lines: the last 30 days' ledger lines [{day, kind, delta, note}], newest first (the note he sees: a
 --      step's or reward's title, a parent's words with given points or a correction; never who wrote it),
 --    rewards: [{title, cost, instant}] | null (his active ones),
---    asks: [{title, cost, status, asked_on, decided_on}] | null (waiting, and asked in the last 30 days),
+--    asks: [{title, cost, status, asked_on, decided_on}] | null (waiting, and asked or decided in the last 30
+--      days, newest first by its latest date),
 --    focus: [{day, assignment, minutes, seen_minutes, result, note}] (finished blocks that started in the
 --      last 30 days, newest first: never a block running now, nor with whom),
 --    calendar: [{day, end_day, all_day, starts, ends, title}] (today − 7 to today + 13: events he is in charge
---      of that day, or is the only one on with nobody in charge, not cancelled, as agenda() has them, and the
---      Google events of his own calendar, google_for(); a private one's title is "Private item"; never who
---      else, a place, notes, a directory entry or a day's note),
---    tasks: [{day, title, status}] (today − 7 to today: his tasks as his My day has them (agenda()), status
---      'open', 'done' or 'skipped', and the days the daily job logged 'missed'; a private one is "Private item"),
+--      of that day, or is the only one on with nobody in charge, not cancelled, as agenda() has them, but not
+--      a day that began before the series last changed hands (events.people_changed_at) unless that day's own
+--      change made it his; and the Google events of his own calendar, google_for(); a private one's title is
+--      "Private item"; never who else, a place, notes, a directory entry or a day's note),
+--    tasks: [{day, title, status}] (his open tasks due before today − 7, 'late' on their due day, oldest first;
+--      then today − 7 to today: his open ones as his My day has them (agenda()), and the days the hub wrote
+--      while he was in charge (task_log.responsible_id): 'done' and 'skipped', and 'missed' for a day after the
+--      task last changed hands; a private or health one is "Private item"),
 --    notes: [{id, note, day}] (this link's own notes to the parents of the last 30 days, newest first; day: the household's)}
 -- Never a name but the kid's first name, an email, a phone number, a person's id, another person's item,
 -- the shopping list, dinners, the directory, other kids. STABLE; the definer token functions call it.
@@ -154,13 +236,21 @@ begin
   select b.balance into v_bal from private.points_balance(v_kid) b;
 
   -- His own calendar: the events he is in charge of that day, or is the only one on with nobody in charge,
-  -- and his own Google calendar's events (google_for: a person's calendar is in charge of its person).
+  -- and his own Google calendar's events (google_for: a person's calendar is in charge of its person). A day
+  -- that began before the series last changed hands was someone else's (agenda() gives it today's people),
+  -- unless that day's own change put him in charge or named its people with nobody in charge.
   with items as (
     select a.day, a.end_day, a.all_day, a.local_start, a.local_end, a.title, coalesce(a.private, false) as private
     from public.agenda(v_today - 7, v_today + 13) a
+    join public.events e on e.id = a.item_id
+    left join public.event_changes c on c.event_id = a.item_id and c.on_date = a.occurrence
     where a.kind = 'event' and a.status <> 'cancelled'
       and (a.responsible_id = v_kid
            or (a.responsible_id is null and a.participant_ids <@ array[v_kid] and v_kid = any (a.participant_ids)))
+      and (e.people_changed_at is null
+           or coalesce(a.start_at, a.day::timestamp at time zone v_tz) >= e.people_changed_at
+           or c.responsible_id = v_kid
+           or (c.nobody_in_charge and c.participant_ids is not null))
     union all
     select g.day, g.end_day, g.all_day, g.local_start, g.local_end, g.title, coalesce(g.private, false)
     from private.google_for(v_kid, v_today - 7, v_today + 13, false) g
@@ -175,20 +265,39 @@ begin
   into v_items
   from items i;
 
-  -- His daily tasks, as his My day has them, and the days the daily job logged missed.
+  -- His daily tasks: his open ones as his My day has them (agenda(), and Late for those due before the window),
+  -- and the days the hub wrote while he was in charge of the task (task_log.responsible_id): a done one-off on its
+  -- due day (the entry its tick wrote), the done and skipped days of a repeating one, and the days the daily job
+  -- logged missed, for a day after the task last changed hands (the job logs a day when the next one comes, so a
+  -- day missed before a hand-over can be logged after it). Health tasks are "Private item", as on the wall.
   with t as (
-    select a.day, a.title, coalesce(a.private, false) as private, a.status
+    select a.day, a.title, coalesce(a.private, false) or a.category = 'health' as private, a.status
     from public.agenda(v_today - 7, v_today) a
-    where a.kind = 'task' and a.responsible_id = v_kid
+    where a.kind = 'task' and a.responsible_id = v_kid and a.status = 'open'
     union all
-    select l.occurrence, x.title, x.private, 'missed'
+    select case when x.repeat_mode = 'none' then x.due_date else l.occurrence end, x.title, x.private or x.category = 'health', l.status
     from public.task_log l join public.tasks x on x.id = l.task_id
-    where x.responsible_id = v_kid and l.status = 'missed' and l.occurrence between v_today - 7 and v_today
+    where x.responsible_id = v_kid and l.responsible_id = v_kid and l.status in ('done', 'skipped')
+      and ((x.repeat_mode <> 'none' and l.occurrence between v_today - 7 and v_today)
+           or (x.repeat_mode = 'none' and x.done_at is not null and x.due_date between v_today - 7 and v_today
+               and l.seq = (select max(m.seq) from public.task_log m where m.task_id = x.id and m.status = 'done')))
+    union all
+    select l.occurrence, x.title, x.private or x.category = 'health', 'missed'
+    from public.task_log l join public.tasks x on x.id = l.task_id
+    where x.responsible_id = v_kid and l.responsible_id = v_kid and l.status = 'missed'
+      and l.occurrence between v_today - 7 and v_today
+      and (x.responsible_changed_at is null or l.occurrence > (x.responsible_changed_at at time zone v_tz)::date)
+    union all
+    select cd.due, x.title, x.private or x.category = 'health', 'late'
+    from public.tasks x
+    cross join lateral (select private.current_due(x) as due) cd
+    where x.responsible_id = v_kid and x.active and x.done_at is null and cd.due < v_today - 7
   ),
   shown as (
     select t.day, case when t.private then private.word('private_item', v_lang) else t.title end as title, t.status from t
   )
-  select coalesce(jsonb_agg(jsonb_build_object('day', s.day, 'title', s.title, 'status', s.status) order by s.day desc, s.title, s.status), '[]')
+  select coalesce(jsonb_agg(jsonb_build_object('day', s.day, 'title', s.title, 'status', s.status)
+                            order by s.status <> 'late', case when s.status = 'late' then s.day end, s.day desc, s.title, s.status), '[]')
   into v_tasks
   from shown s;
 
@@ -228,10 +337,11 @@ begin
       (select coalesce(jsonb_agg(jsonb_build_object('title', q.title, 'cost', q.cost, 'status', q.status,
                                                     'asked_on', (q.asked_at at time zone v_tz)::date,
                                                     'decided_on', (q.decided_at at time zone v_tz)::date)
-                                 order by q.asked_at desc, q.id), '[]')
+                                 order by coalesce(q.decided_at, q.asked_at) desc, q.id), '[]')
        from (select * from public.reward_asks q
-             where q.kid_id = v_kid and (q.status = 'waiting' or q.asked_at >= v_now - interval '30 days')
-             order by q.asked_at desc, q.id limit 100) q) end,
+             where q.kid_id = v_kid
+               and (q.status = 'waiting' or q.asked_at >= v_now - interval '30 days' or q.decided_at >= v_now - interval '30 days')
+             order by coalesce(q.decided_at, q.asked_at) desc, q.id limit 100) q) end,
     'focus', (select coalesce(jsonb_agg(jsonb_build_object(
                        'day', (f.started_at at time zone v_tz)::date,
                        'assignment', a.title,
@@ -381,7 +491,7 @@ $$;
 -- ---------------------------------------------------------------------
 -- His view: 0005's (homework_view_kid_v5), with the school's marks and his New from school (as 0006); and, when a
 -- tutor link of his has the coach view on (active, not past its end date), me.coach: the first word of that link's
--- label (the first such link), so his screen can say that link sees his points too (§20.6). Left out with none, so
+-- label (the first such link), so his screen can say what that link sees too (§20.6). Left out with none, so
 -- with the coach view off everywhere it is exactly 0006's.
 create or replace function private.homework_view_kid(p_kid uuid, p_lang text)
 returns jsonb
@@ -490,5 +600,9 @@ grant  execute on function public.coach_note_done(uuid)                    to au
 
 -- Private: the definer token functions call it; nobody else.
 revoke execute on function private.coach_view(uuid)                        from public, anon, authenticated;
+-- The stamp triggers: nobody calls them (a trigger runs whoever writes the row).
+revoke execute on function private.task_log_in_charge()                    from public, anon, authenticated;
+revoke execute on function private.tasks_in_charge_since()                 from public, anon, authenticated;
+revoke execute on function private.events_people_since()                   from public, anon, authenticated;
 
 commit;

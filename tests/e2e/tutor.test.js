@@ -116,6 +116,8 @@ async function tokenRpcs(page, db) {
     db.calls.push({ name, body, auth: req.headers()['authorization'] || '' });
     if (!FAKES[name]) return route.fallback();
     if (db.offline) return route.abort('internetdisconnected');
+    // The call reaches the database (it does what it does), but its answer is lost on the way back.
+    if (db.loseAnswer === name) { db.loseAnswer = null; FAKES[name](db, body); return route.abort('connectionreset'); }
     const out = FAKES[name](db, body);
     return route.fulfill({ status: out && out.__status ? out.__status : 200, headers: { ...CORS, 'content-type': 'application/json' },
       body: JSON.stringify(out && out.__status ? out.body : out === undefined ? null : out) });
@@ -439,6 +441,55 @@ async function tokenRpcs(page, db) {
     await page.waitForTimeout(300);
     check('... and no coach read after that', calls(db, 'coach_view_by_token').length === after && db.calls.every((c) => COACH_FNS.test(c.name)), [...new Set(db.calls.map((c) => c.name))].join(','));
     check('nothing is kept on the device, with the coach view either', await page.evaluate(() => { try { return localStorage.length === 0 && sessionStorage.length === 0; } catch (e) { return true; } }));
+    await page.context().close();
+  }
+  {
+    // His overdue tasks (Late on his My day) come first, "Late since …"; an ask from long ago that a parent decided
+    // yesterday is among the asks (review findings 4 and 7).
+    const d = coachDb();
+    d.coachTasks[P.jordan].push({ day: '2026-10-22', title: 'Return library book', status: 'late' }, { day: '2026-10-25', title: 'Old form', private: true, status: 'late' });
+    d.reward_asks.push({ id: hid(51), kid_id: P.jordan, reward_id: null, title: 'New bike helmet', cost: 500, status: 'approved',
+      asked_at: at('2026-09-23T20:00:00'), decided_at: at('2026-11-01T22:00:00'), decided_by: 'alex@example.com', note: null });
+    ({ page, db } = await open({ label: 'coach-late', path: `/day.html?h=${PAT}`, db: d }));
+    await page.waitForSelector('[data-sec="coach"]');
+    check('Coach: his overdue tasks first, oldest first, "Late since …" (a private one as "Private item"), then the last 7 days',
+      (await text(page, '[data-part="tasks"] h3')) === 'His daily tasks (late ones, today and the last 7 days)' && same(await texts(page, '.coach-tasks li'), ['Late since Thu Oct 22 · Return library book', 'Late since Sun Oct 25 · Private item',
+        'Today · Not done yet · Feed the cat', 'Yesterday · Done · Make bed', 'Sat Oct 31 · Missed · Make bed', 'Sat Oct 31 · Done · Private item'])
+      && (await page.$$('.coach-tasks li.is-late')).length === 2, JSON.stringify(await texts(page, '.coach-tasks li')));
+    check('Coach: an ask from 40 days ago that a parent said yes to yesterday, newest decision first', same(await texts(page, '.coach-asks li'),
+      ["Choose Friday's dinner · 60 · asked today · waiting", 'New bike helmet · 500 · asked Wed Sep 23 · approved yesterday']), JSON.stringify(await texts(page, '.coach-asks li')));
+    await page.context().close();
+  }
+  {
+    // A note whose answer is lost ("Can't reach Home Hub"): sent again as it is, it finds the note it made (one note);
+    // changed before it is sent again, it is a new note with a new key, so the corrected words reach the parents
+    // (the first one, which did land, stays as a note of its own) (review finding 6).
+    ({ page, db } = await open({ label: 'coach-lost', path: `/day.html?h=${PAT}`, db: coachDb(), allowConsole: /ERR_CONNECTION_RESET/ }));
+    await page.waitForSelector('[data-sec="coach"]');
+    await page.fill('.coach-note textarea[name="note"]', 'He starts on time most days.');
+    db.loseAnswer = 'coach_note_by_token';
+    await page.click('.coach-note [type="submit"]');
+    check('an answer lost on the way: "Can\'t reach Home Hub…" and the note kept in the box', await until(async () => /Can't reach Home Hub/.test(await text(page, '.coach-note .form-error')))
+      && (await page.inputValue('.coach-note textarea[name="note"]')) === 'He starts on time most days.' && db.coach_notes.length === 1, await text(page, '.coach-note .form-error'));
+    await page.click('.coach-note [type="submit"]');
+    await until(() => calls(db, 'coach_note_by_token').length === 2);
+    const [s1, s2] = calls(db, 'coach_note_by_token').map((c) => c.body);
+    check('... sent again as it is: the same key, one note, "Sent to the family."', s1.p_key === s2.p_key && await until(async () => /Sent to the family\./.test(await text(page, '.toasts')))
+      && db.coach_notes.length === 1 && (await page.inputValue('.coach-note textarea[name="note"]')) === '', JSON.stringify([s1, s2, db.coach_notes.map((n) => n.note)]));
+    db.hwNow += 60e3;   // a minute later
+    await page.fill('.coach-note textarea[name="note"]', 'Suggest lowering the on-time bonus.');
+    db.loseAnswer = 'coach_note_by_token';
+    await page.click('.coach-note [type="submit"]');
+    await until(async () => /Can't reach Home Hub/.test(await text(page, '.coach-note .form-error')));
+    db.hwNow += 60e3;
+    await page.fill('.coach-note textarea[name="note"]', 'Suggest lowering the on-time bonus to 5, not 10.');
+    await page.click('.coach-note [type="submit"]');
+    await until(() => calls(db, 'coach_note_by_token').length === 4);
+    const [s3, s4] = calls(db, 'coach_note_by_token').slice(2).map((c) => c.body);
+    check('... changed before it is sent again: a new key, so the parents get the corrected words too', s3.p_key !== s4.p_key && UUID.test(s4.p_key)
+      && same(db.coach_notes.map((n) => n.note).sort(), ['He starts on time most days.', 'Suggest lowering the on-time bonus to 5, not 10.', 'Suggest lowering the on-time bonus.'])
+      && await until(async () => same(await texts(page, '.coach-notes li'), ['Today · Suggest lowering the on-time bonus to 5, not 10.', 'Today · Suggest lowering the on-time bonus.',
+        'Today · He starts on time most days.'])), JSON.stringify([s3, s4, db.coach_notes.map((n) => n.note), await texts(page, '.coach-notes li')]));
     await page.context().close();
   }
   {

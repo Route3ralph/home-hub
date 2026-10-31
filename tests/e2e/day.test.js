@@ -2975,8 +2975,19 @@ const HW_AUDIO_DROP = `(${HW_STUBS})(); (${HW_CLOCKED})(); (${HW_WAKE_DROP})();`
     d.tutor_links[0].coach = true;
     ({ page, db } = await open({ label: 'hw-coach', path: `/day.html?t=${JORDAN}#homework`, db: d, device: HW_DEVICE, init: HW_STUBS }));
     await page.waitForSelector('.hw-now-card');
-    check('the coach view on for Pat\'s link: the who-sees line says Pat sees his points too',
-      (await hwText(page, '.hw-who')) === 'Pat and the grown-ups in your family see your plan and your notes. The grown-ups and Pat see your points.', await hwText(page, '.hw-who'));
+    check('the coach view on for Pat\'s link: the who-sees line names everything Pat now sees too (his points and rewards, focus sessions, own calendar, daily tasks)',
+      (await hwText(page, '.hw-who')) === 'Pat and the grown-ups in your family see your plan and your notes. The grown-ups and Pat see your points and rewards, '
+        + 'your focus sessions, your own calendar and your daily tasks.', await hwText(page, '.hw-who'));
+    await page.context().close();
+  }
+  {
+    // ... and in Spanish.
+    const d = withCoach(hwDb({ lang: 'es' }));
+    d.tutor_links[0].coach = true;
+    ({ page, db } = await open({ label: 'hw-coach-es', path: `/day.html?t=${JORDAN}#homework`, db: d, device: HW_DEVICE, init: HW_STUBS }));
+    await page.waitForSelector('.hw-now-card');
+    check('... in Spanish too', (await hwText(page, '.hw-who')) === 'Pat y los adultos de tu familia ven tu plan y tus notas. Los adultos y Pat ven tus puntos y premios, '
+      + 'tus sesiones de concentración, tu propio calendario y tus tareas diarias.', await hwText(page, '.hw-who'));
     await page.context().close();
   }
   {

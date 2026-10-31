@@ -169,12 +169,14 @@ Home Hub can read Jordan's assignments, and his class schedule and games, from t
 
 Pat is Jordan's tutor and also his coach for starting, timing and planning. With the **coach view** on for Pat's link, the link also shows, read-only, in a **Coach** section under the homework:
 - his **points**: the balance, this week's and last week's by kind (focus, on time, milestones, given, voided, trades) and the last 30 days, without who gave or took them;
-- his **rewards** (cost, instant or not) and his asks and cash-ins of the last 30 days;
+- his **rewards** (cost, instant or not) and his asks and cash-ins asked or decided in the last 30 days;
 - his **focus sessions** of the last 30 days: the day, the assignment, the minutes he chose and the minutes the hub saw, how it ended, his note;
 - **his own calendar**, the next 14 days and the last 7: what he is in charge of, or is the only one on with nobody in charge (an event he is only along on is the family's); private ones as "Private item";
-- **his daily tasks**, today and the last 7 days, done or not.
+- **his daily tasks**, today and the last 7 days, done or not, and before them the ones still late; private items and health tasks as "Private item".
 
-Never the rest of the family: no one else's events, tasks or names, no dinners, shopping list or contacts, and nothing live. Pat can also leave you a note ("suggest lowering the on-time bonus"), which shows under Pat's link on the Homework page with **Done**; that is all Pat can change. Jordan's screen then says Pat sees his points too.
+Only his own days: a chore or a weekly event handed to him from Sam shows his days from the hand-over on, never Sam's from before (the hub notes who was in charge from 0007 on, so nothing from before it shows).
+
+Never the rest of the family: no one else's events, tasks or names, no dinners, shopping list or contacts, and nothing live. Pat can also leave you a note ("suggest lowering the on-time bonus"), which shows under Pat's link on the Homework page with **Done**; that is all Pat can change. Jordan's screen then says what Pat sees too.
 
 **Turning it on** (nothing to deploy: no Edge Function and no `cron.sql` change):
 1. `tests/run.sh` ends with `0 failed`; merge. Nothing changes until step 2: the coach parts show only on schema 7.
@@ -187,7 +189,7 @@ To stop it for one link, untick **Coach view**: it stops at once, and Pat's link
 
 - **Never in an email, a text or on the wall:** the teacher's text, steps, questions, notes, points, rewards or asks. Only the homework-time event shows there, as any event does.
 - **Jordan's My day** never shows the teacher's text, and never a parent's name or email: notes are "Pat:" or "Your parents:".
-- **Pat's link** never shows points, rewards, asks, family names, event titles (only "Busy"), or anything live, unless you turn on its coach view: then it also shows, read-only, his points, rewards and asks, his focus sessions, his own calendar's titles and his daily tasks, and still never anyone else's, nor anything live.
+- **Pat's link** never shows points, rewards, asks, family names, event titles (only "Busy"), or anything live, unless you turn on its coach view: then it also shows, read-only, his points, rewards and asks, his focus sessions, his own calendar's titles and his daily tasks (health tasks as "Private item"), and still never anyone else's, nor anything live.
 - **Everyone who signs in** reads the Homework page; only the parents change it.
 - **The school links** are never shown again once saved, not even to the parents: only "…a1b2". An assignment's description from the school is its teacher's text: for the grown-ups and Pat, never on Jordan's screen.
 - **How long things are kept:** the teacher's text until 30 days after the due date; done and dropped assignments, focus blocks, questions and notes 180 days; points until **Erase**.

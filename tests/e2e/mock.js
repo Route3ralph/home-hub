@@ -2923,7 +2923,9 @@ const tkTooLong = () => new Raise('22023', "That's too long.");
 // with tutor_links.coach on. Points, rewards, asks and focus come from the tables; his calendar and his daily tasks
 // are the test's (db.coachCal[kid], db.coachTasks[kid]: the rows agenda() and google_for() would give, already "his
 // own", each { day, end_day, all_day, starts, ends, title, private } and { day, title, private, status }), as db.hwBusy
-// stands in for person_items. Private ones read "Private item" in the link's language.
+// stands in for person_items. Private ones read "Private item" in the link's language. A task with status 'late' (open,
+// due before the last 7 days) comes first, oldest first, as the migration orders them; asks are kept while waiting or
+// asked or decided in the last 30 days, newest first by their latest date.
 const COACH_PRIVATE = { en: 'Private item', es: 'Asunto privado' };
 function tkCoachView(db, l) {
   if (!l || !l.coach) return null;
@@ -2949,7 +2951,9 @@ function tkCoachView(db, l) {
     } : null,
     rewards: pts ? db.rewards.filter((r) => r.kid_id === kid && r.active).sort((x, y) => x.sort_order - y.sort_order || (x.cost || 0) - (y.cost || 0))
       .map((r) => ({ title: r.title, cost: r.cost, instant: !!r.instant })) : null,
-    asks: pts ? db.reward_asks.filter((q) => q.kid_id === kid && (q.status === 'waiting' || db.hwNow - tkMs(q.asked_at) <= 30 * 86400000)).sort(desc('asked_at'))
+    asks: pts ? db.reward_asks.filter((q) => q.kid_id === kid && (q.status === 'waiting' || db.hwNow - tkMs(q.asked_at) <= 30 * 86400000
+        || (q.decided_at && db.hwNow - tkMs(q.decided_at) <= 30 * 86400000)))
+      .map((q) => Object.assign({}, q, { latest: q.decided_at || q.asked_at })).sort(desc('latest'))
       .map((q) => ({ title: q.title, cost: q.cost, status: q.status, asked_on: tkDayOf(db, q.asked_at), decided_on: q.decided_at ? tkDayOf(db, q.decided_at) : null })) : null,
     focus: db.focus_sessions.filter((f) => f.kid_id === kid && f.ended_at && tkDayOf(db, f.started_at) >= tkAdd(today, -29) && tkDayOf(db, f.started_at) <= today)
       .sort(desc('started_at')).map((f) => {
@@ -2960,7 +2964,8 @@ function tkCoachView(db, l) {
     calendar: ((db.coachCal || {})[kid] || []).filter((i) => i.day >= tkAdd(today, -7) && i.day <= tkAdd(today, 13))
       .map((i) => ({ day: i.day, end_day: i.end_day || i.day, all_day: !!i.all_day, starts: i.all_day ? null : i.starts || null, ends: i.all_day ? null : i.ends || null,
         title: i.private ? word : i.title })),
-    tasks: ((db.coachTasks || {})[kid] || []).filter((t) => t.day >= tkAdd(today, -7) && t.day <= today)
+    tasks: [...((db.coachTasks || {})[kid] || []).filter((t) => t.status === 'late' && t.day < tkAdd(today, -7)).sort((x, y) => (x.day < y.day ? -1 : x.day > y.day ? 1 : 0)),
+      ...((db.coachTasks || {})[kid] || []).filter((t) => t.status !== 'late' && t.day >= tkAdd(today, -7) && t.day <= today)]
       .map((t) => ({ day: t.day, title: t.private ? word : t.title, status: t.status })),
     notes: (db.coach_notes || []).filter((n) => n.link_id === l.id && db.hwNow - tkMs(n.created_at) <= 30 * 86400000)
       .sort((x, y) => (tkMs(x.created_at) > tkMs(y.created_at) ? -1 : tkMs(x.created_at) < tkMs(y.created_at) ? 1 : x.id > y.id ? -1 : 1))

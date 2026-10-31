@@ -191,11 +191,15 @@ insert into tasks (title, responsible_id, due_date, done_at, done_by, private) v
   ('Robin chores', test.person('Robin'), '2026-11-03', null, null, false);
 insert into tasks (title, responsible_id, due_date, repeat_mode, every_count, every_unit, anchor_date) values
   ('Make bed', test.person('Taylor'), '2026-11-04', 'schedule', 1, 'day', '2026-10-01');
+-- The entries the hub wrote while they were his: Make bed's days, and the ticks of his two done one-offs
+-- (complete_task writes one for a one-off too).
 insert into task_log (task_id, occurrence, status, done_on, done_by) values
   (test.task('Make bed'), '2026-11-03', 'done', '2026-11-03', 'Taylor (My day)'),
   (test.task('Make bed'), '2026-11-02', 'missed', null, null),
   (test.task('Make bed'), '2026-11-01', 'skipped', null, 'alex@example.com'),
-  (test.task('Make bed'), '2026-10-20', 'done', '2026-10-20', 'Taylor (My day)');
+  (test.task('Make bed'), '2026-10-20', 'done', '2026-10-20', 'Taylor (My day)'),
+  (test.task('Pack gym bag'), '2026-11-02', 'done', '2026-11-02', 'Taylor (My day)'),
+  (test.task('Diary'), '2026-11-01', 'done', '2026-11-01', 'Taylor (My day)');
 
 -- What a coach never sees: dinners and the shopping list.
 insert into meals (day, kind, title, cook_id) values ('2026-11-04', 'cook', 'Tacos', test.person('Morgan'));
@@ -367,6 +371,156 @@ select test.is(tutor_assignment_by_token(pg_temp.token('Pat Lee, tutor'), '{"id"
                'true'::jsonb, 'a writer''s answer (the tutor''s view) says coach: true too');
 
 -- ---------------------------------------------------------------------
+-- Whose days they were: a task's history is the person in charge when the hub wrote it (task_log.responsible_id),
+-- not the task's person now; a series that changed hands shows only its days from then on (review findings 1 and 5)
+-- ---------------------------------------------------------------------
+-- Sam's daily chore, weekly chore and a one-off, with Sam's last week on them; on Mon Nov 2 at 9am a parent hands
+-- all three to Taylor (rotating chores). Every entry is written as the pages write it.
+:as_owner
+set hub.now = '2026-10-28 08:00 America/New_York';
+insert into tasks (title, responsible_id, due_date, repeat_mode, every_count, every_unit, anchor_date) values
+  ('Walk the dog', test.person('Sam'), '2026-10-29', 'schedule', 1, 'day', '2026-10-01'),
+  ('Take out the bins', test.person('Sam'), '2026-10-28', 'schedule', 1, 'week', '2026-10-07');
+insert into tasks (title, responsible_id, due_date) values ('Return the library DVDs', test.person('Sam'), '2026-10-30');
+set hub.now = '2026-10-29 18:00 America/New_York';
+:as_adult
+select complete_task(test.task('Walk the dog'), '2026-10-29');
+:as_owner
+set hub.now = '2026-10-30 18:00 America/New_York';
+:as_adult
+select complete_task(test.task('Return the library DVDs'));
+:as_owner
+set hub.now = '2026-10-31 08:00 America/New_York';
+:as_service
+select roll_missed_tasks();                                      -- Walk the dog: Oct 30 missed (Sam's)
+:as_admin
+select skip_task(test.task('Walk the dog'), '2026-10-31');
+:as_owner
+set hub.now = '2026-11-01 18:00 America/New_York';
+:as_adult
+select complete_task(test.task('Walk the dog'), '2026-11-01');
+:as_owner
+set hub.now = '2026-11-02 09:00 America/New_York';
+:as_admin
+update tasks set responsible_id = test.person('Taylor') where title in ('Walk the dog', 'Take out the bins', 'Return the library DVDs');
+:as_owner
+set hub.now = '2026-11-02 19:00 America/New_York';
+:as_anon
+select complete_by_token(test.token('Taylor'), test.task('Walk the dog'), '2026-11-02');   -- his own, from his My day
+:as_owner
+set hub.now = '2026-11-04 08:00 America/New_York';
+:as_service
+select roll_missed_tasks();          -- Walk the dog: Nov 3 missed (his); the bins: Oct 28 missed, logged now but Sam's day
+:as_owner
+set hub.now = '2026-11-04 17:30 America/New_York';
+create temp table handed as
+  select x from jsonb_array_elements(coach_view_by_token(pg_temp.token('Pat Lee, tutor')) -> 'tasks') x
+  where x ->> 'title' in ('Walk the dog', 'Take out the bins', 'Return the library DVDs');
+select test.is((select string_agg(x ->> 'day' || ' ' || (x ->> 'status') || ' ' || (x ->> 'title'), ' | ') from handed),
+               '2026-11-04 open Take out the bins | 2026-11-04 open Walk the dog | 2026-11-03 missed Walk the dog | 2026-11-02 done Walk the dog',
+               'chores handed to him: his days since (done, missed) and what is open now; none of Sam''s days before (done, skipped, '
+               'missed), nor Sam''s done one-off, nor a day Sam missed that the daily job logged after the hand-over');
+select test.is((select string_agg(coalesce(to_jsonb(l) ->> 'responsible_id', '-') || ' ' || l.status, ', ' order by l.seq)
+                from task_log l where l.task_id = test.task('Walk the dog')),
+               (select string_agg(p || ' ' || s, ', ' order by n) from unnest(array[test.person('Sam'), test.person('Sam'), test.person('Sam'),
+                       test.person('Sam'), test.person('Taylor'), test.person('Taylor')]::text[],
+                       array['done', 'missed', 'skipped', 'done', 'done', 'missed']) with ordinality u (p, s, n)),
+               'task_log.responsible_id: each entry keeps who was in charge when the hub wrote it');
+select test.is((select to_jsonb(t) ->> 'responsible_changed_at' from tasks t where t.title = 'Walk the dog')::timestamptz,
+               timestamptz '2026-11-02 14:00+00', 'tasks.responsible_changed_at: when the task last changed hands');
+select test.is((select to_jsonb(t) ->> 'responsible_changed_at' from tasks t where t.title = 'Feed the cat'), null,
+               '... none for a task that never changed hands');
+
+-- A series handed to him shows its days from then on: Sam's Monday and Wednesday physio and Wednesday chess, handed
+-- to Taylor now (Wed Nov 4, 5:30pm). Today's 4pm physio was still Sam's; tonight's chess is his. A day whose own change
+-- put him in charge (Mon Nov 2) was his.
+:as_owner
+insert into events (title, start_date, start_time, end_time, repeat, repeat_weekdays, responsible_id, participant_ids) values
+  ('Physio', '2026-10-05', '16:00', '17:00', 'weekly', '{1,3}', test.person('Sam'), '{}'),
+  ('Evening chess', '2026-10-07', '19:00', '20:00', 'weekly', '{3}', test.person('Sam'), '{}'),
+  ('Board games', '2026-10-07', '18:00', '19:00', 'weekly', '{3}', null, array[test.person('Robin')]);
+insert into event_changes (event_id, on_date, responsible_id) values (test.event('Physio'), '2026-11-02', test.person('Taylor'));
+:as_admin
+update events set responsible_id = test.person('Taylor') where title in ('Physio', 'Evening chess');
+update events set participant_ids = array[test.person('Taylor')] where title = 'Board games';
+:as_anon
+select test.is((select string_agg(x ->> 'day' || ' ' || (x ->> 'starts') || ' ' || (x ->> 'title'), ' | ')
+                from jsonb_array_elements(coach_view_by_token(pg_temp.token('Pat Lee, tutor')) -> 'calendar') x
+                where x ->> 'title' in ('Physio', 'Evening chess', 'Board games')),
+               '2026-11-02 16:00 Physio | 2026-11-04 18:00 Board games | 2026-11-04 19:00 Evening chess | 2026-11-09 16:00 Physio | '
+               '2026-11-11 16:00 Physio | 2026-11-11 18:00 Board games | 2026-11-11 19:00 Evening chess | 2026-11-16 16:00 Physio',
+               'series handed to him: only what began after (tonight''s board games and chess, the coming days) and a day its own change '
+               'put him in charge; none of Sam''s days before, nor today''s 4pm physio, nor a nobody-in-charge series'' day before he '
+               'became its only one');
+:as_owner
+select test.is((select string_agg(title || ' ' || coalesce(to_jsonb(e) ->> 'people_changed_at', '-'), ', ' order by title) from events e
+                where title in ('Physio', 'Board games', 'Piano lesson')),
+               'Board games 2026-11-04T22:30:00+00:00, Physio 2026-11-04T22:30:00+00:00, Piano lesson -',
+               'events.people_changed_at: when the series'' person in charge (or, with nobody in charge, its people) last changed');
+
+-- A health task of his (not switched private) is "Private item" with its day and status, as on the wall (finding 2).
+:as_owner
+insert into tasks (title, category, responsible_id, due_date, due_time, repeat_mode, every_count, every_unit, anchor_date) values
+  ('Allergy medicine with breakfast', 'health', test.person('Taylor'), '2026-11-04', '07:30', 'schedule', 1, 'day', '2026-10-01');
+insert into task_log (task_id, occurrence, status, done_on, done_by) values
+  (test.task('Allergy medicine with breakfast'), '2026-11-03', 'done', '2026-11-03', 'Taylor (My day)'),
+  (test.task('Allergy medicine with breakfast'), '2026-11-02', 'missed', null, null);
+:as_anon
+create temp table cv_health as select coach_view_by_token(pg_temp.token('Pat Lee, tutor')) as v;
+select test.is((select string_agg(x ->> 'day' || ' ' || (x ->> 'status'), ' | ') from cv_health, jsonb_array_elements(v -> 'tasks') x
+                where x ->> 'title' = 'Private item' and x ->> 'day' >= '2026-11-02'),
+               '2026-11-04 open | 2026-11-03 done | 2026-11-02 missed', 'a health task of his: "Private item", with its days and status');
+select test.ok((select position('Allergy' in v::text) = 0 from cv_health), '... and its title appears nowhere');
+
+-- His open tasks due before the last 7 days are there too, as Late on his My day (finding 4): first, oldest first.
+:as_owner
+insert into tasks (title, responsible_id, due_date, active) values
+  ('Return library book', test.person('Taylor'), '2026-10-25', true),
+  ('Old paused form', test.person('Taylor'), '2026-10-20', false),
+  ('Sam''s overdue form', test.person('Sam'), '2026-10-20', true);
+insert into tasks (title, category, responsible_id, due_date) values ('Eye drops refill', 'health', test.person('Taylor'), '2026-10-22');
+:as_anon
+select test.is((select string_agg(x ->> 'day' || ' ' || (x ->> 'status') || ' ' || (x ->> 'title'), ' | ' order by n)
+                from jsonb_array_elements(coach_view_by_token(pg_temp.token('Pat Lee, tutor')) -> 'tasks') with ordinality t (x, n)
+                where n <= 2),
+               '2026-10-22 late Private item | 2026-10-25 late Return library book',
+               'his open tasks due before the window: status late, on their due day, first and oldest first (a health one as '
+               '"Private item"; not a paused one, not Sam''s)');
+select test.ok(not exists (select 1 from jsonb_array_elements(coach_view_by_token(pg_temp.token('Pat Lee, tutor')) -> 'tasks') x
+                           where x ->> 'title' in ('Old paused form', 'Sam''s overdue form')), '... a paused one and Sam''s aren''t there');
+
+-- An ask decided in the last 30 days shows, however long ago he asked, newest decision first (finding 7).
+:as_owner
+insert into rewards (id, kid_id, title, cost, active) values ('d0000000-0000-4000-8000-000000000009', test.person('Taylor'), 'New bike helmet', 500, true);
+insert into reward_asks (kid_id, reward_id, title, cost, status, asked_at, decided_at, decided_by) values
+  (test.person('Taylor'), 'd0000000-0000-4000-8000-000000000009', 'New bike helmet', 500, 'approved', '2026-09-25 21:00+00', '2026-11-03 22:00+00', 'alex@example.com');
+:as_anon
+select test.is((select pg_temp.rows(coach_view_by_token(pg_temp.token('Pat Lee, tutor')) -> 'asks', '{title,cost,status,asked_on,decided_on}')),
+               'Extra game time 15 cashed 2026-11-04 2026-11-04 | New bike helmet 500 approved 2026-09-25 2026-11-03 | '
+               'Pick the movie 200 waiting 2026-11-03 - | Pick the movie 200 approved 2026-10-20 2026-10-21',
+               'asks: one asked 40 days ago and approved yesterday shows, by its newest date (not the one asked and declined two months ago)');
+
+-- The stamps can't be written another way: an entry always takes the task's person, a save that leaves who is in
+-- charge as it is keeps the time, and an entry from before 0007 (no stamp) never shows.
+:as_owner
+insert into task_log (task_id, occurrence, status, done_on, done_by, responsible_id)
+  values (test.task('Make bed'), '2026-10-29', 'done', '2026-10-29', 'Taylor (My day)', test.person('Robin'));
+select test.is((select responsible_id from task_log where task_id = test.task('Make bed') and occurrence = '2026-10-29'),
+               test.person('Taylor'), 'task_log.responsible_id: an entry takes the task''s person in charge, whatever it is given');
+:as_admin
+update tasks set responsible_changed_at = null, notes = 'Round the block' where title = 'Walk the dog';
+update events set people_changed_at = null, participant_ids = array[test.person('Morgan')] where title = 'Physio';
+:as_owner
+select test.is((select responsible_changed_at from tasks where title = 'Walk the dog'), timestamptz '2026-11-02 14:00+00',
+               'a save that leaves the task''s person as it is keeps responsible_changed_at (a page can''t clear it)');
+select test.is((select people_changed_at from events where title = 'Physio'), timestamptz '2026-11-04 22:30+00',
+               '... and an event''s people_changed_at (the people along don''t count while someone is in charge)');
+update task_log set responsible_id = null where task_id = test.task('Make bed') and occurrence = '2026-10-29';
+:as_anon
+select test.ok(not exists (select 1 from jsonb_array_elements(coach_view_by_token(pg_temp.token('Pat Lee, tutor')) -> 'tasks') x
+                           where x ->> 'day' = '2026-10-29'), 'an entry with no stamp (from before 0007) doesn''t show');
+
+-- ---------------------------------------------------------------------
 -- Notes for the parents
 -- ---------------------------------------------------------------------
 :as_owner
@@ -535,6 +689,17 @@ select test.is((select string_agg(p.proname, ', ' order by p.proname) from pg_pr
 select test.is((select string_agg(p.proname, ', ' order by p.proname) from pg_proc p
                 where p.proname in ('coach_view_by_token', 'coach_note_by_token', 'set_tutor_coach', 'coach_note_done', 'coach_view')
                   and not coalesce(p.proconfig, '{}') @> '{"search_path=\"\""}'), null, '... and every one sets search_path = ''''');
+select test.is((select string_agg(t.tgrelid::regclass::text || ' ' || t.tgname || ' ' || p.proname || ' ' || p.prosecdef, ', ' order by t.tgname)
+                from pg_trigger t join pg_proc p on p.oid = t.tgfoid
+                where t.tgname in ('task_log_in_charge', 'tasks_in_charge_since', 'events_people_since')),
+               'events events_people_since events_people_since false, task_log task_log_in_charge task_log_in_charge true, '
+               'tasks tasks_in_charge_since tasks_in_charge_since false',
+               'the three stamp triggers (the entry''s one runs as its owner, so the stamp never depends on who writes)');
+select test.is((select string_agg(p.proname || ' ' || r, ', ' order by p.proname, r) from pg_proc p
+                cross join unnest(array['anon', 'authenticated', 'service_role']) r
+                where p.pronamespace = 'private'::regnamespace and p.proname in ('task_log_in_charge', 'tasks_in_charge_since', 'events_people_since')
+                  and (has_function_privilege(r, p.oid, 'execute') or not coalesce(p.proconfig, '{}') @> '{"search_path=\"\""}')), null,
+               '... nobody may call their functions, and each sets search_path = ''''');
 select test.is(hub_schema_version(), 7, 'hub_schema_version is 7');
 
 -- ---------------------------------------------------------------------

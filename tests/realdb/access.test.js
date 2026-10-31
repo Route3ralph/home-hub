@@ -563,6 +563,18 @@ const emptyLists = (b) => !!b && typeof b === 'object' && !Array.isArray(b)
       cv.body.tasks);
     check('... and nothing of anyone else: no other name or surname, no email, no person\'s id, no token, no dinner, no list line, no phone number',
       !leaks(ct, ['Jordan']).length && !/Pancakes|Oat milk|Tacos|Milk|Eggs|Birthday cake|Pregnancy|Mow the lawn|Dinner out|Piano|555-/.test(ct), [leaks(ct, ['Jordan']), ct.match(/Pancakes|Oat milk|Tacos|Milk|Eggs|Birthday cake|Pregnancy|Mow the lawn|Dinner out|Piano|555-/g)]);
+    // A chore a parent hands him from Taylor, saved as the Tasks page saves it (an update by Alex): his from now on, and
+    // none of Taylor's days before (task_log keeps who was in charge; review findings 1 and 5).
+    await sql(`insert into tasks (title, responsible_id, due_date, repeat_mode, every_count, every_unit, anchor_date)
+                 values ('Water the plants', '${taylor.id}', public.today_local(), 'schedule', 1, 'day', public.today_local() - 10);
+               insert into task_log (task_id, occurrence, status, done_on, done_by)
+                 select id, public.today_local() - 1, 'done', public.today_local() - 1, 'Taylor (My day)' from tasks where title = 'Water the plants';`);
+    const plants = (await sql(`select id from tasks where title = 'Water the plants'`))[0].id;
+    const handed = await ask(`/rest/v1/tasks?id=eq.${plants}`, admin, { responsible_id: jordan.id }, 'PATCH');
+    const water = (await fn('coach_view_by_token', null, { p_token: PAT })).body.tasks.filter((x) => x.title === 'Water the plants');
+    check('a chore Alex hands him on the Tasks page: his from now on (open today), none of Taylor\'s days before it', handed.status < 300
+      && water.length === 1 && water[0].status === 'open'
+      && (await sql(`select responsible_changed_at is not null as s from tasks where id = '${plants}'`))[0].s === 't', [handed.status, water]);
     const onList = await fn('tutor_view_by_token', null, { p_token: PAT, p_assignment: null, p_part: 'all' });
     check('... and Pat\'s view says coach: true, with nothing else new', onList.body.coach === true
       && JSON.stringify(Object.keys(onList.body).filter((k) => k !== 'coach').sort()) === JSON.stringify(Object.keys(offList.body).sort()), Object.keys(onList.body));

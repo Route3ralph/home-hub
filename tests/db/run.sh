@@ -197,6 +197,33 @@ if [[ $out == *"(migration 0006) isn't installed"* ]] && [[ -z $(quiet -d hub_05
    && [[ $(quiet -d hub_05_again -A -t -c "select public.hub_schema_version() || ' ' || (select count(*) from pg_attribute where attrelid = 'public.tutor_links'::regclass and attname = 'coach')") == "5 0" ]]; then
   report "PASS  migration 0007 refuses to run without 0006 (a database at 0005), and changes nothing"
 else report "FAIL  migration 0007 refuses to run without 0006  (${out:0:200})"; fi
+# 0007 on a database with tasks, events and task entries already there (docs/v1.3-homework.md §20.2): the tasks and
+# events take 0007's time as their people_changed_at / responsible_changed_at (so the coach view takes none of their
+# earlier days for his), without a save (updated_at as it was); the entries already there have no stamp; a task or
+# event made afterwards has no time, and an entry written afterwards takes its task's person.
+sql -d postgres -c 'create database hub_06_stamps template hub_05_again'
+quiet -d hub_06_stamps -f supabase/migrations/0006_homework_school.sql >/dev/null 2>&1
+quiet -d hub_06_stamps >/dev/null <<'SQL'
+insert into public.tasks (title, responsible_id, due_date, updated_at) select 'Old chore', id, current_date, '2026-01-02 03:04+00' from public.people where name = 'Sam';
+insert into public.events (title, start_date, responsible_id, updated_at) select 'Old class', current_date, id, '2026-01-02 03:04+00' from public.people where name = 'Sam';
+insert into public.task_log (task_id, occurrence, status) select id, current_date, 'done' from public.tasks where title = 'Old chore';
+SQL
+t0=$(quiet -d hub_06_stamps -A -t -c "select now()")
+out=$(quiet -d hub_06_stamps -f supabase/migrations/0007_homework_coach.sql 2>&1)
+got=$(quiet -d hub_06_stamps -A -t <<SQL
+insert into public.tasks (title, responsible_id) select 'New chore', id from public.people where name = 'Sam';
+insert into public.events (title, start_date) values ('New class', current_date);
+insert into public.task_log (task_id, occurrence, status) select id, current_date, 'skipped' from public.tasks where title = 'Old chore';
+select (t.responsible_changed_at >= '$t0') || ' ' || (e.people_changed_at >= '$t0') || ' ' || (t.updated_at = '2026-01-02 03:04+00') || ' '
+       || (e.updated_at = '2026-01-02 03:04+00') || ' ' || (select count(*) from public.tasks where title = 'New chore' and responsible_changed_at is null) || ' '
+       || (select count(*) from public.events where title = 'New class' and people_changed_at is null) || ' '
+       || (select string_agg(l.status || ':' || (l.responsible_id is not distinct from t.responsible_id), ',' order by l.seq) from public.task_log l where l.task_id = t.id)
+from public.tasks t, public.events e where t.title = 'Old chore' and e.title = 'Old class';
+SQL
+)
+if [[ $got == "true true true true 1 1 done:false,skipped:true" ]]; then
+  report "PASS  migration 0007 stamps the tasks and events already there with its time, without saving them; earlier task entries have no stamp, later ones their task's person"
+else report "FAIL  migration 0007 stamps the tasks and events already there  (${out:0:200}; got $got)"; fi
 
 # 5. preflight.sql's promise, "nothing migration 0002 creates exists yet", covers everything the
 #    migration creates that a live database could already have under the same name (which would

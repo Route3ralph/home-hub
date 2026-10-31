@@ -1014,8 +1014,20 @@ create table public.coach_notes (
   check ((done_at is null) = (done_by is null))
 );
 create index coach_notes_link on public.coach_notes (link_id, created_at desc);
+
+-- Who was in charge when the hub wrote it, so the coach view never takes someone else's days for his.
+-- The default is only for the rows already there (0007's time): it is dropped at once.
+alter table public.task_log
+  add column responsible_id uuid references public.people (id) on delete set null;
+alter table public.tasks
+  add column responsible_changed_at timestamptz default now();
+alter table public.events
+  add column people_changed_at timestamptz default now();
+alter table public.tasks alter column responsible_changed_at drop default;
+alter table public.events alter column people_changed_at drop default;
 ```
 
+- `task_log.responsible_id` is the task's person in charge as the entry is written (the trigger `task_log_in_charge`, before insert, SECURITY DEFINER: whatever the entry is given); null on the entries from before 0007. `tasks.responsible_changed_at` and `events.people_changed_at` are when the person in charge last changed (for an event with nobody in charge before and after, its people, as a set): the triggers `tasks_in_charge_since` and `events_people_since` (before update) set `private.now()` then and otherwise keep the row's time, whatever a save sends; a new row keeps what it is given (none, or a row put back with Undo). The tasks and events already there take 0007's time, without a save. Nothing else reads them.
 - Row-level security on `coach_notes`: the parents select (policy "Parents can see the coach's notes"); `revoke all … from public, anon, authenticated`, then `grant select … to authenticated`; no write grant (the functions write). service_role keeps the defaults, as on 0005's tables.
 - `tutor_links` keeps its grants (the parents read it; no update grant), so `set_tutor_coach` is the only way to change `coach`; its stamp trigger stamps the change. New link, Off, On, Extend and a new name keep the switch.
 
@@ -1026,10 +1038,11 @@ Signed-in actions (`authenticated` only; SECURITY DEFINER; each raises 42501 "On
 - `set_tutor_coach(p_link uuid, p_coach boolean)` returns void: the coach view on or off for one link, at once (22023 "That link is gone.", "Choose on or off.").
 - `coach_note_done(p_note uuid)` returns void: Done on a coach's note; a second Done changes nothing (22023 "That note is gone." for an unknown one).
 
-New in private (revoked from public, anon and authenticated; only the two token functions call it):
-- `private.coach_view(p_link uuid)` returns jsonb: the coach view (`docs/v1.3-homework.md` §20.3), null for a link whose coach view is off. "His own" calendar is the events of `agenda` that day that he is in charge of, or that have nobody in charge and him as the only one on them, and the Google events `private.google_for` puts in his charge; his daily tasks are the tasks of `agenda` in his charge, and the days the daily job logged missed. STABLE.
+New in private (revoked from public, anon and authenticated; only the two token functions call the first, and the other three are triggers):
+- `private.coach_view(p_link uuid)` returns jsonb: the coach view (`docs/v1.3-homework.md` §20.3), null for a link whose coach view is off. "His own" calendar is the events of `agenda` that day that he is in charge of, or that have nobody in charge and him as the only one on them (not a day that began before the series last changed hands, `events.people_changed_at`, unless that day's own change made it his), and the Google events `private.google_for` puts in his charge; his daily tasks are his open tasks of `agenda` and his late ones, and only the history the hub wrote while he was in charge (`task_log.responsible_id`: done, skipped, and missed for a day after `tasks.responsible_changed_at`); private and health tasks are "Private item". STABLE.
+- `private.task_log_in_charge()` (SECURITY DEFINER), `private.tasks_in_charge_since()` and `private.events_people_since()`, each `returns trigger`: the three stamp triggers above.
 
 Replaced, with the same signatures (`create or replace`, so they keep their grants); each is 0006's wrapper with one marked part, and 0005's `_v5` bodies aren't touched:
 - `private.homework_view_tutor(p_link uuid, p_assignment uuid, p_part text)`: `coach: true` for a link with the coach view on (not for the AI poll).
-- `private.homework_view_kid(p_kid uuid, p_lang text)`: `me.coach`, the first word of the label of his first tutor link with the coach view on, so his screen can say it sees his points.
+- `private.homework_view_kid(p_kid uuid, p_lang text)`: `me.coach`, the first word of the label of his first tutor link with the coach view on, so his screen can say what it sees.
 - `hub_schema_version()` returns 7.
