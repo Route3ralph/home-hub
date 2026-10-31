@@ -38,7 +38,7 @@
 const { chromium } = require('playwright');
 const { createHash } = require('crypto');
 const { makeDb, install, signIn, SUPA, withHomework, homeworkRpc, foodRpc, hwKidRow, tutorLinkRow, assignmentRow, stepRow, sessionRow,
-  rewardRow, askRow, ledgerRow, withSchool, schoolRpc, schoolFeedRow, schoolItemRow, schoolUrlOf, withCoach, coachRpc, coachNoteRow } = require('./mock');
+  rewardRow, askRow, ledgerRow, withSchool, withSchoolCheck, schoolRpc, schoolFeedRow, schoolItemRow, schoolUrlOf, withCoach, coachRpc, coachNoteRow } = require('./mock');
 const { serve } = require('./server');
 
 let BASE = '';
@@ -1413,6 +1413,134 @@ const emailOf = (req) => {
     ({ page, db, log } = await open({ label: 'coach-sam', db: coachDb(), rpc: RPC7, email: 'sam@example.com' }));
     check('Sam (schema 7): no coach switch, no notes and no coach_notes read', !(await page.$('[data-act="link-coach"]')) && !(await page.$('.hw-coach-notes'))
       && !coachReads(log).length && !!(await page.$('[data-sec="switches"]')), JSON.stringify(coachReads(log)));
+    await page.context().close();
+  }
+
+  // =====================================================================
+  // 11. The first-import check when nothing is due yet (schema 8, 0008; docs/v1.3-homework.md §11.2 step 7, §12.8)
+  // =====================================================================
+  // Jordan's Assignments link, not checked yet; today is Thu Nov 5. On 6 and 7 the check holds only items due from today,
+  // so the page tells an empty one apart by the link's status: not read yet, read with nothing in it, read with every item
+  // past. From 0008 the latest past ones fill it, each "was due …". The page reads both, with no version gate.
+  const RPC8 = Object.assign({}, RPC7, { hub_schema_version: () => 8 });
+  const CHK = '[data-ref="school-check"]';
+  const FA = '5c2f0000-0000-4000-8000-000000000001';
+  const PAST = [['2026-10-26', 'Poem recital', 'English'], ['2026-10-27', 'Fractions worksheet', 'Math'], ['2026-10-28', 'Vocabulary list', 'Spanish'],
+    ['2026-10-29', 'Lab safety quiz', 'Biology'], ['2026-10-30', 'Book report', 'English'], ['2026-11-03', 'Map of Europe', 'Geography']];
+  const TO_COME = [['2026-11-05', 'Read chapter 5', 'History'], ['2026-11-09', 'Map quiz', 'Geography'], ['2026-11-10', 'Essay outline', 'English'],
+    ['2026-11-12', 'Unit test', 'Math'], ['2026-11-13', 'Lab report', 'Biology'], ['2026-11-16', 'Poster', 'Art'], ['2026-11-18', 'Oral report', 'Spanish']];
+  // His Assignments link (read today at 10:23am with these items, or not read yet when items is null); v8: 0008's check.
+  const checkDb = (v8, items) => {
+    const d = withCoach(schoolDb());
+    if (v8) withSchoolCheck(d);
+    const read = items ? at(TODAY, '10:23') : null;
+    d.school_feeds.push(schoolFeedRow({ id: FA, kid_id: ID.jordan, kind: 'assignments', url_end: 'a1b2', last_try_at: read, last_ok_at: read,
+      last_count: items ? items.length : null }));
+    (items || []).forEach(([due, title, subject], n) => d.school_items.push(schoolItemRow({ id: `5c2f1000-0000-4000-8000-${String(n + 1).padStart(12, '0')}`,
+      feed_id: FA, title, subject, due_date: due })));
+    return d;
+  };
+  const UNTIL = 'Until you answer, nothing from it reaches Jordan or Pat.';
+  const checkLine = async (page) => tc(page, `${CHK} .hw-switch-line`);
+  {
+    // Schema 7 (0006's check): the three empty checks, each with no buttons.
+    ({ page, db } = await open({ label: 'check-7', db: checkDb(false, null), rpc: RPC7 }));
+    check('schema 7, the Assignments link not read yet: "Once the Assignments link is read, its next 5 items show here…" (as before), no buttons',
+      (await checkLine(page)) === `Once the Assignments link is read, its next 5 items show here, to check against Blackbaud. ${UNTIL}`
+      && !(await page.$(`${CHK} button`)), await tc(page, CHK));
+    await page.click('[data-row="school"] [data-act="school-now"]');
+    await settle(page);
+    check('... Check now reads it with nothing in it: "…was read today 3:10pm and held no assignments due from 2 weeks ago on. The next ones show here once the school posts some…", no buttons',
+      (await lastToast(page)) === 'Checked 1 link · 0 items' && same(calls(db, 'school_feed_status').slice(-1)[0].body, { p_kid: ID.jordan })
+      && (await checkLine(page)) === `The Assignments link was read today 3:10pm and held no assignments due from 2 weeks ago on. The next ones show here once the school posts some, to check against Blackbaud. ${UNTIL}`
+      && !(await page.$(`${CHK} button`)), `${await lastToast(page)} | ${await tc(page, CHK)}`);
+    // The next read brings six assignments, every one due before today: 0006's check is empty.
+    PAST.forEach(([due, title, subject], n) => db.school_items.push(schoolItemRow({ id: `5c2f1000-0000-4000-8000-${String(n + 1).padStart(12, '0')}`, feed_id: FA, title, subject, due_date: due })));
+    Object.assign(db.school_feeds[0], { last_ok_at: at(TODAY, '15:10'), last_count: 6 });
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await settle(page);
+    check('... read with 6 items, every one past (the check empty, as 0006 answers it): "…was read today 3:10pm: all 6 of its assignments are already past. The next ones show here once the school posts one due today or later…", no buttons',
+      (await checkLine(page)) === `The Assignments link was read today 3:10pm: all 6 of its assignments are already past. The next ones show here once the school posts one due today or later, to check against Blackbaud. ${UNTIL}`
+      && !(await page.$(`${CHK} button`)) && !(await page.$(`${CHK} li`)), await tc(page, CHK));
+    db.school_feeds[0].last_count = 1;
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await settle(page);
+    check('... and with 1: "its one assignment is already past"', (await checkLine(page)) === `The Assignments link was read today 3:10pm: its one assignment is already past. The next ones show here once the school posts one due today or later, to check against Blackbaud. ${UNTIL}`,
+      await checkLine(page));
+    await page.context().close();
+  }
+  {
+    // Schema 8: every item past, so the five latest, "was due …", in date order; Looks right as before.
+    ({ page, db } = await open({ label: 'check-8-past', db: checkDb(true, PAST), rpc: RPC8 }));
+    check('schema 8, every item past: Check the dates with the five latest, in date order, each "was due …"', same(await texts(page, `${CHK} .hw-school-items li`),
+      ['Math · Fractions worksheet · was due Tue Oct 27', 'Spanish · Vocabulary list · was due Wed Oct 28', 'Biology · Lab safety quiz · was due Thu Oct 29',
+        'English · Book report · was due Fri Oct 30', 'Geography · Map of Europe · was due Tue Nov 3']), JSON.stringify(await texts(page, `${CHK} .hw-school-items li`)));
+    check('... it says plainly nothing is due yet, so these are the latest ones, and asks if these are the dates Blackbaud shows (it still lists past assignments)',
+      (await checkLine(page)) === 'Nothing is due yet, so these are the latest ones. Are these the dates Blackbaud shows? It still lists past assignments. Until you answer, nothing from the Assignments link reaches Jordan or Pat.',
+      await checkLine(page));
+    check('... Looks right, Use the first date and One day off; nothing for him yet', same(await texts(page, `${CHK} button`), ['Looks right', 'Use the first date', 'One day off'])
+      && !(await page.$('[data-keep="new"]')), await tc(page, CHK));
+    await page.locator('[data-row="school"]').screenshot({ path: SHOTS + 'homework-school-past.png' });
+    await page.click(`${CHK} [data-act="school-dates"][data-rule="end"][data-shift="0"]`);
+    await settle(page);
+    check('Looks right: check_school_feed(the link, end, 0) as before; the box goes; "Dates checked. Jordan\'s New from school shows the next ones once the school posts them."',
+      same(lastCall(db, 'check_school_feed').body, { p_feed: FA, p_date_rule: 'end', p_date_shift: 0 }) && calls(db, 'check_school_feed').length === 1
+      && db.school_feeds[0].checked && !(await page.$(CHK)) && (await lastToast(page)) === "Dates checked. Jordan's New from school shows the next ones once the school posts them."
+      && !(await page.$('[data-keep="new"]')), `${JSON.stringify(lastCall(db, 'check_school_feed').body)} | ${await lastToast(page)}`);
+    await page.context().close();
+  }
+  {
+    // Schema 8: two to come (one today) and six past: those two and the three latest past, in date order.
+    ({ page, db } = await open({ label: 'check-8-two', db: checkDb(true, PAST.concat(TO_COME.slice(0, 2))), rpc: RPC8 }));
+    check('schema 8, two to come: the three latest past ("was due") and the two ("due"), in date order', same(await texts(page, `${CHK} .hw-school-items li`),
+      ['Biology · Lab safety quiz · was due Thu Oct 29', 'English · Book report · was due Fri Oct 30', 'Geography · Map of Europe · was due Tue Nov 3',
+        'History · Read chapter 5 · due Thu Nov 5', 'Geography · Map quiz · due Mon Nov 9']), JSON.stringify(await texts(page, `${CHK} .hw-school-items li`)));
+    check('... "Only 2 are still to come, so the latest past ones fill in. Are these the dates Blackbaud shows?…"',
+      (await checkLine(page)) === 'Only 2 are still to come, so the latest past ones fill in. Are these the dates Blackbaud shows? It still lists past assignments. Until you answer, nothing from the Assignments link reaches Jordan or Pat.',
+      await checkLine(page));
+    await page.click(`${CHK} [data-act="school-off"]`);
+    await page.click(`${CHK} button:text-is("A day later")`);
+    await settle(page);
+    check('One day off, A day later: check_school_feed(the link, end, 1) as before; "Dates checked. Jordan\'s New from school shows them now."; the two on his New from school',
+      same(lastCall(db, 'check_school_feed').body, { p_feed: FA, p_date_rule: 'end', p_date_shift: 1 }) && !(await page.$(CHK))
+      && (await lastToast(page)) === "Dates checked. Jordan's New from school shows them now." && (await tc(page, '[data-keep="new"] summary')) === 'New from school for Jordan (2)',
+    `${JSON.stringify(lastCall(db, 'check_school_feed').body)} | ${await lastToast(page)}`);
+    await page.context().close();
+  }
+  {
+    // Schema 8: one to come.
+    ({ page } = await open({ label: 'check-8-one', db: checkDb(true, PAST.concat(TO_COME.slice(1, 2))), rpc: RPC8 }));
+    check('schema 8, one to come: "Only 1 is still to come…", and the four latest past', (await checkLine(page)).startsWith('Only 1 is still to come, so the latest past ones fill in.')
+      && same((await texts(page, `${CHK} .hw-school-items li`)).map((x) => /was due/.test(x)), [true, true, true, true, false]), `${await checkLine(page)} | ${await texts(page, `${CHK} li`)}`);
+    await page.context().close();
+  }
+  {
+    // Schema 8: seven to come and six past: the five earliest to come, exactly as before.
+    ({ page } = await open({ label: 'check-8-seven', db: checkDb(true, PAST.concat(TO_COME)), rpc: RPC8 }));
+    check('schema 8, seven to come: the five earliest, "due …", and "Is this what Blackbaud shows?" as on 6 and 7', same(await texts(page, `${CHK} .hw-school-items li`),
+      ['History · Read chapter 5 · due Thu Nov 5', 'Geography · Map quiz · due Mon Nov 9', 'English · Essay outline · due Tue Nov 10', 'Math · Unit test · due Thu Nov 12',
+        'Biology · Lab report · due Fri Nov 13'])
+      && (await checkLine(page)) === 'Is this what Blackbaud shows? Until you answer, nothing from the Assignments link reaches Jordan or Pat.'
+      && same(await texts(page, `${CHK} button`), ['Looks right', 'Use the first date', 'One day off']), `${await checkLine(page)} | ${await texts(page, `${CHK} li`)}`);
+    await page.context().close();
+  }
+  {
+    // Schema 8: not read yet, and read with nothing in it.
+    ({ page } = await open({ label: 'check-8-empty', db: checkDb(true, null), rpc: RPC8 }));
+    const notRead = await checkLine(page);
+    await page.context().close();
+    ({ page } = await open({ label: 'check-8-none', db: checkDb(true, []), rpc: RPC8 }));
+    check('schema 8: not read yet, and read with nothing in it (today 10:23am), say so as on 7',
+      notRead === `Once the Assignments link is read, its next 5 items show here, to check against Blackbaud. ${UNTIL}`
+      && (await checkLine(page)) === `The Assignments link was read today 10:23am and held no assignments due from 2 weeks ago on. The next ones show here once the school posts some, to check against Blackbaud. ${UNTIL}`,
+      `${notRead} | ${await checkLine(page)}`);
+    await page.context().close();
+  }
+  {
+    // A phone: the past check with no sideways scroll.
+    ({ page } = await open({ label: 'check-8-phone', db: checkDb(true, PAST), rpc: RPC8, ctx: phone }));
+    check('phone: the past check with no sideways scroll', (await texts(page, `${CHK} .hw-school-items li`)).length === 5 && await noSideScroll(page));
+    await page.locator('[data-row="school"]').screenshot({ path: SHOTS + 'homework-phone-school-past.png' });
     await page.context().close();
   }
 

@@ -300,6 +300,12 @@ const ESSAY = { uid: 'asg-1004', summary: 'English - 7: Essay outline', lines: [
     check('the parents\' page: Check the dates with those five, each with its day, and Looks right',
       lines.length === 5 && want.every(([t], i) => lines[i].includes(t) && lines[i].endsWith(days[i]))
       && !!(await page.$('[data-ref="school-check"] [data-act="school-dates"][data-rule="end"][data-shift="0"]')), lines);
+    // The page's words for past items (homework.js on schema 8; no tutor link in this household, so "the tutor").
+    const lead = await tc(page, '[data-ref="school-check"] .hw-switch-line');
+    check('... each line "was due <day>", and the lead says nothing is due yet, so these are the latest ones, and asks if these are the dates Blackbaud shows',
+      same(lines.map((l) => l.split(' · ').pop()), days.map((d) => `was due ${d}`))
+      && lead === 'Nothing is due yet, so these are the latest ones. Are these the dates Blackbaud shows? It still lists past assignments. Until you answer, nothing from the Assignments link reaches Jordan or the tutor.',
+      { lines, lead });
     const before = (await anonRpc('homework_by_token', { p_token: P.jordan.day_token })).body;
     check('until a parent answers, nothing from the link reaches Jordan', !!before && !('from_school' in before), Object.keys(before || {}));
     await shot(page, 'school-past-check');
@@ -308,6 +314,8 @@ const ESSAY = { uid: 'asg-1004', summary: 'English - 7: Essay outline', lines: [
     const fc = await one(`select checked, date_rule, date_shift from school_feeds where id = '${feedId}'`);
     check('Looks right: check_school_feed(the link, end, 0); the link checked and the box gone', same(fc, { checked: 't', date_rule: 'end', date_shift: '0' })
       && await until(async () => !(await page.$('[data-ref="school-check"]'))), fc);
+    check('... "Dates checked. Jordan\'s New from school shows the next ones once the school posts them." (every one was past)',
+      (await lastToast(page)) === "Dates checked. Jordan's New from school shows the next ones once the school posts them.", await lastToast(page));
     const after = (await anonRpc('homework_by_token', { p_token: P.jordan.day_token })).body;
     check('... and the link reaches Jordan (his New from school, with nothing to come yet)', !!after && same(after.from_school, []), after && after.from_school);
     const f = await failures();

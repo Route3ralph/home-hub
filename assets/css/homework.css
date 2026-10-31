@@ -148,6 +148,8 @@
 .hw-school-items { list-style: none; margin: 0; padding: 0; }
 .hw-school-items > li { padding: 6px 0; border-bottom: 1px solid var(--line); font-size: 14px; overflow-wrap: anywhere; }
 .hw-school-items > li:last-child { border-bottom: 0; }
+/* 0008: a past item on the first-import check ("was due …") */
+.hw-school-items > li.hw-school-past { color: var(--text-2); }
 .hw-school-row { display: grid; gap: 6px; }
 .hw-school-marks { margin: 10px 0 0; padding-left: 20px; font-size: 14px; }
 .hw-school-marks li { margin: 4px 0; overflow-wrap: anywhere; }

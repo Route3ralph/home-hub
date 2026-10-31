@@ -947,6 +947,19 @@
       ${acts ? `<div class="hw-feed-acts">${acts}</div>` : ''}${open ? schoolFormHTML(kind, label, !!f) : ''}</li>`;
   }
   const itemLine = (x) => [x.subject, x.title, `due ${fmt.day(x.due_date)}`].filter(Boolean).join(' · ');
+  // A first-import check's item: from 0008 (schema 8) the check fills up with past items (past: true) when fewer than 5
+  // are to come; those read "was due". On 6 and 7 there is no past key, and nothing past on the check.
+  const isPast = (x) => x.past === true;
+  const checkLine = (x) => [x.subject, x.title, `${isPast(x) ? 'was due' : 'due'} ${fmt.day(x.due_date)}`].filter(Boolean).join(' · ');
+  // An empty check, in words, by the Assignments link's status (the same on 7 and 8, with no version gate): not read
+  // yet; read with nothing in it; read with items, every one past (on 7, whose check has only items due from today).
+  function emptyCheckWords(st, f) {
+    if (!f.last_ok_at) return 'Once the Assignments link is read, its next 5 items show here, to check against Blackbaud.';
+    const n = Number(f.last_count) || 0;
+    const read = `The Assignments link was read ${when(st, f.last_ok_at)}`;
+    if (!n) return `${read} and held no assignments due from 2 weeks ago on. The next ones show here once the school posts some, to check against Blackbaud.`;
+    return `${read}: ${n === 1 ? 'its one assignment is' : `all ${n} of its assignments are`} already past. The next ones show here once the school posts one due today or later, to check against Blackbaud.`;
+  }
   // The first-import check (§11.2 step 7): an Assignments link nobody has checked. Until a parent answers, nothing from
   // it reaches him or the tutor; the answer sets the due date as an item's last ('end') or first ('start') day, moved -1 to 1.
   function schoolCheckHTML(st) {
@@ -955,13 +968,18 @@
     const kid = kidName(st);
     const tutor = tutorFirst(st) || 'the tutor';
     const head = '<p class="hw-switch-title">Check the dates</p>';
-    if (!st.school.check.length) {
-      return `<div class="hw-school-check" data-ref="school-check">${head}<p class="hw-switch-line">${esc(`Once the Assignments link is read, its next 5 items show here, to check against Blackbaud. Until you answer, nothing from it reaches ${kid} or ${tutor}.`)}</p></div>`;
+    const items = st.school.check;
+    if (!items.length) {
+      return `<div class="hw-school-check" data-ref="school-check">${head}<p class="hw-switch-line">${esc(`${emptyCheckWords(st, f)} Until you answer, nothing from it reaches ${kid} or ${tutor}.`)}</p></div>`;
     }
     const at = (rule, shift) => ` data-id="${esc(f.id)}" data-rule="${rule}" data-shift="${shift}"`;
+    // With past items: nothing (or too little) is due yet, so these are the latest ones; Blackbaud still lists those.
+    const toCome = items.filter((x) => !isPast(x)).length;
+    const lead = toCome === items.length ? 'Is this what Blackbaud shows?'
+      : `${toCome ? `Only ${toCome} ${toCome === 1 ? 'is' : 'are'} still to come, so the latest past ones fill in.` : 'Nothing is due yet, so these are the latest ones.'} Are these the dates Blackbaud shows? It still lists past assignments.`;
     return `<div class="hw-school-check" data-ref="school-check">${head}
-      <p class="hw-switch-line">${esc(`Is this what Blackbaud shows? Until you answer, nothing from the Assignments link reaches ${kid} or ${tutor}.`)}</p>
-      <ul class="hw-school-items">${st.school.check.map((x) => `<li>${esc(itemLine(x))}</li>`).join('')}</ul>
+      <p class="hw-switch-line">${esc(`${lead} Until you answer, nothing from the Assignments link reaches ${kid} or ${tutor}.`)}</p>
+      <ul class="hw-school-items">${items.map((x) => `<li${isPast(x) ? ' class="hw-school-past"' : ''}>${esc(checkLine(x))}</li>`).join('')}</ul>
       <div class="hw-feed-acts">${btn('school-dates', 'Looks right', at('end', 0), 'btn-primary')}${btn('school-dates', 'Use the first date', at('start', 0))}${st.schoolOff ? '' : btn('school-off', 'One day off')}</div>
       ${st.schoolOff ? `<p class="hw-switch-line">Blackbaud shows each one:</p><div class="hw-feed-acts">${btn('school-dates', 'A day earlier', at('end', -1))}${btn('school-dates', 'A day later', at('end', 1))}</div>` : ''}</div>`;
   }
@@ -1592,8 +1610,10 @@
   // The first-import check's answer: the due date is an item's last ('end') or first ('start') day, moved by shift.
   function checkDates(st, id, rule, shift) {
     st.schoolOff = false;
+    // Every item on the check past (0008): nothing reaches his New from school until the school posts one to come.
+    const past = !!(st.school && st.school.check.length && st.school.check.every(isPast));
     write(st, () => run(sb().rpc('check_school_feed', { p_feed: id, p_date_rule: rule, p_date_shift: shift })),
-      () => toast(`Dates checked. ${kidName(st)}'s New from school shows them now.`));
+      () => toast(`Dates checked. ${kidName(st)}'s New from school shows ${past ? 'the next ones once the school posts them' : 'them now'}.`));
   }
   function schoolItemAct(st, id, action) {
     const x = st.school && [].concat(st.school.new, st.school.hidden).find((y) => y.id === id);
