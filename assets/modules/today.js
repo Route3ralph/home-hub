@@ -10,7 +10,13 @@
    notice says the calendar now goes to Google and the kitchen wall. With
    schema 4, tonight's dinner in one line under the person chips ("Dinner:
    Tacos · Sam cooks ›", to the Food page), or a quiet "What's for dinner? ›"
-   when the family planned one in the last two weeks.
+   when the family planned one in the last two weeks. With schema 5, for the
+   parents: one line per reward a kid asked for ("Jordan asks: Pick the
+   movie · 100 · balance 118 (this week: …) Yes · Not now"), one per instant
+   reward a kid cashed in today, which needed no yes ("Jordan cashed in: 15
+   minutes of extra game time · 15 · 4:52pm"), and one for questions and
+   milestones waiting ("Homework: 1 question · 2 milestones to check ›", to
+   the Homework page).
    Dates and times are the household's (core.v2).
    ===================================================================== */
 (function () {
@@ -159,6 +165,52 @@
     } catch (err) { return null; }
   }
 
+  // Every row a read matches, page by page. The API answers at most its "Max rows" (Supabase's Settings
+  // → API, 1,000 unless changed) and cuts the rest without an error, and a kid's points ledger is never
+  // trimmed (his balance is the sum of all of it). build() makes the read afresh, ordered oldest first
+  // and ending in a unique column, so a row written between two pages lands on the last one; pages until
+  // one comes back empty (or brings nothing new), whatever the cap is. (homework.js has the same.)
+  async function readAll(build) {
+    const out = [];
+    const seen = new Set();
+    for (let from = 0; ;) {
+      const page = (await q(build().range(from, from + 999))) || [];
+      const fresh = page.filter((r) => !seen.has(r.id));
+      if (!fresh.length) return out;
+      fresh.forEach((r) => { seen.add(r.id); out.push(r); });
+      from += page.length;
+    }
+  }
+
+  // What waits for a parent in homework (schema 5): the kids' waiting asks, with each one's points (all
+  // of them, a page at a time: the balance and this week's sources), the instant rewards a kid cashed in
+  // today (decided by him at once: the parents see them here, as a decided ask), and how many questions and
+  // milestones to check (one steps request, of steps touched in the last 30 days). Never throws: a
+  // failed read (null) leaves the lines out. No request for Sam, or below schema 5.
+  async function loadHomework(today) {
+    if (!(core.schemaVersion >= 5) || !(core.me && core.me.role === 'admin')) return null;
+    try {
+      const [asks, steps, cashed] = await Promise.all([
+        q(core.sb.from('reward_asks').select('id,kid_id,title,cost,asked_at').eq('status', 'waiting').order('asked_at')),
+        q(core.sb.from('homework_steps').select('id,kind,done_at,checked_at,question,answer').gte('updated_at', dates.addDays(today, -30))
+          .or('and(kind.eq.milestone,done_at.not.is.null,checked_at.is.null),and(question.not.is.null,answer.is.null)')),
+        q(core.sb.from('reward_asks').select('id,kid_id,title,cost,decided_at').eq('status', 'cashed').gte('decided_at', dates.addDays(today, -1))
+          .order('decided_at')),
+      ]);
+      const kids = [...new Set((asks || []).map((x) => x.kid_id))];
+      const ledger = kids.length ? await readAll(() => core.sb.from('points_ledger').select('id,kid_id,kind,delta,day,who').in('kid_id', kids)
+        .order('at').order('id')) : [];
+      return {
+        asks: asks || [],
+        // The household's today (the read reaches back a day, so a cash-in just after midnight is never missed).
+        cashed: (cashed || []).filter((x) => fmt.relDay(x.decided_at) === 'Today'),
+        ledger: ledger || [],
+        questions: (steps || []).filter((x) => x.question && !x.answer).length,
+        milestones: (steps || []).filter((x) => x.kind === 'milestone' && x.done_at && !x.checked_at).length,
+      };
+    } catch (err) { return null; }
+  }
+
   // day_text for every kid and helper with a phone, so the Send buttons are ready to tap (a link
   // has to have its message before the tap, or phones block the new window).
   function loadTexts(today) {
@@ -169,7 +221,7 @@
   async function load() {
     const today = dates.today();
     const projects = loadProjects();
-    const [agenda, late, heads, setup, texts, , google, notice, dinners] = await Promise.all([
+    const [agenda, late, heads, setup, texts, , google, notice, dinners, homework] = await Promise.all([
       call('agenda', { p_from: today, p_to: today }),
       call('late_items'),
       call('heads_up', { p_day: today }),
@@ -179,6 +231,7 @@
       loadGoogle(today),
       loadNotice(today),
       loadDinners(today),
+      loadHomework(today),
     ]);
     const p = await projects;
     return {
@@ -194,6 +247,7 @@
       kidSources: google.kidSources,
       notice,
       dinners,
+      homework,
     };
   }
 
@@ -507,6 +561,81 @@
       ? `<small class="today-dinner-note">${esc(m.note)}</small>` : ''}</span><span class="today-dinner-go" aria-hidden="true">›</span></a>`;
   }
 
+  // A kid's points this household week (Mon–Sun), by where they came from: "this week: +24 focus and on
+  // time, +40 milestones checked by Pat". A tutor link's entries are "<label> (tutor link)": its first word.
+  function weekSources(rows, today) {
+    const mon = dates.mondayOf(today);
+    const week = rows.filter((l) => l.day >= mon && l.day <= dates.addDays(mon, 6));
+    const total = (kinds) => week.filter((l) => kinds.includes(l.kind)).reduce((n, l) => n + l.delta, 0);
+    const signed = (n) => (n < 0 ? `−${-n}` : `+${n}`);
+    const checkers = [...new Set(week.filter((l) => l.kind === 'milestone').map((l) => {
+      const m = /^(.*) \(tutor link\)$/.exec(l.who || '');
+      if (m) return m[1].split(/[\s,]+/)[0];
+      if (String(l.who || '').toLowerCase() === String((core.me && core.me.email) || '').toLowerCase()) return 'you';
+      const p = v2.people().find((x) => x.email && x.email.toLowerCase() === String(l.who || '').toLowerCase());
+      return p ? firstName(p.name) : 'a parent';
+    }))];
+    const parts = [];
+    if (total(['focus', 'on_time'])) parts.push(`${signed(total(['focus', 'on_time']))} focus and on time`);
+    // A milestone pays half at his tick, the rest at the check.
+    if (total(['milestone_done'])) parts.push(`${signed(total(['milestone_done']))} milestones ticked`);
+    if (total(['milestone'])) parts.push(`${signed(total(['milestone']))} milestones checked${checkers.length ? ` by ${checkers.join(' and ')}` : ''}`);
+    if (total(['given'])) parts.push(`${signed(total(['given']))} given`);
+    if (total(['void'])) parts.push(`${signed(total(['void']))} voided`);
+    return parts.length ? `this week: ${parts.join(', ')}` : 'nothing earned this week';
+  }
+
+  // The parents' homework lines (schema 5), the same under every chip: each waiting ask with Yes · Not now,
+  // today's instant cash-ins (nothing to decide: he took them on the spot, the points already taken), then
+  // what waits to be answered or checked, to the Homework page.
+  function homeworkHTML(d) {
+    const h = d.homework;
+    if (!h || (!h.asks.length && !h.cashed.length && !h.questions && !h.milestones)) return '';
+    const asks = h.asks.map((x) => {
+      const kid = activePerson(x.kid_id) || v2.person(x.kid_id);
+      const rows = h.ledger.filter((l) => l.kid_id === x.kid_id);
+      const balance = rows.reduce((n, l) => n + l.delta, 0);
+      return `<div class="today-hw-ask" data-ask="${esc(x.id)}"><p class="today-hw-line">${esc(`${kid ? firstName(kid.name) : 'A kid'} asks: ${x.title} · ${x.cost} · balance ${balance} (${weekSources(rows, d.today)})`)}</p>
+        <div class="today-hw-btns"><button type="button" class="btn btn-sm btn-primary" data-act="hw-yes" data-ask="${esc(x.id)}">Yes</button>
+        <button type="button" class="btn btn-sm" data-act="hw-not-now" data-ask="${esc(x.id)}">Not now</button></div></div>`;
+    });
+    const cashed = h.cashed.map((x) => {
+      const kid = activePerson(x.kid_id) || v2.person(x.kid_id);
+      return `<p class="today-hw-line today-hw-cashed">${esc(`${kid ? firstName(kid.name) : 'A kid'} cashed in: ${x.title} · ${x.cost} · ${fmt.time(x.decided_at)}`)}</p>`;
+    });
+    const waiting = [h.questions ? plural(h.questions, 'question') : '', h.milestones ? `${plural(h.milestones, 'milestone')} to check` : ''].filter(Boolean);
+    const count = waiting.length ? `<a class="today-hw-count" href="#/homework">Homework: ${esc(waiting.join(' · '))} <span aria-hidden="true">›</span></a>` : '';
+    return `<div class="today-hw" aria-label="Homework">${asks.join('')}${cashed.join('')}${count}</div>`;
+  }
+
+  // Yes or Not now on a kid's ask (decide_reward), one tap; the database's own words when it refuses.
+  // Both of the ask's buttons wait for the answer, so a quick second tap can't send the other one. An
+  // ask someone already decided (the other parent, a moment ago) or that he cancelled comes back as it
+  // is, with no error: the toast says what it is, not what was tapped.
+  async function decide(st, id, approve, btn) {
+    const x = ((st.data.homework && st.data.homework.asks) || []).find((a) => a.id === id);
+    const kid = x && v2.person(x.kid_id);
+    const box = btn.closest('.today-hw-ask');
+    const btns = box ? Array.from(box.querySelectorAll('button')) : [btn];
+    btns.forEach((b) => { b.disabled = true; });
+    let res;
+    try {
+      if (approve) res = await call('decide_reward', { p_ask: id, p_approve: true });
+      else res = await call('decide_reward', { p_ask: id, p_approve: false });
+    } catch (err) {
+      btns.forEach((b) => { b.disabled = false; });
+      toast(err && ['42501', '22023', 'P0001'].includes(err.code) && err.message ? err.message : friendly(err), { error: true });
+      return;
+    }
+    const what = x ? x.title : 'the reward';
+    const was = res && res.ask && res.ask.status;
+    toast(was === 'approved' && !approve ? `Already approved: ${what}`
+      : was === 'declined' && approve ? `Already answered Not now: ${what}`
+        : was === 'cancelled' ? `${kid ? firstName(kid.name) : 'He'} cancelled that ask: ${what}`
+          : approve ? `Yes: ${what}${kid ? ` for ${firstName(kid.name)}` : ''}` : `Not now: ${what}`);
+    if (!st.ctx.stale()) refresh(st);
+  }
+
   function setupHTML(setup) {
     const people = v2.people().filter((p) => p.active !== false);
     const steps = [
@@ -591,6 +720,7 @@
       ${whoHTML(st)}
       <div class="today-chips" role="group" aria-label="Whose day">${chipsHTML(v)}</div>
       ${dinnerHTML(d)}
+      ${homeworkHTML(d)}
       <div class="today-grid${side ? ' has-side' : ''}">
         <div class="today-col">
           <section class="today-sec" aria-label="${esc(dayTitle)}">${ui.sectionHeading(dayTitle, dayItems.length)}
@@ -658,6 +788,7 @@
       const act = e.target.closest('[data-act]');
       if (!act) return;
       if (act.dataset.act === 'add-event') openAdd('event');
+      else if (act.dataset.act === 'hw-yes' || act.dataset.act === 'hw-not-now') decide(st, act.dataset.ask, act.dataset.act === 'hw-yes', act);
       else if (act.dataset.act === 'link-me') linkMe(st, act);
       else if (act.dataset.act === 'close-notice') {
         closeNotice();

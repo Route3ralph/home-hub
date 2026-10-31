@@ -20,6 +20,7 @@ v2 turns on by itself once the database is upgraded (see [Upgrading to v2](#upgr
 | **Family** | One list of everyone in the house: parents, adults, kids and helpers, each with a colour, language (English or Spanish), phone and email. Parents and adults can sign in; kids and helpers get a **My day link** (Copy, WhatsApp, Text, New link). |
 | **Settings** | Time zone, the usual morning-email time, days off (school holidays: repeating events can skip them), who new pet and house tasks go to, whether the morning email is running, and (v1.1) [Google Calendar and Hearth](#google-calendar-and-hearth). |
 | **Food** (v1.2) | This week's dinners and the family's one shopping list: see [Food](#food-dinners-and-the-shopping-list-v12). |
+| **Homework** (v1.3) | Jordan's assignments in small steps, a focus timer on his My day, points and rewards, and a link for his tutor: see [Homework](#homework-plans-focus-sessions-and-points-v13). |
 
 **Event or task?** The ＋ button asks first. *Piano, pickups, appointments → Event. Pills, filters, chores, calls → Task.* With v1.2 it also offers **Shopping**, for something to buy.
 
@@ -27,7 +28,7 @@ v2 turns on by itself once the database is upgraded (see [Upgrading to v2](#upgr
 
 **Morning email.** Anyone with an email address can get their day before breakfast (or tomorrow's plan in the evening). Parents also get a block per kid or helper with Send buttons, what nobody is on, and the project lines. The first email asks the person to confirm their address; signing in to the hub confirms it too. Every email has a link to stop them.
 
-**On a phone.** The bottom bar has Today · Calendar · ＋ · Tasks · More (with v1.2: Today · Calendar · ＋ · Tasks · Food · More). Add the hub to your Home Screen (Settings explains how on iPhone and Android) and it opens like an app.
+**On a phone.** The bottom bar has Today · Calendar · ＋ · Tasks · More (with v1.2: Today · Calendar · ＋ · Tasks · Food · More; with v1.3, Homework is under More). Add the hub to your Home Screen (Settings explains how on iPhone and Android) and it opens like an app.
 
 Every date and time is in the household's time zone, wherever your phone is.
 
@@ -81,6 +82,82 @@ The order matters (the design's §15):
 
 To hide Food again, turn off both switches at the foot of the Food page first, then follow the design's §15.
 
+## Homework: plans, focus sessions and points (v1.3)
+
+The **Homework** page helps Jordan with big homework: a two-week project broken into small steps he can start, a timer for working in short blocks, and points he trades for rewards the parents list. Pat Lee, his tutor, plans with him through a link of Pat's own. It turns on by itself once the database is upgraded to v1.3 (see [Turning on Homework](#turning-on-homework)). On a phone it is under **More**; on a computer it is a tab after Food. The design, with every rule, is [`docs/v1.3-homework.md`](docs/v1.3-homework.md).
+
+It is help with starting, timing and planning that suits any kid. Nothing in the hub gives anyone a medical or learning label, and nothing asks for one.
+
+**What Jordan sees (on his My day)**
+- A **Homework** card under his greeting: tonight's steps and minutes, his points, the next step with its own **Start** (one tap from My day to a running timer), and the **next-reward bar**: "6 points to A new book", or "You can get 15 minutes of extra game time now!". The bar is on every homework screen.
+- **Open ›** shows **Now** (the next step, what "done" looks like, his own start cue, and one big **Start**: 10, 15, 20 or 25 minutes, 10 offered first, alone, with Pat or with a parent), **Tonight**, **From earlier** (folded; **Re-plan** puts his steps on the next homework days with room), and **Due soon**, with two bars: the work left and the homework time left before it's due.
+- **+ Homework:** he writes down tonight's homework himself (what, class, due date, about how many minutes). **Quick** makes a small one tonight's step in one tap; anything due 4 or more days out he plans with Pat.
+- **The timer** is a ring that shrinks. It counts from the hub's clock, so it's right whenever he looks, even after the phone was locked. Under it his points count up while he works ("★ 118 +12 so far", a point a minute, never more than the hub will pay). **I'm stuck** opens his own if-stuck plan and three ways on: **Make it smaller** (a tiny first piece; the timer moves to it), **Ask Pat** (a short question Pat answers on the link) and **Next step**. **The second the ring runs out he is paid**: his balance counts up to the new total, a "+30" pops up, and a short sound plays if sound is on. Then **Step done** and **More to do** (they earn the same), with an optional "what I got done".
+- A step's box ticks it (with **Undo** for 15 minutes); **Not today** moves a plain step to the next homework day with room. He can rename, move and add plain steps. **Milestones** are checkpoints he sets with Pat: their days stay put until they change them together. Ticking one pays half its points at once ("+20 now · +20 more when Pat checks it").
+- **Points** (★): his balance, the rewards (**Get it now** on an instant one, which is his on the spot; **Ask** on the others, and a parent says yes), and **Suggest a reward** (a parent prices it).
+- His screen says who sees what: "Pat and the grown-ups in your family see your plan and your notes. The grown-ups see your points."
+
+**What Pat sees (the tutor link)**
+- A link with no sign-in that shows only Jordan's homework, in a fixed order, so a check-in takes under 15 minutes: **To check** (milestones he ticked: **Looks done**, with a word about the work, or **Not yet**, saying what's missing), **To talk about** (a milestone his steps can't reach any more), **Questions** (**Answer**), plans to look at, his assignments (Pat can add assignments and lessons, plan them with him from a starter plan, and **Give Jordan this plan**), his homework time for two weeks with his other commitments shown only as "Busy", and his finished blocks of the last 14 days.
+- Never: points, rewards, family names, the family's events, phone numbers, or whether he is working right now.
+- **Open it on your own phone or computer**, not Jordan's or a shared one. It ends after 180 days (the family can **Extend** it); if it is ever passed around, **New link** on the Homework page stops the old one at once.
+
+**What the parents do (the Homework page)**
+- **Turn on homework for Jordan**, then set his **homework time**: an ordinary repeating event in his name ("Homework", Mon–Thu 4:30–5:15), which shows on his My day, the Calendar page, the morning email and the wall like any event. Change it, skip a day or make a one-day change on the Calendar page (**Change** opens it there); tick **Private** on it if the wall shouldn't name it. Steps are placed only into homework time, less his other timed events that day (piano, tutoring with Pat), up to 8 weeks ahead.
+- **+ Assignment** or **+ Lesson:** title, class, due date (a lesson's "do by" day), and the teacher's text, pasted. To use a photo of the sheet, copy its text with the phone's Live Text and paste it: photos aren't sent anywhere.
+- Plan it with Jordan: **Start from a starter plan** (Essay or project, Test, Reading, Practice, Short), rename each step to the real work ("Find 2 sources and save their links"), set one to four milestones, then **Give Jordan this plan**. Until then he sees "Being planned". **Place again** puts the steps not done on homework days again (after a due date moves, or a week went sideways).
+- **To approve:** his asks for rewards, with his balance and where this week's points came from beside each, **Yes** or **Not now** (also on **Today**). An instant reward he got shows on **Today** ("Jordan cashed in: 15 minutes of extra game time · 15 · 4:52pm") and in **Recent**, with nothing to decide. **To check:** milestones he ticked. **Questions and notes:** his open questions, and every answer and note Pat or a parent wrote to him in the last 7 days, with who wrote it.
+- **Points and rewards:** **Give points** (with a note he sees, for what the rules can't see) and **Void** (a correction with a reason he sees, never a penalty); the rewards, in three sizes to start, each **Instant** or not (an instant one he gets on the spot, at most 2 a day).
+- **Switches:** homework on or off, points on or off and their values (with the instant rewards a day and the focus length offered first), the tutor's link (**Copy**, **WhatsApp**, **Text**, **New link**, **Off**, **Extend 180 days**), and **Erase Jordan's homework** (type ERASE; the homework-time events stay on the calendar).
+- Sam sees all of it, read-only. Taylor's link shows none of it.
+
+**Points**
+
+| What | Points |
+|---|---|
+| A focus block on a step or an assignment | 1 for every minute the hub saw, paid the second the block ends, whatever he answers then (a 20-minute block is 20) |
+| Starting the day's first block on time: from 30 minutes before to 10 minutes after his homework time starts (when piano runs into it, after piano ends, plus 15 minutes) | +10, paid once 5 minutes of it are done |
+| A milestone | +40: +20 when he ticks it, +20 when Pat or a parent checks it |
+| At most | 60 a day from blocks and on-time starts; 160 a week from milestones |
+
+Nothing is ever taken away: **Not yet** on a milestone keeps the 20 his tick paid, and taking a check back removes only what the check paid, never below zero. There are no streaks to break, and nothing earns for grades, for making steps, or for a block on something that isn't homework (his own projects keep the timer, without points). About 340 to 380 points in two weeks; a homework day earns 30 to 50. Start with rewards in three sizes, for example "15 minutes of extra game time · 15" (instant), "Pick the movie · 200" and "A trip to the water park · 500". **Instant rewards** are his on the spot (the points go at once, from his free points, at most 2 a day; you see each one on Today); the others he asks for and a parent says **Yes** or **Not now**. Each value is yours to change on the switches card. Tell Jordan at the start that you'll look at the points with him after a term; a change agreed then isn't a penalty.
+
+**Where he works, and his reminder**
+- **On his phone:** face up beside him, with a **Focus scheduled for his homework time**, so other apps stay quiet while the ring runs. iPhone: **Settings → Focus → + → Custom**, name it "Homework" → **Add Schedule** → the same days and times as his homework time. Android: **Settings → Do Not Disturb** (or **Modes**) → **Schedules** → the same days and times.
+- **On a family computer:** My day in its own small window beside his work. It can show a notification when a block ends (it asks once).
+- **Not on a school-managed laptop:** its web filter may log the addresses he opens, and his My day address carries his link.
+- **A web page can't ring at 4:30**, or while the phone is locked. Set a **repeating alarm on his phone, "Homework: open My day"**, at his usual time. Optionally, on an iPhone: **Shortcuts → Automation → + → Alarm** → "Homework" → **Is Stopped** → **Run Immediately** → **Open URLs** → his My day link with `#homework` at the end, so stopping the alarm opens his homework. Try it on his phone.
+- Add My day to his Home Screen. During a block the screen stays on where the phone allows it; where it doesn't, the timer is right when he looks. The silent switch may mute the chime at the end; the end always shows on the screen.
+
+### Turning on Homework
+
+The order matters (the design's §16.1). The owner's part is about 25 minutes, plus 5 if Food isn't on yet:
+1. `tests/run.sh` ends with `0 failed`; merge. The site stays on schema 3 or 4: no Homework tab, no new request, My day as before.
+2. Nothing to deploy: hub-jobs and `supabase/cron.sql` don't change.
+3. **Only if Food (v1.2) isn't on yet, about 5 minutes:** run [`supabase/migrations/0004_meals_and_shopping.sql`](supabase/migrations/0004_meals_and_shopping.sql) first ([Turning on Food](#turning-on-food)).
+4. **About 5 minutes:** run [`supabase/migrations/0005_homework.sql`](supabase/migrations/0005_homework.sql) in the Supabase SQL editor. "isn't installed" means 0004 is missing; "already installed" means it's done; either way nothing was changed. Reload the hub: **More → Homework**.
+5. **About 10 minutes, on a computer:** Homework → **Turn on homework for Jordan** → his homework time (days, from, to) → **Add** (a second time for Sunday if it differs) → three rewards (about 15 and instant, 200 and 500 points) → **+ Tutor link**: "Pat Lee, tutor" and Pat's language → **Make the link** → **WhatsApp** or **Text**.
+6. **About 10 minutes, with Jordan:** add his real next assignment and paste the teacher's text → a starter plan → change a step → **Give Jordan this plan**. On his phone: My day shows the card; he types his start cue and if-stuck line; he taps **Start** on the card, watches his points count up, lets the ring run out and sees them arrive, taps **Step done**; he sees the next-reward bar and how **Get it now** works; he adds tonight's homework himself with **+ Homework** and **Quick**. Set the Homework Focus on his phone (2 minutes) and the repeating alarm.
+7. **Tell Pat** (one message): the link shows only Jordan's homework; open it on your own phone or computer; plan at the next session; keep the link private.
+
+To turn it off: **Homework for Jordan** off on the switches card hides his card and stops Pat's link at once, and deletes nothing. If the hub can't be reached, paste this in the Supabase SQL editor; it stops every homework function and link without deleting anything:
+
+```sql
+update public.homework_kids set active = false;
+update public.household set homework_ai = false;
+update public.tutor_links set active = false;
+```
+
+To hide the page altogether, follow the design's §16.3.
+
+### What goes where
+
+- **Never in an email, a text or on the wall:** the teacher's text, steps, questions, notes, points, rewards or asks. Only the homework-time event shows there, as any event does.
+- **Jordan's My day** never shows the teacher's text, and never a parent's name or email: notes are "Pat:" or "Your parents:".
+- **Pat's link** never shows points, rewards, asks, family names, event titles (only "Busy"), or anything live.
+- **Everyone who signs in** reads the Homework page; only the parents change it.
+- **How long things are kept:** the teacher's text until 30 days after the due date; done and dropped assignments, focus blocks, questions and notes 180 days; points until **Erase**.
+
 ## Messaging contractors
 
 A **Message** button appears on a project's Team cards and in a schedule task's details (and on the Contractors page before v2). It drafts a note with that contractor's upcoming dates and, if sharing is on, a link to their part of the live schedule. Edit the draft, then choose how to send it:
@@ -101,6 +178,7 @@ The first three come from your own phone number or email address, so replies com
 - The share page can read one project by its secret link. It returns only the schedule plus each contractor's name and company. It never returns phone numbers, emails or private notes. Turning sharing off, or clicking **Get a new link**, stops the old link immediately.
 - **Google Calendar (v1.1)** copies to the kitchen wall only what everyone in the house may see, and only after an admin has looked at it: see [Privacy](#privacy) under Google Calendar and Hearth.
 - **The shopping list (v1.2)** is seen by every grown-up who signs in, and by the helper's My day link (and so anyone her link reaches) while a parent allows it. A locked line never reaches a My day link. What is typed there is shown as plain text, only on the Food page and her own screen, never in an email, a text or on the wall. A dinner's note and recipe link go only to the person cooking it.
+- **Homework (v1.3)** is read by every grown-up who signs in; only the parents change it. Jordan's My day shows his own homework and points, never the teacher's text or anyone's email. The tutor's link shows only Jordan's homework: never points, rewards, family names, the family's events or anything live; it ends after 180 days, and **New link** or **Off** stops it at once. Nothing about homework goes into an email, a text or onto the wall, except the homework-time event, as any event.
 - This repository is public, but it contains only code. `config.js` holds a *publishable* key, which is designed to be public. Never put a `service_role` or secret key in this repo.
 
 The rules are in [`supabase/schema.sql`](supabase/schema.sql) and [`supabase/migrations/`](supabase/migrations/).
@@ -321,16 +399,17 @@ Never commit the token. The rules for changing the repo (tests, migrations, depl
 | File | What it is |
 |---|---|
 | `index.html`, `assets/hub.js` | The private hub: `hub.js` is the core (sign-in, the shell and bottom bar, forms, data access, messages, toasts, the shared v2 pieces) |
-| `assets/modules/` | The hub's pages, one file each. v2: `today.js`, `calendar.js`, `tasks.js`, `projects.js` (v1 and v2), `directory.js`, `people.js` (Family), `settings.js`; v1.2: `food.js` (Food). v1: `home.js`, `contractors.js`, `family.js`. Each page shows only for the database version it was made for |
+| `assets/modules/` | The hub's pages, one file each. v2: `today.js`, `calendar.js`, `tasks.js`, `projects.js` (v1 and v2), `directory.js`, `people.js` (Family), `settings.js`; v1.2: `food.js` (Food); v1.3: `homework.js` (Homework). v1: `home.js`, `contractors.js`, `family.js`. Each page shows only for the database version it was made for |
 | `assets/shoplist.js` | The shopping list's shared pieces, for the Food page and My day: aisles in English and Spanish, grouping, and the outbox that keeps changes on the phone until they are sent |
-| `assets/styles.css`, `assets/css/` | Styles with automatic light and dark mode: the shared ones, then one file per v2 page (`food.css` for Food) |
-| `day.html`, `assets/day.js` | The public My day page for kids and helpers (no sign-in; the link carries the person's code), with the helper's shopping list (`#list`) |
+| `assets/plan.js` | Homework's shared pieces, for the Homework page, My day and the tutor link: the plan editor, the starter plans, the week strip and the two bars, the timer's arithmetic, the tutor's view, and their words in English and Spanish |
+| `assets/styles.css`, `assets/css/` | Styles with automatic light and dark mode: the shared ones, then one file per v2 page (`food.css` for Food; `plan.css` and `homework.css` for Homework) |
+| `day.html`, `assets/day.js` | The public My day page for kids and helpers (no sign-in; the link carries the person's code), with the helper's shopping list (`#list`) and a kid's homework (`#homework`, `#focus`, `#points`); and the tutor's link (`day.html?h=…`), which shows one kid's homework only |
 | `share.html` | The public, read-only project page |
 | `assets/gantt.js` | Schedule engine and Gantt chart, shared by the hub and the share page |
 | `manifest.webmanifest`, `assets/icons/` | The Home Screen app: name, colours and icons |
 | `config.js` | Database connection settings |
 | `supabase/schema.sql` | The v1 tables, security rules and functions (the baseline) |
-| `supabase/migrations/` | Every database change since, in order: `0002_home_hub_v2.sql` is v2, `0003_google_calendar.sql` is v1.1 (Google Calendar), `0004_meals_and_shopping.sql` is v1.2 (Food) |
+| `supabase/migrations/` | Every database change since, in order: `0002_home_hub_v2.sql` is v2, `0003_google_calendar.sql` is v1.1 (Google Calendar), `0004_meals_and_shopping.sql` is v1.2 (Food), `0005_homework.sql` is v1.3 (Homework) |
 | `supabase/preflight.sql` | Read-only checks to run before applying the v2 migration (0002 only) |
 | `supabase/cron.sql` | Schedules the morning email and the Google Calendar job (pg_cron) once hub-jobs is deployed |
 | `supabase/config.toml` | Supabase CLI settings: both Edge Functions deploy with JWT verification off |
@@ -340,6 +419,7 @@ Never commit the token. The rules for changing the repo (tests, migrations, depl
 | `docs/v2-design.md` | The v2 design: what was built and why |
 | `docs/v1.1-google-calendar.md` | The v1.1 design: Google Calendar and Hearth |
 | `docs/v1.2-kitchen.md` | The v1.2 design: Food, dinners and the shopping list |
+| `docs/v1.3-homework.md` | The v1.3 design: Homework, plans, focus sessions and points, and the tutor's link |
 | `.mcp.json`, `.claude/settings.json` | Supabase access for Claude Code sessions (token comes from the environment) |
 | `tests/` | Automated tests: run `tests/run.sh` (see [`tests/README.md`](tests/README.md)) |
 | `CLAUDE.md` | Rules for changing this repo: tests, migrations, deploy order, test data |

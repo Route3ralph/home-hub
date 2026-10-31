@@ -6,7 +6,10 @@
 // first Start copying (docs/v1.1-google-calendar.md §5.4). On schema 4 (migration 0004): tonight's
 // dinner in one line under the person chips, the same under every chip, to that day on the Food page;
 // "What's for dinner? ›" only after a dinner in the last 14 days; nothing when the read fails; and no
-// meals request at all below schema 4 (docs/v1.2-kitchen.md §6.2).
+// meals request at all below schema 4 (docs/v1.2-kitchen.md §6.2). On schema 5 (migration 0005), for
+// the parents only: one line per ask Jordan made, with his balance and where this week's points came
+// from, and Yes · Not now; one line for questions and milestones to check, to the Homework page; no line
+// and no request for Sam, below 5 or when a read fails (docs/v1.3-homework.md §9.3).
 //
 // The fake RPCs answer with the shapes in supabase/migrations/0002_home_hub_v2.sql (agenda_item rows
 // with all 27 columns, day_text as text, complete_task / undo_task as uuids, save_person as a people
@@ -17,7 +20,8 @@
 // Run alone with: node tests/e2e/today.test.js
 const { chromium } = require('playwright');
 const { randomUUID, createHash } = require('crypto');
-const { makeDb, install, signIn, SUPA, withCalendars, calendarRow, googleEventRow, calendarRpc, withFood, mealRow, stubShare } = require('./mock');
+const { makeDb, install, signIn, SUPA, withCalendars, calendarRow, googleEventRow, calendarRpc, withFood, mealRow, withHomework, homeworkRpc, hwKidRow, stepRow,
+  askRow, ledgerRow, stubShare } = require('./mock');
 const { serve } = require('./server');
 
 let BASE = '';
@@ -192,6 +196,7 @@ const STUBS = {
   people: { nav: { label: 'Family', order: 60 } },
   settings: { nav: { label: 'Settings', order: 70 } },
   food: { nav: { label: 'Food', order: 35, primary: true }, min: 4 },   // schema 4 only, as the real one
+  homework: { nav: { label: 'Homework', order: 37 }, min: 5 },          // schema 5 only, as the real one
 };
 const stubModule = (name, s) => `;(function () {
   var provides = {};
@@ -1001,6 +1006,173 @@ const emailOf = (req) => {
   ({ page } = await open({ label: 'dinner-desktop', rpc: fRpc, db: dinnerDb({ title: 'Tacos', cook_id: ID.sam }), ctx: { viewport: { width: 1280, height: 900 } } }));
   await page.screenshot({ path: SHOTS + 'today-dinner-desktop.png' });
   await page.context().close();
+
+  // =====================================================================
+  // 9f. Schema 5 (v1.3): the parents' homework lines
+  // =====================================================================
+  const hRpc = Object.assign({ hub_schema_version: () => 5 }, calendarRpc, homeworkRpc);
+  const PAT_LINK = 'Pat Lee, tutor (tutor link)';
+  const ASK = 'a5c00000-0000-4000-8000-0000000000a1';
+  // Jordan: balance 118, this week (Mon Oct 19 – Sun Oct 25) +24 focus and on time and +40 for two
+  // milestones Pat checked; one ask waiting; one open question and two milestones to check (and an
+  // answered question, a checked milestone and a question untouched for 40 days, none of which count).
+  const hwDb = () => {
+    const d = withHomework(withFood(todayDb()));
+    d.homework_kids.push(hwKidRow({ kid_id: ID.jordan }));
+    d.reward_asks.push(askRow({ id: ASK, kid_id: ID.jordan, title: 'Pick the movie', cost: 100, asked_at: '2026-10-25T12:00:00.000000+00:00' }));
+    const L = (day, kind, delta, who) => d.points_ledger.push(ledgerRow({ kid_id: ID.jordan, day, kind, delta, who: who || 'Jordan Example (My day)' }));
+    L('2026-10-10', 'given', 54, 'alex@example.com');
+    L('2026-10-20', 'focus', 4); L('2026-10-20', 'on_time', 5); L('2026-10-21', 'focus', 4); L('2026-10-21', 'on_time', 5); L('2026-10-22', 'focus', 6);
+    L('2026-10-21', 'milestone', 20, PAT_LINK); L('2026-10-23', 'milestone', 20, PAT_LINK);
+    const A = 'a5c10000-0000-4000-8000-0000000000a1';
+    d.homework_steps.push(
+      stepRow({ assignment_id: A, title: 'Draft the first half', question: 'Does the poster need a title?', question_at: '2026-10-24T22:00:00.000000+00:00' }),
+      stepRow({ assignment_id: A, kind: 'milestone', title: 'Outline', done_at: '2026-10-24T21:00:00.000000+00:00', done_by: 'Jordan Example (My day)' }),
+      stepRow({ assignment_id: A, kind: 'milestone', title: 'Full draft', done_at: '2026-10-25T11:00:00.000000+00:00', done_by: 'Jordan Example (My day)' }),
+      stepRow({ assignment_id: A, kind: 'milestone', title: 'Sketch', done_at: '2026-10-20T21:00:00.000000+00:00', done_by: 'Jordan Example (My day)',
+        checked_at: '2026-10-21T22:00:00.000000+00:00', checked_by: PAT_LINK }),
+      stepRow({ assignment_id: A, title: 'Read chapter 2', question: 'Which pages?', answer: 'Pages 40 to 52.', answer_by: PAT_LINK, answer_at: '2026-10-22T22:00:00.000000+00:00' }),
+      stepRow({ assignment_id: A, title: 'Old step', question: 'Is this still due?', question_at: '2026-09-14T22:00:00.000000+00:00', updated_at: '2026-09-15T16:00:00.000000+00:00' }),
+    );
+    return d;
+  };
+  const hwLines = (page) => page.$$eval('.today-hw > *', (es) => es.map((e) => e.textContent.replace(/\s+/g, ' ').trim()));
+  const hwReads = (log) => log.filter((l) => /\/rest\/v1\/(reward_asks|homework_steps|points_ledger|homework_kids)/.test(l)).map(decodeURIComponent);
+  ({ page, db, log } = await open({ label: 'hw-alex', rpc: hRpc, db: hwDb() }));
+  let hl = await hwLines(page);
+  check('schema 5 (parents): "Jordan asks: Pick the movie · 100 · balance 118 (this week: +24 focus and on time, +40 milestones checked by Pat) Yes Not now"',
+    hl[0] === 'Jordan asks: Pick the movie · 100 · balance 118 (this week: +24 focus and on time, +40 milestones checked by Pat) Yes Not now', JSON.stringify(hl));
+  check('schema 5 (parents): "Homework: 1 question · 2 milestones to check ›", to the Homework page', hl[1] === 'Homework: 1 question · 2 milestones to check ›'
+    && (await page.getAttribute('.today-hw a.today-hw-count', 'href')) === '#/homework', JSON.stringify(hl));
+  check('the lines sit under the person chips, before the day', await page.$eval('.today-hw', (e) => !!e.previousElementSibling && (e.previousElementSibling.classList.contains('today-chips')
+    || e.previousElementSibling.classList.contains('today-dinner'))));
+  const reads5 = hwReads(log);
+  // The ask's kid's points: all of them, a page at a time (the API's Max rows cuts a read short without an
+  // error), oldest first, until a page comes back empty: here his 8 rows, then an empty page.
+  check('reads: waiting asks, today\'s instant cash-ins, one steps request (milestones to check, open questions, touched in 30 days), and the ask\'s kid\'s points, page by page', reads5.length === 5
+    && reads5.some((l) => /^GET \/rest\/v1\/reward_asks\?.*status=eq\.waiting/.test(l))
+    && reads5.some((l) => /^GET \/rest\/v1\/reward_asks\?.*status=eq\.cashed&decided_at=gte\.2026-10-24/.test(l))
+    && reads5.some((l) => /^GET \/rest\/v1\/homework_steps\?.*updated_at=gte\.2026-09-25.*or=\(and\(kind\.eq\.milestone,done_at\.not\.is\.null,checked_at\.is\.null\),and\(question\.not\.is\.null,answer\.is\.null\)\)/.test(l))
+    && same(reads5.filter((l) => l.includes('/points_ledger?')), [0, 8].map((n) => `GET /rest/v1/points_ledger?select=id,kid_id,kind,delta,day,who&kid_id=in.(${ID.jordan})&order=at.asc,id.asc&offset=${n}&limit=1000`)),
+    JSON.stringify(reads5));
+  await chip(page, 'Jordan').click();
+  await page.waitForTimeout(100);
+  check('the same lines under every chip', same(await hwLines(page), hl));
+  await page.click('.today-hw [data-act="hw-not-now"]');
+  await page.waitForTimeout(500);
+  check('Not now: decide_reward(ask, false), one tap; the line goes', same((calls(db, 'decide_reward')[0] || {}).body, { p_ask: ASK, p_approve: false })
+    && db.reward_asks[0].status === 'declined' && (await hwLines(page)).length === 1 && /Not now: Pick the movie/.test(await lastToast(page)), JSON.stringify([await hwLines(page), await lastToast(page)]));
+  db.reward_asks[0].status = 'waiting';
+  await go(page, '#/tasks');
+  await go(page, '#/');
+  await page.click('.today-hw [data-act="hw-yes"]');
+  await page.waitForTimeout(500);
+  check('Yes: decide_reward(ask, true); the trade is written and the line goes', same((calls(db, 'decide_reward')[1] || {}).body, { p_ask: ASK, p_approve: true })
+    && db.points_ledger.some((l) => l.kind === 'trade' && l.delta === -100) && (await hwLines(page)).length === 1 && /Yes: Pick the movie for Jordan/.test(await lastToast(page)),
+    JSON.stringify([await hwLines(page), await lastToast(page)]));
+  await page.context().close();
+  // Yes, then Not now before the answer comes: both buttons wait, so only the Yes is sent.
+  ({ page, db } = await open({ label: 'hw-double', rpc: hRpc, db: hwDb() }));
+  await page.route('**/rest/v1/rpc/decide_reward', async (route) => { if (route.request().method() !== 'OPTIONS') await new Promise((r) => setTimeout(r, 500)); return route.fallback(); });
+  await page.click('.today-hw [data-act="hw-yes"]');
+  const both = await page.$$eval('.today-hw-ask button', (bs) => bs.map((b) => b.disabled));
+  await page.$eval('.today-hw [data-act="hw-not-now"]', (b) => b.click()).catch(() => {});
+  await page.waitForTimeout(1000);
+  check('Yes then Not now before the answer: both buttons wait, one decide_reward (the Yes), the trade, and only "Yes: Pick the movie for Jordan"', same(both, [true, true])
+    && calls(db, 'decide_reward').length === 1 && db.reward_asks[0].status === 'approved' && db.points_ledger.filter((l) => l.kind === 'trade').length === 1
+    && same((await page.$$eval('.toasts .toast', (es) => es.map((e) => e.textContent.trim()))), ['Yes: Pick the movie for Jordan']),
+    JSON.stringify([both, calls(db, 'decide_reward').map((c) => c.body), await page.$$eval('.toasts .toast', (es) => es.map((e) => e.textContent.trim()))]));
+  await page.context().close();
+  // An ask the other parent answered Not now a moment ago: Yes here keeps her answer (the database answers
+  // it as it is, with no error), and the toast says so, not "Yes".
+  ({ page, db } = await open({ label: 'hw-stale', rpc: hRpc, db: hwDb() }));
+  Object.assign(db.reward_asks[0], { status: 'declined', decided_at: '2026-10-25T15:00:00.000000+00:00', decided_by: 'morgan@example.com' });
+  await page.click('.today-hw [data-act="hw-yes"]');
+  await page.waitForTimeout(500);
+  check('Yes on an ask already answered Not now: "Already answered Not now: Pick the movie", no trade, the line goes',
+    (await lastToast(page)) === 'Already answered Not now: Pick the movie' && !db.points_ledger.some((l) => l.kind === 'trade') && (await hwLines(page)).length === 1,
+    JSON.stringify([await lastToast(page), await hwLines(page)]));
+  await page.context().close();
+  // The other parent said Yes a moment ago: Not now here keeps her Yes (no second trade, no decline), and
+  // says so. He cancelled it while this page still showed it: either button says so and writes nothing.
+  for (const [label, status, act, by, want] of [
+    ['hw-stale-yes', 'approved', 'hw-not-now', 'morgan@example.com', 'Already approved: Pick the movie'],
+    ['hw-cancelled-yes', 'cancelled', 'hw-yes', null, 'Jordan cancelled that ask: Pick the movie'],
+    ['hw-cancelled-no', 'cancelled', 'hw-not-now', null, 'Jordan cancelled that ask: Pick the movie'],
+  ]) {
+    ({ page, db } = await open({ label, rpc: hRpc, db: hwDb() }));
+    Object.assign(db.reward_asks[0], { status, decided_at: '2026-10-25T15:00:00.000000+00:00', decided_by: by });
+    const rows = db.points_ledger.length;
+    await page.click(`.today-hw [data-act="${act}"]`);
+    await page.waitForTimeout(500);
+    check(`${act === 'hw-yes' ? 'Yes' : 'Not now'} on an ask already ${status}: "${want}", nothing written, the line goes`,
+      (await lastToast(page)) === want && db.points_ledger.length === rows && db.reward_asks[0].status === status && (await hwLines(page)).length === 1,
+      JSON.stringify([await lastToast(page), db.points_ledger.length - rows, db.reward_asks[0].status, await hwLines(page)]));
+    await page.context().close();
+  }
+  // A ledger past the API's 1,000 rows (he never loses a row: about two school years of homework): 1,200
+  // older +1s before this week's. The balance and this week's sources count every row.
+  const long = hwDb();
+  long.points_ledger.unshift(...Array.from({ length: 1200 }, (x, i) => ledgerRow({ kid_id: ID.jordan, kind: 'focus', delta: 1,
+    at: new Date(Date.UTC(2025, 0, 3) + i * 3600000).toISOString().replace('Z', '000+00:00'), day: new Date(Date.UTC(2025, 0, 3) + i * 3600000).toISOString().slice(0, 10) })));
+  ({ page, db, log } = await open({ label: 'hw-long', rpc: hRpc, db: long }));
+  check('1,208 ledger rows (past the API\'s 1,000): "balance 1318 (this week: +24 focus and on time, +40 milestones checked by Pat)", from two full pages and an empty one',
+    (await hwLines(page))[0] === 'Jordan asks: Pick the movie · 100 · balance 1318 (this week: +24 focus and on time, +40 milestones checked by Pat) Yes Not now'
+    && same(hwReads(log).filter((l) => l.includes('/points_ledger?')).map((l) => /offset=(\d+)/.exec(l)[1]), ['0', '1000', '1208']), JSON.stringify([(await hwLines(page))[0], hwReads(log).filter((l) => l.includes('/points_ledger?'))]));
+  await page.context().close();
+  // Not enough points: the database's words.
+  const poor = hwDb();
+  poor.points_ledger = poor.points_ledger.filter((l) => l.kind !== 'given');
+  ({ page, db } = await open({ label: 'hw-poor', rpc: hRpc, db: poor, allowConsole: /status of 403/ }));
+  check('a balance under the cost still shows the ask', /balance 64/.test((await hwLines(page))[0] || ''), (await hwLines(page))[0]);
+  await page.click('.today-hw [data-act="hw-yes"]');
+  await page.waitForTimeout(400);
+  check('Yes with too few points: "Not enough points yet." and the line stays', (await lastToast(page)) === 'Not enough points yet.' && (await hwLines(page)).length === 2, await lastToast(page));
+  await page.context().close();
+  ({ page, log } = await open({ label: 'hw-sam', email: 'sam@example.com', rpc: hRpc, db: hwDb() }));
+  check('Sam: no homework lines and no homework request', !(await page.$('.today-hw')) && !hwReads(log).length, JSON.stringify(hwReads(log)));
+  await page.context().close();
+  ({ page, log } = await open({ label: 'hw-v4', rpc: fRpc, db: withFood(todayDb()) }));
+  check('schema 4: no homework lines and no homework request', !(await page.$('.today-hw')) && !hwReads(log).length, JSON.stringify(hwReads(log)));
+  await page.context().close();
+  // An instant reward he cashed in today (the owner's "immediate gratification"): decided by him at once, so a line
+  // that needs no tap; yesterday's isn't shown.
+  {
+    const d = hwDb();
+    d.reward_asks.push(askRow({ kid_id: ID.jordan, title: '15 minutes of extra game time', cost: 15, status: 'cashed', asked_at: '2026-10-25T20:52:00.000000+00:00',
+      decided_at: '2026-10-25T20:52:00.000000+00:00', decided_by: 'Jordan Example (My day)' }),
+    askRow({ kid_id: ID.jordan, title: 'Old cash-in', cost: 10, status: 'cashed', asked_at: '2026-10-24T20:52:00.000000+00:00',
+      decided_at: '2026-10-24T20:52:00.000000+00:00', decided_by: 'Jordan Example (My day)' }));
+    d.points_ledger.push(ledgerRow({ kid_id: ID.jordan, day: '2026-10-25', kind: 'milestone_done', delta: 20, who: 'Jordan Example (My day)' }));
+    ({ page } = await open({ label: 'hw-cashed', rpc: hRpc, db: d }));
+    const lines = await hwLines(page);
+    check('schema 5 (parents): "Jordan cashed in: 15 minutes of extra game time · 15 · 4:52pm", with no buttons; not yesterday\'s',
+      lines.includes('Jordan cashed in: 15 minutes of extra game time · 15 · 4:52pm') && !lines.some((l) => /Old cash-in/.test(l))
+      && !(await page.$('.today-hw-cashed button')), JSON.stringify(lines));
+    check('... and the ask line counts a milestone\'s first half: "+20 milestones ticked"', /\+20 milestones ticked, \+40 milestones checked by Pat/.test(lines[0] || ''), JSON.stringify(lines));
+    await page.context().close();
+  }
+  const quiet = hwDb();
+  quiet.reward_asks = [];
+  quiet.homework_steps = [];
+  ({ page, log } = await open({ label: 'hw-nothing', rpc: hRpc, db: quiet }));
+  check('nothing waiting: no lines, and no points read', !(await page.$('.today-hw')) && !hwReads(log).some((l) => /points_ledger/.test(l)), JSON.stringify(hwReads(log)));
+  await page.context().close();
+  ({ page, db } = await open({ label: 'hw-fail', rpc: hRpc, db: hwDb(), allowConsole: /status of 500/, path: '/#/tasks' }));
+  await page.route('**/rest/v1/homework_steps*', (route) => route.fulfill({ status: 500, headers: { ...CORS, 'content-type': 'application/json' }, body: JSON.stringify({ code: 'XX000', message: 'Database restarting' }) }));
+  await go(page, '#/');
+  await page.waitForTimeout(300);
+  check('a read fails: no homework lines, and the day draws as usual', !(await page.$('.today-hw')) && same(await titles(page, 'day'), ['Grandma visiting', 'School run', 'Call the plumber', 'Heartworm pill']),
+    JSON.stringify(await titles(page, 'day')));
+  await page.context().close();
+  for (const scheme of ['light', 'dark']) {
+    ({ page } = await open({ label: `hw-phone-${scheme}`, rpc: hRpc, db: hwDb(), ctx: Object.assign({ colorScheme: scheme }, phone) }));
+    const small = await page.$$eval('.today-hw button, .today-hw a', (els) => els.map((e) => { const r = e.getBoundingClientRect(); return [e.textContent.trim(), Math.round(r.width), Math.round(r.height)]; })
+      .filter(([, w, h]) => w < 44 || h < 44));
+    check(`schema 5 phone (${scheme}): the homework lines' taps are 44px+; no sideways scroll`, !small.length && await noSideScroll(page), JSON.stringify(small));
+    await page.screenshot({ path: SHOTS + `today-homework-phone-${scheme}.png` });
+    await page.context().close();
+  }
 
   // =====================================================================
   // 10. v1 mode: no Today page, no v2 reads

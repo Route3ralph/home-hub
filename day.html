@@ -14,17 +14,20 @@
   <meta name="apple-mobile-web-app-title" content="My day">
   <meta name="theme-color" content="#f6f4f0" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#121110" media="(prefers-color-scheme: dark)">
-  <link rel="stylesheet" href="assets/styles.css?v=20261030s">
-  <link rel="stylesheet" href="assets/css/day.css?v=20261030s">
+  <link rel="stylesheet" href="assets/styles.css?v=20261031b">
+  <link rel="stylesheet" href="assets/css/day.css?v=20261031b">
+  <link rel="stylesheet" href="assets/css/plan.css?v=20261031b">
 </head>
 <body>
   <main id="app" class="page day"><p class="loading">Loading…</p></main>
 
-  <!-- The public My day page: config.js, supabase-js and the shopping list's helpers (shoplist.js, no
-       database calls of its own), never the hub. -->
-  <script src="config.js?v=20261030s"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.3/dist/umd/supabase.js?v=20261030s"></script>
-  <script src="assets/shoplist.js?v=20261030s"></script>
-  <script src="assets/day.js?v=20261030s"></script>
+  <!-- The public My day page (and the tutor's link, day.html?h=): config.js, supabase-js, the shopping
+       list's helpers (shoplist.js) and homework's plan editor and timer (plan.js), neither with database
+       calls of its own, never the hub. -->
+  <script src="config.js?v=20261031b"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.3/dist/umd/supabase.js?v=20261031b"></script>
+  <script src="assets/shoplist.js?v=20261031b"></script>
+  <script src="assets/plan.js?v=20261031b"></script>
+  <script src="assets/day.js?v=20261031b"></script>
 </body>
 </html>

@@ -1,0 +1,163 @@
+/* =====================================================================
+   Home Hub v1.3: styles for the Homework page (assets/modules/homework.js):
+   the kid line, the first visit, the sections (To approve, To check, To
+   talk about, Questions and notes, Assignments and lessons, This week,
+   Points and rewards, Switches) and one assignment's page. The bars, the
+   week strip and the plan editor are plan.css's. Colours come from
+   styles.css's variables, so light and dark both work. Every tap target
+   is at least 44px, and nothing scrolls the page sideways at 390px.
+   ===================================================================== */
+
+/* ---------- Head and the kid line ---------- */
+.hw-page, .hw-a { min-width: 0; max-width: 860px; }
+.hw-page[aria-busy="true"], .hw-a[aria-busy="true"] { opacity: 0.85; }
+.hw-head { margin-bottom: 8px; }
+.hw-kidpick select { min-height: 44px; padding: 0 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); color: var(--text); font: inherit; font-weight: 600; }
+.hw-kidline { margin: 0 0 6px; color: var(--text-2); font-size: 15px; font-weight: 600; overflow-wrap: anywhere; }
+.hw-timelink {
+  display: inline-flex; align-items: center; gap: 4px; min-height: 44px; padding: 0 2px;
+  font-size: 15px; font-weight: 600; text-decoration: none; text-align: left;
+}
+.hw-page .btn, .hw-a .btn { min-height: 44px; min-width: 44px; justify-content: center; }
+.hw-retry { display: inline-flex; align-items: center; min-height: 44px; font-size: 14px; }
+.hw-fail { margin: 6px 0 0; color: var(--text-3); font-size: 14px; }
+
+/* ---------- Cards, rows and the inline forms ---------- */
+.hw-sec { min-width: 0; }
+.hw-sec .sec-head { flex-wrap: wrap; }
+.hw-adds { display: inline-flex; flex-wrap: wrap; gap: 8px; margin-left: auto; letter-spacing: 0; text-transform: none; }
+.hw-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); }
+.hw-rows, .hw-arows, .hw-blocks { list-style: none; margin: 0; padding: 0 12px; }
+.hw-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; min-height: 56px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+.hw-row:last-child { border-bottom: 0; }
+.hw-row.is-done .hw-row-main > span:first-child { color: var(--text-3); text-decoration: line-through; }
+.hw-row.is-off .hw-rw-line { color: var(--text-3); }
+.hw-row-main { flex: 1 1 220px; min-width: 0; display: flex; flex-direction: column; gap: 2px; overflow-wrap: anywhere; }
+.hw-row-sub { color: var(--text-3); font-size: 13px; overflow-wrap: anywhere; }
+.hw-row-acts { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.hw-ask-line, .hw-check-line { font-weight: 600; }
+.hw-sugg-line { color: var(--text-2); }
+.hw-qa-line { font-size: 14px; }
+.hw-q .hw-qa-line { font-weight: 600; font-size: 15px; }
+.hw-qa-step { font-weight: 650; }
+.hw-diamond { display: inline-grid; place-items: center; margin-right: 6px; color: var(--accent); vertical-align: -1px; }
+.hw-diamond svg { width: 12px; height: 12px; fill: currentColor; }
+.hw-note, .hw-price, .hw-linkform { flex: 1 1 100%; display: grid; gap: 8px; padding: 10px 12px; border-radius: 12px; background: var(--surface-2); }
+.hw-note .form-actions, .hw-price .form-actions, .hw-linkform .form-actions { margin: 0; }
+.hw-talk {
+  display: flex; align-items: center; gap: 6px; width: 100%; min-height: 44px;
+  color: var(--text); font-weight: 600; text-decoration: none; overflow-wrap: anywhere;
+}
+.hw-talk:hover { color: var(--accent); }
+.hw-more {
+  display: inline-grid; place-items: center; width: 44px; height: 44px; border: 0; border-radius: 10px;
+  background: none; color: var(--text-3); cursor: pointer;
+}
+.hw-more:hover, .hw-more:focus-visible { background: var(--surface-2); color: var(--text); outline: none; }
+.hw-more svg { width: 20px; height: 20px; fill: currentColor; }
+.hw-empty { padding: 14px 16px; }
+.hw-sub { margin: 14px 0 6px; color: var(--text-3); font-size: 13px; font-weight: 700; }
+
+/* ---------- Assignments and lessons ---------- */
+.hw-arows > li { padding: 4px 0 10px; border-bottom: 1px solid var(--line); }
+.hw-arows > li:last-child { border-bottom: 0; }
+.hw-arow {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 2px 12px;
+  min-height: 52px; padding: 6px 0 2px; color: var(--text); text-decoration: none;
+}
+.hw-arow:hover .hw-arow-title { color: var(--accent); }
+.hw-arow-title { grid-column: 1; font-weight: 650; overflow-wrap: anywhere; }
+.hw-arow-sub { grid-column: 1; color: var(--text-3); font-size: 13px; overflow-wrap: anywhere; }
+.hw-arow-state { grid-column: 2; grid-row: 1 / span 2; color: var(--text-2); font-size: 13px; font-weight: 600; text-align: right; }
+@media (max-width: 520px) {
+  .hw-arow { grid-template-columns: minmax(0, 1fr); }
+  .hw-arow-state { grid-column: 1; grid-row: auto; text-align: left; }
+}
+.hw-done { margin-top: 10px; }
+.hw-done > summary, .hw-addtime > summary {
+  display: flex; align-items: center; min-height: 44px; color: var(--accent); font-size: 14px; font-weight: 650; cursor: pointer;
+}
+.hw-done > .hw-arows { margin-top: 4px; }
+
+/* ---------- This week ---------- */
+.hw-focused { margin: 10px 0 8px; color: var(--text-2); font-size: 14px; }
+.hw-focused:empty { display: none; }
+.hw-blocks li { padding: 10px 0; border-bottom: 1px solid var(--line); font-size: 14px; overflow-wrap: anywhere; }
+.hw-blocks li:last-child { border-bottom: 0; }
+.hw-blocks li > a { display: flex; align-items: center; gap: 6px; min-height: 44px; margin: -10px 0; color: var(--text); text-decoration: none; }
+.hw-blocks li > a:hover { color: var(--accent); }
+
+/* ---------- Points and rewards ---------- */
+.hw-points-line { margin: 2px 0 10px; font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.hw-ledger-line { font-variant-numeric: tabular-nums; }
+
+/* ---------- Switches ---------- */
+.hw-switches { padding: 4px 14px; }
+.hw-switch-row { display: grid; gap: 6px; padding: 12px 0; border-bottom: 1px solid var(--line); min-width: 0; }
+.hw-switch-row:last-of-type { border-bottom: 0; }
+.hw-switch-row > .btn { justify-self: start; }
+.hw-switch { display: flex; align-items: center; gap: 12px; min-height: 44px; font-weight: 650; cursor: pointer; }
+.hw-switch input { flex: none; width: 22px; height: 22px; accent-color: var(--accent); }
+.hw-switch input:disabled + span { cursor: default; }
+.hw-switch-title { margin: 0; font-weight: 650; }
+.hw-switch-line { display: block; margin: 0; color: var(--text-3); font-size: 13px; overflow-wrap: anywhere; }
+.hw-switch-note { margin: 0; padding: 10px 0; color: var(--text-3); font-size: 13px; }
+.hw-values { display: grid; gap: 10px; margin-top: 4px; }
+.hw-values-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px 14px; }
+.hw-values select { min-height: 44px; }
+.hw-times { list-style: none; margin: 0; padding: 0; }
+.hw-time { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 48px; border-bottom: 1px solid var(--line); font-weight: 600; }
+.hw-time:last-child { border-bottom: 0; }
+.hw-timeform { display: grid; gap: 10px; }
+.hw-timeform .form-actions { margin: 0; }
+.hw-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.hw-chip {
+  min-width: 48px; min-height: 44px; padding: 0 10px; border: 1.5px solid var(--border); border-radius: 999px;
+  background: var(--surface); color: var(--text); font: inherit; font-size: 14px; font-weight: 600; cursor: pointer;
+}
+.hw-chip[aria-pressed="true"] { border-color: var(--accent); background: var(--accent); color: var(--surface); }
+.hw-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.hw-links { list-style: none; margin: 0; padding: 0; }
+.hw-link { display: grid; gap: 4px; padding: 10px 0; border-bottom: 1px solid var(--line); min-width: 0; }
+.hw-link:last-child { border-bottom: 0; }
+.hw-link-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.hw-link-label { overflow-wrap: anywhere; }
+.hw-link-meta { margin: 0; color: var(--text-3); font-size: 13px; }
+.hw-link-acts { display: flex; flex-wrap: wrap; gap: 8px; }
+
+/* ---------- The first visit ---------- */
+.hw-setup { margin: 10px 0 4px; padding: 16px; }
+.hw-setup p { margin: 0 0 10px; color: var(--text-2); }
+.hw-setup-title { margin: 0 0 8px; font-size: 18px; }
+.hw-setup-step + .hw-setup-step { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line); }
+.hw-setup-step h3 { margin: 0 0 4px; font-size: 16px; }
+.hw-setup-acts { display: flex; flex-wrap: wrap; gap: 8px; }
+.hw-rws { display: grid; gap: 10px; }
+.hw-rw { display: grid; grid-template-columns: minmax(0, 1fr) 110px; gap: 10px; align-items: end; }
+.hw-rewardsform { display: grid; gap: 10px; }
+.hw-rewardsform .form-actions { margin: 0; }
+
+/* ---------- One assignment ---------- */
+.hw-a > .back, .hw-a [data-ref="head"] > .back { display: inline-flex; align-items: center; min-height: 44px; font-weight: 600; }
+.hw-a-head h1 { margin: 0; overflow-wrap: anywhere; }
+.hw-a-head .eyebrow { margin: 0; }
+.hw-a-meta { margin: 4px 0 14px; color: var(--text-2); }
+.hw-afields { margin: 0; padding: 16px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }
+.hw-afields textarea { min-height: 160px; }
+.hw-afields .hw-if-lesson, .hw-afields.is-lesson .hw-if-assignment { display: none; }
+.hw-afields.is-lesson .hw-if-lesson { display: inline; }
+.hw-kinds { display: flex; flex-wrap: wrap; gap: 8px; margin: 0; padding: 0; border: 0; min-width: 0; }
+.hw-kinds legend { width: 100%; padding: 0; margin-bottom: 4px; font-size: 13px; font-weight: 600; color: var(--text-2); }
+.hw-radio { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 14px; border: 1.5px solid var(--border); border-radius: 999px; cursor: pointer; }
+.hw-radio input { accent-color: var(--accent); }
+.hw-radio:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); font-weight: 650; }
+.hw-livetext { color: var(--text-3); font-size: 13px; }
+.hw-a-acts { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 0; }
+.hw-ed { padding: 12px; }
+.hw-a-text { padding: 14px 16px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.hw-a-stretch { margin: 10px 0 0; color: var(--text-2); font-style: italic; }
+.hw-steps-ro { list-style: none; }
+@media (max-width: 520px) {
+  .hw-rw { grid-template-columns: minmax(0, 1fr) 90px; }
+  .hw-ed { padding: 8px; }
+}

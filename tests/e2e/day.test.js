@@ -26,6 +26,25 @@
 // answered, Deshacer of a tick that found Alex's purchase, Deshacer of a tick waiting for "¿Añadir otra vez?"
 // after a read past midnight); the saved list when Supabase gets no answer at the
 // start; a null answer clearing what was saved.
+// v1.3 (docs/v1.3-homework.md §7, §8, §9.6, §9.7, §14), with mock.js's homeworkTokenRpc (the migration's rules and
+// shapes; db.hwNow is the server's clock): the card only with get_person_day's homework key (none for a helper,
+// on schema 4, with homework off, or without plan.js) and its one-tap Start; #focus counted from the server's
+// clock with the phone's a day off (8 minutes on, a hidden page back, a reload with the phone 5 hours off),
+// Wake Lock, AudioContext and Notification asked for only inside a tap, the chime scheduled on the audio clock at
+// Start, the cue for the first minute, Done then Keep going, the stuck sheet (Make it smaller moves the block),
+// the end screen (the server's points, More to do, Stop, under 5 minutes, the daily cap), the break, Next; an End
+// and a Start with no answer sent again with the same id; offline; #homework at 390px, 420px and 1280×800 (Now,
+// Tonight, From earlier with Re-plan, Due soon with the bars, Behind the plan and the milestone line that opens
+// Ask Pat, the who-sees line), tick and Undo, Not today, Quick and + Homework, his cue; #points (ask, cancel,
+// suggest, decided, the last entries, points off); #plan/<id> in his role; every new word and database message
+// in Spanish; no tutor link; homework off while open; hostile text; a phone where plan.js didn't load (the day as
+// before, with no card). Then (18b) a second tap on an End on its way (one End, its screen drawn), the wake lock
+// held while the ring runs on any view, taken again on coming back to any view after the browser let go of it
+// while the page was hidden (HW_WAKE_DROP), and let go of at its end or for a Start with no block, the stuck sheet
+// on a block with no plan (Quick and 'switch' first), Make it smaller sent twice (one key, one step), Chime even on
+// silent ('playback' just for the chime) and the chime set again after time away on any view (#focus, #homework,
+// the day), called off when the ring ran out meanwhile, and made at the first tap after a reload (HW_CLOCKED: an
+// AudioContext on the page's clock that stands still while the page is hidden); "Pasado al mié".
 // mock.js answers RPCs for signed-in members only, so the token functions (called signed out) are
 // answered by a route added here; everything else (config.js, supabase-js) comes from mock.js.
 // The browser runs in Pacific/Kiritimati (UTC+14) with its clock set so the device's date is a day
@@ -34,7 +53,9 @@
 const fs = require('fs');
 const crypto = require('crypto');
 const { chromium } = require('playwright');
-const { makeDb, install, signIn, SUPA, withFood, foodRpc, personDayFood, shopItem, mealRow } = require('./mock');
+const { makeDb, install, signIn, SUPA, withFood, foodRpc, personDayFood, shopItem, mealRow, withHomeworkTokens, homeworkTokenRpc: homeworkRpc,
+  personDayHomework, tkKidRow: hwKidRow, tkLinkRow: tutorLinkRow, tkAssignmentRow: assignmentRow, tkStepRow: stepRow, tkSessionRow: sessionRow,
+  tkRewardRow: rewardRow, tkLedgerRow: ledgerRow } = require('./mock');
 const { serve, ROOT } = require('./server');
 
 let BASE = '';
@@ -195,9 +216,13 @@ const FAKES = {
   get_person_day: (db, b) => {
     const who = db.my[b.p_token];
     if (!who) return null;
-    const out = clone({ person: who.person, today: TODAY, days: [{ day: TODAY, items: who.days[0] }, { day: TOMORROW, items: who.days[1] }], late: who.late });
-    const person = db.shopping_items && (db.people || []).find((p) => p.day_token === b.p_token);
-    return person ? personDayFood(db, person, out) : out;
+    // db.myToday: the household's day, for the homework household (v1.3), whose clock is Mon Nov 2.
+    const today = db.myToday || TODAY;
+    const out = clone({ person: who.person, today, days: [{ day: today, items: who.days[0] }, { day: hwAdd(today, 1), items: who.days[1] }], late: who.late });
+    const person = (db.people || []).find((p) => p.day_token === b.p_token);
+    // With withHomeworkTokens (schema 5): get_person_day's homework key, for a kid with homework on.
+    if (person && db.homework_kids) personDayHomework(db, person, out);
+    return person && db.shopping_items ? personDayFood(db, person, out) : out;
   },
   get_list_by_token: (db, b) => foodRpc.get_list_by_token(db, b),
   add_to_list_by_token: listWrite('add_to_list_by_token'),
@@ -248,6 +273,15 @@ const FAKES = {
     return true;
   },
 };
+// v1.3: Jordan's seven homework functions and the tutor link's four, through mock.js's homeworkTokenRpc (the
+// migration's rules and shapes). db.hwError refuses the next homework write with [status, code, message].
+Object.keys(homeworkRpc).forEach((name) => {
+  FAKES[name] = (db, b) => {
+    if (db.hwError && !/^(homework_by_token|tutor_view_by_token)$/.test(name)) { const e = db.hwError; db.hwError = null; return fail(...e); }
+    return homeworkRpc[name](db, b);
+  };
+});
+const hwAdd = (iso, n) => new Date(Date.parse(`${iso}T00:00:00Z`) + n * 86400000).toISOString().slice(0, 10);
 
 // The token functions, answered for signed-out callers (mock.js wants a member). Every call is
 // recorded in db.calls with its body, Authorization header, and when it came and was answered (ms);
@@ -266,6 +300,8 @@ async function tokenRpcs(page, db) {
     const reply = (status, payload) => { call.done = Date.now(); return route.fulfill({ status, headers: { ...CORS, 'content-type': 'application/json' }, body: JSON.stringify(payload) }); };
     if (db.slow && db.slow[name]) await new Promise((r) => setTimeout(r, db.slow[name]));
     if (db.status && db.status[name]) return reply(db.status[name], { message: 'Service Unavailable' });
+    // db.loseAnswer[name]: the call is made, and its answer never reaches the phone (so many times).
+    if (db.loseAnswer && db.loseAnswer[name] > 0) { db.loseAnswer[name] -= 1; FAKES[name](db, body); call.done = Date.now(); return route.abort('internetdisconnected'); }
     const out = FAKES[name](db, body);
     return out && out.__status ? reply(out.__status, out.body) : reply(200, out === undefined ? null : out);
   });
@@ -273,6 +309,224 @@ async function tokenRpcs(page, db) {
 
 const IPHONE = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1';
 const ANDROID = 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36';
+
+// ---- v1.3: homework (docs/v1.3-homework.md §7, §8, §9.6), with mock.js's homeworkTokenRpc. The household's clock
+// is Mon Nov 2 2026, 4:31pm in New York; the phone says Tue Nov 3, 12:07pm in Kiritimati, so nothing may lean on
+// its clock or zone. Homework time Mon–Thu 4:30–5:15 and Sun 5:00–5:45; piano on Tuesday at 5:00.
+const HW_NOW = '2026-11-02T21:31:04.512Z';
+const HW_DEVICE = new Date('2026-11-03T22:07:00Z');
+const HWT = '2026-11-02';
+const PAT = 'abcdef0123456789abcdef0123456789';   // the tutor link's token ("Pat Lee, tutor")
+const hwStamp = (ms) => new Date(ms).toISOString();
+const hid = (n) => `a0000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
+const H = {
+  link: hid(1), sci: hid(10), s0: hid(11), s1: hid(12), s2: hid(13), s3: hid(14), s4: hid(15), s5: hid(16), s6: hid(17),
+  math: hid(20), m1: hid(21), span: hid(30), v1: hid(31), v2: hid(32), v3: hid(33), ws51: hid(40), frac: hid(50), f1: hid(51),
+  game: hid(60), dinner: hid(61), book: hid(62), askOld: hid(70), askNo: hid(71), old: hid(80),
+};
+const HW_TITLES = { m1: 'Do worksheet 4.2', s1: 'Copy the requirements into your notes', s2: 'Find 2 sources and save their links' };
+function hwDb(o) {
+  const opts = o || {};
+  const db = dayDb();
+  db.myToday = HWT;
+  db.my[JORDAN] = {
+    person: { name: 'Jordan Example', language: opts.lang || 'en', digest_enabled: true, email_confirmed: false },
+    days: [[item({ item_id: hid(90), occurrence: HWT, day: HWT, title: 'Homework', start_time: '16:30', end_time: '17:15', time_label: opts.lang === 'es' ? '16:30' : '4:30pm' })], []],
+    late: [],
+  };
+  db.household = [{ id: true, tz: 'America/New_York' }];
+  db.people = [
+    { id: P.alex, name: 'Alex Example', role: 'admin', language: 'en', email: 'alex@example.com', day_token: null, active: true },
+    { id: P.sam, name: 'Sam Example', role: 'adult', language: 'en', email: 'sam@example.com', day_token: null, active: true },
+    { id: P.taylor, name: 'Taylor Example', role: 'helper', language: 'es', email: null, day_token: TAYLOR, active: true },
+    { id: P.jordan, name: 'Jordan Example', role: 'kid', language: opts.lang || 'en', email: null, day_token: JORDAN, active: true },
+    { id: P.morgan, name: 'Morgan Example', role: 'kid', language: 'en', email: null, day_token: MORGAN, active: true },
+  ];
+  withHomeworkTokens(db, { now: HW_NOW });
+  // His first length is 20 here (the flows below were written for 20-minute blocks); the default, 10, has its own check.
+  db.homework_kids.push(hwKidRow({ kid_id: P.jordan, focus_minutes: opts.length || 20, cue: "When I've had my snack, I open my notes doc.",
+    if_stuck: opts.ifStuck === undefined ? "If I'm stuck for 5 minutes, I'll write the question for Pat and move on." : opts.ifStuck }));
+  db.hwTimes[P.jordan] = [{ weekdays: [1, 2, 3, 4], starts: '16:30', ends: '17:15' }, { weekdays: [7], starts: '17:00', ends: '17:45' }];
+  db.hwBusy[P.jordan] = { '2026-11-03': [{ starts: '17:00', ends: '18:00', title: 'Piano' }] };
+  if (!opts.noTutor) db.tutor_links.push(tutorLinkRow({ id: H.link, kid_id: P.jordan, token: PAT, created_at: '2026-10-20T12:00:00.000000+00:00' }));
+  const kid = P.jordan;
+  const at = (iso) => `${iso}.000000+00:00`;
+  const fam = 'alex@example.com';
+  const tut = 'Pat Lee, tutor (tutor link)';
+  const me = 'Jordan (My day)';
+  db.assignments.push(
+    assignmentRow({ id: H.sci, kid_id: kid, title: 'Science project: river poster', subject: 'Science', due_date: '2026-11-13', added_by: 'tutor',
+      stretch: 'Which part of the river would you most like to show in detail?', given_at: at('2026-10-26T22:00:00'), given_by: tut, plan_rev: 3,
+      created_at: at('2026-10-25T15:00:00'), details: 'Make a poster about one river. Two sources at least.' }),
+    assignmentRow({ id: H.math, kid_id: kid, title: 'Worksheet 4.2', subject: 'Math', due_date: '2026-11-03', given_at: at('2026-11-01T15:00:00'), given_by: fam,
+      plan_rev: 2, created_at: at('2026-11-01T14:00:00') }),
+    assignmentRow({ id: H.span, kid_id: kid, title: 'Vocabulary project', subject: 'Spanish', due_date: '2026-11-09', given_at: at('2026-10-27T15:00:00'),
+      given_by: fam, plan_rev: 4, created_at: at('2026-10-27T14:00:00') }),
+    assignmentRow({ id: H.ws51, kid_id: kid, title: 'Worksheet 5.1', subject: 'Math', due_date: '2026-11-04', added_by: 'kid', created_by: me,
+      created_at: at('2026-11-02T20:00:00') }),
+    assignmentRow({ id: H.frac, kid_id: kid, kind: 'lesson', title: 'Fractions practice', subject: 'Math', due_date: '2026-11-06', added_by: 'tutor',
+      created_at: at('2026-11-01T16:00:00') }),
+  );
+  db.homework_steps.push(
+    stepRow({ id: H.s0, assignment_id: H.sci, pos: 1, kind: 'milestone', title: 'Choose the river and its part', minutes: 10, day: '2026-10-30',
+      done_at: at('2026-10-30T21:00:00'), done_by: me, checked_at: at('2026-10-31T15:00:00'), checked_by: tut,
+      coach_note: 'Good choice. The delta is a strong focus.', coach_note_by: 'tutor', coach_note_at: at('2026-10-31T15:00:00') }),
+    stepRow({ id: H.s1, assignment_id: H.sci, pos: 2, kind: 'start', title: HW_TITLES.s1, done_looks_like: 'the requirements in your notes', minutes: 10, day: HWT }),
+    stepRow({ id: H.s2, assignment_id: H.sci, pos: 3, kind: 'step', title: HW_TITLES.s2, done_looks_like: '2 titles and links in your notes doc', minutes: 20, day: HWT }),
+    stepRow({ id: H.s3, assignment_id: H.sci, pos: 4, kind: 'milestone', title: 'Outline with 3 main points', done_looks_like: 'an outline you can show', minutes: 25, day: '2026-11-04' }),
+    stepRow({ id: H.s4, assignment_id: H.sci, pos: 5, kind: 'step', title: 'Draft the first half', minutes: 25, day: '2026-11-05' }),
+    stepRow({ id: H.s5, assignment_id: H.sci, pos: 6, kind: 'check', title: 'Check it against the instructions', minutes: 20, day: '2026-11-11' }),
+    stepRow({ id: H.s6, assignment_id: H.sci, pos: 7, kind: 'turn_in', title: 'Turn it in', minutes: 5, day: '2026-11-13' }),
+    stepRow({ id: H.m1, assignment_id: H.math, pos: 1, kind: 'step', title: HW_TITLES.m1, minutes: 15, day: HWT,
+      question: "What does 'simplify fully' mean here?", question_at: at('2026-11-01T22:00:00'),
+      answer: 'No common factor is left.', answer_by: tut, answer_at: at('2026-11-01T23:10:00') }),
+    stepRow({ id: H.v1, assignment_id: H.span, pos: 1, kind: 'step', title: 'List the 20 words', minutes: 15, day: '2026-10-29' }),
+    stepRow({ id: H.v2, assignment_id: H.span, pos: 2, kind: 'milestone', title: 'Flashcards made', minutes: 20, day: '2026-10-30',
+      not_yet_at: at('2026-10-31T16:00:00'), coach_note: 'Add the last five words.', coach_note_by: 'tutor', coach_note_at: at('2026-10-31T16:00:00') }),
+    stepRow({ id: H.v3, assignment_id: H.span, pos: 3, kind: 'turn_in', title: 'Turn it in', minutes: 5, day: '2026-11-09' }),
+    stepRow({ id: H.f1, assignment_id: H.frac, pos: 1, kind: 'step', title: 'Do practice session 1', minutes: 20, day: '2026-11-05' }),
+  );
+  db.rewards.push(
+    rewardRow({ id: H.game, kid_id: kid, title: '15 minutes of extra game time', cost: 15, sort_order: 1 }),
+    rewardRow({ id: H.dinner, kid_id: kid, title: "Choose Friday's dinner", cost: 60, sort_order: 2 }),
+    rewardRow({ id: H.book, kid_id: kid, title: 'A new book', cost: 150, sort_order: 3 }),
+  );
+  db.reward_asks.push(
+    { id: H.askOld, kid_id: kid, reward_id: H.dinner, title: "Choose Friday's dinner", cost: 60, status: 'approved', asked_at: at('2026-10-30T22:00:00'),
+      decided_at: at('2026-10-31T13:00:00'), decided_by: 'morgan@example.com', note: null },
+    { id: H.askNo, kid_id: kid, reward_id: H.game, title: '15 minutes of extra game time', cost: 15, status: 'declined', asked_at: at('2026-11-01T22:00:00'),
+      decided_at: at('2026-11-01T23:00:00'), decided_by: 'alex@example.com', note: 'Not on a school night' },
+  );
+  db.points_ledger.push(
+    ledgerRow({ kid_id: kid, at: at('2026-10-26T23:00:00'), day: '2026-10-26', kind: 'given', delta: 149, note: 'Great session with Pat', who: fam }),
+    ledgerRow({ kid_id: kid, at: at('2026-10-31T15:00:00'), day: '2026-10-31', kind: 'milestone', delta: 20, step_id: H.s0, note: 'Choose the river and its part', who: tut }),
+    ledgerRow({ kid_id: kid, at: at('2026-10-31T13:00:00'), day: '2026-10-31', kind: 'trade', delta: -60, note: "Choose Friday's dinner", who: 'morgan@example.com' }),
+    ledgerRow({ kid_id: kid, at: at('2026-11-01T22:21:00'), day: '2026-11-01', kind: 'focus', delta: 4, session_id: H.old, step_id: H.s0, note: 'Choose the river and its part', who: me }),
+    ledgerRow({ kid_id: kid, at: at('2026-11-01T22:21:01'), day: '2026-11-01', kind: 'on_time', delta: 5, session_id: H.old, step_id: H.s0, note: 'Choose the river and its part', who: me }),
+  );
+  db.focus_sessions.push(sessionRow({ id: H.old, kid_id: kid, assignment_id: H.sci, step_id: H.s0, minutes: 20, with_whom: 'tutor',
+    started_at: at('2026-11-01T22:00:00'), ends_at: at('2026-11-01T22:20:00'), ended_at: at('2026-11-01T22:21:00'), result: 'done', seen_minutes: 20,
+    on_time: true, points: 9, note: 'picked the delta' }));
+  return db;
+}
+// Wake Lock, AudioContext and Notification, recorded with whether a tap was being handled (user activation).
+const HW_STUBS = () => {
+  const rec = { wake: [], audio: [], osc: [], ask: [], notes: [], released: 0, session: [], cheer: [] };   // osc: the chime's tones; cheer: the celebration's
+  window.__hw = rec;
+  const active = () => !!(navigator.userActivation && navigator.userActivation.isActive);
+  try {
+    Object.defineProperty(navigator, 'wakeLock', { configurable: true, value: { request(type) {
+      rec.wake.push({ type, active: active() });
+      const s = { released: false, release() { s.released = true; rec.released += 1; return Promise.resolve(); }, addEventListener() {} };
+      return Promise.resolve(s);
+    } } });
+  } catch (e) { /* the test says so */ }
+  class FakeAudio {
+    constructor() { rec.audio.push({ active: active() }); this.currentTime = 5; this.state = 'running'; this.destination = {}; }
+    resume() { return Promise.resolve(); }
+    close() { return Promise.resolve(); }
+    createOscillator() {
+      const o = { type: 'sine', frequency: { value: 0, setValueAtTime() {} }, connect() {}, stop() {},
+        start(when) { if (o.type === 'triangle') rec.cheer.push(when); else rec.osc.push(when); } };
+      return o;
+    }
+    createGain() { return { gain: { value: 0, setValueAtTime() {}, linearRampToValueAtTime() {}, exponentialRampToValueAtTime() {} }, connect() {} }; }
+  }
+  window.AudioContext = FakeAudio;
+  window.webkitAudioContext = FakeAudio;
+  function FakeNote(title, o) { rec.notes.push({ title, body: o && o.body }); }
+  FakeNote.permission = 'default';
+  FakeNote.requestPermission = () => { rec.ask.push(active()); FakeNote.permission = 'granted'; return Promise.resolve('granted'); };
+  window.Notification = FakeNote;
+};
+
+// After HW_STUBS: an AudioContext on a clock (its currentTime follows the page's clock and stands still while
+// the page is hidden, as iOS stops a hidden page's audio), oscillators that end at their stop time, and
+// navigator.audioSession, each change recorded with the audio clock's time. window.__hide() / __show() hide
+// the page and bring it back (visibilityState and visibilitychange).
+const HW_CLOCKED = () => {
+  const rec = window.__hw;
+  rec.ctx = [];
+  rec.tones = [];
+  rec.session = [];
+  let hiddenSince = null;
+  let away = 0;
+  const vis = (v) => {
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => v });
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => v === 'hidden' });
+    document.dispatchEvent(new Event('visibilitychange'));
+  };
+  window.__hide = () => { hiddenSince = performance.now(); vis('hidden'); };
+  window.__show = () => { away += performance.now() - hiddenSince; hiddenSince = null; vis('visible'); };
+  class Clocked {
+    constructor() {
+      this.t0 = performance.now();
+      this.state = 'running';
+      this.destination = {};
+      rec.audio.push({ active: !!(navigator.userActivation && navigator.userActivation.isActive) });
+      rec.ctx.push(this);
+    }
+    get currentTime() { return 5 + ((hiddenSince != null ? hiddenSince : performance.now()) - this.t0 - away) / 1000; }
+    resume() { return Promise.resolve(); }
+    close() { return Promise.resolve(); }
+    createOscillator() {
+      const ctx = this;
+      const o = {
+        type: 'sine', frequency: { value: 0 }, connect() {}, onended: null, when: null, stopAt: null, ended: false, cancelled: false,
+        start(when) { o.when = when; if (o.type === 'triangle') { rec.cheer.push(when); return; } rec.osc.push(when); rec.tones.push(o); },
+        stop(when) {
+          if (o.cancelled || o.ended) return;
+          if (!when) { o.cancelled = true; return; }
+          o.stopAt = when;
+          // Ends when the audio clock reaches its stop time (later, if the clock stood still meanwhile).
+          const wait = () => setTimeout(() => {
+            if (o.cancelled || o.ended) return;
+            if (ctx.currentTime < o.stopAt) { wait(); return; }
+            o.ended = true;
+            if (o.onended) o.onended({});
+          }, Math.max(1, (o.stopAt - ctx.currentTime) * 1000));
+          wait();
+        },
+      };
+      return o;
+    }
+    createGain() { return { gain: { value: 0, setValueAtTime() {}, linearRampToValueAtTime() {}, exponentialRampToValueAtTime() {} }, connect() {} }; }
+  }
+  window.AudioContext = Clocked;
+  window.webkitAudioContext = Clocked;
+  let type = 'auto';
+  Object.defineProperty(navigator, 'audioSession', { configurable: true, value: {
+    get type() { return type; },
+    set type(v) { type = v; const c = rec.ctx[rec.ctx.length - 1]; rec.session.push({ type: v, at: c ? Math.round(c.currentTime * 1000) / 1000 : null }); },
+  } });
+  // When the next tone not called off or played is due, in seconds on the audio clock (null: none).
+  window.__chimeIn = () => {
+    const c = rec.ctx[rec.ctx.length - 1];
+    const due = rec.tones.filter((t) => !t.cancelled && !(t.stopAt != null && c && c.currentTime >= t.stopAt)).map((t) => t.when);
+    return c && due.length ? Math.min(...due) - c.currentTime : null;
+  };
+};
+const HW_AUDIO = `(${HW_STUBS})(); (${HW_CLOCKED})();`;
+// After HW_STUBS and HW_CLOCKED: a wake lock the browser lets go of when the page is hidden, as browsers do (its
+// 'release' listeners called; rec.dropped counts them). window.__hide() / __show() hide the page and bring it back.
+const HW_WAKE_DROP = () => {
+  const rec = window.__hw;
+  rec.dropped = 0;
+  const live = [];
+  Object.defineProperty(navigator, 'wakeLock', { configurable: true, value: { request(type) {
+    rec.wake.push({ type, active: !!(navigator.userActivation && navigator.userActivation.isActive) });
+    const ls = [];
+    const s = { released: false, release() { if (!s.released) { s.released = true; rec.released += 1; } return Promise.resolve(); },
+      addEventListener(kind, f) { if (kind === 'release') ls.push(f); } };
+    live.push({ s, ls });
+    return Promise.resolve(s);
+  } } });
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'hidden') return;
+    live.splice(0).forEach(({ s, ls }) => { if (s.released) return; s.released = true; rec.dropped += 1; ls.forEach((f) => f(new Event('release'))); });
+  }, true);
+};
+const HW_AUDIO_DROP = `(${HW_STUBS})(); (${HW_CLOCKED})(); (${HW_WAKE_DROP})();`;
 
 (async () => {
   fs.mkdirSync(SHOTS, { recursive: true });
@@ -288,7 +542,9 @@ const ANDROID = 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KH
     if (opts.signedIn) await signIn(context, 'alex@example.com');
     if (opts.init) await context.addInitScript(opts.init);
     const page = await context.newPage();
-    await page.clock.install({ time: DEVICE_NOW });
+    await page.clock.install({ time: opts.device || DEVICE_NOW });
+    // opts.noPlan: plan.js doesn't load (a phone that kept an older day.html, or a failed fetch).
+    if (opts.noPlan) await page.route(/\/assets\/plan\.js/, (route) => route.abort('failed'));
     page.on('pageerror', (e) => errors.push(`${opts.label}: ${e.message}`));
     page.on('console', (m) => {
       if (m.type() !== 'error') return;
@@ -349,16 +605,18 @@ const ANDROID = 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KH
   }));
   const indexCdn = (fs.readFileSync(`${ROOT}/index.html`, 'utf8').match(/https:\/\/cdn\.jsdelivr\.net\/[^"?]*supabase\.js/) || [])[0];
   const order = head.scripts.map((s) => s.src.replace(/\?.*$/, ''));
-  // shoplist.js (v1.2: the shopping list's aisles and outbox, no database calls of its own) comes before day.js.
-  check('day.html: config.js, then supabase-js (the same pinned URL as index.html), then assets/shoplist.js and assets/day.js',
-    same(order, ['config.js', indexCdn, 'assets/shoplist.js', 'assets/day.js']) && /@2\.\d+\.\d+\//.test(indexCdn || ''), order.join(', '));
+  // shoplist.js (v1.2: the shopping list's aisles and outbox) and plan.js (v1.3: homework's editor and timer, added on
+  // purpose), neither with database calls of its own, come before day.js.
+  check('day.html: config.js, then supabase-js (the same pinned URL as index.html), then assets/shoplist.js, assets/plan.js and assets/day.js',
+    same(order, ['config.js', indexCdn, 'assets/shoplist.js', 'assets/plan.js', 'assets/day.js']) && /@2\.\d+\.\d+\//.test(indexCdn || ''), order.join(', '));
   check('day.html: no async scripts, no inline script', head.scripts.every((s) => !s.async) && head.inline === 0);
-  check('day.html: styles.css then css/day.css', same(head.styles.map((h) => h.replace(/\?.*$/, '')), ['assets/styles.css', 'assets/css/day.css']), head.styles.join(', '));
+  check('day.html: styles.css, css/day.css, then css/plan.css (v1.3)', same(head.styles.map((h) => h.replace(/\?.*$/, '')), ['assets/styles.css', 'assets/css/day.css', 'assets/css/plan.css']),
+    head.styles.join(', '));
   check('day.html: robots noindex,nofollow and referrer no-referrer', /noindex/.test(head.robots || '') && /nofollow/.test(head.robots || '') && head.referrer === 'no-referrer', JSON.stringify(head));
   check('day.html: no manifest link (the hub\'s manifest would install the hub)', !head.manifest);
   check('day.html: the hub and the Gantt engine are not loaded', head.hub === 'undefined' && head.gantt === 'undefined'
     && !requests.some((u) => /hub\.js|gantt\.js|manifest\.webmanifest|assets\/modules\//.test(u)), requests.filter((u) => /assets/.test(u)).join(' | '));
-  const fetched = await page.evaluate(async (urls) => Promise.all(urls.map(async (u) => (await fetch(new URL(u, location.href))).status)), head.styles.concat(['assets/shoplist.js', 'assets/day.js']));
+  const fetched = await page.evaluate(async (urls) => Promise.all(urls.map(async (u) => (await fetch(new URL(u, location.href))).status)), head.styles.concat(['assets/shoplist.js', 'assets/plan.js', 'assets/day.js']));
   check('day.html: its stylesheets and scripts exist', fetched.every((s) => s === 200), fetched.join(','));
   check('no sign-in: no Auth requests', !requests.some((u) => u.includes('/auth/v1/')), requests.filter((u) => u.includes('/auth/')).join(' | '));
   const gpd = calls(db, 'get_person_day');
@@ -1419,6 +1677,1319 @@ const ANDROID = 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KH
   await page.waitForSelector('.day-sec');
   check('another link on the same phone: the list saved for Taylor\'s link is removed unread', (await page.evaluate(() => localStorage.getItem('homehub.shop.day'))) === null);
   await page.context().close();
+
+  // =====================================================================
+  // 16. Homework (v1.3): the card, only with get_person_day's homework key, and no homework request without it
+  // =====================================================================
+  const hwCalls = (d) => d.calls.filter((c) => /_by_token$/.test(c.name) && !/^(complete|undo|get_list|add_to_list|buy_item)_by_token$/.test(c.name));
+  const hwText = (pg, sel) => pg.$eval(sel, (e) => e.textContent.replace(/\s+/g, ' ').trim()).catch(() => '');
+  const hwTexts = (pg, sel) => pg.$$eval(sel, (es) => es.map((e) => e.textContent.replace(/\s+/g, ' ').trim()));
+  const hwVisible = (pg, sel) => pg.$eval(sel, (e) => !!(e.offsetWidth || e.offsetHeight)).catch(() => false);
+  const hwToast = async (pg) => (await pg.waitForSelector('.toast', { timeout: 3000 }).then(() => text(pg, '.toast:last-child')).catch(() => ''));
+  const hwClear = (pg) => pg.evaluate(() => document.querySelectorAll('.toast').forEach((x) => x.remove()));
+  const hwRec = (pg) => pg.evaluate(() => window.__hw);
+  // Move the server's clock and the phone's together (the phone's by the same amount, from wherever it is).
+  const hwTick = async (pg, d, ms) => { d.hwNow += ms; await pg.clock.fastForward(ms); await pg.waitForTimeout(50); };
+  const hwPause = async (pg) => pg.clock.pauseAt(new Date((await pg.evaluate(() => Date.now())) + 200));
+
+  // A helper's My day: no card, no homework request (Taylor has no homework_kids row).
+  ({ page, db, requests } = await open({ label: 'hw-helper', path: `/day.html?t=${TAYLOR}`, db: hwDb(), device: HW_DEVICE, init: HW_STUBS }));
+  check('homework: no card on a helper\'s My day, and no homework request', !(await page.$('.hw-card')) && !hwCalls(db).length, db.calls.map((c) => c.name).join(','));
+  await page.context().close();
+  // Schema 4 (no 0005 yet): get_person_day has no homework key; the day draws as before, with no homework request.
+  {
+    const d4 = hwDb();
+    delete d4.homework_kids;
+    ({ page, db } = await open({ label: 'hw-schema4', path: `/day.html?t=${JORDAN}`, db: d4, device: HW_DEVICE, init: HW_STUBS }));
+    check('homework: on schema 4 there is no card and no homework request; the day is as before',
+      !(await page.$('.hw-card')) && !hwCalls(db).length && (await text(page, '.day-head h1')) === 'Hi, Jordan'
+      && same((await rowsOf(page, 'today')).map((r) => r.title), ['Homework']), db.calls.map((c) => c.name).join(','));
+    await page.context().close();
+  }
+  // A kid with homework off: no card either.
+  {
+    const off = hwDb();
+    off.homework_kids[0].active = false;
+    ({ page, db } = await open({ label: 'hw-off', path: `/day.html?t=${JORDAN}`, db: off, device: HW_DEVICE, init: HW_STUBS }));
+    check('homework: homework off → no card, no homework request', !(await page.$('.hw-card')) && !hwCalls(db).length);
+    await page.context().close();
+  }
+  // + Homework due within 3 days (so 'add' does Quick too) while he has no homework time at all: his homework is kept,
+  // with no plan; the form closes and nothing says "Set a homework time first." to him.
+  {
+    const nt = hwDb();
+    delete nt.hwTimes[P.jordan];
+    ({ page, db } = await open({ label: 'hw-notime', path: `/day.html?t=${JORDAN}#homework`, db: nt, device: HW_DEVICE, init: HW_STUBS }));
+    await page.waitForSelector('[data-act="hw-add"]', { timeout: 5000 });
+    await page.click('[data-act="hw-add"]');
+    await page.fill('.hw-add-form input[name="title"]', 'Worksheet 6.1');
+    await page.fill('.hw-add-form input[name="due"]', '2026-11-03');
+    await page.click('.hw-add-form [type="submit"]');
+    await until(() => calls(db, 'assignment_by_token').length === 1);
+    const sent = calls(db, 'assignment_by_token')[0].body;
+    check('+ Homework with no homework time: his homework is kept, with no plan; the form closes, no error',
+      sent.p_minutes === 15 && await until(() => db.assignments.some((a) => a.id === sent.p_assignment && a.added_by === 'kid'))
+      && !db.homework_steps.some((s) => s.assignment_id === sent.p_assignment)
+      && await until(async () => !(await page.$('.hw-add-form'))) && !/homework time/i.test(await page.evaluate(() => document.body.innerText.match(/Set a homework time first/) ? 'homework time' : '')),
+      `${JSON.stringify(sent)} ${await page.evaluate(() => [...document.querySelectorAll('.toast')].map((t) => t.textContent).join(' | '))}`);
+    await page.context().close();
+  }
+  // Without plan.js (it didn't load: a phone that kept an older day.html, or a failed fetch): the day still works, with no card.
+  {
+    ({ page, db } = await open({ label: 'hw-noplan', path: `/day.html?t=${JORDAN}`, db: hwDb(), noPlan: true, device: HW_DEVICE, init: HW_STUBS,
+      allowConsole: /plan\.js|ERR_FAILED/ }));
+    const planLoaded = await page.evaluate(() => typeof window.HomePlan);
+    check('homework: without plan.js the day draws as before (no card, no homework request)',
+      planLoaded === 'undefined' && !(await page.$('.hw-card')) && !hwCalls(db).length && !!(await page.$('.day-sec')), planLoaded);
+    await page.context().close();
+  }
+
+  ({ page, db, requests } = await open({ label: 'hw-en', path: `/day.html?t=${JORDAN}`, db: hwDb(), device: HW_DEVICE, init: HW_STUBS }));
+  check('homework card: under the greeting, above today\'s items',
+    await page.evaluate(() => { const c = document.querySelector('.hw-card'); const h = document.querySelector('.day-head'); const s = document.querySelector('.day-sec');
+      return !!(c && h && s && (h.compareDocumentPosition(c) & 4) && (c.compareDocumentPosition(s) & 4)); }));
+  check('homework card: "Homework · 4:30pm · 3 steps · 45 min · 2 from earlier", the balance, Next and its own Start',
+    (await hwText(page, '.hw-card-head')) === 'Homework · 4:30pm · 3 steps · 45 min · 2 from earlier'
+    && (await hwText(page, '.hw-card-points')) === '★ 118'
+    && (await hwText(page, '.hw-card-next')) === 'Next: Worksheet 4.2 · Do worksheet 4.2'
+    && (await hwText(page, '.hw-card [data-act="hw-card-start"]')) === 'Start · 20 min'
+    && (await page.$eval('.hw-card a.hw-open', (a) => a.getAttribute('href'))) === '#homework',
+    `${await hwText(page, '.hw-card')}`);
+  // The next-reward bar (the owner's "immediate gratification"): 118 points buy Friday's dinner (60) now; the
+  // cheapest he can't afford yet is the book (150), 32 to go.
+  check('homework card: the next-reward bar, "You can get Choose Friday\'s dinner now!" and "32 points to A new book"',
+    (await hwText(page, '.hw-card .plan-goal-text')) === "You can get Choose Friday's dinner now!" && (await hwText(page, '.hw-card .plan-goal-next')) === '32 points to A new book'
+    && (await page.$eval('.hw-card .plan-goal-fill', (f) => f.style.width)) === '78.7%', await hwText(page, '.hw-card'));
+  check('homework card: drawn from get_person_day alone (no homework_by_token on the day view)', !calls(db, 'homework_by_token').length);
+  check('homework card: nothing asked for before a tap (no wake lock, no audio, no notification)',
+    await page.evaluate(() => !window.__hw.wake.length && !window.__hw.audio.length && !window.__hw.ask.length));
+
+  // ---- One tap from My day to a running ring
+  await page.click('.hw-card [data-act="hw-card-start"]');
+  await until(async () => (await page.evaluate(() => location.hash)) === '#focus' && !!(await page.$('.hw-ring')));
+  let fstart = calls(db, 'focus_by_token');
+  check('the card\'s Start: one focus_by_token start on Next, at his first length, alone, with the phone\'s id for the block',
+    fstart.length === 1 && same(Object.assign({}, fstart[0].body, { p_session: 'id' }), { p_token: JORDAN, p_action: 'start', p_session: 'id', p_minutes: 20, p_step: H.m1, p_with: 'alone' })
+    && UUID.test(fstart[0].body.p_session), JSON.stringify(fstart.map((c) => c.body)));
+  const blockId = fstart[0] && fstart[0].body.p_session;
+  let rec = await hwRec(page);
+  check('Start: the screen wake lock and the AudioContext are asked for inside the tap',
+    rec.wake.length >= 1 && rec.wake[0].type === 'screen' && rec.wake[0].active && rec.audio.length === 1 && rec.audio[0].active, JSON.stringify(rec));
+  check('Start: the chime is scheduled on the audio clock at Start (currentTime + 20 minutes), not by a timer',
+    rec.osc.length >= 1 && rec.osc.every((w) => Math.abs(w - (5 + 1200)) < 3), JSON.stringify(rec.osc));
+  check('#focus: the step, its assignment, the ring and "20 min" from the server\'s clock (the phone is a day off)',
+    (await hwText(page, '.hw-focus-title')) === 'Do worksheet 4.2' && (await hwText(page, '.hw-focus-sub')) === 'Worksheet 4.2'
+    && (await hwText(page, '.hw-left')) === '20 min' && !!(await page.$('.hw-ring svg.plan-ring')), await hwText(page, '.hw-focus'));
+  check('#focus: on time at once ("On time · +10 once 5 minutes are done") and his cue for the first minute',
+    (await hwText(page, '.hw-ontime')) === 'On time · +10 once 5 minutes are done'
+    && (await hwText(page, '.hw-focus-cue')) === '“When I\'ve had my snack, I open my notes doc.”', await hwText(page, '.hw-focus'));
+  check('#focus: I\'m stuck, Done and Stop', same(await hwTexts(page, '.hw-focus-acts button'), ['I\'m stuck', 'Done', 'Stop']), JSON.stringify(await hwTexts(page, '.hw-focus-acts button')));
+  check('#focus: no ticking seconds shown', !/\d:\d\d/.test(await hwText(page, '.hw-ring')), await hwText(page, '.hw-ring'));
+  check('#focus: the points so far ("★ 118 +0 so far") and the next-reward bar', (await hwText(page, '.hw-live')) === '★ 118 +0 so far'
+    && (await hwText(page, '.hw-focus .plan-goal-text')) === "You can get Choose Friday's dinner now!", await hwText(page, '.hw-focus'));
+  await page.screenshot({ path: SHOTS + 'day-hw-focus.png', fullPage: true });
+
+  // ---- The ring counts to the server's ends_at, whatever the phone's clock says
+  await hwPause(page);
+  await hwTick(page, db, 61 * 1000);
+  check('#focus: the cue goes after the first minute', !(await hwVisible(page, '.hw-focus-cue')));
+  check('#focus: a minute on, the points tick up: "★ 119 +1 so far"', (await hwText(page, '.hw-live')) === '★ 119 +1 so far', await hwText(page, '.hw-live'));
+  await hwTick(page, db, 7 * 60 * 1000);
+  check('#focus: 8 minutes on, 12 left', (await hwText(page, '.hw-left')) === '12 min', await hwText(page, '.hw-left'));
+  // An estimate from the server's start time, a point a minute, and the on-time +10 once 5 minutes are seen; the
+  // bar to the book moves with it (32 − 18 = 14 to go). The end pays what the server saw.
+  check('#focus: 8 minutes on, "★ 136 +18 so far" (8 a minute and the on-time 10), and the bar moves on: "14 points to A new book"',
+    (await hwText(page, '.hw-live')) === '★ 136 +18 so far' && (await hwText(page, '.hw-focus .plan-goal-next')) === '14 points to A new book', await hwText(page, '.hw-focus'));
+  const hwReads = calls(db, 'homework_by_token').length;
+  await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  check('#focus: back into view reads homework_by_token again', await until(() => calls(db, 'homework_by_token').length === hwReads + 1), String(calls(db, 'homework_by_token').length));
+  // A phone clock that jumps by hours, then a reload in the middle of the block: the server answers the open block.
+  await page.clock.setSystemTime(new Date(HW_DEVICE.getTime() - 5 * 3600 * 1000));
+  await page.reload();
+  await page.waitForSelector('.hw-ring', { timeout: 5000 });
+  check('a reload mid-block shows it again, 12 minutes left, with the phone\'s clock 5 hours off', (await hwText(page, '.hw-left')) === '12 min'
+    && (await hwText(page, '.hw-focus-title')) === 'Do worksheet 4.2', await hwText(page, '.hw-focus'));
+  check('a reload: no second start (the server\'s open block is shown)', calls(db, 'focus_by_token').length === 1);
+  await hwPause(page);
+
+  // ---- Done, then Keep going: the same block moves on
+  await page.click('[data-act="hw-done-step"]');
+  await until(() => calls(db, 'step_by_token').length === 1);
+  check('Done: the step is ticked (step_by_token done)', same(calls(db, 'step_by_token')[0].body, { p_token: JORDAN, p_step: H.m1, p_action: 'done' }), JSON.stringify(calls(db, 'step_by_token').map((c) => c.body)));
+  await page.waitForSelector('.hw-after-done', { timeout: 3000 });
+  check('Done: offers Keep going on the next step, or End the block',
+    same(await hwTexts(page, '.hw-after-done button'), [`Keep going: ${HW_TITLES.s1}`, 'End the block']), JSON.stringify(await hwTexts(page, '.hw-after-done button')));
+  await page.click('[data-act="hw-keep"]');
+  await until(() => calls(db, 'focus_by_token').length === 2);
+  check('Keep going: focus_by_token switch, the same block, to the next step',
+    same(calls(db, 'focus_by_token')[1].body, { p_token: JORDAN, p_action: 'switch', p_session: blockId, p_step: H.s1 }), JSON.stringify(calls(db, 'focus_by_token')[1].body));
+  check('Keep going: the ring goes on with the new step', await until(async () => (await hwText(page, '.hw-focus-title')) === HW_TITLES.s1) && (await hwText(page, '.hw-left')) === '12 min');
+
+  // ---- The stuck sheet: his plan, Make it smaller (the block moves to it), Ask Pat, Next step
+  await page.click('[data-act="hw-stuck"]');
+  await page.waitForSelector('.hw-sheet');
+  check('I\'m stuck: his own if-then plan first', (await hwText(page, '.hw-sheet .hw-stuck-plan')) === 'Stuck? Your plan: “If I\'m stuck for 5 minutes, I\'ll write the question for Pat and move on.”', await hwText(page, '.hw-sheet'));
+  check('I\'m stuck: Make it smaller, Ask Pat, Next step (the next step named), Back to the timer; no AI',
+    same(await hwTexts(page, '.hw-sheet .hw-sheet-acts > button'), ['Make it smaller', 'Ask Pat', 'Next step', 'Back to the timer'])
+    && /Science project: river poster · Find 2 sources and save their links/.test(await hwText(page, '.hw-sheet'))
+    && !/AI|Claude/.test(await hwText(page, '.hw-sheet')), await hwText(page, '.hw-sheet'));
+  check('I\'m stuck: the ring keeps running underneath', !!(await page.$('.hw-ring')) && (await hwText(page, '.hw-left')) === '12 min');
+  await page.click('.hw-sheet [data-act="hw-smaller"]');
+  check('Make it smaller: the chips and your own',
+    same(await hwTexts(page, '.hw-sheet [data-chip]'), ['Write one sentence', 'List what\'s unclear', 'Do the easiest part']) && !!(await page.$('.hw-sheet input[name="text"]')));
+  await page.click('.hw-sheet [data-chip="1"]');
+  await until(() => calls(db, 'step_by_token').length === 2);
+  const smaller = calls(db, 'step_by_token')[1].body;
+  check('Make it smaller: step_by_token smaller on the running step, with the phone\'s key for the new one',
+    same(Object.assign({}, smaller, { p_key: 'k' }), { p_token: JORDAN, p_step: H.s1, p_action: 'smaller', p_text: 'List what\'s unclear', p_key: 'k' }) && UUID.test(smaller.p_key), JSON.stringify(smaller));
+  check('Make it smaller during a block: the block moves to the new step', await until(async () => (await hwText(page, '.hw-focus-title')) === 'List what\'s unclear')
+    && db.focus_sessions.find((f) => f.id === blockId).step_id === smaller.p_key && !(await page.$('.hw-sheet')), await hwText(page, '.hw-focus-title'));
+  await page.click('[data-act="hw-stuck"]');
+  await page.click('.hw-sheet [data-act="hw-ask"]');
+  await page.fill('.hw-sheet input[name="text"]', 'Do I need a list for every source?');
+  await page.click('.hw-sheet [data-act="hw-sheet-send"]');
+  await until(() => calls(db, 'step_by_token').length === 3);
+  check('Ask Pat: a short question on the step; the step stays open and the timer runs on',
+    same(calls(db, 'step_by_token')[2].body, { p_token: JORDAN, p_step: smaller.p_key, p_action: 'ask', p_text: 'Do I need a list for every source?' })
+    && (await hwToast(page)) === 'Question sent.' && !!(await page.$('.hw-ring')), JSON.stringify(calls(db, 'step_by_token')[2].body));
+  await hwClear(page);
+  await page.click('[data-act="hw-stuck"]');
+  await page.click('.hw-sheet [data-act="hw-sheet-close"]');
+  check('Back to the timer closes the sheet', !(await page.$('.hw-sheet')));
+
+  // ---- The end screen. The owner changed the rule: the block is paid the moment its ring runs out (End 'time',
+  // sent at once, before he answers), with a small celebration; his answer (More to do, his note) comes after.
+  await hwTick(page, db, 12 * 60 * 1000 + 2000);
+  await page.waitForSelector('.hw-end', { timeout: 3000 });
+  await until(() => calls(db, 'focus_by_token').length === 3 && !!calls(db, 'focus_by_token')[2].done);
+  check('the ring runs out: the block is paid at once (focus_by_token end, time), before he answers', same(calls(db, 'focus_by_token')[2].body,
+    { p_token: JORDAN, p_action: 'end', p_session: blockId, p_result: 'time' }), JSON.stringify(calls(db, 'focus_by_token')[2].body));
+  await page.waitForSelector('.hw-points-line', { timeout: 3000 });
+  const earned = db.points_ledger.filter((l) => l.session_id === blockId).map((l) => [l.kind, l.delta]);
+  check('the points shown are the server\'s: "+20 · 20 minutes · +10 on time", and "+30" by the counter, which starts at ★ 118',
+    (await hwText(page, '.hw-points-line')) === '+20 · 20 minutes · +10 on time' && (await hwText(page, '.hw-end-balance')) === '★ 118'
+    && (await hwText(page, '.hw-end .hw-plus')) === '+30' && same(earned, [['focus', 20], ['on_time', 10]]), `${await hwText(page, '.hw-end')} / ${JSON.stringify(earned)}`);
+  rec = await hwRec(page);
+  check('the celebration: a short sound (two tones, not the chime) on the AudioContext his Start made', rec.cheer.length === 2, JSON.stringify(rec.cheer));
+  await page.clock.runFor(1200);
+  check('the celebration: the counter ticks up to the new total, ★ 148', (await hwText(page, '.hw-end-balance')) === '★ 148', await hwText(page, '.hw-end'));
+  check('then: "Time. How did it go?", the ring solid, Step done and More to do, and the optional note',
+    (await hwText(page, '.hw-end h2')) === 'Time. How did it go?' && !!(await page.$('.hw-ring svg.plan-ring.is-done'))
+    && same(await hwTexts(page, '.hw-end [data-act="hw-end"]'), ['Step done ✓', 'More to do'])
+    && (await page.$eval('.hw-end label', (l) => l.textContent.trim())).startsWith('What did you get done? (optional)'), await hwText(page, '.hw-end'));
+  rec = await hwRec(page);
+  check('the end is always visual; no notification on a computer that didn\'t ask for one', rec.notes.length === 0);
+  await page.fill('.hw-end input[name="note"]', 'found 2 sources, 1 more to check');
+  await page.click('.hw-end [data-act="hw-end"][data-result="more"]');
+  await until(() => calls(db, 'focus_by_token').length === 4);
+  check('More to do: his answer, a second focus_by_token end with the note (the points stay as paid)', same(calls(db, 'focus_by_token')[3].body,
+    { p_token: JORDAN, p_action: 'end', p_session: blockId, p_result: 'more', p_note: 'found 2 sources, 1 more to check' })
+    && await until(async () => (await hwText(page, '.hw-end h2')) === 'Block finished.') && (await hwText(page, '.hw-points-line')) === '+20 · 20 minutes · +10 on time'
+    && (await hwText(page, '.hw-end-balance')) === '★ 148' && db.points_ledger.filter((l) => l.session_id === blockId).length === 2
+    && db.focus_sessions.find((f) => f.id === blockId).note === 'found 2 sources, 1 more to check',
+    JSON.stringify(calls(db, 'focus_by_token')[3].body));
+  check('the end screen: a break, and Next', same(await hwTexts(page, '.hw-end-next button'), ['Break · 5 min', `Next: ${HW_TITLES.s1} ›`]), JSON.stringify(await hwTexts(page, '.hw-end-next button')));
+  rec = await hwRec(page);
+  check('the wake lock: asked for again after the reload, and released at the end', rec.wake.length >= 1 && rec.wake[0].type === 'screen' && rec.released >= 1, JSON.stringify(rec));
+  await page.screenshot({ path: SHOTS + 'day-hw-end.png', fullPage: true });
+  await page.click('[data-act="hw-break"]');
+  check('Break: "Take 5 minutes." with a small ring on the device, and Skip break; nothing stored',
+    (await hwText(page, '.hw-break p')) === 'Take 5 minutes.' && !!(await page.$('.hw-break svg.plan-ring')) && !!(await page.$('[data-act="hw-skip-break"]'))
+    && calls(db, 'focus_by_token').length === 4);
+  await page.click('[data-act="hw-skip-break"]');
+  await page.click('.hw-end-next [data-act="hw-next"]');
+  await until(async () => (await page.evaluate(() => location.hash)) === '#homework' && !!(await page.$('.hw-now-card')));
+  check('Next: #homework with that step as Now', (await hwText(page, '.hw-now-title')) === HW_TITLES.s1, await hwText(page, '.hw-now'));
+  await page.context().close();
+
+  // =====================================================================
+  // 17. #homework: Now, Tonight, From earlier, Due soon, at 390px, 420px and 1280×800
+  // =====================================================================
+  const hwSizes = [['phone', phone(), 390], ['window', { viewport: { width: 420, height: 800 } }, 420], ['desktop', { viewport: { width: 1280, height: 800 } }, 1280]];
+  for (const [label, ctx, width] of hwSizes) {
+    ({ page, db } = await open({ label: `hw-${label}`, path: `/day.html?t=${JORDAN}#homework`, db: hwDb(), device: HW_DEVICE, init: HW_STUBS, ctx }));
+    await page.waitForSelector('.hw-now-card');
+    check(`#homework at ${width}px: no sideways scroll`, await noSideScroll(page));
+    await page.screenshot({ path: SHOTS + `day-hw-${label}.png`, fullPage: true });
+    if (label !== 'phone') { await page.context().close(); continue; }
+    check('#homework: read with homework_by_token({ p_token })', same(calls(db, 'homework_by_token').map((c) => c.body), [{ p_token: JORDAN }]), JSON.stringify(calls(db, 'homework_by_token').map((c) => c.body)));
+    check('#homework: ‹ My day, "Homework", the balance', (await hwText(page, '.hw-head .list-back')) === '‹ My day' && (await hwText(page, '.hw-head h1')) === 'Homework'
+      && (await hwText(page, '.hw-head .hw-points')) === '★ 118');
+    check('Now: "Now · homework time 4:30pm–5:15pm · start by 4:40pm for +10"', (await hwText(page, '#hw-now-h')) === 'Now · homework time 4:30pm–5:15pm · start by 4:40pm for +10', await hwText(page, '#hw-now-h'));
+    check('#homework: the next-reward bar under the heading', (await hwText(page, '.hw-head .plan-goal-text')) === "You can get Choose Friday's dinner now!"
+      && (await hwText(page, '.hw-head .plan-goal-next')) === '32 points to A new book', await hwText(page, '.hw-head'));
+    check('Now: the card\'s Next, with its place in the plan, its "done looks like", his cue and ✎',
+      (await hwText(page, '.hw-now-title')) === 'Do worksheet 4.2' && (await hwText(page, '.hw-now-sub')) === 'Worksheet 4.2 · step 1 of 1 · 15 min'
+      && (await hwText(page, '.hw-now-card .hw-cue')).startsWith('“When I\'ve had my snack, I open my notes doc.”') && !!(await page.$('.hw-now-card [data-act="hw-cue"]')), await hwText(page, '.hw-now-card'));
+    check('Now: the length chips (his first length chosen) and Alone ▾ (With Pat, With a parent)',
+      same(await hwTexts(page, '.hw-len'), ['10', '15', '20', '25']) && (await page.$eval('.hw-len[aria-checked="true"]', (b) => b.textContent.trim())) === '20'
+      && same(await page.$$eval('.hw-now-card select[name="with"] option', (os) => os.map((x) => [x.value, x.textContent])), [['alone', 'Alone'], ['tutor', 'With Pat'], ['parent', 'With a parent']])
+      && (await hwText(page, '.hw-now-card [data-act="hw-start"]')) === 'Start · 20 min');
+    check('Tonight: "Tonight · 45 min planned · 45 min of homework time", in the plans\' order',
+      (await hwText(page, '#hw-tonight-h')) === 'Tonight · 45 min planned · 45 min of homework time'
+      && same(await hwTexts(page, '.hw-tonight .hw-list > .hw-steps > .hw-step .hw-step-title'), ['Worksheet 4.2 · Do worksheet 4.2', `Science project: river poster · ${HW_TITLES.s1}`, `Science project: river poster · ${HW_TITLES.s2}`]),
+      JSON.stringify(await hwTexts(page, '.hw-tonight .hw-list > .hw-steps > .hw-step .hw-step-title')));
+    // His view says who answered only as a role it doesn't carry for answers: "Answer: …" (never a name that might be wrong).
+    check('Tonight: his question and the answer under the step', (await hwText(page, `.hw-step[data-step="${H.m1}"] .hw-q`)) === 'You asked: What does \'simplify fully\' mean here?'
+      && (await hwText(page, `.hw-step[data-step="${H.m1}"] .hw-note`)) === 'Answer: No common factor is left.', await hwText(page, `.hw-step[data-step="${H.m1}"]`));
+    check('Tonight: homework with no plan, due soon: "Math · Worksheet 5.1 · due Wed" with Quick and Start',
+      (await hwText(page, `.hw-noplan[data-asg="${H.ws51}"] .hw-noplan-title`)) === 'Math · Worksheet 5.1 · due Wed'
+      && same(await hwTexts(page, `.hw-noplan[data-asg="${H.ws51}"] button`), ['Quick', 'Start']), await hwText(page, '.hw-tonight'));
+    check('From earlier: folded into one line with Re-plan', (await hwText(page, '.hw-earlier summary')) === 'From earlier · 2 steps · 35 min · Re-plan ›'
+      && !(await page.$eval('.hw-earlier', (d) => d.open)), await hwText(page, '.hw-earlier summary'));
+    await page.click('.hw-earlier summary');
+    check('From earlier, opened: each step with Start and Not today (none on a checkpoint), and Re-plan; the Not yet note under the milestone',
+      same(await hwTexts(page, '.hw-earlier .hw-step-title'), ['Vocabulary project · List the 20 words', 'Vocabulary project · Flashcards made'])
+      && (await page.$$(`.hw-earlier .hw-step[data-step="${H.v1}"] [data-act="hw-not-today"]`)).length === 1
+      && !(await page.$(`.hw-earlier .hw-step[data-step="${H.v2}"] [data-act="hw-not-today"]`))
+      && (await hwText(page, `.hw-earlier .hw-step[data-step="${H.v2}"] .hw-note`)) === 'Not yet: Add the last five words.'
+      && !!(await page.$('.hw-earlier [data-act="hw-replan-earlier"]')), await hwText(page, '.hw-earlier'));
+    check('nothing red and no "late" in From earlier', !/late/i.test(await hwText(page, '.hw-earlier')) && (await page.$eval('.hw-earlier', (e) => getComputedStyle(e).color)) !== 'rgb(220, 38, 38)');
+    check('+ Homework', (await hwText(page, '[data-act="hw-add"]')) === '+ Homework');
+    const due = await page.$$eval('.hw-due .hw-asg', (rs) => rs.map((r) => r.textContent.replace(/\s+/g, ' ').trim()));
+    check('Due soon: the Science project with its next milestone, the two bars, the checked milestone\'s note and the stretch question',
+      /^Science · Science project: river poster · due Fri Nov 13 · ◆ Outline with 3 main points Wed/.test(due.find((x) => /river/.test(x)) || '')
+      && !!(await page.$(`.hw-asg[data-asg="${H.sci}"] .plan-bars .plan-bar-work`)) && !!(await page.$(`.hw-asg[data-asg="${H.sci}"] .plan-bars .plan-bar-time`))
+      && /Pat: Good choice\. The delta is a strong focus\./.test(due.find((x) => /river/.test(x)) || '')
+      && /Optional: Which part of the river would you most like to show in detail\?/.test(due.find((x) => /river/.test(x)) || ''), JSON.stringify(due));
+    check('Due soon: Behind the plan · Re-plan ›, as plain text, and the passed milestone\'s line',
+      /Spanish · Vocabulary project · due Mon Nov 9 · Behind the plan · Re-plan ›/.test(due.join(' | '))
+      && /Flashcards made was planned for Fri Oct 30\. Pick a new day with Pat ›/.test(due.join(' | ')), JSON.stringify(due));
+    check('Due soon: a lesson being planned', due.some((x) => x === 'Math · Fractions practice · lesson · do by Fri · Being planned'), JSON.stringify(due));
+    check('the who-sees line', (await hwText(page, '.hw-who')) === 'Pat and the grown-ups in your family see your plan and your notes. The grown-ups see your points.');
+    check('focused minutes this week against last week', (await hwText(page, '.hw-pace')) === '0 min focused this week (last week 20 min)', await hwText(page, '.hw-pace'));
+    check('a phone: no "Show a notification" offer', !(await page.$('[data-act="hw-notify"]')));
+    check('no Notification asked for, ever, on a phone', !(await hwRec(page)).ask.length);
+
+    // ---- Tapping another step makes it Now
+    await page.click(`.hw-tonight .hw-step[data-step="${H.s2}"] .hw-step-main`);
+    check('tapping a step makes it Now', (await hwText(page, '.hw-now-title')) === HW_TITLES.s2 && (await hwText(page, '.hw-now-card .hw-now-dll')) === 'Done looks like: 2 titles and links in your notes doc');
+
+    // ---- Tick, and the 15-minute Undo
+    await page.click(`.hw-tonight .hw-step[data-step="${H.m1}"] .hw-box`);
+    await until(() => calls(db, 'step_by_token').length === 1);
+    await page.waitForSelector('.toast-action', { timeout: 3000 }).catch(() => {});
+    check('tick: step_by_token done, a "Done" toast with Undo', same(calls(db, 'step_by_token')[0].body, { p_token: JORDAN, p_step: H.m1, p_action: 'done' })
+      && (await hwText(page, '.toast-action span')) === 'Done: Do worksheet 4.2' && same(await texts(page, '.toast-action button'), ['Undo', '×']));
+    check('tick: the box shows it done (from the answer, no second read)', await until(async () => (await page.$eval(`.hw-step[data-step="${H.m1}"] .hw-box`, (b) => b.getAttribute('aria-checked'))) === 'true')
+      && calls(db, 'homework_by_token').length === 1);
+    await page.click('.toast-action .toast-btn:not(.toast-x)');
+    await until(() => calls(db, 'step_by_token').length === 2);
+    check('Undo: step_by_token undo', same(calls(db, 'step_by_token')[1].body, { p_token: JORDAN, p_step: H.m1, p_action: 'undo' })
+      && await until(async () => (await page.$eval(`.hw-step[data-step="${H.m1}"] .hw-box`, (b) => b.getAttribute('aria-checked'))) === 'false'));
+    await hwClear(page);
+
+    // ---- Not today (⋯), a resend is harmless
+    await page.click(`.hw-tonight .hw-step[data-step="${H.s2}"] [data-act="hw-more"]`);
+    check('⋯ on a step: Done, Not today, Make it smaller, Ask Pat, Edit',
+      same(await hwTexts(page, `.hw-step[data-step="${H.s2}"] .hw-menu button`), ['Done', 'Not today', 'Make it smaller', 'Ask Pat', 'Edit']), JSON.stringify(await hwTexts(page, `.hw-step[data-step="${H.s2}"] .hw-menu button`)));
+    await page.click(`.hw-step[data-step="${H.s2}"] .hw-menu [data-act="hw-not-today"]`);
+    await until(() => calls(db, 'step_by_token').length === 3);
+    check('Not today: step_by_token not_today with the day his screen showed', same(calls(db, 'step_by_token')[2].body, { p_token: JORDAN, p_step: H.s2, p_action: 'not_today', p_day: HWT }));
+    const moved = db.homework_steps.find((s) => s.id === H.s2);
+    check('Not today: the step goes to the next homework day with room (Tuesday), and leaves Tonight',
+      moved.day === '2026-11-03' && moved.moved_from === HWT && await until(async () => !(await page.$(`.hw-tonight .hw-step[data-step="${H.s2}"]`))), JSON.stringify(moved));
+    check('Not today: a toast says where it went', /^Moved to tomorrow/.test(await hwToast(page)), await text(page, '.toasts'));
+    const resend = homeworkRpc.step_by_token(db, { p_token: JORDAN, p_step: H.s2, p_action: 'not_today', p_day: HWT });
+    check('Not today sent again with the old day changes nothing (a resend)', db.homework_steps.find((s) => s.id === H.s2).day === '2026-11-03' && !resend.__status);
+    await hwClear(page);
+
+    // ---- Quick → Now, + Homework → Now
+    await page.click(`.hw-noplan[data-asg="${H.ws51}"] [data-act="hw-quick"]`);
+    check('Quick: his guess of the minutes, one tap', same(await hwTexts(page, `.hw-noplan[data-asg="${H.ws51}"] [data-quick]`), ['10', '15', '20', '30', '45']));
+    await page.click(`.hw-noplan[data-asg="${H.ws51}"] [data-quick="15"]`);
+    await until(() => calls(db, 'assignment_by_token').length === 1);
+    check('Quick: assignment_by_token quick with the minutes', same(calls(db, 'assignment_by_token')[0].body, { p_token: JORDAN, p_action: 'quick', p_assignment: H.ws51, p_minutes: 15 }));
+    check('Quick: one plain step tonight, given, and it is Now', await until(async () => (await hwText(page, '.hw-now-title')) === 'Worksheet 5.1')
+      && (await hwTexts(page, '.hw-tonight .hw-step-title')).includes('Worksheet 5.1 · Worksheet 5.1') && !(await page.$(`.hw-noplan[data-asg="${H.ws51}"]`)), await hwText(page, '.hw-tonight'));
+    await page.click('[data-act="hw-add"]');
+    check('+ Homework: what, class, due, about how many minutes (15)', same(await page.$$eval('.hw-add-form input', (is) => is.map((i) => [i.name, i.type, i.value])),
+      [['title', 'text', ''], ['subject', 'text', ''], ['due', 'date', ''], ['minutes', 'number', '15']]) && (await page.$eval('.hw-add-form input[name="due"]', (i) => [i.min, i.max].join())) === '2026-11-02,2027-01-01');
+    await page.fill('.hw-add-form input[name="title"]', 'Worksheet 5.2');
+    await page.fill('.hw-add-form input[name="subject"]', 'Math');
+    await page.fill('.hw-add-form input[name="due"]', '2026-11-03');
+    await page.click('.hw-add-form [type="submit"]');
+    await until(() => calls(db, 'assignment_by_token').length === 2);
+    const add = calls(db, 'assignment_by_token')[1].body;
+    check('+ Homework: assignment_by_token add with the phone\'s id and the minutes (due within 3 days: Quick too)',
+      same(Object.assign({}, add, { p_assignment: 'id' }), { p_token: JORDAN, p_action: 'add', p_assignment: 'id', p_title: 'Worksheet 5.2', p_subject: 'Math', p_due_date: '2026-11-03', p_minutes: 15 })
+      && UUID.test(add.p_assignment), JSON.stringify(add));
+    check('+ Homework: it is Now', await until(async () => (await hwText(page, '.hw-now-title')) === 'Worksheet 5.2') && db.assignments.find((a) => a.id === add.p_assignment).added_by === 'kid');
+    await page.click('[data-act="hw-add"]');
+    await page.fill('.hw-add-form input[name="title"]', 'Book report');
+    await page.fill('.hw-add-form input[name="due"]', '2026-11-20');
+    await page.click('.hw-add-form [type="submit"]');
+    await until(() => calls(db, 'assignment_by_token').length === 3);
+    check('+ Homework due later: added without minutes (no Quick), shown under Due soon with "Plan this one with Pat."',
+      !('p_minutes' in calls(db, 'assignment_by_token')[2].body) && calls(db, 'assignment_by_token')[2].body.p_subject === null
+      && await until(async () => /Book report · due Fri Nov 20 · No plan yet · Plan this one with Pat\./.test(await hwText(page, '.hw-due'))), `${JSON.stringify(calls(db, 'assignment_by_token')[2].body)} ${await hwText(page, '.hw-due')}`);
+
+    // ---- Re-plan from earlier, and the passed milestone's line filling Ask Pat
+    await page.click('.hw-earlier [data-act="hw-replan-earlier"]');
+    await until(() => calls(db, 'plan_by_token').length === 1);
+    check('Re-plan: plan_by_token with p_steps null and the plan\'s rev', same(calls(db, 'plan_by_token')[0].body, { p_token: JORDAN, p_assignment: H.span, p_steps: null, p_rev: 4 }), JSON.stringify(calls(db, 'plan_by_token')[0].body));
+    check('Re-plan: his plain step placed from today; the milestone keeps its day', db.homework_steps.find((s) => s.id === H.v1).day >= HWT
+      && db.homework_steps.find((s) => s.id === H.v2).day === '2026-10-30', JSON.stringify(db.homework_steps.filter((s) => s.assignment_id === H.span).map((s) => [s.title, s.day])));
+    await page.waitForSelector('.hw-talk', { timeout: 3000 });
+    check('Re-plan: the milestone it can\'t move says "Flashcards made was planned for Fri Oct 30. Pick a new day with Pat ›"',
+      (await hwText(page, '.hw-talk')) === 'Flashcards made was planned for Fri Oct 30. Pick a new day with Pat ›', await hwText(page, '.hw-talk'));
+    await page.click('.hw-talk [data-act="hw-talk"]');
+    await page.waitForSelector('.hw-sheet input[name="text"]');
+    check('…which opens Ask Pat with that line filled in', (await page.$eval('.hw-sheet input[name="text"]', (i) => i.value)) === 'Flashcards made was planned for Fri Oct 30. Pick a new day with Pat.');
+    await page.click('.hw-sheet [data-act="hw-sheet-send"]');
+    await until(() => calls(db, 'step_by_token').length === 4);
+    check('…and asks on the milestone', same(calls(db, 'step_by_token')[3].body, { p_token: JORDAN, p_step: H.v2, p_action: 'ask', p_text: 'Flashcards made was planned for Fri Oct 30. Pick a new day with Pat.' }));
+    await hwClear(page);
+
+    // ---- His cue, set with ✎
+    await page.click('.hw-now-card [data-act="hw-cue"]');
+    await page.fill('.hw-sheet input[name="text"]', 'When the timer is set, I open the worksheet.');
+    await page.click('.hw-sheet [data-act="hw-sheet-send"]');
+    await until(() => calls(db, 'homework_prefs_by_token').length === 1);
+    check('✎ his start cue: homework_prefs_by_token with both lines (his if-stuck line kept) and his first length kept',
+      same(calls(db, 'homework_prefs_by_token')[0].body, { p_token: JORDAN, p_cue: 'When the timer is set, I open the worksheet.', p_if_stuck: "If I'm stuck for 5 minutes, I'll write the question for Pat and move on.", p_minutes: null })
+      && await until(async () => (await hwText(page, '.hw-now-card .hw-cue')).startsWith('“When the timer is set, I open the worksheet.”')), JSON.stringify(calls(db, 'homework_prefs_by_token')[0].body));
+
+    // ---- A length chip is remembered on the device; Start uses it and "With Pat"
+    await page.click('.hw-len[data-len="15"]');
+    await page.selectOption('.hw-now-card select[name="with"]', 'tutor');
+    check('a length chip: Start · 15 min, remembered on the device', (await hwText(page, '.hw-now-card [data-act="hw-start"]')) === 'Start · 15 min'
+      && /15/.test(await page.evaluate(() => { try { return localStorage.getItem('homehub.myday.length'); } catch (e) { return ''; } }) || ''));
+    // The 60-second read only while #homework is on screen and visible.
+    const before60 = calls(db, 'homework_by_token').length;
+    await hwPause(page);
+    await page.clock.fastForward(61 * 1000);
+    check('#homework: read again every 60 seconds while it is on screen', await until(() => calls(db, 'homework_by_token').length === before60 + 1), String(calls(db, 'homework_by_token').length - before60));
+    await page.click('.hw-now-card [data-act="hw-start"]');
+    await until(() => calls(db, 'focus_by_token').length === 1);
+    check('Start on Now: its step, the chosen length and with whom', same(Object.assign({}, calls(db, 'focus_by_token')[0].body, { p_session: 'id' }),
+      { p_token: JORDAN, p_action: 'start', p_session: 'id', p_minutes: 15, p_step: db.homework_steps.find((s) => s.title === 'Worksheet 5.2').id, p_with: 'tutor' }), JSON.stringify(calls(db, 'focus_by_token')[0].body));
+    await page.waitForSelector('.hw-ring');
+    const n60 = calls(db, 'homework_by_token').length;
+    await page.clock.fastForward(130 * 1000);
+    db.hwNow += 130 * 1000;
+    check('never the 60-second read while #focus is on screen', calls(db, 'homework_by_token').length === n60, String(calls(db, 'homework_by_token').length - n60));
+    // Stop at 2 minutes: a point a minute the server saw (the owner changed the rule: under 5 minutes paid nothing),
+    // and not the on-time 10, which needs 5 minutes (Stop ends at once).
+    await page.click('[data-act="hw-stop"]');
+    await until(() => calls(db, 'focus_by_token').length === 2);
+    check('Stop: focus_by_token end, stopped, at once', same(Object.assign({}, calls(db, 'focus_by_token')[1].body, { p_session: 'id' }), { p_token: JORDAN, p_action: 'end', p_session: 'id', p_result: 'stopped' }));
+    check('Stop at 2 minutes: "+2 · 2 minutes" (a point a minute; the on-time 10 needs 5 minutes)', await until(async () => (await hwText(page, '.hw-points-line')) === '+2 · 2 minutes'), await hwText(page, '.hw-end'));
+    await page.context().close();
+  }
+
+  // =====================================================================
+  // 18. Points earned alike, the daily cap, a lost answer resent, offline Start, Finish the block first
+  // =====================================================================
+  {
+    const d = hwDb();
+    // A block of his 12 minutes old, still open: the card says how long is left, and #focus shows it.
+    ({ page, db } = await open({ label: 'hw-stop', path: `/day.html?t=${JORDAN}`, db: d, device: HW_DEVICE, init: HW_STUBS }));
+    await page.click('.hw-card [data-act="hw-card-start"]');
+    await page.waitForSelector('.hw-ring');
+    await hwPause(page);
+    await hwTick(page, db, 12 * 60 * 1000 + 5000);
+    await page.click('[data-act="hw-stop"]');
+    check('Stop at 12 minutes: "+12 · 12 minutes" and the on-time +10', await until(async () => (await hwText(page, '.hw-points-line')) === '+12 · 12 minutes · +10 on time'), await hwText(page, '.hw-end'));
+    // Back to the card with no block running.
+    await page.goto(`${BASE}/day.html?t=${JORDAN}`);
+    await page.waitForSelector('.hw-card');
+    check('the card after: Next is still the step, 22 points more', (await hwText(page, '.hw-card-points')) === '★ 140', await hwText(page, '.hw-card'));
+    // The day's cap (60): 36 more already today (58 in all) → the next block crossing it gets the 2 left, and says so.
+    db.points_ledger.push(ledgerRow({ kid_id: P.jordan, at: hwStamp(db.hwNow), day: HWT, kind: 'focus', delta: 36, note: 'x', who: 'Jordan (My day)' }));
+    await page.click('.hw-card [data-act="hw-card-start"]');
+    await page.waitForSelector('.hw-ring');
+    await hwPause(page);
+    await hwTick(page, db, 20 * 60 * 1000 + 2000);
+    await page.waitForSelector('.hw-end [data-act="hw-end"]');
+    await page.click('.hw-end [data-act="hw-end"][data-result="done"]');
+    check('over the daily cap: "+2 · 20 minutes · Today\'s limit reached."', await until(async () => (await hwText(page, '.hw-points-line')) === '+2 · 20 minutes · Today\'s limit reached.'), await hwText(page, '.hw-end'));
+    // While a block runs, the card says how long is left.
+    await page.context().close();
+  }
+  {
+    const d = hwDb();
+    d.focus_sessions.push(sessionRow({ id: hid(99), kid_id: P.jordan, assignment_id: H.math, step_id: H.m1, minutes: 20, started_at: hwStamp(d.hwNow - 8 * 60000),
+      ends_at: hwStamp(d.hwNow + 12 * 60000), on_time: true }));
+    ({ page, db } = await open({ label: 'hw-running', path: `/day.html?t=${JORDAN}`, db: d, device: HW_DEVICE, init: HW_STUBS, allowConsole: /ERR_INTERNET_DISCONNECTED/ }));
+    check('a block running: the card says "Focus · 12 min left ›" (from ends_in_s), linking to #focus',
+      (await hwText(page, '.hw-card a.hw-card-focus')) === 'Focus · 12 min left ›' && (await page.$eval('.hw-card a.hw-card-focus', (a) => a.getAttribute('href'))) === '#focus'
+      && !(await page.$('.hw-card [data-act="hw-card-start"]')), await hwText(page, '.hw-card'));
+    // Start on #homework while that block is open: "Finish the block you started first." and that block's screen.
+    await page.goto(`${BASE}/day.html?t=${JORDAN}#homework`);
+    await page.waitForSelector('.hw-now-card');
+    await page.click('.hw-now-card [data-act="hw-start"]').catch(() => {});
+    check('Start with a block open goes to that block', await until(async () => (await page.evaluate(() => location.hash)) === '#focus' && (await hwText(page, '.hw-left')) === '12 min'), await hwText(page, 'main'));
+    // An End whose answer never comes back: kept, sent again on `online`, and the block answers once.
+    db.loseAnswer = { focus_by_token: 1 };
+    await page.click('[data-act="hw-stop"]');
+    check('an End with no answer: kept on the phone, "Not sent yet"', await until(async () => /Not sent yet/.test(await hwText(page, 'main'))), await hwText(page, 'main'));
+    const ended = db.focus_sessions.find((f) => f.id === hid(99));
+    await page.evaluate(() => window.dispatchEvent(new Event('online')));
+    check('…sent again on `online`, with the same block; the server answers its first answer (one end, one set of points)',
+      await until(() => calls(db, 'focus_by_token').filter((c) => c.body.p_action === 'end').length === 2)
+      && same(calls(db, 'focus_by_token').filter((c) => c.body.p_action === 'end').map((c) => c.body.p_session), [hid(99), hid(99)])
+      && db.points_ledger.filter((l) => l.session_id === hid(99) && l.kind === 'focus').length === 1 && ended.result === 'stopped'
+      && await until(async () => (await hwText(page, '.hw-points-line')) === '+8 · 8 minutes · +10 on time'), `${JSON.stringify(ended)} ${await hwText(page, '.hw-end')}`);
+    await page.context().close();
+  }
+  {
+    // Offline: Start says it needs a connection and calls nothing.
+    ({ page, db } = await open({ label: 'hw-offline', path: `/day.html?t=${JORDAN}#homework`, db: hwDb(), device: HW_DEVICE, init: HW_STUBS, allowConsole: /ERR_INTERNET_DISCONNECTED/ }));
+    await page.waitForSelector('.hw-now-card');
+    await page.context().setOffline(true);
+    await page.click('.hw-now-card [data-act="hw-start"]');
+    check('offline: "Starting needs a connection." and no call', (await hwToast(page)) === 'Starting needs a connection.' && !calls(db, 'focus_by_token').length);
+    await page.context().setOffline(false);
+    await hwClear(page);
+    // A Start whose answer is lost: the next tap sends the same block id, so the server finds the one it made.
+    db.loseAnswer = { focus_by_token: 1 };
+    await page.click('.hw-now-card [data-act="hw-start"]');
+    await until(() => calls(db, 'focus_by_token').length === 1);
+    check('a Start with no answer: "Starting needs a connection."', (await hwToast(page)) === 'Starting needs a connection.');
+    await hwClear(page);
+    await page.click('.hw-now-card [data-act="hw-start"]');
+    await until(() => calls(db, 'focus_by_token').length === 2);
+    check('Start again: the same block id; one block on the server', calls(db, 'focus_by_token')[0].body.p_session === calls(db, 'focus_by_token')[1].body.p_session
+      && db.focus_sessions.filter((f) => f.ended_at == null).length === 1 && await until(async () => !!(await page.$('.hw-ring'))));
+    await page.context().close();
+  }
+  {
+    // A computer: the one-time "Show a notification when a block ends", asked inside the tap.
+    ({ page, db } = await open({ label: 'hw-notify', path: `/day.html?t=${JORDAN}#homework`, db: hwDb(), device: HW_DEVICE, init: HW_STUBS }));
+    await page.waitForSelector('.hw-now-card');
+    check('a computer: "Show a notification when a block ends"', (await hwText(page, '[data-act="hw-notify"]')) === 'Show a notification when a block ends');
+    await page.click('[data-act="hw-notify"]');
+    check('…asked inside the tap, then gone', same((await hwRec(page)).ask, [true]) && !(await page.$('[data-act="hw-notify"]')));
+    await page.context().close();
+  }
+
+  // =====================================================================
+  // 18b. A second tap on an End on its way; the wake lock on every view; the stuck sheet on a block with
+  //      no plan; Make it smaller sent twice; the chime on silent and after time away
+  // =====================================================================
+  const endsSent = (d) => calls(d, 'focus_by_token').filter((c) => c.body.p_action === 'end').length;
+  {
+    // Stop tapped again while the first End is on its way (a slow answer): the buttons wait, one End is sent,
+    // and its end screen comes when it answers, with no focus or visibilitychange to send it again.
+    ({ page, db } = await open({ label: 'hw-stop-twice', path: `/day.html?t=${JORDAN}`, db: hwDb(), device: HW_DEVICE, init: HW_STUBS }));
+    await page.click('.hw-card [data-act="hw-card-start"]');
+    await page.waitForSelector('.hw-ring');
+    await hwPause(page);
+    await hwTick(page, db, 12 * 60 * 1000 + 5000);
+    db.slow = { focus_by_token: 800 };
+    await page.click('[data-act="hw-stop"]');
+    await new Promise((r) => setTimeout(r, 150));
+    const waiting = await page.$$eval('.hw-focus-acts button', (bs) => bs.map((b) => b.disabled));
+    await page.$eval('[data-act="hw-stop"]', (b) => b.click()).catch(() => {});
+    check('Stop twice while the End is on its way: the buttons wait; one End; then "+12 · 12 minutes" and Break, with no focus or visibilitychange',
+      same(waiting, [true, true, true]) && await until(async () => (await hwText(page, '.hw-points-line')) === '+12 · 12 minutes · +10 on time' && !!(await page.$('[data-act="hw-break"]')))
+      && endsSent(db) === 1, `${JSON.stringify(waiting)} ${endsSent(db)} ${await hwText(page, '.hw-focus')}`);
+    db.slow = null;
+    await page.context().close();
+    // The end screen's Step done ✓, tapped twice.
+    ({ page, db } = await open({ label: 'hw-done-twice', path: `/day.html?t=${JORDAN}`, db: hwDb(), device: HW_DEVICE, init: HW_STUBS }));
+    await page.click('.hw-card [data-act="hw-card-start"]');
+    await page.waitForSelector('.hw-ring');
+    await hwPause(page);
+    await hwTick(page, db, 20 * 60 * 1000 + 2000);
+    await page.waitForSelector('.hw-end [data-act="hw-end"]');
+    db.slow = { focus_by_token: 800 };
+    await page.click('.hw-end [data-act="hw-end"][data-result="done"]');
+    await new Promise((r) => setTimeout(r, 150));
+    await page.$eval('.hw-end [data-act="hw-end"][data-result="done"]', (b) => b.click()).catch(() => {});
+    // The ring ran out: the block's own End ('time', paid at once), then his answer, once, however often he taps.
+    const answers = () => calls(db, 'focus_by_token').filter((c) => c.body.p_action === 'end' && c.body.p_result === 'done').length;
+    check('Step done ✓ twice on the end screen: the time End and one answer, then its points line',
+      await until(async () => /^\+\d+ · \d+ minutes/.test(await hwText(page, '.hw-points-line')) && endsSent(db) === 2 && (await hwText(page, '.hw-end h2')) === 'Block finished.')
+      && answers() === 1 && calls(db, 'focus_by_token').filter((c) => c.body.p_result === 'time').length === 1, `${endsSent(db)} ${answers()} ${await hwText(page, '.hw-focus')}`);
+    db.slow = null;
+    await page.context().close();
+  }
+  {
+    // The wake lock follows the block, not the screen: kept while the ring runs on #homework, let go of when it
+    // runs out on the day view, not asked for again on an end screen whose ring ran out.
+    const held = async (pg) => { const r = await hwRec(pg); return r.wake.length - r.released; };
+    ({ page, db } = await open({ label: 'hw-wake', path: `/day.html?t=${JORDAN}`, db: hwDb(), device: HW_DEVICE, init: HW_STUBS }));
+    await page.click('.hw-card [data-act="hw-card-start"]');
+    await until(async () => (await page.evaluate(() => location.hash)) === '#focus' && !!(await page.$('.hw-ring')));
+    await page.click('.hw-head a.list-back[href="#homework"]');
+    await page.waitForSelector('.hw-tonight');
+    await hwPause(page);
+    await hwTick(page, db, 10 * 60 * 1000);
+    check('the wake lock: kept while the block runs, on #homework too', (await held(page)) === 1, JSON.stringify(await hwRec(page)));
+    await page.click('[data-act="hw-day"]');
+    await page.waitForSelector('.hw-card');
+    await hwTick(page, db, 11 * 60 * 1000);
+    check('the wake lock: let go of when the ring runs out, on the day view (not only on #focus)', (await held(page)) === 0, JSON.stringify(await hwRec(page)));
+    await page.click('.hw-card a.hw-card-focus');
+    await page.waitForSelector('.hw-end [data-act="hw-end"]');
+    await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+    await hwTick(page, db, 2000);
+    check('the wake lock: not asked for again on coming back to a block whose ring ran out', (await hwRec(page)).wake.length === 1 && (await held(page)) === 0, JSON.stringify(await hwRec(page)));
+    await page.context().close();
+    // A Start with no answer (503): the lock taken in the tap is let go of; a Start that works keeps its own.
+    const d = hwDb();
+    d.status = { focus_by_token: 503 };
+    ({ page, db } = await open({ label: 'hw-wake-503', path: `/day.html?t=${JORDAN}`, db: d, device: HW_DEVICE, init: HW_STUBS, allowConsole: /status of 503/ }));
+    await page.click('.hw-card [data-act="hw-card-start"]');
+    check('a Start answered 503: "Starting needs a connection." and the wake lock let go of',
+      (await hwToast(page)) === 'Starting needs a connection.' && await until(async () => (await held(page)) === 0), JSON.stringify(await hwRec(page)));
+    db.status = {};
+    await hwClear(page);
+    await page.click('.hw-card [data-act="hw-card-start"]');
+    check('…Start again: the lock taken again in the tap and kept for the block',
+      await until(async () => !!(await page.$('.hw-ring'))) && (await held(page)) === 1 && (await hwRec(page)).wake.length === 2, JSON.stringify(await hwRec(page)));
+    await page.context().close();
+  }
+  for (const where of ['focus', 'homework', 'day']) {
+    // The browser lets go of the lock while the page is hidden: coming back with the ring still running takes it
+    // again on whatever view he comes back to, not only on #focus.
+    const held = async (pg) => { const r = await hwRec(pg); return r.wake.length - r.released - r.dropped; };
+    ({ page, db } = await open({ label: `hw-wake-back-${where}`, path: `/day.html?t=${JORDAN}`, db: hwDb(), device: HW_DEVICE, init: HW_AUDIO_DROP }));
+    await page.click('.hw-card [data-act="hw-card-start"]');
+    await until(async () => (await page.evaluate(() => location.hash)) === '#focus' && !!(await page.$('.hw-ring')));
+    if (where !== 'focus') { await page.click('.hw-head a.list-back[href="#homework"]'); await page.waitForSelector('.hw-tonight'); }
+    if (where === 'day') { await page.click('[data-act="hw-day"]'); await page.waitForSelector('.hw-card'); }
+    await hwPause(page);
+    await hwTick(page, db, 60 * 1000);
+    const before = await held(page);
+    await page.evaluate(() => window.__hide());
+    const hidden = await held(page);
+    await hwTick(page, db, 60 * 1000);
+    await page.evaluate(() => window.__show());
+    await hwTick(page, db, 2000);
+    check(`the wake lock: let go of by the browser while hidden, taken again on coming back to ${where === 'day' ? 'the day view' : `#${where}`} with the ring running`,
+      before === 1 && hidden === 0 && await until(async () => (await held(page)) === 1) && (await hwRec(page)).wake.length === 2, JSON.stringify(await hwRec(page)));
+    await page.context().close();
+  }
+  for (const first of ['smaller', 'ask']) {
+    // A block on an assignment with no plan (Start on a Tonight row) has no step: Make it smaller or Ask Pat
+    // first gives it one (Quick, the block's length; the block moves to it), then acts on that step.
+    ({ page, db } = await open({ label: `hw-noplan-${first}`, path: `/day.html?t=${JORDAN}#homework`, db: hwDb(), device: HW_DEVICE, init: HW_STUBS }));
+    await page.waitForSelector(`.hw-noplan[data-asg="${H.ws51}"]`);
+    await page.click(`.hw-noplan[data-asg="${H.ws51}"] [data-act="hw-asg-start"]`);
+    await until(async () => !!(await page.$('.hw-ring')));
+    const block = (calls(db, 'focus_by_token')[0] || {}).body.p_session;
+    await page.click('[data-act="hw-stuck"]');
+    if (first === 'smaller') {
+      await page.click('.hw-sheet [data-act="hw-smaller"]');
+      await page.click('.hw-sheet [data-chip="0"]');
+    } else {
+      await page.click('.hw-sheet [data-act="hw-ask"]');
+      await page.fill('.hw-sheet input[name="text"]', 'Do I show my work?');
+      await page.click('.hw-sheet [data-act="hw-sheet-send"]');
+    }
+    await until(() => calls(db, 'step_by_token').length === 1 && !!calls(db, 'step_by_token')[0].done);
+    await page.waitForTimeout(200);
+    const one = db.homework_steps.find((x) => x.assignment_id === H.ws51 && x.title === 'Worksheet 5.1');
+    const act = (calls(db, 'step_by_token')[0] || {}).body || {};
+    check(`stuck on a block with no plan (${first} first): Quick with the block's length, the block moved to that step, then ${first} on it`,
+      !!one && same(calls(db, 'assignment_by_token').map((c) => c.body), [{ p_token: JORDAN, p_action: 'quick', p_assignment: H.ws51, p_minutes: 20 }])
+      && same(calls(db, 'focus_by_token').slice(1).map((c) => c.body), [{ p_token: JORDAN, p_action: 'switch', p_session: block, p_step: one.id }])
+      && act.p_step === one.id && act.p_action === first && !(await page.$('.toast-error')),
+      JSON.stringify([db.calls.map((c) => [c.name, c.body.p_action, c.body.p_step]), await text(page, '.toasts')]));
+    if (first === 'smaller') {
+      check('... the block goes on with the smaller step', await until(async () => (await hwText(page, '.hw-focus-title')) === 'Write one sentence')
+        && db.focus_sessions.find((f) => f.id === block).step_id === act.p_key, await hwText(page, '.hw-focus-title'));
+    } else {
+      check('... his question is sent ("Question sent."), on the step', (await hwToast(page)) === 'Question sent.' && one.question === 'Do I show my work?', JSON.stringify(one));
+    }
+    await page.context().close();
+  }
+  {
+    // Make it smaller sent twice: a second tap while the first is on its way, and a tap again after a lost answer
+    // (the step was made). One key per sheet, so the server finds the step it made: one step, never two.
+    for (const how of ['twice', 'lost']) {
+      ({ page, db } = await open({ label: `hw-smaller-${how}`, path: `/day.html?t=${JORDAN}#homework`, db: hwDb(), device: HW_DEVICE, init: HW_STUBS, ctx: phone(),
+        allowConsole: /ERR_INTERNET_DISCONNECTED/ }));
+      await page.waitForSelector('.hw-now-card');
+      if (how === 'twice') db.slow = { step_by_token: 600 };
+      else db.loseAnswer = { step_by_token: 1 };
+      await page.click(`.hw-tonight .hw-step[data-step="${H.s2}"] [data-act="hw-more"]`);
+      await page.click(`.hw-step[data-step="${H.s2}"] .hw-menu [data-act="hw-smaller"]`);
+      await page.click('.hw-sheet [data-chip="0"]');
+      if (how === 'twice') await page.waitForTimeout(100);
+      else {
+        await until(() => calls(db, 'step_by_token').length === 1 && !!calls(db, 'step_by_token')[0].done);
+        check('Make it smaller with a lost answer: "Can\'t reach Home Hub", the sheet stays', /^Can't reach Home Hub/.test(await hwToast(page)) && !!(await page.$('.hw-sheet [data-chip="0"]')), await text(page, '.toasts'));
+      }
+      await page.click('.hw-sheet [data-chip="0"]', { timeout: 1000 }).catch(() => {});
+      await until(async () => calls(db, 'step_by_token').every((c) => c.done) && !(await page.$('.hw-sheet')));
+      db.slow = null;
+      const made = db.homework_steps.filter((x) => x.title === 'Write one sentence');
+      const keys = [...new Set(calls(db, 'step_by_token').map((c) => c.body.p_key))];
+      check(`Make it smaller, ${how === 'twice' ? 'tapped twice while the answer is on its way' : 'tapped again after a lost answer'}: one new step, one key, and it is Now`,
+        made.length === 1 && keys.length === 1 && made[0].id === keys[0] && (await hwText(page, '.hw-now-title')) === 'Write one sentence',
+        `steps=${made.length} keys=${JSON.stringify(keys)} now=${await hwText(page, '.hw-now-title')}`);
+      await page.context().close();
+    }
+  }
+  {
+    // Chime even on silent: navigator.audioSession is 'playback' just for the chime (from a moment before it until
+    // its last tone has played), not at Start; and never for a block stopped before its end.
+    const silentInit = `${HW_AUDIO} try { localStorage.setItem('homehub.myday.chime-silent', '1'); } catch (e) {}`;
+    ({ page, db } = await open({ label: 'hw-silent', path: `/day.html?t=${JORDAN}`, db: hwDb(), device: HW_DEVICE, init: silentInit, ctx: phone() }));
+    await page.click('.hw-card [data-act="hw-card-start"]');
+    await until(async () => !!(await page.$('.hw-ring')));
+    await hwPause(page);
+    check('Chime even on silent: nothing changed at Start (his music plays on)', !(await hwRec(page)).session.length, JSON.stringify((await hwRec(page)).session));
+    db.hwNow += 20 * 60 * 1000 + 3000;
+    await page.clock.runFor(20 * 60 * 1000 + 3000);
+    await page.waitForSelector('.hw-end', { timeout: 3000 });
+    let r = await hwRec(page);
+    const first = Math.min(...r.osc);
+    const last = Math.max(...r.tones.map((t) => t.stopAt || 0));   // the chime's tones (the celebration's are rec.cheer)
+    check('…"playback" from a moment before the chime, back to "auto" only once its last tone has played',
+      same(r.session.map((x) => x.type), ['playback', 'auto']) && r.session[0].at >= first - 3.5 && r.session[0].at <= first && r.session[1].at >= last - 0.001,
+      JSON.stringify({ session: r.session, first, last }));
+    await page.context().close();
+    ({ page, db } = await open({ label: 'hw-silent-stop', path: `/day.html?t=${JORDAN}`, db: hwDb(), device: HW_DEVICE, init: silentInit, ctx: phone() }));
+    await page.click('.hw-card [data-act="hw-card-start"]');
+    await until(async () => !!(await page.$('.hw-ring')));
+    await hwPause(page);
+    db.hwNow += 5 * 60 * 1000;
+    await page.clock.runFor(5 * 60 * 1000);
+    await page.click('[data-act="hw-stop"]');
+    await page.waitForSelector('.hw-points-line', { timeout: 3000 });
+    await page.clock.runFor(20 * 60 * 1000);
+    r = await hwRec(page);
+    check('…a block stopped before its end: never "playback"', !r.session.some((x) => x.type === 'playback'), JSON.stringify(r.session));
+    await page.context().close();
+  }
+  {
+    // The chime after time away: iOS stops a hidden page's audio clock, so the tones are set again on coming
+    // back (on the ring's end), called off when the ring ran out meanwhile, and made at the first tap after a reload.
+    const chimeIn = (pg) => pg.evaluate(() => window.__chimeIn());
+    ({ page, db } = await open({ label: 'hw-chime-away', path: `/day.html?t=${JORDAN}`, db: hwDb(), device: HW_DEVICE, init: HW_AUDIO, ctx: phone() }));
+    await page.click('.hw-card [data-act="hw-card-start"]');
+    await until(async () => !!(await page.$('.hw-ring')));
+    await hwPause(page);
+    check('the chime: set at Start for the ring\'s end (20 minutes)', Math.abs((await chimeIn(page)) - 1200) < 2, String(await chimeIn(page)));
+    await hwTick(page, db, 2 * 60 * 1000);
+    await page.evaluate(() => window.__hide());
+    await hwTick(page, db, 5 * 60 * 1000);
+    await page.evaluate(() => window.__show());
+    await until(async () => (await hwText(page, '.hw-left')) === '13 min');
+    await page.waitForTimeout(200);
+    check('back after 5 minutes away (the audio clock stood still): the chime set again for the ring\'s end, 13 minutes on', Math.abs((await chimeIn(page)) - 780) < 2,
+      String(await chimeIn(page)));
+    await page.evaluate(() => window.__hide());
+    await hwTick(page, db, 20 * 60 * 1000);
+    await page.evaluate(() => window.__show());
+    await page.waitForSelector('.hw-end', { timeout: 3000 });
+    await page.waitForTimeout(200);
+    const late = await chimeIn(page);
+    check('back after the ring ran out while away: the end screen, and no chime still to come', late === null || late <= 2, String(late));
+    await page.context().close();
+    // ... and the same on #homework and on the day: the block runs there too (the lock follows it), so the chime
+    // is set again on coming back whatever is on screen, and a ring that ran out meanwhile leaves none to come.
+    for (const where of ['homework', 'day']) {
+      const on = where === 'day' ? 'on the day' : 'on #homework';
+      ({ page, db } = await open({ label: `hw-chime-away-${where}`, path: `/day.html?t=${JORDAN}`, db: hwDb(), device: HW_DEVICE, init: HW_AUDIO, ctx: phone() }));
+      await page.click('.hw-card [data-act="hw-card-start"]');
+      await until(async () => !!(await page.$('.hw-ring')));
+      await hwPause(page);
+      await hwTick(page, db, 2 * 60 * 1000);
+      await page.click('.hw-head a.list-back');
+      await until(async () => (await page.evaluate(() => location.hash)) === '#homework');
+      if (where === 'day') {
+        await page.click('.hw-head [data-act="hw-day"]');
+        await page.waitForSelector('.hw-card', { timeout: 3000 });
+      }
+      await page.waitForTimeout(200);
+      await page.evaluate(() => window.__hide());
+      await hwTick(page, db, 5 * 60 * 1000);
+      await page.evaluate(() => window.__show());
+      await page.waitForTimeout(200);
+      check(`…${on}, back after 5 minutes away: the chime set again for the ring's end, 13 minutes on`, Math.abs((await chimeIn(page)) - 780) < 2,
+        String(await chimeIn(page)));
+      await page.evaluate(() => window.__hide());
+      await hwTick(page, db, 20 * 60 * 1000);
+      // The ring ran out while away (iOS: the audio clock stood still): its tones are called off when it runs out.
+      const away = await chimeIn(page);
+      await page.evaluate(() => window.__show());
+      await page.waitForTimeout(200);
+      const back = await chimeIn(page);
+      check(`…${on}, the ring ran out while away: no chime still to come, before or after coming back`,
+        (away === null || away <= 2) && (back === null || back <= 2), JSON.stringify({ away, back }));
+      await page.context().close();
+    }
+    ({ page, db } = await open({ label: 'hw-chime-reload', path: `/day.html?t=${JORDAN}`, db: hwDb(), device: HW_DEVICE, init: HW_AUDIO, ctx: phone() }));
+    await page.click('.hw-card [data-act="hw-card-start"]');
+    await until(async () => !!(await page.$('.hw-ring')));
+    await hwPause(page);
+    await hwTick(page, db, 3 * 60 * 1000);
+    await page.reload();
+    await page.waitForSelector('.hw-ring', { timeout: 5000 });
+    await hwPause(page);
+    check('a reload: no AudioContext until a tap', !(await hwRec(page)).ctx.length);
+    await page.click('[data-act="hw-stuck"]');
+    await page.click('.hw-sheet [data-act="hw-sheet-close"]');
+    await page.waitForTimeout(200);
+    const after = await hwRec(page);
+    check('…his first tap on #focus makes it (inside the tap) and sets the chime for the ring\'s end (17 minutes)',
+      after.ctx.length === 1 && after.audio.length === 1 && after.audio[0].active && after.osc.length === 2 && Math.abs((await chimeIn(page)) - 1020) < 2,
+      JSON.stringify({ audio: after.audio, osc: after.osc, chimeIn: await chimeIn(page) }));
+    await page.context().close();
+    // ... but a first tap that ends the block (Stop) sets no chime for it.
+    ({ page, db } = await open({ label: 'hw-chime-reload-stop', path: `/day.html?t=${JORDAN}`, db: hwDb(), device: HW_DEVICE, init: HW_AUDIO, ctx: phone() }));
+    await page.click('.hw-card [data-act="hw-card-start"]');
+    await until(async () => !!(await page.$('.hw-ring')));
+    await hwPause(page);
+    await hwTick(page, db, 3 * 60 * 1000);
+    await page.reload();
+    await page.waitForSelector('.hw-ring', { timeout: 5000 });
+    await hwPause(page);
+    await page.click('[data-act="hw-stop"]');
+    await page.waitForSelector('.hw-points-line', { timeout: 3000 });
+    await page.waitForTimeout(200);
+    check('…a first tap after a reload that is Stop: the block ends, and no chime is set for it', (await chimeIn(page)) === null, JSON.stringify((await hwRec(page)).osc));
+    await page.context().close();
+  }
+
+  // =====================================================================
+  // 19. #points: the balance and "+9 today", asks, rewards, suggest, the last entries
+  // =====================================================================
+  {
+    const d = hwDb();
+    d.points_ledger.push(ledgerRow({ kid_id: P.jordan, at: hwStamp(d.hwNow - 3600000), day: HWT, kind: 'focus', delta: 4, note: 'Do worksheet 4.2', who: 'Jordan (My day)' }),
+      ledgerRow({ kid_id: P.jordan, at: hwStamp(d.hwNow - 3500000), day: HWT, kind: 'on_time', delta: 5, note: 'Do worksheet 4.2', who: 'Jordan (My day)' }));
+    ({ page, db } = await open({ label: 'hw-points', path: `/day.html?t=${JORDAN}#points`, db: d, device: HW_DEVICE, init: HW_STUBS, ctx: phone() }));
+    await page.waitForSelector('.hw-balance-big');
+    check('#points: the balance and "+9 today", with no daily target', (await hwText(page, '.hw-balance-big')) === '★ 127' && (await hwText(page, '.hw-today')) === '+9 today'
+      && !/ of /.test(await hwText(page, '.hw-today')), `${await hwText(page, '.hw-balance-big')} ${await hwText(page, '.hw-today')}`);
+    check('#points: rewards, with what he can ask for and how many more the rest need',
+      same(await page.$$eval('.hw-reward', (rs) => rs.map((r) => r.textContent.replace(/\s+/g, ' ').trim())), ['15 minutes of extra game time · 15 Ask', "Choose Friday's dinner · 60 Ask", 'A new book · 150 23 more']),
+      JSON.stringify(await page.$$eval('.hw-reward', (rs) => rs.map((r) => r.textContent.replace(/\s+/g, ' ').trim()))));
+    check('#points: decided asks for 7 days (Yes; Not now with the parent\'s word)', /Choose Friday's dinner · 60 · Yes/.test(await hwText(page, '.hw-decided'))
+      && /15 minutes of extra game time · 15 · Not now: Not on a school night/.test(await hwText(page, '.hw-decided')), await hwText(page, '.hw-decided'));
+    check('#points: the last entries ("+4 Focus · Do worksheet 4.2 · today", "Trade: …")',
+      same((await hwTexts(page, '.hw-recent li')).slice(0, 2), ['+5 On time · Do worksheet 4.2 · today', '+4 Focus · Do worksheet 4.2 · today'])
+      && (await hwTexts(page, '.hw-recent li')).includes("−60 Trade · Choose Friday's dinner · Sat"), JSON.stringify(await hwTexts(page, '.hw-recent li')));
+    await page.click(`.hw-reward[data-reward="${H.dinner}"] [data-act="hw-ask-reward"]`);
+    await until(() => calls(db, 'reward_by_token').length === 1);
+    const ask = calls(db, 'reward_by_token')[0].body;
+    check('Ask: reward_by_token ask with the reward and the phone\'s key', same(Object.assign({}, ask, { p_key: 'k' }), { p_token: JORDAN, p_action: 'ask', p_reward: H.dinner, p_key: 'k' }) && UUID.test(ask.p_key), JSON.stringify(ask));
+    check('Ask: "Waiting for a parent", what is free to trade, "Tell a parent you asked."', await until(async () => /Waiting for a parent/.test(await hwText(page, '.hw-asks')))
+      && /Choose Friday's dinner · 60/.test(await hwText(page, '.hw-asks')) && /67 free to trade/.test(await hwText(page, '.hw-asks'))
+      && /Tell a parent you asked\./.test(await hwText(page, '.hw-asks')), await hwText(page, '.hw-asks'));
+    await page.click('.hw-asks [data-act="hw-cancel-ask"]');
+    await until(() => calls(db, 'reward_by_token').length === 2);
+    check('Cancel: his own ask, by its key', same(calls(db, 'reward_by_token')[1].body, { p_token: JORDAN, p_action: 'cancel', p_key: ask.p_key })
+      && await until(async () => !(await page.$('.hw-asks .hw-ask'))));
+    await page.fill('.hw-suggest-form input[name="text"]', 'A trip to the climbing gym');
+    await page.click('.hw-suggest-form [type="submit"]');
+    await until(() => calls(db, 'reward_by_token').length === 3);
+    const sug = calls(db, 'reward_by_token')[2].body;
+    check('Suggest a reward: reward_by_token suggest with the phone\'s key; "a parent prices it"', same(Object.assign({}, sug, { p_key: 'k' }), { p_token: JORDAN, p_action: 'suggest', p_text: 'A trip to the climbing gym', p_key: 'k' })
+      && (await hwText(page, '.hw-suggest-hint')) === 'A parent prices it.' && db.rewards.some((r) => r.id === sug.p_key && r.suggested && r.cost === null), JSON.stringify(sug));
+    check('#points at 390px: no sideways scroll', await noSideScroll(page));
+    await page.screenshot({ path: SHOTS + 'day-hw-points.png', fullPage: true });
+    // Points off: no points, rewards or asks; #points goes back to #homework.
+    db.homework_kids[0].points_on = false;
+    await page.reload();
+    await page.waitForSelector('.hw-now-card');
+    check('points off: #points shows #homework, with no balance anywhere', (await page.evaluate(() => location.hash)) === '#homework' && !/★/.test(await hwText(page, 'main')), await hwText(page, 'main'));
+    await page.goto(`${BASE}/day.html?t=${JORDAN}`);
+    await page.waitForSelector('.hw-card');
+    check('points off: the card has no balance either', !(await page.$('.hw-card-points')));
+    await page.context().close();
+  }
+
+  // =====================================================================
+  // 19b. The owner's "immediate gratification" (docs/v1.3-homework.md §8): instant rewards cashed on the spot,
+  //      a milestone's first half at his tick, 10 minutes offered first, and a block paid the moment its ring
+  //      runs out on the day view (after a reload, with no view read yet)
+  // =====================================================================
+  {
+    const d = hwDb();
+    d.rewards.find((r) => r.id === H.game).instant = true;
+    ({ page, db } = await open({ label: 'hw-instant', path: `/day.html?t=${JORDAN}#points`, db: d, device: HW_DEVICE, init: HW_STUBS, ctx: phone() }));
+    await page.waitForSelector('.hw-balance-big');
+    const rewards = () => page.$$eval('.hw-reward', (rs) => rs.map((r) => r.textContent.replace(/\s+/g, ' ').trim()));
+    check('#points: an instant reward is marked "instant", with "Get it now"; the others are asked for',
+      same(await rewards(), ['15 minutes of extra game time · 15 · instant Get it now', "Choose Friday's dinner · 60 Ask", 'A new book · 150 32 more']), JSON.stringify(await rewards()));
+    check('#points: the next-reward bar under the heading', (await hwText(page, '.hw-head .plan-goal-text')) === "You can get Choose Friday's dinner now!", await hwText(page, '.hw-head'));
+    await page.click(`.hw-reward[data-reward="${H.game}"] [data-act="hw-cash"]`);
+    check('Get it now asks once more ("Yes, get it · −15", Cancel), and sends nothing yet',
+      (await hwText(page, '[data-act="hw-cash-yes"]')) === 'Yes, get it · −15' && !!(await page.$('[data-act="hw-cash-no"]')) && !calls(db, 'reward_by_token').length);
+    await page.click('[data-act="hw-cash-yes"]');
+    await until(() => calls(db, 'reward_by_token').length === 1 && !!calls(db, 'reward_by_token')[0].done);
+    const cash = calls(db, 'reward_by_token')[0].body;
+    check('Yes: reward_by_token cash, with the reward, the price his button showed and the phone\'s key',
+      same(Object.assign({}, cash, { p_key: 'k' }), { p_token: JORDAN, p_action: 'cash', p_reward: H.game, p_key: 'k', p_cost: 15 })
+      && UUID.test(cash.p_key), JSON.stringify(cash));
+    check('cashed on the spot: "Got it: … Tell a parent.", ★ 103, "Got it" with his decided asks, and a trade of −15 the parents see',
+      (await hwToast(page)) === 'Got it: 15 minutes of extra game time. Tell a parent.' && await until(async () => (await hwText(page, '.hw-balance-big')) === '★ 103')
+      && /15 minutes of extra game time · 15 · Got it/.test(await hwText(page, '.hw-decided'))
+      && db.points_ledger.some((l) => l.kind === 'trade' && l.delta === -15 && l.ask_id === cash.p_key) && db.reward_asks.find((q) => q.id === cash.p_key).status === 'cashed',
+      `${await hwText(page, '.hw-balance-big')} | ${await hwText(page, '.hw-decided')}`);
+    await hwClear(page);
+    await page.click(`.hw-reward[data-reward="${H.game}"] [data-act="hw-cash"]`);
+    await page.click('[data-act="hw-cash-yes"]');
+    await until(() => calls(db, 'reward_by_token').length === 2 && !!calls(db, 'reward_by_token')[1].done);
+    check('a second one today: a new key, ★ 88', calls(db, 'reward_by_token')[1].body.p_key !== cash.p_key && await until(async () => (await hwText(page, '.hw-balance-big')) === '★ 88'));
+    check('past the parents\' 2 a day: no more "Get it now"; it can still be asked for, and he is told so',
+      await until(async () => (await rewards())[0] === '15 minutes of extra game time · 15 · instant Ask') && (await hwText(page, '.hw-cash-none')) === 'No more instant rewards today: ask a parent.',
+      JSON.stringify(await rewards()));
+    await page.context().close();
+  }
+  {
+    // A milestone ticked from From earlier: half its points at once (40 → +20 now, +20 when checked).
+    ({ page, db } = await open({ label: 'hw-milestone-now', path: `/day.html?t=${JORDAN}#homework`, db: hwDb(), device: HW_DEVICE, init: HW_STUBS, ctx: phone() }));
+    await page.waitForSelector('.hw-now-card');
+    await page.click('.hw-earlier summary');
+    await page.click(`.hw-step[data-step="${H.v2}"] .hw-box`);
+    await until(() => calls(db, 'step_by_token').length === 1 && !!calls(db, 'step_by_token')[0].done);
+    check('a milestone ticked: half its points at once, "+20 now · +20 more when Pat checks it"',
+      (await hwToast(page)).startsWith('+20 now · +20 more when Pat checks it') && db.points_ledger.some((l) => l.kind === 'milestone_done' && l.step_id === H.v2 && l.delta === 20),
+      await text(page, '.toasts'));
+    check('... the counter by the heading starts at ★ 118 with "+20", and ticks up to ★ 138', (await hwText(page, '.hw-head .hw-plus')) === '+20'
+      && await until(async () => (await hwText(page, '.hw-head .hw-points')) === '★ 138'), await hwText(page, '.hw-head'));
+    await page.context().close();
+  }
+  {
+    // 10 minutes offered first (the default; the owner changed it from 20): the card's Start is 10 minutes.
+    ({ page, db } = await open({ label: 'hw-ten', path: `/day.html?t=${JORDAN}`, db: hwDb({ length: 10 }), device: HW_DEVICE, init: HW_STUBS }));
+    check('the default first length: "Start · 10 min" on the card', (await hwText(page, '.hw-card [data-act="hw-card-start"]')) === 'Start · 10 min', await hwText(page, '.hw-card'));
+    await page.context().close();
+    check('a new homework_kids row (the fakes\' default, as the migration\'s) offers 10 minutes first', hwKidRow({}).focus_minutes === 10);
+  }
+  {
+    // A reload on the day view with a block running: when the card's ring runs out, his view is read once and the
+    // block is paid at once (End 'time'), and the card asks how it went; #focus has the celebration's points.
+    const d = hwDb();
+    d.focus_sessions.push(sessionRow({ id: hid(98), kid_id: P.jordan, assignment_id: H.math, step_id: H.m1, minutes: 20, started_at: hwStamp(d.hwNow - 19 * 60000),
+      ends_at: hwStamp(d.hwNow + 60000), on_time: true }));
+    ({ page, db } = await open({ label: 'hw-day-payout', path: `/day.html?t=${JORDAN}`, db: d, device: HW_DEVICE, init: HW_STUBS }));
+    check('a block running, on the day view: "Focus · 1 min left ›", no view read yet', (await hwText(page, '.hw-card a.hw-card-focus')) === 'Focus · 1 min left ›'
+      && !calls(db, 'homework_by_token').length, await hwText(page, '.hw-card'));
+    await hwPause(page);
+    await hwTick(page, db, 62 * 1000);
+    await until(() => calls(db, 'focus_by_token').length === 1 && !!calls(db, 'focus_by_token')[0].done);
+    check('its ring runs out on the day view: his view read once, and the block paid at once (end, time)', calls(db, 'homework_by_token').length === 1
+      && same(calls(db, 'focus_by_token')[0].body, { p_token: JORDAN, p_action: 'end', p_session: hid(98), p_result: 'time' })
+      && db.points_ledger.filter((l) => l.session_id === hid(98)).reduce((n, l) => n + l.delta, 0) === 30, JSON.stringify(db.calls.map((c) => [c.name, c.body.p_action])));
+    check('... the card asks how it went, and celebrates there: "+30", counting up to the new balance',
+      await until(async () => (await hwText(page, '.hw-card a.hw-card-focus')) === 'Your block is over. How did it go? ›' && (await hwText(page, '.hw-card .hw-plus')) === '+30')
+      && await until(async () => { await page.clock.runFor(100); return (await hwText(page, '.hw-card-points')) === '★ 148'; }), await hwText(page, '.hw-card'));
+    await page.click('.hw-card a.hw-card-focus');
+    await page.waitForSelector('.hw-end [data-act="hw-end"]');
+    check('... and #focus: "+20 · 20 minutes · +10 on time", How did it go? (the "+30" was the card\'s, not played again)',
+      (await hwText(page, '.hw-points-line')) === '+20 · 20 minutes · +10 on time'
+      && !(await page.$('.hw-end .hw-plus')) && (await hwText(page, '.hw-end h2')) === 'Time. How did it go?', await hwText(page, '.hw-end'));
+    await page.click('.hw-end [data-act="hw-end"][data-result="done"]');
+    await until(() => calls(db, 'focus_by_token').length === 2 && !!calls(db, 'focus_by_token')[1].done);
+    check('... Step done: his answer, a second end; the step ticked, the points as paid',
+      same(calls(db, 'focus_by_token')[1].body, { p_token: JORDAN, p_action: 'end', p_session: hid(98), p_result: 'done' }) && !!db.homework_steps.find((x) => x.id === H.m1).done_at
+      && db.points_ledger.filter((l) => l.session_id === hid(98)).length === 2 && await until(async () => (await hwText(page, '.hw-end h2')) === 'Block finished.'), await hwText(page, '.hw-end'));
+    await page.context().close();
+  }
+
+  // =====================================================================
+  // 19c. Review fixes to 19b: the confirm tap never under the first one (a double tap spends nothing), a cash-in's
+  //      key kept until it is answered, a refusal read again, the price his button showed, the bar never on a reward
+  //      he asked for; the celebration's +N is what the End paid, played where he is (the card too) and never later;
+  //      a reload between the paid End and his answer still asks how it went; the bar on the end screen and the break
+  // =====================================================================
+  const instantDb = () => { const d = hwDb(); d.rewards.find((r) => r.id === H.game).instant = true; return d; };
+  const rewardRows = (pg) => pg.$$eval('.hw-reward', (rs) => rs.map((r) => r.textContent.replace(/\s+/g, ' ').trim()));
+  const centre = (pg, sel) => pg.$eval(sel, (e) => { const r = e.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; });
+  {
+    ({ page, db } = await open({ label: 'hw-cash-dbl', path: `/day.html?t=${JORDAN}#points`, db: instantDb(), device: HW_DEVICE, init: HW_STUBS, ctx: phone() }));
+    await page.waitForSelector('.hw-balance-big');
+    const at = await centre(page, `.hw-reward[data-reward="${H.game}"] [data-act="hw-cash"]`);
+    await page.mouse.dblclick(at.x, at.y);
+    await page.waitForTimeout(600);
+    check('a double tap on "Get it now" only opens its "Yes, get it · −15": nothing is sent (the Yes waits a moment before it takes a tap)',
+      !calls(db, 'reward_by_token').length && (await hwText(page, '[data-act="hw-cash-yes"]')) === 'Yes, get it · −15' && (await hwText(page, '.hw-balance-big')) === '★ 118',
+      `calls=${calls(db, 'reward_by_token').length} ${await hwText(page, '.hw-balance-big')}`);
+    await page.click('[data-act="hw-cash-no"]');
+    const again = await centre(page, `.hw-reward[data-reward="${H.game}"] [data-act="hw-cash"]`);
+    await page.touchscreen.tap(again.x, again.y);
+    await page.touchscreen.tap(again.x, again.y);
+    await page.waitForTimeout(600);
+    check('... and so do two quick taps on a touch screen', !calls(db, 'reward_by_token').length && db.reward_asks.every((q) => q.status !== 'cashed'),
+      `calls=${calls(db, 'reward_by_token').length}`);
+    await page.click('[data-act="hw-cash-yes"]');
+    check('... a deliberate Yes then cashes it', await until(() => calls(db, 'reward_by_token').length === 1 && !!calls(db, 'reward_by_token')[0].done)
+      && await until(async () => (await hwText(page, '.hw-balance-big')) === '★ 103'));
+    await page.context().close();
+  }
+  {
+    // A refusal (a parent set today's instant rewards to 0 after #points was drawn): his view is read again.
+    ({ page, db } = await open({ label: 'hw-cash-refused', path: `/day.html?t=${JORDAN}#points`, db: instantDb(), device: HW_DEVICE, init: HW_STUBS, ctx: phone(),
+      allowConsole: /status of 4\d\d/ }));
+    await page.waitForSelector('.hw-balance-big');
+    db.homework_kids.find((k) => k.kid_id === P.jordan).instant_day = 0;
+    const reads = calls(db, 'homework_by_token').length;
+    await page.click(`.hw-reward[data-reward="${H.game}"] [data-act="hw-cash"]`);
+    await page.click('[data-act="hw-cash-yes"]');
+    check('a refused cash-in says why ("That\'s all the instant rewards for today…")', (await hwToast(page)) === "That's all the instant rewards for today. Ask a parent for this one.");
+    check('... and his view is read again: no "Get it now" left, "No more instant rewards today", the reward can be asked for',
+      await until(async () => calls(db, 'homework_by_token').length === reads + 1 && (await rewardRows(page))[0] === '15 minutes of extra game time · 15 · instant Ask')
+      && (await hwText(page, '.hw-cash-none')) === 'No more instant rewards today: ask a parent.', JSON.stringify(await rewardRows(page)));
+    await page.context().close();
+  }
+  {
+    // The price his button showed: a parent changes it meanwhile; the cash-in is refused and the new price drawn.
+    ({ page, db } = await open({ label: 'hw-cash-price', path: `/day.html?t=${JORDAN}#points`, db: instantDb(), device: HW_DEVICE, init: HW_STUBS, ctx: phone(),
+      allowConsole: /status of 4\d\d/ }));
+    await page.waitForSelector('.hw-balance-big');
+    await page.click(`.hw-reward[data-reward="${H.game}"] [data-act="hw-cash"]`);
+    db.rewards.find((r) => r.id === H.game).cost = 30;
+    await page.click('[data-act="hw-cash-yes"]');
+    check('a price changed since his screen showed it: refused ("That reward\'s price changed."), nothing taken',
+      (await hwToast(page)) === "That reward's price changed. Look again before you get it." && calls(db, 'reward_by_token')[0].body.p_cost === 15
+      && !db.reward_asks.some((q) => q.status === 'cashed' && q.reward_id === H.game && q.cost === 30), await text(page, '.toasts'));
+    check('... and the new price drawn', await until(async () => (await rewardRows(page))[0] === '15 minutes of extra game time · 30 · instant Get it now'),
+      JSON.stringify(await rewardRows(page)));
+    await page.context().close();
+  }
+  {
+    // A cash-in whose answer is lost, and the read after it too: Cancel and Get it now again keep its key, so the
+    // tap again finds the cash-in it made.
+    ({ page, db } = await open({ label: 'hw-cash-lost', path: `/day.html?t=${JORDAN}#points`, db: instantDb(), device: HW_DEVICE, init: HW_STUBS, ctx: phone(),
+      allowConsole: /ERR_INTERNET_DISCONNECTED|Failed to load/ }));
+    await page.waitForSelector('.hw-balance-big');
+    db.loseAnswer = { reward_by_token: 1, homework_by_token: 1 };
+    await page.click(`.hw-reward[data-reward="${H.game}"] [data-act="hw-cash"]`);
+    await page.click('[data-act="hw-cash-yes"]');
+    await until(() => calls(db, 'reward_by_token').length === 1 && !!calls(db, 'reward_by_token')[0].done && db.loseAnswer.homework_by_token === 0);
+    await page.waitForTimeout(300);
+    // Its "Can't reach" stays 6 seconds: cleared, so the toast checked below is the one the second Yes brings
+    // (the fake marks a call done before its answer reaches the page).
+    check('a cash-in with a lost answer, and the read after it lost too: "Can\'t reach Home Hub", its Yes still there',
+      (await hwToast(page)) === "Can't reach Home Hub. Check your internet connection and try again." && !!(await page.$('[data-act="hw-cash-yes"]')), await text(page, '.toasts'));
+    await hwClear(page);
+    await page.click('[data-act="hw-cash-no"]');
+    await page.evaluate(() => { location.hash = '#homework'; });
+    await page.waitForSelector('.hw-tonight');
+    await page.evaluate(() => { location.hash = '#points'; });
+    await page.waitForSelector(`.hw-reward[data-reward="${H.game}"] [data-act="hw-cash"]`);
+    await page.click(`.hw-reward[data-reward="${H.game}"] [data-act="hw-cash"]`);
+    await page.click('[data-act="hw-cash-yes"]');
+    await until(() => calls(db, 'reward_by_token').length === 2 && !!calls(db, 'reward_by_token')[1].done);
+    const keys = calls(db, 'reward_by_token').map((c) => c.body.p_key);
+    const got = await hwToast(page);
+    const cashed = db.reward_asks.filter((q) => q.status === 'cashed').length;
+    const trades = db.points_ledger.filter((l) => l.kind === 'trade' && l.delta === -15).length;
+    check('a lost answer, Cancel, another view, Get it now and Yes again: the same key, one cash-in, one trade of −15',
+      keys[0] === keys[1] && cashed === 1 && trades === 1 && got === 'Got it: 15 minutes of extra game time. Tell a parent.',
+      `keys same=${keys[0] === keys[1]} cashed=${cashed} trades=${trades} toast=${JSON.stringify(got)} toasts=${JSON.stringify(await texts(page, '.toast'))}`);
+    await page.context().close();
+  }
+  {
+    // A cash-in whose answer is lost: the read after it shows it landed ("Got it"), and no Yes is left to tap twice.
+    const d = instantDb();
+    d.loseAnswer = { reward_by_token: 1 };
+    ({ page, db } = await open({ label: 'hw-cash-landed', path: `/day.html?t=${JORDAN}#points`, db: d, device: HW_DEVICE, init: HW_STUBS, ctx: phone(),
+      allowConsole: /ERR_INTERNET_DISCONNECTED|Failed to load/ }));
+    await page.waitForSelector('.hw-balance-big');
+    await page.click(`.hw-reward[data-reward="${H.game}"] [data-act="hw-cash"]`);
+    await page.click('[data-act="hw-cash-yes"]');
+    check('a lost answer: his view is read again and shows the cash-in landed ("Got it", ★ 103), with no Yes left',
+      await until(async () => (await hwText(page, '.hw-balance-big')) === '★ 103' && /15 minutes of extra game time · 15 · Got it/.test(await hwText(page, '.hw-decided')))
+      && !(await page.$('[data-act="hw-cash-yes"]')) && /Got it: 15 minutes of extra game time\. Tell a parent\./.test(await text(page, '.toasts'))
+      && db.reward_asks.filter((q) => q.status === 'cashed').length === 1, `${await hwText(page, '.hw-balance-big')} | ${await text(page, '.toasts')}`);
+    await page.context().close();
+  }
+  {
+    // The bar never names a reward he asked for: its points are held, waiting for a parent's Yes.
+    const d = hwDb();
+    d.rewards.find((r) => r.id === H.game).active = false;
+    d.rewards.find((r) => r.id === H.dinner).cost = 100;
+    ({ page, db } = await open({ label: 'hw-goal-asked', path: `/day.html?t=${JORDAN}#points`, db: d, device: HW_DEVICE, init: HW_STUBS, ctx: phone() }));
+    await page.waitForSelector('.hw-balance-big');
+    await page.click(`.hw-reward[data-reward="${H.dinner}"] [data-act="hw-ask-reward"]`);
+    await until(() => calls(db, 'reward_by_token').length === 1 && !!calls(db, 'reward_by_token')[0].done);
+    check('after he asks for the dinner (100 of his 118), the bar is toward A new book (132 to go), never the dinner',
+      await until(async () => (await hwText(page, '.hw-head .plan-goal-text')) === '132 points to A new book'), await hwText(page, '.hw-head .plan-goal'));
+    await page.goto(`${BASE}/day.html?t=${JORDAN}`);
+    await page.waitForSelector('.hw-card');
+    check('... on the card too', (await hwText(page, '.hw-card .plan-goal-text')) === '132 points to A new book', await hwText(page, '.hw-card .plan-goal'));
+    await page.context().close();
+  }
+  const running = (d) => d.focus_sessions.push(sessionRow({ id: hid(98), kid_id: P.jordan, assignment_id: H.math, step_id: H.m1, minutes: 20,
+    started_at: hwStamp(d.hwNow - 19 * 60000), ends_at: hwStamp(d.hwNow + 60000), on_time: true }));
+  {
+    // Paid on the day view: the card celebrates there and then, and a later #homework has no stale "+N".
+    const d = hwDb();
+    running(d);
+    ({ page, db } = await open({ label: 'hw-cheer-day', path: `/day.html?t=${JORDAN}`, db: d, device: HW_DEVICE, init: HW_STUBS }));
+    await page.click('.hw-card a.hw-card-focus');
+    await page.waitForSelector('.hw-ring');
+    await page.click('.hw-focus h1');   // his first tap on #focus after a reload makes the AudioContext
+    await page.goBack();
+    await page.waitForSelector('.hw-card');
+    await hwPause(page);
+    await hwTick(page, db, 62 * 1000);
+    await until(() => calls(db, 'focus_by_token').length === 1 && !!calls(db, 'focus_by_token')[0].done);
+    check('paid while he is on the day: the card shows "+30" and counts up from ★ 118 to ★ 148, with the short sound',
+      await until(async () => (await hwText(page, '.hw-card .hw-plus')) === '+30') && (await hwRec(page)).cheer.length > 0
+      && await until(async () => { await page.clock.runFor(100); return (await hwText(page, '.hw-card-points')) === '★ 148'; }), await hwText(page, '.hw-card'));
+    const sounds = (await hwRec(page)).cheer.length;
+    await hwTick(page, db, 10 * 60 * 1000);
+    await page.click('.hw-card .hw-open');
+    await page.waitForSelector('.hw-tonight');
+    check('... and ten minutes later #homework has no "+30" and no sound: ★ 148 as it is', !(await page.$('.hw-head .hw-plus'))
+      && (await hwText(page, '.hw-head .hw-points')) === '★ 148' && (await hwRec(page)).cheer.length === sounds, await hwText(page, '.hw-head'));
+    await page.context().close();
+  }
+  {
+    // The "+N" is what the End paid, whatever else moved his balance during the block.
+    const d = hwDb();
+    running(d);
+    ({ page, db } = await open({ label: 'hw-cheer-given', path: `/day.html?t=${JORDAN}#focus`, db: d, device: HW_DEVICE, init: HW_STUBS }));
+    await page.waitForSelector('.hw-ring');
+    db.points_ledger.push(ledgerRow({ kid_id: P.jordan, at: hwStamp(db.hwNow), day: HWT, kind: 'given', delta: 50, note: 'Helped with dinner', who: 'alex@example.com' }));
+    await hwPause(page);
+    await hwTick(page, db, 62 * 1000);
+    await until(() => calls(db, 'focus_by_token').length === 1 && !!calls(db, 'focus_by_token')[0].done);
+    check('a parent gave 50 during the block: the end screen\'s "+30" is what the block paid (not +80)',
+      await until(async () => (await hwText(page, '.hw-end .hw-plus')) === '+30'), `${await hwText(page, '.hw-end .hw-plus')} | ${await hwText(page, '.hw-points-line')}`);
+    await page.context().close();
+  }
+  {
+    const d = hwDb();
+    running(d);
+    d.reward_asks.push({ id: hid(77), kid_id: P.jordan, reward_id: H.dinner, title: "Choose Friday's dinner", cost: 60, status: 'waiting',
+      asked_at: '2026-11-02T21:00:00.000000+00:00', decided_at: null, decided_by: null, note: null });
+    ({ page, db } = await open({ label: 'hw-cheer-trade', path: `/day.html?t=${JORDAN}#focus`, db: d, device: HW_DEVICE, init: HW_STUBS }));
+    await page.waitForSelector('.hw-ring');
+    await page.click('.hw-focus h1');   // his first tap on #focus after a reload makes the AudioContext
+    Object.assign(db.reward_asks.find((x) => x.id === hid(77)), { status: 'approved', decided_at: hwStamp(db.hwNow), decided_by: 'alex@example.com' });
+    db.points_ledger.push(ledgerRow({ kid_id: P.jordan, at: hwStamp(db.hwNow), day: HWT, kind: 'trade', delta: -60, ask_id: hid(77), note: "Choose Friday's dinner", who: 'alex@example.com' }));
+    await hwPause(page);
+    await hwTick(page, db, 62 * 1000);
+    await until(() => calls(db, 'focus_by_token').length === 1 && !!calls(db, 'focus_by_token')[0].done);
+    check('a parent said Yes to his ask (−60) during the block: the block\'s "+30" is still celebrated, up to ★ 88',
+      await until(async () => (await hwText(page, '.hw-end .hw-plus')) === '+30') && (await hwRec(page)).cheer.length > 0
+      && await until(async () => { await page.clock.runFor(100); return (await hwText(page, '.hw-end-balance')) === '★ 88'; }), `${await hwText(page, '.hw-end')}`);
+    await page.context().close();
+  }
+  {
+    // A reload between the paid End and his answer: #focus asks again (the view's answer_due), and so do #homework
+    // and the card; his answer ticks the step.
+    const d = hwDb();
+    running(d);
+    ({ page, db } = await open({ label: 'hw-answer-due', path: `/day.html?t=${JORDAN}#focus`, db: d, device: HW_DEVICE, init: HW_STUBS }));
+    await page.waitForSelector('.hw-ring');
+    await hwPause(page);
+    await hwTick(page, db, 62 * 1000);
+    await until(() => calls(db, 'focus_by_token').length === 1 && !!calls(db, 'focus_by_token')[0].done);
+    await page.waitForSelector('.hw-end [data-act="hw-end"]');
+    await page.clock.resume();
+    await page.reload();
+    await page.waitForFunction(() => !document.querySelector('.loading'));
+    check('a reload after the ring ran out (paid): #focus still asks "Time. How did it go?", with what it paid',
+      await until(async () => (await hwText(page, '.hw-end h2')) === 'Time. How did it go?') && (await hwText(page, '.hw-points-line')) === '+20 · 20 minutes · +10 on time'
+      && !(await page.$('.hw-end .hw-plus')), `${await page.evaluate(() => location.hash)} | ${await hwText(page, 'main')}`.slice(0, 240));
+    await page.evaluate(() => { location.hash = '#homework'; });
+    check('... #homework asks too', await until(async () => (await hwText(page, '.hw-block')) === 'Your block is over. How did it go? ›'), await hwText(page, '.hw-block'));
+    await page.goto(`${BASE}/day.html?t=${JORDAN}`);
+    await page.waitForSelector('.hw-card');
+    check('... and so does the card on My day after a reload', (await hwText(page, '.hw-card a.hw-card-focus')) === 'Your block is over. How did it go? ›', await hwText(page, '.hw-card'));
+    await page.click('.hw-card a.hw-card-focus');
+    await page.waitForSelector('.hw-end [data-act="hw-end"][data-result="done"]');
+    await page.click('.hw-end [data-act="hw-end"][data-result="done"]');
+    check('... Step done from there: his answer, the step ticked, the points as paid',
+      await until(() => calls(db, 'focus_by_token').length === 2 && !!calls(db, 'focus_by_token')[1].done)
+      && same(calls(db, 'focus_by_token')[1].body, { p_token: JORDAN, p_action: 'end', p_session: hid(98), p_result: 'done' }) && !!db.homework_steps.find((x) => x.id === H.m1).done_at
+      && db.points_ledger.filter((l) => l.session_id === hid(98)).reduce((n, l) => n + l.delta, 0) === 30
+      && await until(async () => (await hwText(page, '.hw-end h2')) === 'Block finished.'), await hwText(page, '.hw-end'));
+    await page.context().close();
+  }
+  {
+    // The next-reward bar stays on the timer screen: the end screen, after his answer, and the break.
+    const d = hwDb();
+    running(d);
+    ({ page, db } = await open({ label: 'hw-goal-end', path: `/day.html?t=${JORDAN}#focus`, db: d, device: HW_DEVICE, init: HW_STUBS }));
+    await page.waitForSelector('.hw-ring');
+    await hwPause(page);
+    await hwTick(page, db, 62 * 1000);
+    await until(() => calls(db, 'focus_by_token').length === 1 && !!calls(db, 'focus_by_token')[0].done);
+    await page.waitForSelector('.hw-end .hw-points-line');
+    const atEnd = await hwText(page, '.hw-focus .plan-goal');
+    await page.click('.hw-end [data-act="hw-end"][data-result="more"]');
+    await until(async () => (await hwText(page, '.hw-end h2')) === 'Block finished.');
+    const finished = await hwText(page, '.hw-focus .plan-goal');
+    await page.click('[data-act="hw-break"]');
+    const brk = await hwText(page, '.hw-focus .plan-goal');
+    const want = "You can get Choose Friday's dinner now!2 points to A new book";
+    check('the next-reward bar on the timer screen when the block ends, after his answer and on the break ("2 points to A new book")',
+      atEnd === want && finished === want && brk === want, JSON.stringify({ atEnd, finished, brk }));
+    await page.context().close();
+  }
+
+  // =====================================================================
+  // 20. #plan/<id>: his rules (a plain step moved, a milestone locked), and Re-plan
+  // =====================================================================
+  {
+    // The stale save below is refused with a 400, which Chrome logs.
+    ({ page, db } = await open({ label: 'hw-plan', path: `/day.html?t=${JORDAN}#plan/${H.sci}`, db: hwDb(), device: HW_DEVICE, init: HW_STUBS, allowConsole: /status of 400/ }));
+    await page.waitForSelector('.plan-editor');
+    check('#plan/<id>: the editor in his role, with ‹ Homework', (await page.$eval('.plan-editor', (e) => e.dataset.role)) === 'kid' && (await hwText(page, '.hw-head .list-back')) === '‹ Homework');
+    check('#plan/<id>: milestones and the turn-in locked, with "Milestones are checkpoints you set with Pat. Change them together."',
+      !(await page.$(`.plan-step[data-id="${H.s3}"] select[name="day"]`)) && !!(await page.$(`.plan-step[data-id="${H.s3}"] .plan-lock`))
+      && (await hwText(page, '.plan-lock-note')) === 'Milestones are checkpoints you set with Pat. Change them together.');
+    const i2 = await page.$eval(`.plan-step[data-id="${H.s2}"]`, (e) => e.dataset.i);
+    await page.selectOption(`.plan-step[data-i="${i2}"] select[name="day"]`, '2026-11-03');
+    await page.click('.plan-editor [data-act="save"]');
+    await until(() => calls(db, 'plan_by_token').length === 1);
+    const ps = calls(db, 'plan_by_token')[0].body;
+    check('Save: plan_by_token with the whole plan and its rev; the plain step moved', ps.p_assignment === H.sci && ps.p_rev === 3
+      && ps.p_steps.find((s) => s.id === H.s2).day === '2026-11-03' && ps.p_steps.find((s) => s.id === H.s3).day === '2026-11-04'
+      && db.homework_steps.find((s) => s.id === H.s2).day === '2026-11-03', JSON.stringify(ps));
+    // A stale copy (someone ticked a step since): reloads with "Changed since you opened it".
+    db.assignments.find((a) => a.id === H.sci).plan_rev += 1;
+    const i4 = await page.$eval(`.plan-step[data-id="${H.s4}"]`, (e) => e.dataset.i);
+    await page.selectOption(`.plan-step[data-i="${i4}"] select[name="day"]`, '2026-11-09');
+    await page.click('.plan-editor [data-act="save"]');
+    check('a stale save: read again, "Changed since you opened it: here it is now."', await until(async () => (await hwText(page, '.plan-msg')) === 'Changed since you opened it: here it is now.'), await hwText(page, '.plan-msg'));
+    await page.click('.plan-editor [data-act="replan"]');
+    await until(() => calls(db, 'plan_by_token').length === 3);
+    check('Re-plan in the editor: plan_by_token with p_steps null', calls(db, 'plan_by_token')[2].body.p_steps === null);
+    await page.click('.hw-head .list-back');
+    check('‹ Homework goes back to #homework', await until(async () => (await page.evaluate(() => location.hash)) === '#homework'));
+    await page.context().close();
+  }
+
+  // =====================================================================
+  // 21. Spanish: the words, and the database's messages in his words (before the 42501 line)
+  // =====================================================================
+  {
+    // The refusals below come back as 400 and 403, which Chrome logs.
+    ({ page, db } = await open({ label: 'hw-es', path: `/day.html?t=${JORDAN}`, db: hwDb({ lang: 'es', ifStuck: null }), device: HW_DEVICE, init: HW_STUBS, ctx: phone(),
+      allowConsole: /status of 40[03]/ }));
+    check('Spanish card: "Tarea · 16:30 · 3 pasos · 45 min · 2 de antes", "Empezar · 20 min", "Abrir ›"',
+      (await hwText(page, '.hw-card-head')) === 'Tarea · 16:30 · 3 pasos · 45 min · 2 de antes' && (await hwText(page, '.hw-card [data-act="hw-card-start"]')) === 'Empezar · 20 min'
+      && (await hwText(page, '.hw-card a.hw-open')) === 'Abrir ›' && (await hwText(page, '.hw-card-next')) === 'Siguiente: Worksheet 4.2 · Do worksheet 4.2', await hwText(page, '.hw-card'));
+    await page.click('.hw-card a.hw-open');
+    await page.waitForSelector('.hw-now-card');
+    check('Spanish #homework: Ahora, Esta tarde, Para pronto, De antes, + Tarea, the who-sees line',
+      /^Ahora · tiempo de tarea 16:30–17:15 · empieza antes de las 16:40 para \+10$/.test(await hwText(page, '#hw-now-h'))
+      && (await hwText(page, '.hw-head .plan-goal-text')) === '¡Ya puedes conseguir Choose Friday\'s dinner!' && (await hwText(page, '.hw-head .plan-goal-next')) === '32 puntos para A new book'
+      && (await hwText(page, '#hw-tonight-h')) === 'Esta tarde · 45 min planeados · 45 min de tiempo de tarea'
+      && (await hwText(page, '#hw-due-h')) === 'Para pronto' && (await hwText(page, '.hw-earlier summary')) === 'De antes · 2 pasos · 35 min · Volver a planear ›'
+      && (await hwText(page, '[data-act="hw-add"]')) === '+ Tarea'
+      && (await hwText(page, '.hw-who')) === 'Pat y los adultos de tu familia ven tu plan y tus notas. Los adultos ven tus puntos.'
+      && (await hwText(page, '.hw-head .list-back')) === '‹ Mi día' && (await hwText(page, '.hw-head h1')) === 'Tarea',
+      `${await hwText(page, '#hw-now-h')} | ${await hwText(page, '#hw-tonight-h')} | ${await hwText(page, '.hw-earlier summary')}`);
+    check('Spanish Due soon: "Por detrás del plan · Volver a planear ›" and the milestone line', /Por detrás del plan · Volver a planear ›/.test(await hwText(page, '.hw-due'))
+      && /Flashcards made estaba planeado para el vie 30 oct\. Elige otro día con Pat ›/.test(await hwText(page, '.hw-due')), await hwText(page, '.hw-due'));
+    check('Spanish: the length chips, Solo / Con Pat / Con tu madre o tu padre', same(await page.$$eval('.hw-now-card select[name="with"] option', (os) => os.map((x) => x.textContent)), ['Solo', 'Con Pat', 'Con tu madre o tu padre']));
+    await page.screenshot({ path: SHOTS + 'day-hw-es.png', fullPage: true });
+    // The stuck sheet with no if-stuck line yet.
+    await page.click('.hw-now-card [data-act="hw-start"]');
+    await page.waitForSelector('.hw-ring');
+    check('Spanish #focus: Estoy atascado, Hecho, Parar', same(await hwTexts(page, '.hw-focus-acts button'), ['Estoy atascado', 'Hecho', 'Parar'])
+      && (await hwText(page, '.hw-ontime')) === 'A tiempo · +10 cuando lleves 5 minutos' && (await hwText(page, '.hw-sofar')) === '+0 hasta ahora',
+      JSON.stringify(await hwTexts(page, '.hw-focus-acts button')));
+    await page.click('[data-act="hw-stuck"]');
+    check('Spanish stuck sheet: no plan yet → "Escribe tu plan para cuando te atasques ✎"; Hazlo más pequeño, Preguntar a Pat, Siguiente paso, Volver al temporizador',
+      (await hwText(page, '.hw-sheet .hw-stuck-plan')) === 'Escribe tu plan para cuando te atasques ✎'
+      && same(await hwTexts(page, '.hw-sheet .hw-sheet-acts > button'), ['Hazlo más pequeño', 'Preguntar a Pat', 'Siguiente paso', 'Volver al temporizador']), await hwText(page, '.hw-sheet'));
+    await page.click('.hw-sheet [data-act="hw-smaller"]');
+    check('Spanish chips', same(await hwTexts(page, '.hw-sheet [data-chip]'), ['Escribe una frase', 'Apunta lo que no está claro', 'Haz la parte más fácil']));
+    await page.click('.hw-sheet [data-act="hw-sheet-close"]');
+    await hwPause(page);
+    await hwTick(page, db, 20 * 60 * 1000 + 2000);
+    await page.waitForSelector('.hw-end [data-act="hw-end"]');
+    check('Spanish end screen', (await hwText(page, '.hw-end h2')) === 'Tiempo. ¿Qué tal fue?' && same(await hwTexts(page, '.hw-end [data-act="hw-end"]'), ['Paso hecho ✓', 'Queda más']));
+    await page.click('.hw-end [data-act="hw-end"][data-result="done"]');
+    check('Spanish points line', await until(async () => (await hwText(page, '.hw-points-line')) === '+20 · 20 minutos · +10 a tiempo'), await hwText(page, '.hw-end'));
+    await page.goto(`${BASE}/day.html?t=${JORDAN}#homework`);
+    await page.waitForSelector('.hw-now-card');
+    // Each database message, from a homework call, in his words.
+    const msgs = [
+      [403, '42501', "That step isn't on your plan.", 'Ese paso no está en tu plan.'],
+      [403, '42501', 'Only your own tick can be undone, for 15 minutes.', 'Solo puedes deshacer lo que marcaste tú, durante 15 minutos.'],
+      [403, '42501', "That's a checkpoint. Change it with Pat.", 'Es un punto de control. Cámbialo con Pat.'],
+      [400, 'P0001', 'Finish the block you started first.', 'Termina primero el bloque que empezaste.'],
+      [403, '42501', "That block isn't yours.", 'Ese bloque no es tuyo.'],
+      [400, 'P0001', "That's a lot for one day.", 'Es mucho para un día. Sigue mañana.'],
+      [400, 'P0001', "No homework day before it's due has room. Re-plan, make it smaller, or ask Pat.", 'No queda ningún día de tarea con sitio antes de la entrega. Vuelve a planear, hazlo más pequeño o pregunta a Pat.'],
+      [400, 'P0001', 'This plan was changed since you opened it.', 'Este plan cambió desde que lo abriste.'],
+      [403, '42501', 'Not enough points yet.', 'Todavía no tienes puntos suficientes.'],
+      [403, '42501', 'Points are off.', 'Los puntos están desactivados.'],
+      [400, '22023', 'Choose 10, 15, 20 or 25 minutes.', 'Elige 10, 15, 20 o 25 minutos.'],
+      [403, '42501', 'Plan this one with Pat.', 'Planéalo con Pat.'],
+      [400, '22023', 'Set a homework time first.', 'Primero hay que poner un tiempo de tarea.'],
+      // His limits: retrying can't help, so never "Algo salió mal. Inténtalo de nuevo.".
+      [400, '22023', 'At most 20 steps.', 'Como mucho 20 pasos.'],
+      [400, 'P0001', 'Three asks are waiting already. Wait for a parent first.', 'Ya hay tres pedidos esperando. Espera primero a tus padres.'],
+      [400, 'P0001', 'Five suggestions are waiting already. Wait for a parent first.', 'Ya hay cinco propuestas esperando. Espera primero a tus padres.'],
+      [400, 'P0001', 'Fifteen of your own are open already.', 'Ya tienes quince tareas tuyas abiertas.'],
+      // A token writer's last guard: a constraint error said without its detail.
+      [400, '22023', "That can't be saved.", 'Eso no se puede guardar.'],
+      // Instant rewards: one that needs a parent's yes, and the day's limit on cashing them.
+      [403, '42501', 'Ask a parent for that one.', 'Ese pídeselo a tus padres.'],
+      [400, 'P0001', "That's all the instant rewards for today. Ask a parent for this one.", 'Ya usaste los premios al momento de hoy. Este pídeselo a tus padres.'],
+    ];
+    for (const [status, code, msg, words] of msgs) {
+      await hwClear(page);
+      db.hwError = [status, code, msg];
+      await page.click(`.hw-tonight .hw-step[data-step="${H.s1}"] [data-act="hw-more"]`);
+      await page.click(`.hw-step[data-step="${H.s1}"] .hw-menu [data-act="hw-not-today"]`);
+      const shown = await page.waitForSelector('.toast-error', { timeout: 3000 }).then(() => text(page, '.toast-error')).catch(() => '');
+      check(`Spanish: "${msg}" → "${words}"`, shown === words, shown);
+      await page.waitForTimeout(50);
+    }
+    // Not today to a day past tomorrow (Tuesday's homework time is full): "Pasado al mié", as plan.js's t()
+    // says it ("a el" → "al").
+    await hwClear(page);
+    db.hwError = null;
+    db.hwBusy[P.jordan]['2026-11-03'] = [{ starts: '16:00', ends: '18:00', title: 'Piano' }];
+    const movedCalls = calls(db, 'step_by_token').length;
+    await page.click(`.hw-tonight .hw-step[data-step="${H.s1}"] [data-act="hw-more"]`);
+    await page.click(`.hw-step[data-step="${H.s1}"] .hw-menu [data-act="hw-not-today"]`);
+    await until(() => calls(db, 'step_by_token').length === movedCalls + 1 && !!calls(db, 'step_by_token').slice(-1)[0].done);
+    const movedEs = await hwToast(page);
+    check('Spanish Not today to Wednesday: "Pasado al mié" (a + el → al), never "a el"',
+      db.homework_steps.find((x) => x.id === H.s1).day === '2026-11-04' && movedEs === 'Pasado al mié', `${movedEs} | ${db.homework_steps.find((x) => x.id === H.s1).day}`);
+    await page.context().close();
+  }
+  {
+    // No tutor link: "Ask for help", and the words without Pat.
+    ({ page, db } = await open({ label: 'hw-notutor', path: `/day.html?t=${JORDAN}#homework`, db: hwDb({ noTutor: true }), device: HW_DEVICE, init: HW_STUBS }));
+    await page.waitForSelector('.hw-now-card');
+    check('no tutor link: "With your tutor" is left out, and the who-sees line names only the family',
+      same(await page.$$eval('.hw-now-card select[name="with"] option', (os) => os.map((x) => x.value)), ['alone', 'parent'])
+      && (await hwText(page, '.hw-who')) === 'The grown-ups in your family see your plan, your notes and your points.');
+    await page.click(`.hw-tonight .hw-step[data-step="${H.s1}"] [data-act="hw-more"]`);
+    check('no tutor link: "Ask for help"', (await hwTexts(page, `.hw-step[data-step="${H.s1}"] .hw-menu button`)).includes('Ask for help'));
+    await page.context().close();
+  }
+  {
+    // homework_by_token answers null (homework turned off a moment ago) while the day link works: the day, and a word.
+    const d = hwDb();
+    ({ page, db } = await open({ label: 'hw-null', path: `/day.html?t=${JORDAN}`, db: d, device: HW_DEVICE, init: HW_STUBS }));
+    db.homework_kids[0].active = false;
+    await page.click('.hw-card a.hw-open');
+    check('homework off while open: back to the day, with no card, and "Homework isn\'t on your My day right now."',
+      await until(async () => !!(await page.$('.day-sec')) && !(await page.$('.hw-card'))) && (await hwToast(page)) === "Homework isn't on your My day right now.", await hwText(page, 'main'));
+    // A link that no longer works at all.
+    delete db.my[JORDAN];
+    db.people.find((p) => p.id === P.jordan).day_token = null;
+    await page.goto(`${BASE}/day.html?t=${JORDAN}#homework`);
+    await page.reload();
+    await page.waitForSelector('.day-problem');
+    check('a link that no longer works: the usual words', /This link isn't working/.test(await hwText(page, '.day-problem')));
+    await page.context().close();
+  }
+  {
+    // A hostile title and note are drawn as text.
+    const d = hwDb();
+    d.homework_steps.find((s) => s.id === H.m1).title = '<img src=x onerror="window.__xss=1">';
+    d.homework_steps.find((s) => s.id === H.m1).answer = '<b>bold</b>';
+    ({ page, db } = await open({ label: 'hw-xss', path: `/day.html?t=${JORDAN}#homework`, db: d, device: HW_DEVICE, init: HW_STUBS }));
+    await page.waitForSelector('.hw-now-card');
+    check('a hostile title and answer are drawn as text', (await hwText(page, '.hw-now-title')) === '<img src=x onerror="window.__xss=1">'
+      && !(await page.$('.hw-now-card img, .hw-note b')) && !(await page.evaluate(() => window.__xss)));
+    await page.context().close();
+  }
 
   console.log(results.join('\n'));
   console.log(`\n${results.filter((r) => r.startsWith('PASS')).length}/${results.length} passed`);

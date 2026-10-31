@@ -4,7 +4,8 @@
 // for whichever email typed the code 123456.
 //
 //   /rest/v1/<table>      GET (select=*|cols, eq/neq/gt/gte/lt/lte/like/ilike/is/in/cs/cd/ov and not.*,
-//                         order, limit, offset; Accept: application/vnd.pgrst.object+json), POST (insert,
+//                         order, limit, offset, at most 1,000 rows as Supabase's API answers; Accept:
+//                         application/vnd.pgrst.object+json), POST (insert,
 //                         Prefer: return=representation|minimal, resolution=merge-duplicates|ignore-duplicates
 //                         with on_conflict, the columns parameter), PATCH, DELETE
 //   /rest/v1/rpc/<fn>     POST (or GET) with named arguments, shaped as PostgREST shapes them: a scalar, an
@@ -228,13 +229,32 @@ function filterSql(cache, table, qualifier, col, spec) {
   return neg ? `not (${expr})` : expr;
 }
 
+// PostgREST's logical filters: or=(a.eq.1,and(b.is.null,c.not.is.null)) and and=(…), also as not.or= and
+// not.and=; each item is a column's filter written col.op.value (col.not.op.value), or a nested and(…),
+// or(…), not.and(…) or not.or(…). A value in double quotes keeps its commas and parentheses.
+function logicSql(cache, table, qualifier, op, tree) {
+  const m = /^\((.*)\)$/s.exec(tree);
+  if (!m || m[1] === '') throw pgrst(400, 'PGRST100', `"failed to parse logic tree (${tree})" (line 1, column 1)`);
+  const items = splitTopLevel(m[1]).map((item) => {
+    const nested = /^(not\.)?(and|or)(\(.*\))$/s.exec(item);
+    if (nested) return `${nested[1] ? 'not ' : ''}${logicSql(cache, table, qualifier, nested[2], nested[3])}`;
+    const dot = item.indexOf('.');
+    if (dot < 1) throw pgrst(400, 'PGRST100', `"failed to parse logic tree (${tree})" (line 1, column 1)`);
+    const spec = item.slice(dot + 1).replace(/^((?:not\.)?(?:eq|neq|gt|gte|lt|lte|like|ilike|is)\.)"(.*)"$/s, '$1$2');
+    return filterSql(cache, table, qualifier, item.slice(0, dot), spec);
+  });
+  return `(${items.join(` ${op} `)})`;
+}
+
 function whereSql(cache, table, qualifier, params) {
   const conds = [];
   for (const [k, v] of params) {
-    if (RESERVED.has(k)) {
-      if (k === 'and' || k === 'or') throw new Error(`realdb server: logical filters (${k}) aren't supported`);
+    const logic = /^(not\.)?(and|or)$/.exec(k);
+    if (logic) {
+      conds.push(`${logic[1] ? 'not ' : ''}${logicSql(cache, table, qualifier, logic[2], v)}`);
       continue;
     }
+    if (RESERVED.has(k)) continue;
     conds.push(filterSql(cache, table, qualifier, k, v));
   }
   return conds.length ? `where ${conds.join(' and ')}` : '';
@@ -271,6 +291,7 @@ function parsePrefer(h) {
 // Server
 // ---------------------------------------------------------------------
 async function start(opts = {}) {
+  const maxRows = opts.maxRows !== undefined ? opts.maxRows : Number(process.env.REALDB_MAX_ROWS || 1000);
   const db = await connect({ socketDir: opts.socket, port: opts.port, database: opts.db });
   let cache = await loadCache(db);
   const roots = Object.assign({ '/': REPO }, opts.roots || {});
@@ -346,7 +367,11 @@ async function start(opts = {}) {
 
     if (method === 'GET' || method === 'HEAD') {
       const sel = selectSql(cache, name, sp.get('select'));
-      const limit = sp.get('limit') != null ? `limit ${Number(sp.get('limit'))}` : '';
+      // Supabase's API "Max rows" (PostgREST's db-max-rows, 1,000 unless changed): a read is cut to it, with
+      // no error, whatever limit it asks for. opts.maxRows (null: no cap) or REALDB_MAX_ROWS sets another.
+      const want = sp.get('limit') != null ? Number(sp.get('limit')) : null;
+      const cut = maxRows == null ? want : want == null ? maxRows : Math.min(want, maxRows);
+      const limit = cut != null ? `limit ${cut}` : '';
       const offset = sp.get('offset') != null ? `offset ${Number(sp.get('offset'))}` : '';
       const sql = `select coalesce(json_agg(_t), '[]')::text, count(_t) from (select ${sel} from ${T} ${whereSql(cache, name, T, params)} ${orderSql(cache, name, sp.get('order'))} ${limit} ${offset}) _t`;
       const out = await tx({ ...ident0, readOnly: true, method, reqPath: url.pathname }, async (run) => {

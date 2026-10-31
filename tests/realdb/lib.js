@@ -3,7 +3,7 @@
 //   const { page } = await h.open({ email: 'alex@example.com', phone: true, path: '/#/' });
 //   await h.sql("select due_date from tasks where title = 'Heartworm pill'")  → [{ due_date: '2026-10-27' }]
 //   h.check(name, ok, detail); … await h.finish();   // prints the PASS/FAIL lines, closes everything
-//   await h.migrate('supabase/migrations/0004_meals_and_shopping.sql')   // as the owner applies it (setup(name, { v3: true }))
+//   await h.migrate('supabase/migrations/0005_homework.sql')   // as the owner applies it (setup(name, { v4: true }))
 // Signing in goes through the server's real /auth/v1/otp and /auth/v1/verify (code 123456); the session
 // is then put where supabase-js keeps it. The browser's clock starts at the household's pinned "now".
 // hub-jobs' Google calls (the calendar job, Test) reach a fake Google (fakeGoogle below): h.google.
@@ -210,8 +210,9 @@ async function setup(name, opts = {}) {
   const socket = env('REALDB_SOCKET');
   const port = env('REALDB_PORT');
   // The template: the full database (every migration), the v1 one (opts.v1), v2 without migration 0003
-  // (opts.v2), or v1.1 without migration 0004 (opts.v3).
-  const template = opts.v1 ? env('REALDB_V1_TEMPLATE') : opts.v2 ? env('REALDB_V2_TEMPLATE') : opts.v3 ? env('REALDB_V3_TEMPLATE') : env('REALDB_TEMPLATE');
+  // (opts.v2), v1.1 without migration 0004 (opts.v3), or v1.2 without migration 0005 (opts.v4).
+  const template = opts.v1 ? env('REALDB_V1_TEMPLATE') : opts.v2 ? env('REALDB_V2_TEMPLATE') : opts.v3 ? env('REALDB_V3_TEMPLATE')
+    : opts.v4 ? env('REALDB_V4_TEMPLATE') : env('REALDB_TEMPLATE');
   const dbName = `rt_${name}`;
   const admin = await connect({ socketDir: socket, port, database: 'postgres' });
   await admin.query(`drop database if exists ${ident(dbName)}`);
@@ -377,4 +378,14 @@ async function setup(name, opts = {}) {
   return { base, browser, server, sent, google, runDigest, runCalendar, hubJobsAs, api, sql, migrate, clockNow, setClock, requests, mark, failed, sessionFor, open, settle, go, tc, texts, lastToast, titles, until, shot, check, flow, finish, errors };
 }
 
-module.exports = { setup };
+// Homework (migration 0005, docs/v1.3-homework.md §3): its eleven tables and twenty-six public
+// functions, as request paths. A site on a database before 0005 asks for none of them.
+const HOMEWORK_TABLES = ['homework_kids', 'homework_times', 'tutor_links', 'assignments', 'homework_steps', 'focus_sessions', 'rewards', 'reward_asks',
+  'points_ledger', 'homework_use', 'ai_runs'];
+const HOMEWORK_FNS = ['homework_week', 'save_homework_kid', 'add_homework_time', 'save_homework_plan', 'homework_step', 'decide_reward', 'give_points', 'void_points',
+  'save_tutor_link', 'new_tutor_token', 'homework_ai_preview', 'homework_ai_draft', 'erase_homework',
+  'homework_by_token', 'step_by_token', 'plan_by_token', 'focus_by_token', 'reward_by_token', 'assignment_by_token', 'homework_prefs_by_token',
+  'tutor_view_by_token', 'tutor_assignment_by_token', 'tutor_plan_by_token', 'tutor_step_by_token', 'homework_ai_start', 'homework_ai_finish'];
+const HOMEWORK_CALLS = new RegExp(`^/rest/v1/(${HOMEWORK_TABLES.join('|')}|rpc/(${HOMEWORK_FNS.join('|')}))$`);
+
+module.exports = { setup, HOMEWORK_TABLES, HOMEWORK_FNS, HOMEWORK_CALLS };

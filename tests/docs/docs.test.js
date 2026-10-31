@@ -4,17 +4,22 @@
 //   • deploy steps 4 and 5 (CLAUDE.md, docs/v2-design.md §7, README "Upgrading to v2") name every
 //     secret hub-jobs reads and every Vault secret supabase/cron.sql needs, and don't call a
 //     required one optional;
-//   • CLAUDE.md and tests/README.md name every suite tests/run.sh runs, and every public page;
-//   • day.html carries the same ?v= as index.html (CLAUDE.md says so);
+//   • CLAUDE.md and tests/README.md name every suite tests/run.sh runs, and every public page, and
+//     tests/README.md every browser and real-database test file, in that suite's section;
+//   • day.html carries the same ?v= as index.html (CLAUDE.md says so); CLAUDE.md names the scripts
+//     index.html and day.html load, in order, and day.html's stylesheets; and every way into day.html
+//     (the ?x= day.js reads) is described in CLAUDE.md and docs/v2-design.md §4;
 //   • the README says Share shows wherever the browser has Web Share (hub.js canShare), not phones only;
 //   • docs/v2-design.md names every table, column, function and anon-callable function the
-//     migrations add, and every signature it, docs/v1.1-google-calendar.md or docs/v1.2-kitchen.md
-//     writes out has the migration's parameter names;
+//     migrations add, and every signature it, docs/v1.1-google-calendar.md, docs/v1.2-kitchen.md or
+//     docs/v1.3-homework.md writes out has the migration's parameter names;
 //   • from migration 0004 (v1.2) on, docs/v2-design.md writes out every new table, added column
 //     and constraint as the migration has it (in ```sql blocks), the signature of every public
 //     function, every private function, and every function a migration renames;
 //   • anon can call exactly the token functions the design counts;
-//   • docs/v1.2-kitchen.md §2 counts the public and private functions migration 0004 adds;
+//   • docs/v1.2-kitchen.md §2 counts the public and private functions migration 0004 adds, and
+//     docs/v1.3-homework.md §2.1 what 0005 adds (tables by name, household columns, functions) and §3.6
+//     the token functions anon can call;
 //   • example phone numbers are in the fictional 555-0100 to 555-0199 range.
 // Reads files only: no database, no browser. Run alone with: node tests/docs/docs.test.js
 const fs = require('fs');
@@ -126,6 +131,23 @@ check('tests/run.sh: its "Unknown suite" message and header name every suite', O
   && Object.values(suites).every((p) => runSh.split('set -u')[0].includes(p)), unknown);
 const usage = (/tests\/run\.sh fn e2e\s+# only the suites named \(([^)]*)\)/.exec(testsReadme) || [])[1] || '';
 check('tests/README.md: "only the suites named" lists every suite', Object.keys(suites).every((s) => new RegExp(`\\b${s}\\b`).test(usage)), usage);
+// tests/README.md describes every browser and real-database test file (its tables of suites), so a new one
+// (v1.3's homework.test.js and tutor.test.js) is written up when it is added. Each is looked for in its
+// own suite's section: e2e/ and realdb/ both have a homework.test.js, so the whole file would find one
+// write-up for two files.
+{
+  const section = (heading) => {
+    const at = testsReadme.indexOf(heading);
+    if (at < 0) return '';
+    const next = testsReadme.indexOf('\n## ', at + heading.length);
+    return testsReadme.slice(at, next < 0 ? undefined : next);
+  };
+  const dirs = { 'tests/e2e': '## Browser tests (`e2e/`)', 'tests/realdb': '## Real-database tests (`realdb/`)' };
+  const files = Object.keys(dirs).flatMap((d) => fs.readdirSync(path.join(ROOT, d)).filter((f) => f.endsWith('.test.js')).map((f) => `${d}/${f}`));
+  const unnamed = files.filter((f) => !section(dirs[path.dirname(f)]).includes(`\`${path.basename(f)}\``)).sort();
+  check(`tests/README.md names every browser and real-database test file in its suite's section (${files.length})`,
+    files.length > 10 && Object.values(dirs).every((h) => section(h)) && !unnamed.length, `missing ${unnamed.join(', ')}`);
+}
 const optionalSuites = Object.keys(suites).filter((s) => !defaults.includes(s));
 for (const s of optionalSuites) {
   check(`CLAUDE.md and tests/README.md say the ${s} suite isn't in the default run`,
@@ -147,6 +169,51 @@ for (const page of ['index.html', 'day.html']) {
 const all = new Set(Object.values(versions).flat());
 check('index.html and day.html carry one and the same ?v= (CLAUDE.md: bump them together)', all.size === 1 && !all.has(''), versions);
 check('CLAUDE.md says day.html carries the same ?v= as index.html', /day\.html[^\n]*\?v=|\?v=[^\n]*day\.html/.test(clientSec));
+
+// CLAUDE.md "Client code" says what index.html and day.html load, in order: each script either page loads
+// (index.html's page modules aside: "then the module files") is named in that page's line, in the page's order,
+// and day.html's line names each of its stylesheets. So a script added to a page (v1.3's plan.js) is added there too.
+{
+  // The page's line, from "loads `" (its list of files) to the end of that sentence.
+  const line = (re) => {
+    const l = clientSec.split('\n').find((x) => re.test(x)) || '';
+    const at = l.search(/\bloads `/);
+    const s = at < 0 ? '' : l.slice(at);
+    const end = s.search(/\.\s+[A-Z]/);
+    return s.slice(0, end < 0 ? undefined : end + 1);
+  };
+  const loads = { 'index.html': line(/^- `index\.html` loads/), 'day.html': line(/^- `day\.html` is/) };
+  for (const [page, text] of Object.entries(loads)) {
+    const html = read(page).replace(/<!--[\s\S]*?-->/g, '');
+    const srcs = [...html.matchAll(/<script\s+src="([^"?]+)/g)].map((m) => m[1]).filter((s) => !/^assets\/modules\//.test(s));
+    // Where the line names a script, at or after `from` (the line may name one earlier too, in passing).
+    const at = (src, from) => {
+      const re = /supabase-js/.test(src) ? /supabase-js/g : new RegExp(`\`(?:assets/)?${path.basename(src).replace('.', '\\.')}\``, 'g');
+      re.lastIndex = from;
+      const m = re.exec(text);
+      return m ? m.index : -1;
+    };
+    const missing = srcs.filter((s) => at(s, 0) < 0);
+    let from = 0;
+    const outOfOrder = srcs.filter((s) => { const p = at(s, from); if (p < 0) return true; from = p + 1; return false; });
+    check(`CLAUDE.md "Client code" names the scripts ${page} loads, in its order (${srcs.map((s) => path.basename(s)).join(', ')})`,
+      !!text && !missing.length && !outOfOrder.length, missing.length ? `missing ${missing.join(', ')}` : `out of order from ${outOfOrder.join(', ')}: ${text.slice(0, 300)}`);
+    if (page !== 'day.html') continue;
+    const css = [...html.matchAll(/<link\s+rel="stylesheet"\s+href="([^"?]+)/g)].map((m) => path.basename(m[1]));
+    const missingCss = css.filter((c) => !text.includes(`${c}\``));
+    check(`CLAUDE.md "Client code" names the stylesheets day.html loads (${css.join(', ')})`, css.length > 0 && !missingCss.length, `missing ${missingCss.join(', ')}`);
+  }
+}
+// Each way into day.html (the ?x= its script reads: t, the My day link; c, the confirmation email; from v1.3 h,
+// the tutor link) is described in CLAUDE.md "Client code" and in docs/v2-design.md §4 "Client".
+{
+  const dayJs = read('assets/day.js');
+  const params = [...new Set([...dayJs.matchAll(/\bquery\.(?:get|has)\('([a-z]+)'\)/g)].map((m) => m[1]))].sort();
+  const client = section(read('docs/v2-design.md'), /^## 4\. Client/);
+  const undescribed = params.filter((k) => !clientSec.includes(`day.html?${k}=`) || !client.includes(`day.html?${k}=`));
+  check(`CLAUDE.md "Client code" and docs/v2-design.md §4 describe every way into day.html (${params.map((k) => `?${k}=`).join(', ')})`,
+    params.length >= 2 && !undescribed.length, `missing ${undescribed.map((k) => `day.html?${k}=`).join(', ')}`);
+}
 
 // ---------------------------------------------------------------------
 // Share (Web Share) shows wherever the browser has navigator.share, not only on phones
@@ -229,8 +296,9 @@ check(`docs/v2-design.md names every function a migration renames, old and new n
 check('docs/v2-design.md says a later change to a wrapped function replaces the wrapper and its _v3 body together',
   !renamed.some(([, to]) => /_v\d+$/.test(to)) || /replaces the wrapper and its `?_v3`? body together/.test(design));
 
-// Every signature written out in the design (and in the v1.1 and v1.2 designs,
-// docs/v1.1-google-calendar.md and docs/v1.2-kitchen.md) has the real parameter names, in order. A signature is
+// Every signature written out in the design (and in the v1.1, v1.2 and v1.3 designs,
+// docs/v1.1-google-calendar.md, docs/v1.2-kitchen.md and docs/v1.3-homework.md) has the real parameter names,
+// in order. A signature is
 // "f()" or arguments that are parameters: "p" or "p_…" (the migrations' naming), or a name and a type
 // ("p_from date", "t public.tasks"), or any plain names after a schema ("private.series_after(t, p_after)").
 // A call ("monday(start)", "series_after(greatest(due_date,
@@ -238,7 +306,7 @@ check('docs/v2-design.md says a later change to a wrapped function replaces the 
 const PARAM = /^(?:out\s+)?(?:p(?:_[a-z0-9_]*)?|[a-z_][a-z0-9_]*\s+[a-z_][a-z0-9_.]*(?:\[\])?)(?:\s+[a-z_][a-z0-9_.]*(?:\[\])?|\s+default\s+\S+)*$/i;
 const designSignatures = new Set();   // the functions whose signature docs/v2-design.md writes out
 for (const [file, text] of [['docs/v2-design.md', design], ['docs/v1.1-google-calendar.md', read('docs/v1.1-google-calendar.md')],
-  ['docs/v1.2-kitchen.md', read('docs/v1.2-kitchen.md')]]) {
+  ['docs/v1.2-kitchen.md', read('docs/v1.2-kitchen.md')], ['docs/v1.3-homework.md', read('docs/v1.3-homework.md')]]) {
   const wrong = [];
   let signatures = 0;
   for (const m of text.matchAll(/(?<![\w.])(?:(public|private)\.)?([a-z_][a-z0-9_]*)\(([^()]*)\)/g)) {
@@ -269,14 +337,17 @@ const missingAnon = [...anon].filter((n) => !words(tokenSec).has(n)).sort();
 check(`docs/v2-design.md "Anonymous token functions" lists every function anon can call (${[...anon].sort().join(', ')})`, anon.size > 0 && !missingAnon.length, `missing ${missingAnon.join(', ')}`);
 // Each function anon can call is a decision (a secret is its only key): adding one means adding it here,
 // to the design and to tests/db/access.test.sql. 0002: My day and the confirmation email; 0004 (v1.2):
-// the helper's shopping list.
-const ANON = ['add_to_list_by_token', 'buy_item_by_token', 'complete_by_token', 'confirm_digest', 'get_list_by_token', 'get_person_day',
-  'stop_digest', 'undo_by_token'];
+// the helper's shopping list; 0005 (v1.3): a kid's homework on My day (seven) and the tutor link (four).
+const ANON = ['add_to_list_by_token', 'assignment_by_token', 'buy_item_by_token', 'complete_by_token', 'confirm_digest', 'focus_by_token',
+  'get_list_by_token', 'get_person_day', 'homework_by_token', 'homework_prefs_by_token', 'plan_by_token', 'reward_by_token',
+  'step_by_token', 'stop_digest', 'tutor_assignment_by_token', 'tutor_plan_by_token', 'tutor_step_by_token', 'tutor_view_by_token',
+  'undo_by_token'];
 check(`the migrations let anon call exactly the ${ANON.length} token functions this check knows`, [...anon].sort().join() === ANON.join(), [...anon].sort());
-// They are all My day's (day.html), and CLAUDE.md says day.html calls only them.
+// They are all day.html's (My day, and from v1.3 the tutor link's mode), and CLAUDE.md says day.html calls only them.
 const missingClaude = ANON.filter((n) => !clientSec.includes(`\`${n}\``));
 check(`CLAUDE.md "Client code" names every token function day.html may call (${ANON.length})`, !missingClaude.length, `missing ${missingClaude.join(', ')}`);
-const NUMBER = { five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12 };
+const NUMBER = { five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12, thirteen: 13, fourteen: 14,
+  fifteen: 15, sixteen: 16, seventeen: 17, eighteen: 18, nineteen: 19, twenty: 20 };
 const counted = (/These (\w+) are the only new functions anon can call/.exec(tokenSec) || [])[1];
 check(`docs/v2-design.md "Anonymous token functions" counts them right ("These ${counted} are the only new functions anon can call": ${anon.size})`,
   NUMBER[String(counted).toLowerCase()] === anon.size, tokenSec.slice(0, 300));
@@ -290,10 +361,40 @@ check(`docs/v2-design.md "Anonymous token functions" counts them right ("These $
   const m0004 = migrationFiles.find((f) => f.startsWith('0004'));
   const added = functions(sqlNoComments(read(`supabase/migrations/${m0004}`))).filter((f) => !old.has(`${f.schema}.${f.name}`));
   const count = (schema) => new Set(added.filter((f) => f.schema === schema).map((f) => f.name)).size;
-  const N = Object.assign({ thirteen: 13, fourteen: 14, fifteen: 15, sixteen: 16, seventeen: 17, eighteen: 18, nineteen: 19, twenty: 20 }, NUMBER);
+  const N = NUMBER;
   const said = /(\w+) new public and (\w+) new private functions/.exec(section(read('docs/v1.2-kitchen.md'), /^## 2\. What ships/)) || [];
   check(`docs/v1.2-kitchen.md §2 counts the functions 0004 adds ("${said[1]} new public and ${said[2]} new private": ${count('public')} and ${count('private')})`,
     N[String(said[1]).toLowerCase()] === count('public') && N[String(said[2]).toLowerCase()] === count('private'), said[0]);
+}
+
+// docs/v1.3-homework.md §2.1 counts what 0005 adds ("Eleven tables (`homework_kids`, …); three `household`
+// columns; twenty-five new public functions (…) and twenty-six new private ones"), and names its tables.
+{
+  const ONES = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9 };
+  const TENS = { twenty: 20, thirty: 30, forty: 40, fifty: 50 };
+  const num = (w) => {   // "eleven" → 11, "twenty-five" → 25
+    const s = String(w).toLowerCase();
+    if (ONES[s] || NUMBER[s]) return ONES[s] || NUMBER[s];
+    const [t, o] = s.split('-');
+    return TENS[t] && (o === undefined || ONES[o]) ? TENS[t] + (o ? ONES[o] : 0) : NaN;
+  };
+  const earlier = sqlNoComments([read('supabase/schema.sql'), ...migrationFiles.filter((f) => f < '0005').map((f) => read(`supabase/migrations/${f}`))].join('\n'));
+  const old = new Set(functions(earlier).map((f) => `${f.schema}.${f.name}`));
+  const m0005 = sqlNoComments(read(`supabase/migrations/${migrationFiles.find((f) => f.startsWith('0005'))}`));
+  const added = functions(m0005).filter((f) => !old.has(`${f.schema}.${f.name}`));
+  const count = (schema) => new Set(added.filter((f) => f.schema === schema).map((f) => f.name)).size;
+  const made = [...m0005.matchAll(/create\s+table\s+public\.(\w+)\s*\(/gi)].map((m) => m[1]).sort();
+  const householdCols = [...((/alter\s+table\s+public\.household\s+((?:\s*add\s+column\s+[^,;]+[,;])+)/i.exec(m0005) || [])[1] || '').matchAll(/add\s+column\s+(\w+)/gi)].length;
+  const row = section(read('docs/v1.3-homework.md'), /^## 2\. What ships/).split('\n').find((l) => l.includes('`supabase/migrations/0005_homework.sql`')) || '';
+  const said = /(\w+) tables \(([^)]*)\); (\w+) `household` columns; ([\w-]+) new public functions \([^)]*\) and ([\w-]+) new private ones/.exec(row) || [];
+  const named = [...String(said[2]).matchAll(/`(\w+)`/g)].map((m) => m[1]).sort();
+  check(`docs/v1.3-homework.md §2.1 counts what 0005 adds ("${said[1]} tables; ${said[3]} household columns; ${said[4]} new public and ${said[5]} new private functions": `
+    + `${made.length}; ${householdCols}; ${count('public')} and ${count('private')})`,
+  num(said[1]) === made.length && num(said[3]) === householdCols && num(said[4]) === count('public') && num(said[5]) === count('private'), row.slice(0, 300));
+  check('docs/v1.3-homework.md §2.1 names the tables 0005 makes', made.length > 0 && named.join() === made.join(), `says ${named.join(', ')}; makes ${made.join(', ')}`);
+  // §3.6: "anon can call **nineteen** token functions".
+  const anonSaid = (/anon can call \*\*(\w+)\*\* token functions/.exec(read('docs/v1.3-homework.md')) || [])[1];
+  check(`docs/v1.3-homework.md §3.6 counts the token functions anon can call ("${anonSaid}": ${anon.size})`, num(anonSaid) === anon.size, anonSaid);
 }
 
 // Every table, column and agenda_item field the migrations add is in the design (tables in private too).
@@ -351,7 +452,8 @@ check(`docs/v2-design.md writes out every table, added column and constraint of 
 // ---------------------------------------------------------------------
 // Example data in the docs is fictional (CLAUDE.md "Test data"): phone numbers in 555-0100 to 555-0199
 // ---------------------------------------------------------------------
-for (const f of ['CLAUDE.md', 'README.md', 'docs/v2-design.md', 'docs/v1.1-google-calendar.md', 'docs/v1.2-kitchen.md', 'tests/README.md']) {
+for (const f of ['CLAUDE.md', 'README.md', 'docs/v2-design.md', 'docs/v1.1-google-calendar.md', 'docs/v1.2-kitchen.md',
+  'docs/v1.3-homework.md', 'tests/README.md']) {
   const bad = [...read(f).matchAll(/\b555-(\d{4})\b/g)].map((m) => m[0]).filter((n) => !/^555-01\d\d$/.test(n));
   check(`${f}: example phone numbers are fictional (555-0100 to 555-0199)`, !bad.length, bad);
 }
