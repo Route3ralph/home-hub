@@ -18,6 +18,11 @@
 // moved due date placed again from the plan as it is now (Jordan's changes kept, a change during the
 // save refused once and read again, a step ticked early sent without a day); a focus read never wipes
 // what is being typed in the rewards, link and points-values forms, nor the homework time's day chips.
+// From 0006 (schema 6; docs/v1.3-homework.md §11, §12), the School links row of the switches: the three feeds
+// (Assignments, Schedule, Games/Practices) with their status (last read, items, the last error in words), Add link,
+// Replace and Remove, the plain how-to-copy steps; the link checked before it is sent (webcal:// sent as https://),
+// a refusal said in the form; the link never shown back, kept in the page, stored or logged; "from school" on an
+// assignment; no row and no request on schema 5 or for Sam; a failed status read; a phone.
 //
 // mock.js has the tables and the signed-in functions (withHomework, homeworkRpc) with the migration's
 // rules and shapes. The other v2 pages are small stubs. The household's clock is Thu Nov 5 2026,
@@ -28,7 +33,7 @@
 const { chromium } = require('playwright');
 const { createHash } = require('crypto');
 const { makeDb, install, signIn, SUPA, withHomework, homeworkRpc, foodRpc, hwKidRow, tutorLinkRow, assignmentRow, stepRow, sessionRow,
-  rewardRow, askRow, ledgerRow } = require('./mock');
+  rewardRow, askRow, ledgerRow, withSchool, schoolRpc } = require('./mock');
 const { serve } = require('./server');
 
 let BASE = '';
@@ -229,7 +234,7 @@ const emailOf = (req) => {
       return db.confirm === false ? d.dismiss() : d.accept();
     });
     const log = [];
-    await install(page, db, log, { rpc: RPC });
+    await install(page, db, log, { rpc: opts.rpc || RPC });
     await page.route(`${SUPA}/rest/v1/rpc/whoami`, (route) => {
       const req = route.request();
       if (req.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: CORS });
@@ -977,6 +982,203 @@ const emailOf = (req) => {
       }
       await page.context().close();
     }
+  }
+
+  // =====================================================================
+  // 9. School links (schema 6, 0006; docs/v1.3-homework.md §11, §12)
+  // =====================================================================
+  // The made-up school's host is academy.school.example (the database's .myschoolapp.com, replaced in tests).
+  const RPC6 = Object.assign({}, RPC, { hub_schema_version: () => 6 }, schoolRpc);
+  const SECRET = 'SECRETMARKER7f3a';
+  const LINK = (z) => `academy.school.example/podium/feed/iCal.aspx?z=${z}`;
+  const FEED = (f) => `[data-row="school"] .hw-feed[data-feed="${f}"]`;
+  const schoolDb = () => {
+    const d = withSchool(fullDb());
+    d.assignments.push(assignmentRow({ id: 'a5c10000-0000-4000-8000-000000000006', kid_id: ID.jordan, added_by: 'school', title: 'Lab report', subject: 'Biology',
+      due_date: '2026-11-20', created_by: 'school', updated_by: 'school' }));
+    return d;
+  };
+  {
+    // Schema 5: no row, no request.
+    ({ page, db } = await open({ label: 'school-5', db: withSchool(fullDb()) }));
+    check('schema 5: no School links row and no school_status request', !(await page.$('[data-row="school"]')) && !calls(db, 'school_status').length
+      && !!(await page.$('[data-row="links"]')), JSON.stringify(calls(db, 'school_status')));
+    await page.context().close();
+  }
+  {
+    // The refused links below come back as 400 (22023), which Chrome logs.
+    ({ page, db } = await open({ label: 'school', db: schoolDb(), rpc: RPC6, allowConsole: /status of 400/ }));
+    const said = [];
+    page.on('console', (m) => said.push(m.text()));
+    check('schema 6: school_status read once, for Jordan', same(calls(db, 'school_status').map((c) => c.body), [{ p_kid: ID.jordan }]), JSON.stringify(calls(db, 'school_status').map((c) => c.body)));
+    check('School links: a row of the switches, after the tutor links and before Erase', same(await page.$$eval('[data-sec="switches"] .hw-switch-row', (rs) => rs.map((r) => r.dataset.row)),
+      ['kid', 'points', 'time', 'links', 'school', 'erase']), JSON.stringify(await page.$$eval('[data-sec="switches"] .hw-switch-row', (rs) => rs.map((r) => r.dataset.row))));
+    check('School links: what it does, and that a link is never shown again', /Home Hub reads them every hour/.test(await tc(page, '[data-row="school"] .hw-switch-line'))
+      && /never shown again/.test(await tc(page, '[data-row="school"] .hw-switch-line')), await tc(page, '[data-row="school"] .hw-switch-line'));
+    check('the three feeds, each "Not added" with Add link: Assignments, Schedule, Games/Practices',
+      same(await texts(page, '[data-row="school"] .hw-feed .hw-feed-name'), ['Assignments', 'Schedule', 'Games/Practices'])
+      && same(await texts(page, '[data-row="school"] .hw-feed .hw-feed-state'), ['Not added', 'Not added', 'Not added'])
+      && same(await texts(page, '[data-row="school"] .hw-feed button'), ['Add link', 'Add link', 'Add link']), await tc(page, '[data-row="school"]'));
+    check('each feed says what it becomes: his homework, marked from school; busy time',
+      same(await texts(page, '[data-row="school"] .hw-feed .hw-feed-what'), ['Jordan\'s assignments, as homework marked "from school"', 'His classes, as busy time', 'Games and practices, as busy time']),
+      JSON.stringify(await texts(page, '[data-row="school"] .hw-feed .hw-feed-what')));
+    const how = await tc(page, '[data-row="school"] details.hw-school-how');
+    check('How to copy a link: folded, the plain steps on a parent\'s own login (the feed button, WebCal Feed for External Calendar, Individual Filter Feeds, Copy Link Address), the 2 months and 12 months, up to an hour',
+      !(await page.$eval('[data-row="school"] details.hw-school-how', (d) => d.open)) && (await tc(page, '[data-row="school"] details.hw-school-how summary')) === 'How to copy a link'
+      && /your own parent login/.test(how) && /Jordan's Calendars/.test(how) && /WebCal Feed for External Calendar/.test(how) && /Individual Filter Feeds/.test(how)
+      && /right-click Assignments and choose Copy Link Address/.test(how) && /past 2 months and the next 12/.test(how) && /up to an hour/.test(how)
+      && /anyone who has it can read/.test(how) && (await page.$$('[data-row="school"] details.hw-school-how ol li')).length === 5, how);
+    check('"from school" on an assignment the school feed brought', (await texts(page, '.hw-arows .hw-arow-sub')).includes('Biology · due Fri Nov 20 · from school'), JSON.stringify(await texts(page, '.hw-arows .hw-arow-sub')));
+
+    // ---- Add link: the form, the checks before anything is sent, a refusal from the database
+    await page.click('[data-row="school"] details.hw-school-how summary');
+    await page.click(`${FEED('assignments')} [data-act="school-add"]`);
+    check('the how-to, opened, stays open when Add link opens the box beside it', await page.$eval('[data-row="school"] details.hw-school-how', (d) => d.open).catch(() => false));
+    const input = `${FEED('assignments')} form[data-form="school"] input[name="url"]`;
+    const attrs = await page.$eval(input, (i) => ({ type: i.type, ac: i.getAttribute('autocomplete'), cap: i.getAttribute('autocapitalize'), sp: i.getAttribute('spellcheck'), max: i.maxLength,
+      focus: document.activeElement === i, label: i.closest('label').querySelector('span').textContent })).catch(() => null);
+    check('Add link: a box for the link (a url field, no autocomplete, no autocapitalize, no spellcheck, at most 500), focused',
+      !!attrs && attrs.type === 'url' && attrs.ac === 'off' && attrs.cap === 'off' && attrs.sp === 'false' && attrs.max === 500 && attrs.focus && attrs.label === 'Paste the Assignments link', JSON.stringify(attrs));
+    const formErr = `${FEED('assignments')} form[data-form="school"] .form-error`;
+    await page.click(`${FEED('assignments')} form[data-form="school"] button[type="submit"]`);
+    await sleep(150);
+    check('an empty box: "Paste the link first." and nothing sent', (await tc(page, formErr)) === 'Paste the link first.' && !calls(db, 'save_school_link').length, await tc(page, formErr));
+    await page.fill(input, `http://${LINK(SECRET)}`);
+    await page.click(`${FEED('assignments')} form[data-form="school"] button[type="submit"]`);
+    await sleep(150);
+    check('an http:// link: refused on the page, nothing sent', /^That isn't a calendar feed link/.test(await tc(page, formErr)) && !calls(db, 'save_school_link').length, await tc(page, formErr));
+    // A window focus while the link is in the box: no read, the box kept.
+    const reads = calls(db, 'school_status').length;
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await sleep(400);
+    check('a window focus while a link is in the box: no read, the box kept', calls(db, 'school_status').length === reads && (await page.inputValue(input).catch(() => '')) === `http://${LINK(SECRET)}`);
+    await page.fill(input, `https://calendar.example.com/podium/feed/iCal.aspx?z=${SECRET}`);
+    await page.click(`${FEED('assignments')} form[data-form="school"] button[type="submit"]`);
+    await until(page, () => !document.querySelector('#main [aria-busy="true"]') && !!document.querySelector('[data-row="school"] form[data-form="school"] .form-error:not([hidden])'));
+    check('a link on another host: the database refuses it, and the form says why (still open, nothing saved)',
+      calls(db, 'save_school_link').length === 1 && /^That isn't a school calendar link/.test(await tc(page, formErr)) && !!(await page.$(input)) && !db.schoolLinks.length, await tc(page, formErr));
+
+    // ---- Saved: webcal:// sent as https://; never shown back
+    await page.fill(input, `  webcal://${LINK(SECRET)}  `);
+    await page.click(`${FEED('assignments')} form[data-form="school"] button[type="submit"]`);
+    await settle(page);
+    check('Save: save_school_link(kid, assignments, the link with webcal:// as https://, trimmed)', same(lastCall(db, 'save_school_link').body,
+      { p_kid: ID.jordan, p_feed: 'assignments', p_url: `https://${LINK(SECRET)}` }) && db.schoolLinks.length === 1, JSON.stringify(lastCall(db, 'save_school_link').body));
+    check('... "Assignments link saved. Home Hub reads it within the hour.", the status read again', (await lastToast(page)) === 'Assignments link saved. Home Hub reads it within the hour.'
+      && calls(db, 'school_status').length === reads + 1, await lastToast(page));
+    check('... the feed: "Added · first read within the hour", with Replace and Remove; no box', (await tc(page, `${FEED('assignments')} .hw-feed-state`)) === 'Added · first read within the hour'
+      && same(await texts(page, `${FEED('assignments')} button`), ['Replace', 'Remove']) && !(await page.$(input)), await tc(page, FEED('assignments')));
+    const kept = await page.evaluate(() => {
+      const all = [document.documentElement.outerHTML, location.href, document.title, [...document.querySelectorAll('input, textarea')].map((i) => i.value).join(' ')];
+      try { all.push(JSON.stringify(Object.assign({}, localStorage)), JSON.stringify(Object.assign({}, sessionStorage))); } catch (e) { all.push('storage?'); }
+      return all.join('\n');
+    });
+    check('the link is never shown back: not in the page, its boxes, its address, its storage, a toast or the console', !kept.includes(SECRET) && !kept.includes('storage?')
+      && !(await toasts(page)).some((x) => x.includes(SECRET)) && !said.some((x) => x.includes(SECRET)), said.filter((x) => x.includes(SECRET)).join(' | ') || 'in the page');
+
+    // ---- What the hourly read left: last read and items; each stop in words
+    Object.assign(db.schoolLinks[0], { read_at: at(TODAY, '10:23'), items: 23 });
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await settle(page);
+    check('after a read: "Last read today 10:23am · 23 items"', (await tc(page, `${FEED('assignments')} .hw-feed-state`)) === 'Last read today 10:23am · 23 items'
+      && !(await page.$(`${FEED('assignments')} .hw-feed-error`)), await tc(page, FEED('assignments')));
+    const stops = [
+      ['sign_in', 'Blackbaud answered with a sign-in page: the link may have been replaced. Copy it again and use Replace.'],
+      ['timeout', 'The school\'s site took too long to answer. Home Hub tries again within the hour.'],
+      ['gone', 'Blackbaud doesn\'t know this link any more. Copy it again and use Replace.'],
+      ['too_many', 'It holds more than Home Hub can use, so nothing was changed.'],
+      ['empty', 'It came back empty (a new school year?), so nothing was changed.'],
+      ['something_new', 'The last read didn\'t work. Home Hub tries again within the hour.'],
+    ];
+    for (const [code, words] of stops) {
+      db.schoolLinks[0].error = code;
+      await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+      await settle(page);
+      check(`the last read stopped with ${code}: "${words}", and the last good read still shown`, (await tc(page, `${FEED('assignments')} .hw-feed-error`)) === words
+        && (await tc(page, `${FEED('assignments')} .hw-feed-state`)) === 'Last read today 10:23am · 23 items', await tc(page, FEED('assignments')));
+    }
+    Object.assign(db.schoolLinks[0], { read_at: null, items: null, error: 'unreachable' });
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await settle(page);
+    check('never read, and the first read failed: "Added · not read yet" and the stop in words', (await tc(page, `${FEED('assignments')} .hw-feed-state`)) === 'Added · not read yet'
+      && (await tc(page, `${FEED('assignments')} .hw-feed-error`)) === 'The school\'s site couldn\'t be reached. Home Hub tries again within the hour.', await tc(page, FEED('assignments')));
+    Object.assign(db.schoolLinks[0], { read_at: at(TODAY, '14:23'), items: 1, error: null });
+
+    // ---- Replace
+    await page.click(`${FEED('assignments')} [data-act="school-replace"]`);
+    check('Replace: an empty box, "Paste the new Assignments link"', (await page.inputValue(input).catch(() => 'none')) === ''
+      && (await tc(page, `${FEED('assignments')} form[data-form="school"] label span`)) === 'Paste the new Assignments link', await tc(page, FEED('assignments')));
+    await page.fill(input, `https://${LINK(`${SECRET}2`)}`);
+    await page.click(`${FEED('assignments')} form[data-form="school"] button[type="submit"]`);
+    await settle(page);
+    check('Replace: save_school_link with the new link; "Assignments link replaced. Home Hub reads it within the hour."', same(lastCall(db, 'save_school_link').body,
+      { p_kid: ID.jordan, p_feed: 'assignments', p_url: `https://${LINK(`${SECRET}2`)}` }) && (await lastToast(page)) === 'Assignments link replaced. Home Hub reads it within the hour.'
+      && (await tc(page, `${FEED('assignments')} .hw-feed-state`)) === 'Added · first read within the hour' && !(await page.content()).includes(SECRET), await lastToast(page));
+    // Cancel closes the box.
+    await page.click(`${FEED('schedule')} [data-act="school-add"]`);
+    await page.fill(`${FEED('schedule')} input[name="url"]`, `https://${LINK('X')}`);
+    await page.click(`${FEED('schedule')} [data-act="cancel-note"]`);
+    check('Cancel: the box goes, nothing sent', !(await page.$(`${FEED('schedule')} form`)) && calls(db, 'save_school_link').length === 3);
+    // Schedule: busy time.
+    await page.click(`${FEED('schedule')} [data-act="school-add"]`);
+    check('Add link on Schedule: "Paste the Schedule link"', (await tc(page, `${FEED('schedule')} form[data-form="school"] label span`)) === 'Paste the Schedule link');
+    await page.fill(`${FEED('schedule')} input[name="url"]`, `https://${LINK('SCHEDULEZ')}`);
+    await page.click(`${FEED('schedule')} form[data-form="school"] button[type="submit"]`);
+    await settle(page);
+    check('Schedule saved: save_school_link with p_feed schedule; "Schedule link saved…"', lastCall(db, 'save_school_link').body.p_feed === 'schedule'
+      && (await lastToast(page)) === 'Schedule link saved. Home Hub reads it within the hour.' && (await tc(page, `${FEED('schedule')} .hw-feed-state`)) === 'Added · first read within the hour');
+
+    // ---- Remove: asks first
+    db.confirm = false;
+    await page.click(`${FEED('assignments')} [data-act="school-remove"]`);
+    await sleep(200);
+    check('Remove asks first: "Remove the Assignments link? …"; No → nothing sent', (db.dialogs || []).slice(-1)[0] === 'Remove the Assignments link? Home Hub stops reading it. What it already brought stays on Jordan\'s list.'
+      && !calls(db, 'remove_school_link').length, (db.dialogs || []).slice(-1)[0]);
+    db.confirm = true;
+    await page.click(`${FEED('assignments')} [data-act="school-remove"]`);
+    await settle(page);
+    check('Remove: remove_school_link(kid, assignments); "Assignments link removed"; Not added again', same(lastCall(db, 'remove_school_link').body, { p_kid: ID.jordan, p_feed: 'assignments' })
+      && (await lastToast(page)) === 'Assignments link removed' && (await tc(page, `${FEED('assignments')} .hw-feed-state`)) === 'Not added'
+      && db.schoolLinks.length === 1 && db.schoolLinks[0].feed === 'schedule', await lastToast(page));
+    check('nothing on the page or in the console ever carried a link', !(await page.content()).includes(SECRET) && !(await page.content()).includes('SCHEDULEZ')
+      && !said.some((x) => x.includes(SECRET) || x.includes('SCHEDULEZ')));
+    await page.context().close();
+  }
+  {
+    // Sam: no row and no request, on schema 6.
+    ({ page, db } = await open({ label: 'school-sam', db: schoolDb(), rpc: RPC6, email: 'sam@example.com' }));
+    check('Sam (schema 6): no School links row and no school_status request', !(await page.$('[data-row="school"]')) && !calls(db, 'school_status').length
+      && !!(await page.$('[data-sec="switches"]')));
+    await page.context().close();
+  }
+  {
+    // A failed status read: the row says so, the rest of the page draws.
+    const f = schoolDb();
+    f.schoolFail = { school_status: { __status: 500, body: { code: 'XX000', message: 'Database restarting', details: null, hint: null } } };
+    ({ page, db } = await open({ label: 'school-fail', db: f, rpc: RPC6, allowConsole: /status of 500/ }));
+    check('school_status fails: "School links couldn\'t be loaded." with Try again; no feeds; the rest draws', /School links couldn't be loaded\./.test(await tc(page, '[data-row="school"]'))
+      && !(await page.$('[data-row="school"] .hw-feed')) && !!(await page.$('[data-row="school"] [data-act="retry"]')) && !!(await page.$('.hw-ask')), await tc(page, '[data-row="school"]'));
+    delete db.schoolFail;
+    await page.click('[data-row="school"] [data-act="retry"]');
+    await settle(page);
+    check('... Try again reads it again', (await page.$$('[data-row="school"] .hw-feed')).length === 3);
+    await page.context().close();
+  }
+  {
+    // A phone: no sideways scroll, 44px targets in the row, the how-to open.
+    const p = schoolDb();
+    withSchool(p).schoolLinks.push({ kid_id: ID.jordan, feed: 'assignments', url: `https://${LINK(SECRET)}`, read_at: at(TODAY, '10:23'), items: 23, error: 'sign_in' });
+    ({ page } = await open({ label: 'school-phone', db: p, rpc: RPC6, ctx: phone }));
+    await page.click('[data-row="school"] details.hw-school-how summary');
+    await page.click(`${FEED('schedule')} [data-act="school-add"]`);
+    check('phone: School links with no sideways scroll', await noSideScroll(page));
+    const small = await page.$$eval('[data-row="school"] button, [data-row="school"] summary, [data-row="school"] input',
+      (els) => els.filter((e) => e.offsetParent).map((e) => { const r = e.getBoundingClientRect(); return [e.dataset.act || e.tagName, Math.round(r.width), Math.round(r.height)]; })
+        .filter(([, wd, ht]) => wd < 44 || ht < 44));
+    check('phone: every tap target in School links is at least 44px', !small.length, JSON.stringify(small));
+    check('phone: the link is never shown back', !(await page.content()).includes(SECRET));
+    await page.locator('[data-row="school"]').screenshot({ path: SHOTS + 'homework-phone-school.png' });
+    await page.context().close();
   }
 
   console.log(results.join('\n'));
