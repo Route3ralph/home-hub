@@ -1639,6 +1639,197 @@ function schoolJob(db, email) {
   return { status: 200, body: Object.assign({ ok: true }, tally, { stop: null }) };
 }
 
+// ---- PR B: the AI planner (docs/v1.3-homework.md §6). hub-jobs { action: 'homework_ai', kind, assignment_id?, token?, request?,
+// answers?, key } for a signed-in parent or Pat's link (the token in the body), in handler.ts's and homework_ai_start's order:
+// the shape (400), who (a malformed token → not_found; Test with a token → 403; no sign-in 401, not an admin 403), the key
+// (db.aiMode 'not_set_up'), then the database's rules: a resent key answers its run, the switch (household.homework_ai: off,
+// but for Test), a run open on the assignment (busy), the caps (db.aiCap: 'cap' | 'month'). A run starts (202 {run_id}) and
+// finishes at the next request the page makes (aiComplete), unless db.aiHold: with db.aiOutcome(db, run, assignment) →
+// { stop } | { draft } | undefined (the made-up draft below). db.aiMode 'no_schema' → 503, 'missing' → 404 (no hub-jobs).
+// homework_ai_preview and homework_ai_draft (the parents') and Pat's view's preview and ai come from the same rows.
+const AI_STOPS_CAP = ['cap', 'month'];
+const aiHh = (db) => (db.household && db.household[0]) || {};
+const aiNowMs = (db) => (db.hwNow != null ? db.hwNow : db.foodNow != null ? db.foodNow : Date.parse('2026-11-05T20:10:00Z'));
+const aiStamp = (db, plus) => fromMicros(Math.round(aiNowMs(db) + (plus || 0)) * 1000);
+const aiToday = (db) => (db.clock && db.clock.local_date) || (db.hwNow != null ? tkToday(db) : localOf(aiNowMs(db), foodTz(db)).date);
+const aiAdd = (iso, n) => new Date(Date.parse(`${iso}T00:00:00Z`) + n * 86400000).toISOString().slice(0, 10);
+// A stand-in for private.scrub: the names the hub knows (people, tutor links' labels and their words), the never-send words,
+// titled names, links, emails and phones; < and > replaced.
+const AI_NOT_NAMES = new Set(['tutor', 'teacher', 'coach', 'math', 'science', 'the', 'and', 'ms', 'mr', 'mrs', 'dr', 'de', 'la']);
+function aiScrub(db, text) {
+  if (text == null) return null;
+  let v = String(text);
+  v = v.replace(/(https?:\/\/|www\.)[^\s<>"]*[^\s<>".,;:!?)'"]/gi, '[link]').replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, '[email]')
+    .replace(/(\(\d{3}\)[ .-]?|\b\d{3}[ .-])?\d{3}[ .-]\d{4}\b/g, '[phone]')
+    .replace(/\b(Mrs|Mr|Miss|Ms|Mx|Dr|Prof|Coach)\.?\s+[A-Z][\w'-]*(\s+[A-Z][\w'-]*)?/g, '[name]');
+  const words = new Set();
+  (db.people || []).forEach((p) => { words.add(String(p.name)); words.add(String(p.name).split(' ')[0]); });
+  (db.tutor_links || []).forEach((l) => {
+    words.add(l.label);
+    const head = String(l.label).split(',')[0].trim();
+    words.add(head);
+    head.split(/\s+/).forEach((w) => { if (!AI_NOT_NAMES.has(w.toLowerCase())) words.add(w); });
+  });
+  (aiHh(db).homework_never_send || []).forEach((w) => words.add(w));
+  [...words].filter((w) => w && w.length >= 2).sort((a, b) => b.length - a.length).forEach((w) => {
+    const re = new RegExp(`(?<![\\p{L}\\p{N}_])${w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+')}(?![\\p{L}\\p{N}_])`, 'giu');
+    v = v.replace(re, '[name]');
+  });
+  return v.replace(/</g, '‹').replace(/>/g, '›');
+}
+// A stand-in for private.ai_input's message (§6.4): the same fields in their tags, made up but in the same order.
+function aiMessage(db, a, kind, request, answers, from) {
+  const today = aiToday(db);
+  if (kind === 'test') {
+    return ['<today>' + today + '</today>', '<kind>assignment</kind>', '<subject>English</subject>',
+      '<assignment_title>Book report on a novel you choose</assignment_title>'].join('\n');
+  }
+  const steps = (db.homework_steps || []).filter((s) => s.assignment_id === a.id && !s.done_at).sort((x, y) => x.pos - y.pos);
+  const plan = steps.length ? steps.map((s, i) => ({ ref: `s${i + 1}`, title: aiScrub(db, s.title), minutes: s.minutes, day: s.day, kind: s.kind, locked: s.source === 'typed' }))
+    : kind === 'revise' && a.ai_draft ? a.ai_draft.steps.map((s, i) => ({ ref: `s${i + 1}`, title: aiScrub(db, s.title), minutes: s.minutes, day: s.day, kind: s.kind, locked: false })) : null;
+  const ans = (answers || []).filter((x) => x && String(x).trim());
+  return [
+    `<today>${today}</today>`, `<due>${a.due_date}</due>`, `<kind>${a.kind}</kind>`, `<subject>${aiScrub(db, a.subject) || ''}</subject>`,
+    `<assignment_title>${aiScrub(db, a.title)}</assignment_title>`, '<assignment_text>', aiScrub(db, a.details) || '', '</assignment_text>',
+    kind === 'revise' && plan ? `<current_plan>${JSON.stringify(plan)}</current_plan>` : null,
+    kind === 'revise' && request ? `<request from="${from === 'tutor' ? 'tutor' : 'parent'}">${aiScrub(db, request)}</request>` : null,
+    ans.length ? `<answers>\n${ans.map((x) => `- ${aiScrub(db, x)}`).join('\n')}\n</answers>` : null,
+  ].filter((x) => x !== null).join('\n');
+}
+const aiOf = (db, a) => {
+  if (!a || (!a.ai_state && !a.ai_draft)) return null;
+  const run = (db.ai_runs || []).find((r) => r.assignment_id === a.id && r.status === 'running');
+  const stale = a.ai_state === 'running' && (!run || tkMs(run.lease_until) < aiNowMs(db));
+  return { state: stale ? 'failed' : a.ai_state, stop: stale ? 'timeout' : a.ai_stop, draft: a.ai_draft, prev: a.ai_prev, at: a.ai_at };
+};
+const aiPreviewKind = (db, a) => (a.ai_draft || (db.homework_steps || []).some((s) => s.assignment_id === a.id) ? 'revise' : 'plan');
+// The made-up draft: placed on the days after today, the turn-in on the due date (an assignment).
+function aiDraftFor(db, a) {
+  const today = aiToday(db);
+  const day = (n) => { const d = aiAdd(today, n); return d < a.due_date ? d : aiAdd(a.due_date, -1); };
+  const steps = [
+    { ref: 'new', kind: 'start', title: 'Copy the requirements into your notes', done_looks_like: 'the list of requirements in your notes', minutes: 10, day: day(1), id: null, source: 'ai' },
+    { ref: 'new', kind: 'step', title: 'Find 2 sources and save their titles', done_looks_like: '2 titles in your notes', minutes: 20, day: day(1), id: null, source: 'ai' },
+    { ref: 'new', kind: 'milestone', title: 'Outline with 3 main points', done_looks_like: 'an outline you can show', minutes: 20, day: day(2), id: null, source: 'ai' },
+    { ref: 'new', kind: 'check', title: 'Check it against the instructions', done_looks_like: 'every point of the sheet ticked', minutes: 15, day: day(3), id: null, source: 'ai' },
+  ].concat(a.kind === 'lesson' ? [] : [{ ref: 'new', kind: 'turn_in', title: 'Turn it in', done_looks_like: 'handed in', minutes: 5, day: a.due_date, id: null, source: 'ai' }]);
+  return { steps, summary: 'Make a poster about one river with two sources.', questions: ['Did your teacher say which materials are allowed?'],
+    stretch: 'Which part of the river would you most like to show in detail?', fits: true, over: 0, horizon: null, no_time: false, note_for_adult: null };
+}
+function aiComplete(db) {
+  if (!db.aiPending || !db.aiPending.length || db.aiHold) return;
+  const ids = db.aiPending.splice(0);
+  ids.forEach((id) => {
+    const run = (db.ai_runs || []).find((r) => r.id === id);
+    if (!run || run.status !== 'running') return;
+    const a = run.assignment_id ? db.assignments.find((x) => x.id === run.assignment_id) : null;
+    const out = (db.aiOutcome && db.aiOutcome(db, run, a)) || {};
+    const fin = { finished_at: aiStamp(db, 18000), model: out.model || 'claude-opus-5-5', input_tokens: 2600, cache_read_tokens: 1600, cache_write_tokens: 0, output_tokens: 2400,
+      cents: out.cents != null ? out.cents : 5.19 };
+    if (out.stop) {
+      Object.assign(run, fin, { status: 'failed', stop: out.stop });
+      if (a) Object.assign(a, { ai_state: 'failed', ai_stop: out.stop });
+      return;
+    }
+    Object.assign(run, fin, { status: 'ready', stop: null });
+    if (!a) return;
+    const draft = Object.assign(out.draft || aiDraftFor(db, a), { model: fin.model, at: fin.finished_at });
+    Object.assign(a, { ai_prev: a.ai_draft, ai_draft: draft, ai_at: fin.finished_at, ai_state: 'ready', ai_stop: null });
+  });
+}
+function aiJob(db, body, email) {
+  (db.jobCalls = db.jobCalls || []).push({ body, email });
+  if (db.aiMode === 'missing') return { status: 404, body: { code: 'NOT_FOUND', message: 'Requested function was not found' } };
+  const isUuid = (s) => typeof s === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s);
+  const kind = body.kind;
+  if (!['plan', 'revise', 'test'].includes(kind) || !isUuid(body.key) || (kind !== 'test' && !isUuid(body.assignment_id))
+    || (body.request != null && (typeof body.request !== 'string' || Array.from(body.request).length > 200))
+    || (body.answers != null && (!Array.isArray(body.answers) || body.answers.length > 3 || body.answers.some((x) => typeof x !== 'string' || Array.from(x).length > 200)))) {
+    return { status: 400, body: { error: 'A bad request.' } };
+  }
+  let link = null;
+  let who;
+  if (body.token != null) {
+    if (!/^[0-9a-f]{32}$/i.test(String(body.token))) return { status: 200, body: { stop: 'not_found' } };
+    if (kind === 'test') return { status: 403, body: { error: 'Only family admins can do this.' } };
+  } else {
+    const m = db.members.find((x) => x.email === email);
+    if (!m) return { status: 401, body: { error: 'Sign in first.' } };
+    if (m.role !== 'admin') return { status: 403, body: { error: 'Only family admins can do this.' } };
+    who = email;
+  }
+  if (db.aiMode === 'not_set_up') return { status: 200, body: { stop: 'not_set_up' } };
+  if (db.aiMode === 'no_schema' || !db.ai_runs) return { status: 503, body: { stop: 'no_schema', error: 'The AI planner needs the database update (migration 0005_homework.sql).' } };
+  let a = null;
+  if (body.token != null) {
+    link = tkLinkByToken(db, String(body.token));
+    if (!link || !link.can_ai) return { status: 200, body: { stop: 'not_found' } };
+    a = db.assignments.find((x) => x.id === body.assignment_id && x.kid_id === link.kid_id);
+    if (!a) return { status: 200, body: { stop: 'not_found' } };
+    who = `${link.label} (tutor link)`;
+  } else if (kind !== 'test') {
+    a = db.assignments.find((x) => x.id === body.assignment_id);
+    if (!a) return { status: 200, body: { stop: 'not_found' } };
+  }
+  const old = db.ai_runs.find((r) => r.key === body.key);
+  if (old) return old.asked_by === who && old.kind === kind && (old.assignment_id || null) === (a ? a.id : null) ? { status: 202, body: { run_id: old.id } } : { status: 200, body: { stop: 'not_found' } };
+  if (kind !== 'test') {
+    if (!aiHh(db).homework_ai) return { status: 200, body: { stop: 'off' } };
+    const open = db.ai_runs.find((r) => r.assignment_id === a.id && r.status === 'running' && tkMs(r.lease_until) > aiNowMs(db));
+    if (open) return { status: 200, body: { stop: 'busy', run_id: open.id } };
+  }
+  if (AI_STOPS_CAP.includes(db.aiCap)) return { status: 200, body: { stop: db.aiCap } };
+  const run = { id: uuid(), kid_id: a ? a.kid_id : null, assignment_id: a ? a.id : null, link_id: link ? link.id : null, kind, asked_by: who, key: body.key,
+    status: 'running', stop: null, model: null, started_at: aiStamp(db), lease_until: aiStamp(db, 6 * 60e3), finished_at: null,
+    input_tokens: null, cache_read_tokens: null, cache_write_tokens: null, output_tokens: null, cents: null,
+    request: body.request || null, answers: body.answers || null, message: a || kind === 'test' ? aiMessage(db, a, kind, body.request, body.answers, link ? 'tutor' : 'parent') : null };
+  db.ai_runs.push(run);
+  if (a) Object.assign(a, { ai_state: 'running', ai_stop: null });
+  (db.aiPending = db.aiPending || []).push(run.id);
+  return { status: 202, body: { run_id: run.id } };
+}
+// homework_ai_draft's and tutor_assignment_by_token's 'ai': Undo puts ai_prev back (one level), Dismiss clears the draft.
+function aiDraftAct(db, a, action) {
+  if (action === 'undo') {
+    if (!a.ai_prev) return false;
+    Object.assign(a, { ai_draft: a.ai_prev, ai_prev: null, ai_at: a.ai_prev.at || a.ai_at });
+    return true;
+  }
+  if (!(a.ai_draft || a.ai_prev || ['ready', 'failed'].includes(a.ai_state))) return false;
+  Object.assign(a, { ai_draft: null, ai_prev: null, ai_at: null }, a.ai_state === 'running' ? {} : { ai_state: null, ai_stop: null });
+  return true;
+}
+const aiRpc = {
+  homework_ai_preview: hwCall('homework_ai_preview', ['p_assignment'], ['p_kind', 'p_request', 'p_answers'], (db, b, email) => {
+    parentOnly(db, email);
+    const kind = b.p_kind || 'plan';
+    if (!['plan', 'revise', 'test'].includes(kind)) throw new Raise('22023', 'Choose plan, revise or test.');
+    if (Array.from(b.p_request || '').length > 200 || (b.p_answers || []).length > 3 || (b.p_answers || []).some((x) => Array.from(x || '').length > 200)) throw new Raise('22023', 'That\'s too long.');
+    const a = db.assignments.find((x) => x.id === b.p_assignment);
+    if (kind !== 'test' && !a) throw new Raise('22023', 'That assignment is gone.');
+    (db.previewCalls = db.previewCalls || []).push(b);
+    return aiMessage(db, a, kind, b.p_request, b.p_answers, 'parent');
+  }),
+  homework_ai_draft: hwCall('homework_ai_draft', ['p_assignment', 'p_action'], [], (db, b, email) => {
+    parentOnly(db, email);
+    if (!['undo', 'dismiss'].includes(b.p_action)) throw new Raise('22023', 'Choose undo or dismiss.');
+    const a = db.assignments.find((x) => x.id === b.p_assignment);
+    if (!a) throw new Raise('22023', 'That assignment is gone.');
+    return { assignment_id: a.id, changed: aiDraftAct(db, a, b.p_action) };
+  }),
+};
+Object.assign(homeworkRpc, aiRpc);   // the signed-in functions, AI included (0005 has them all)
+// The household's AI words and switch (private.household_homework_check), for a parent's update of household.
+function aiHouseholdProblem(next) {
+  const words = next.homework_never_send || [];
+  if (words.length > 20) return new Raise('23514', 'new row for relation "household" violates check constraint "household_homework_never_send_check"');
+  if (words.some((w) => w == null || Array.from(w).length < 2 || Array.from(w).length > 40 || /[\u0000-\u001f\u007f]/.test(w))) {
+    return new Raise('22023', 'Words never to send: each 2 to 40 characters, one line.');
+  }
+  if (next.homework_ai && !words.length) return new Raise('22023', 'Add the school\'s name to Words never to send first.');
+  return null;
+}
+
 // The homework tables' row-level security, column grants, checks and triggers (§3.2). Returns
 // { status, body, rows } or null (not one of them).
 const hwCheck = (table, name) => new Raise('23514', `new row for relation "${table}" violates check constraint "${name}"`);
@@ -1674,6 +1865,13 @@ function hwKidProblem(r) {
   return bad ? hwCheck('homework_kids', `homework_kids_${bad}_check`) : null;
 }
 function homeworkTables(db, table, method, body, member, rows) {
+  if (table === 'household' && db.homework_kids && method === 'PATCH' && body && ('homework_ai' in body || 'homework_never_send' in body || 'homework_ai_month' in body)) {
+    if (member.role !== 'admin') return { status: 200, rows: [] };
+    const bad = rows.map((r) => aiHouseholdProblem(Object.assign({}, r, body))).find(Boolean);
+    if (bad) return tableErr(bad);
+    rows.forEach((r) => Object.assign(r, body, { updated_at: now(), updated_by: member.email }));
+    return { status: 200, rows };
+  }
   if (!HW_TABLES.includes(table) || !db[table]) return null;
   const denied = tableErr(new Raise('42501', `permission denied for table ${table}`));
   if (table === 'homework_use') return denied;
@@ -1871,6 +2069,7 @@ async function install(page, db, log, opts = {}) {
     if (method === 'OPTIONS') return route.fulfill({ status: 204, headers: CORS });
     log.push(`${method} ${path}${url.search}`);
     if (opts.offline) return route.abort('internetdisconnected');
+    aiComplete(db);   // PR B: an AI run started earlier finishes at the page's next request
 
     // ---- Auth
     if (path === '/auth/v1/otp') {
@@ -1894,6 +2093,10 @@ async function install(page, db, log, opts = {}) {
       (db.functionCalls = db.functionCalls || []).push({ path, body, email: emailFrom(req) });
       if (db.calendars && path === '/functions/v1/hub-jobs' && body && (body.action === 'calendar' || body.action === 'calendar_test')) {
         const r = calendarJob(db, body, emailFrom(req));
+        return reply(r.status, r.body);
+      }
+      if (path === '/functions/v1/hub-jobs' && body && body.action === 'homework_ai' && (db.ai_runs || db.aiMode)) {
+        const r = aiJob(db, body, emailFrom(req));
         return reply(r.status, r.body);
       }
       if (path === '/functions/v1/hub-jobs' && body && body.action === 'school' && (db.school_feeds || db.schoolJob)) {
@@ -2758,7 +2961,9 @@ function tkViewTutor(db, link, aid, part) {
   const today = tkToday(db);
   const nowMs = db.hwNow;
   const a1 = aid ? db.assignments.find((x) => x.id === aid && x.kid_id === kid) : null;
-  if (part === 'ai') return { assignment: a1 ? { id: a1.id, plan_rev: a1.plan_rev, ai: null } : null };
+  aiComplete(db);
+  const aiOn = !!(aiHh(db).homework_ai && link.can_ai);
+  if (part === 'ai') return { assignment: a1 ? { id: a1.id, plan_rev: a1.plan_rev, ai: aiOf(db, a1) } : null };
   const fm = tkFree(db, kid, today, tkAdd(today, 55), null);
   const first = fm.some((f) => f.day === today && !tkEnded(db, f)) ? today : tkAdd(today, 1);
   const byDue = (x, y) => (x.due_date < y.due_date ? -1 : x.due_date > y.due_date ? 1 : x.created_at < y.created_at ? -1 : x.created_at > y.created_at ? 1 : x.id < y.id ? -1 : 1);
@@ -2784,7 +2989,9 @@ function tkViewTutor(db, link, aid, part) {
   const days = [...new Set(sessions.map((f) => tkDayOf(db, f.started_at)))].sort().reverse();
   const out = {
     language: link.language, as_of: tkAsOf(db), today, server_now: tkServerNow(db), tutor: link.label, kid: String(me.name).split(' ')[0],
-    ends_on: link.expires_on, ai: null,
+    ends_on: link.expires_on,
+    ai: aiOn ? { on: true, left_today: Math.max(0, Math.min(12 - (db.ai_runs || []).filter((r) => tkDayOf(db, r.started_at) === today).length,
+      10 - (db.ai_runs || []).filter((r) => r.link_id === link.id && tkDayOf(db, r.started_at) === today).length)) } : null,
     pace: db.hwPace || null,
     to_check: all.filter(({ s }) => s.kind === 'milestone' && s.done_at && !s.checked_at).sort((x, y) => tkMs(x.s.done_at) - tkMs(y.s.done_at))
       .map(({ s, a }) => ({ step_id: s.id, assignment: a.title, title: s.title, done_looks_like: s.done_looks_like, day: s.day, done_day: tkDayOf(db, s.done_at) })),
@@ -2833,7 +3040,7 @@ function tkViewTutor(db, link, aid, part) {
           source: s.source, done: !!s.done_at, done_by: tkRoleOf(s.done_by), checked: !!s.checked_at,
           coach: s.coach_note ? { by: s.coach_note_by, text: s.coach_note } : null, moved_from: s.moved_from, question: s.question, answer: s.answer,
           qa_log: (s.qa_log || []).map((x) => { const c = Object.assign({}, x); delete c.answered_by; delete c.cleared_by; return c; }) })),
-        ai: null, preview: null, fits: fm.length > 0 && ml <= tl, over: Math.max(ml - tl, 0), horizon: last > tkAdd(today, 55) ? tkAdd(today, 55) : null,
+        ai: aiOf(db, a1), preview: aiOn ? aiMessage(db, a1, aiPreviewKind(db, a1), null, null, 'tutor') : null, fits: fm.length > 0 && ml <= tl, over: Math.max(ml - tl, 0), horizon: last > tkAdd(today, 55) ? tkAdd(today, 55) : null,
       };
     }
     out.assignment = detail;
@@ -3067,8 +3274,10 @@ const homeworkTokenRpc = {
     if (!f || typeof f !== 'object' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(f.id || '')) throw new Raise('22023', 'An assignment needs its id.');
     if (tkLen(f.title) > 120 || tkLen(f.subject) > 40 || tkLen(f.details) > 4000 || tkLen(f.stretch) > 160) throw tkTooLong();
     if ('title' in f && !tkClean(f.title, 120)) throw new Raise('22023', 'An assignment needs a title and a due date.');   // on a change too
+    if ('ai' in f && !['undo', 'dismiss'].includes(f.ai)) throw new Raise('22023', 'Choose undo or dismiss.');
     let a = db.assignments.find((x) => x.id === f.id);
     if (a && a.kid_id !== l.kid_id) throw new Raise('42501', "That assignment isn't on this link.");
+    if (!a && 'ai' in f) throw new Raise('42501', "That assignment isn't on this link.");
     const pick = (key, clean) => (key in f ? clean(f[key]) : a ? a[key] : null);
     if (!a) {
       if (!tkClean(f.title, 120) || !f.due_date) throw new Raise('22023', 'An assignment needs a title and a due date.');
@@ -3085,6 +3294,7 @@ const homeworkTokenRpc = {
       if (a.status !== 'done') a.done_at = null;
       if (a.status === 'dropped' && !a.dropped_at) a.dropped_at = tkStamp(db.hwNow);
       if (a.status !== 'dropped') a.dropped_at = null;
+      if ('ai' in f) aiDraftAct(db, a, f.ai);
     }
     tkCount(db, l.id, 'writes', 200);
     return Object.assign({ assignment_id: a.id, moved: 0 }, tkViewTutor(db, l, a.id, 'all'));
@@ -3144,4 +3354,4 @@ module.exports = { makeDb, install, signIn, expectedConsoleError, SUPA, withCale
   withFood, mealRow, shopItem, foodRpc, personDayFood, foodStamp,
   withHomework, homeworkRpc, homePlan, hwKidRow, tutorLinkRow, assignmentRow, stepRow, sessionRow, rewardRow, askRow, ledgerRow,
   withHomeworkTokens, homeworkTokenRpc, personDayHomework, tkKidRow, tkLinkRow, tkAssignmentRow, tkStepRow, tkSessionRow, tkRewardRow, tkLedgerRow, stubShare,
-  withSchool, schoolRpc, schoolFeedRow, schoolItemRow, schoolUrlOf };
+  withSchool, schoolRpc, schoolFeedRow, schoolItemRow, schoolUrlOf, aiRpc, aiJob, aiMessage, aiComplete };

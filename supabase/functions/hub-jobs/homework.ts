@@ -256,6 +256,7 @@ export function checkPlan(raw: unknown, fields: Fields): Draft | null {
     const mine = order.get(ref)!;
     let pos = 0;
     out.forEach((s, i) => { if (s.at >= 0 && s.at < mine) pos = i + 1; });
+    if (restored.kind !== 'start' && out.length > 0 && out[0].kind === 'start') pos = Math.max(pos, 1);   // the tiny start stays first
     if (restored.kind === 'turn_in') pos = out.length;
     out.splice(pos, 0, Object.assign(restored, { at: mine }));
   }
@@ -275,11 +276,13 @@ export function checkPlan(raw: unknown, fields: Fields): Draft | null {
 const clamp = (n: number, lo: number, hi: number) => Math.min(Math.max(n, lo), Math.max(hi, lo));
 const dateOf = (v: unknown) => (typeof v === 'string' && DATE.test(v) && !Number.isNaN(Date.parse(`${v}T00:00:00Z`)) ? v : null);
 // A locked step as the people left it. One they left without "done looks like" takes the AI's line for it (the
-// database's check wants one on every step of a draft); nothing else of the AI's copy is used.
+// database's check wants one on every step of a draft), or its own title when the answer left it out; nothing else
+// of the AI's copy is used.
 function restore(lk: Record<string, unknown>, ai: Record<string, unknown> | null): DraftStep | null {
   const title = text(lk.title);
   let dll = text(lk.done_looks_like ?? '');
   if (!within(dll, 3, 160) && ai) dll = text(ai.done_looks_like);
+  if (!within(dll, 3, 160)) dll = title;
   const kind = typeof lk.kind === 'string' && KINDS.includes(lk.kind) ? lk.kind : 'step';
   const minutes = typeof lk.minutes === 'number' && Number.isInteger(lk.minutes) ? lk.minutes : null;
   if (!within(title, 3, 80) || !within(dll, 3, 160) || minutes === null) return null;

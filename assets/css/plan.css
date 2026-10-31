@@ -212,3 +212,46 @@
 .plan-problem p { margin: 0; }
 .plan-problem p + p { margin-top: 12px; }
 .plan-problem .btn { min-height: 44px; }
+
+/* The AI planner (PR B, §6.10, §9.4): What Claude will see, the draft, Ask again. Never on his screens. */
+.plan-ai-preview { margin: 8px 0; }
+.plan-ai-preview summary {
+  display: inline-flex; align-items: center; min-height: 44px; color: var(--accent); font-weight: 650; cursor: pointer;
+}
+.plan-ai-text {
+  margin: 0; padding: 10px 12px; border-radius: 10px; background: var(--surface-2); color: var(--text-2);
+  font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere;
+  max-height: 360px; overflow: auto;
+}
+.plan-ai-hint { margin: 6px 0 0; color: var(--text-3); font-size: 13px; }
+.plan-ai-hint.is-error, .plan-ai-status.is-stop { color: var(--warn); }
+.plan-ai-status { margin: 0 0 10px; color: var(--text-2); font-size: 14px; font-weight: 600; }
+.plan-ai-draft {
+  margin: 0 0 12px; padding: 12px 14px; border: 1.5px dashed var(--accent); border-radius: var(--radius);
+  background: var(--accent-soft);
+}
+.plan-ai-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.plan-ai-label { margin: 0; color: var(--text); font-size: 14px; }
+.plan-ai-label b { font-size: 12px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); }
+.plan-ai-acts { display: flex; flex-wrap: wrap; gap: 8px; }
+.plan-ai-acts .btn { min-height: 44px; }
+.plan-ai-summary { margin: 8px 0; color: var(--text-2); font-size: 14px; overflow-wrap: anywhere; }
+.plan-ai-steps { list-style: none; margin: 8px 0; padding: 0 10px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; }
+.plan-ai-step { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
+.plan-ai-step:last-child { border-bottom: 0; }
+.plan-ai-step .plan-step-day { flex: none; min-width: 84px; color: var(--text-3); font-size: 13px; }
+.plan-ai-step-title { flex: 1; min-width: 0; font-weight: 600; overflow-wrap: anywhere; }
+.plan-ai-step-title svg { width: 12px; height: 12px; margin-right: 4px; fill: var(--accent); vertical-align: -1px; }
+.plan-ai-step .plan-step-dll { flex: 1 1 100%; color: var(--text-3); font-size: 13px; }
+.plan-ai-mark {
+  display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 999px; background: var(--accent-soft); color: var(--accent);
+  font-size: 11px; font-weight: 800; letter-spacing: 0.04em; vertical-align: 1px;
+}
+.plan-ai-note { margin: 8px 0; color: var(--warn); font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
+.plan-ai-sub { margin: 10px 0 6px; color: var(--text-2); font-size: 13px; font-weight: 700; }
+.plan-ai-q { margin: 0 0 8px; }
+.plan-ai-q span { overflow-wrap: anywhere; }
+.plan-ai-stretch { margin: 8px 0; color: var(--text-2); font-size: 14px; font-style: italic; overflow-wrap: anywhere; }
+.plan-ai-ask .field { margin: 8px 0; }
+.plan-ai-ask .btn { min-height: 44px; }
+.plan-ai-ask .plan-chip[aria-pressed="true"] { border-color: var(--accent); background: var(--surface); font-weight: 700; }

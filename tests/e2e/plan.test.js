@@ -123,8 +123,9 @@ const WEEK = [
   });
   check('plan.js loads in day.html as window.HomePlan, frozen', basics.loaded === 'object' && basics.frozen);
   const API = ['HORIZON', 'KINDS', 'LENGTHS', 'LIMITS', 'PLAIN', 'STARTERS', 'WORDS', 'addDays', 'answer', 'audioAt', 'bars', 'check', 'clean',
-    'cleanBlock', 'daysBetween', 'editor', 'ended', 'esc', 'estimate', 'firstDay', 'fmt', 'focused', 'friendly', 'fromRows', 'goalBar', 'guess', 'homeworkDays',
-    'horizon', 'isoWeekday', 'lastWorkDay', 'left', 'ms', 'newId', 'onTimeLine', 'pace', 'place', 'pointsLine', 'ring', 'spare', 'starter',
+    // PR B adds hashText and previewMark (the AI preview's "last sent" mark).
+    'cleanBlock', 'daysBetween', 'editor', 'ended', 'esc', 'estimate', 'firstDay', 'fmt', 'focused', 'friendly', 'fromRows', 'goalBar', 'guess', 'hashText', 'homeworkDays',
+    'horizon', 'isoWeekday', 'lastWorkDay', 'left', 'ms', 'newId', 'onTimeLine', 'pace', 'place', 'pointsLine', 'previewMark', 'ring', 'spare', 'starter',
     't', 'timeLeft', 'timer', 'tutor', 'week', 'weekday', 'workLeft'];
   check('the documented API, and nothing else', same(basics.names, API.slice().sort()), JSON.stringify(basics.names));
   check('constants: lengths 10/15/20/25, the five kinds, the plain ones, 56 days, plan_check\'s limits',
@@ -635,7 +636,7 @@ const WEEK = [
     && text.includes('No steps yet. Start from a starter plan, or add a step.'), text);
   const details = await page.$eval(`${ED} .plan-text`, (d) => ({ open: d.open, body: d.querySelector('.plan-text-body').textContent, img: !!d.querySelector('img') }));
   check('editor: the teacher\'s text folded, its lines kept, drawn as text', !details.open && details.body === `Make a poster.\n${HOSTILE}` && !details.img, JSON.stringify(details));
-  check('editor: no AI part before PR B (no Send to Claude, no "What Claude will see")', !/Claude|AI/.test(text), text);
+  check('editor: no AI part without opts.ai (no Send to Claude, no "What Claude will see")', !/Claude|AI/.test(text), text);
 
   await page.click(`${ED} [data-act="starter"]`);
   const chips = await page.$$eval(`${ED} [data-starter]`, (els) => els.map((b) => [b.dataset.starter, b.classList.contains('is-guess'), b.textContent]));

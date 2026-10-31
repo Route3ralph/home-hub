@@ -42,6 +42,7 @@
                                 5xx, 408, 429)
      newId()                    a random version 4 uuid: the id of a row the page makes (an assignment Pat or
                                 Jordan adds, a smaller step, a block, an ask)
+     hashText(s), previewMark(message)  (PR B) FNV-1a hex; the mark of what an AI message carries that a person typed
 
    DATES
      addDays(iso, n), daysBetween(a, b) (b − a, in days), weekday(iso) (0 = Sunday), isoWeekday(iso)
@@ -139,7 +140,13 @@
                     steps is the whole plan in order: [{ id?, kind, title, done_looks_like, minutes, day,
                     source }] (save_homework_plan's, tutor_plan_by_token's and plan_by_token's p_steps).
          toast(text, { action: { label, onClick } }), friendly(err) (optional), onGone(), onSaved(assignment),
-         showDetails (false: no "Teacher's text" fold)
+         showDetails (false: no "Teacher's text" fold),
+         ai (PR B, not for his role): { on, sent, preview({ kind, request, answers }), send({ kind, request, answers, key }),
+                    state(), draft(action), stretch(text) }: What Claude will see (open while what would be sent differs
+                    from what was last sent from this device, by previewMark), Send to Claude, "Thinking…" with a read
+                    every 5 seconds until the run's lease ends, the draft labelled "Suggested by AI (Claude)" (or
+                    "Suggested changes" beside a given plan) with Use this plan, Undo, Dismiss and Ask again, and each
+                    stop's words (§6.9); the assignment's ai: { state, stop, draft, prev, at }
        the assignment: { id, kind, title, subject, due_date, details?, status, plan_rev, given_at, given_by
          ('tutor' | 'family' | 'kid'), given_by_name?, time_left, horizon, no_time, steps: [{ id, kind,
          title, done_looks_like, minutes, day, source, done, checked, moved_from }] }
@@ -152,11 +159,13 @@
    PAT'S LINK (§9.5)
      const ctl = HomePlan.tutor(el, opts)
        opts: api { view(assignmentId | null, part), assignment(fields), plan(assignmentId, steps, rev, give),
-             step(stepId, action, text) }: each the supabase-js answer ({ data, error, status }) of
+             step(stepId, action, text), ai(body) (PR B: hub-jobs' homework_ai with the link's token, as functions.invoke
+             answers) }: each the supabase-js answer ({ data, error, status }) of
              tutor_view_by_token(p_token, p_assignment, p_part), tutor_assignment_by_token(p_token,
              p_fields), tutor_plan_by_token(p_token, p_assignment, p_steps, p_rev, p_give) and
              tutor_step_by_token(p_token, p_step, p_action, p_text);
-             lang (until the link's language is known), toast, onGone(), go(hash) (default: location.hash)
+             lang (until the link's language is known), toast, onGone(), go(hash) (default: location.hash),
+             sent ({ get(id), set(id, mark) }: the preview's "last sent" marks on the device, or null)
        ctl.show(hash)   the page calls it on load and on every hashchange: '#a/<id>' an assignment and its
                         plan, '#new/assignment' and '#new/lesson' the add form, anything else the list
        ctl.refresh()    read again (on focus and visibilitychange), unless something is being edited
@@ -286,6 +295,28 @@
       points_spent: 'Those points are already spent.', cant_save: "That can't be saved.",
       ask_parent: 'Ask a parent for that one.', instant_done: "That's all the instant rewards for today. Ask a parent for this one.",
       price_changed: "That reward's price changed. Look again before you get it.",
+      // The AI planner (PR B, §6, §9.4): Pat's link and the Homework page only, never his screens
+      ai_preview: 'What Claude will see',
+      ai_preview_hint: "This is all that goes to Anthropic (Claude), with the names Home Hub knows, links, emails and phone numbers taken out. Change the teacher's text first if anything else shouldn't go.",
+      ai_preview_failed: "Couldn't load what Claude will see. Check the connection.",
+      ai_send: 'Send to Claude', ai_thinking: 'Thinking about a plan… (usually under a minute)', ai_thinking_short: 'Thinking…',
+      ai_label: '{what} · Suggested by AI (Claude). Check it with {kid}.', ai_draft: 'Draft', ai_changes: 'Suggested changes',
+      ai_use: 'Use this plan', ai_undo: 'Undo', ai_dismiss: 'Dismiss', ai_draft_ready: 'AI draft ready',
+      ai_loaded: 'The draft is in the plan below, not saved yet. Change it with {kid}, then Save.',
+      ai_ask_for: 'Ask for changes', ai_note: 'Or say what to change (optional)', ai_again: 'Ask again',
+      ai_chip_smaller: 'Smaller steps', ai_chip_fewer: 'Fewer steps', ai_chip_no_wed: 'Nothing on Wednesday', ai_chip_later: 'Start later',
+      ai_chip_writing: 'More time for writing',
+      ai_questions: 'Questions for {kid}', ai_answer: "{kid}'s answer (optional)", ai_optional: 'Optional: {text}', ai_note_adult: 'Note for you: {text}',
+      ai_over: "Doesn't fit his homework time: {n} min too many.", ai_fits: 'Fits his homework time.', ai_mark: 'AI', ai_mark_label: 'Suggested by AI',
+      ai_too_long: 'Ask for changes in at most 200 characters.',
+      ai_s_not_set_up: "AI help isn't set up yet. Start from a starter plan.",
+      ai_s_cap: 'AI help is used up for today. Start from a starter plan.',
+      ai_s_month: 'AI help is used up for this month. Start from a starter plan.',
+      ai_s_auth: "AI help isn't working right now. Start from a starter plan.",
+      ai_s_spend: 'AI help is done for this month. Start from a starter plan.',
+      ai_s_billing: 'AI help is paused. Start from a starter plan.',
+      ai_s_later: "The AI couldn't make a plan just now. Try again later, or start from a starter plan.",
+      ai_s_refusal: "The AI couldn't help with this one. Start from a starter plan.",
     },
     es: {
       homework: 'Tarea', now: 'Ahora', tonight: 'Esta tarde', due_soon: 'Para pronto', start_n: 'Empezar · {n} min',
@@ -384,6 +415,27 @@
       points_spent: 'Esos puntos ya se gastaron.', cant_save: 'Eso no se puede guardar.',
       ask_parent: 'Ese pídeselo a tus padres.', instant_done: 'Ya usaste los premios al momento de hoy. Este pídeselo a tus padres.',
       price_changed: 'El precio de ese premio cambió. Míralo otra vez antes de conseguirlo.',
+      ai_preview: 'Lo que verá Claude',
+      ai_preview_hint: 'Esto es todo lo que va a Anthropic (Claude), sin los nombres que conoce Home Hub, ni enlaces, correos o teléfonos. Cambia antes el texto del profesor si algo más no debe ir.',
+      ai_preview_failed: 'No se pudo cargar lo que verá Claude. Revisa la conexión.',
+      ai_send: 'Enviar a Claude', ai_thinking: 'Pensando un plan… (suele tardar menos de un minuto)', ai_thinking_short: 'Pensando…',
+      ai_label: '{what} · Sugerido por IA (Claude). Revísalo con {kid}.', ai_draft: 'Borrador', ai_changes: 'Cambios sugeridos',
+      ai_use: 'Usar este plan', ai_undo: 'Deshacer', ai_dismiss: 'Descartar', ai_draft_ready: 'Borrador de IA listo',
+      ai_loaded: 'El borrador está en el plan de abajo, todavía sin guardar. Cámbialo con {kid} y luego guárdalo.',
+      ai_ask_for: 'Pedir cambios', ai_note: 'O di qué cambiar (opcional)', ai_again: 'Pedir otra vez',
+      ai_chip_smaller: 'Pasos más pequeños', ai_chip_fewer: 'Menos pasos', ai_chip_no_wed: 'Nada el miércoles', ai_chip_later: 'Empezar más tarde',
+      ai_chip_writing: 'Más tiempo para escribir',
+      ai_questions: 'Preguntas para {kid}', ai_answer: 'Respuesta de {kid} (opcional)', ai_optional: 'Opcional: {text}', ai_note_adult: 'Nota para ti: {text}',
+      ai_over: 'No cabe en su tiempo de tarea: {n} min de más.', ai_fits: 'Cabe en su tiempo de tarea.', ai_mark: 'IA', ai_mark_label: 'Sugerido por IA',
+      ai_too_long: 'Pide los cambios en 200 caracteres como mucho.',
+      ai_s_not_set_up: 'La ayuda de IA todavía no está configurada. Empieza con un plan base.',
+      ai_s_cap: 'La ayuda de IA de hoy ya se usó. Empieza con un plan base.',
+      ai_s_month: 'La ayuda de IA de este mes ya se usó. Empieza con un plan base.',
+      ai_s_auth: 'La ayuda de IA no funciona ahora mismo. Empieza con un plan base.',
+      ai_s_spend: 'La ayuda de IA terminó por este mes. Empieza con un plan base.',
+      ai_s_billing: 'La ayuda de IA está en pausa. Empieza con un plan base.',
+      ai_s_later: 'La IA no pudo hacer un plan ahora. Inténtalo más tarde o empieza con un plan base.',
+      ai_s_refusal: 'La IA no pudo ayudar con este. Empieza con un plan base.',
     },
   };
 
@@ -439,6 +491,21 @@
   }
 
   // A row's id made by the page: crypto.randomUUID, else one from crypto.getRandomValues.
+  // FNV-1a over a text's code points, as 8 hex characters: the preview's "what was sent" mark on the device.
+  function hashText(text) {
+    let h = 0x811c9dc5;
+    for (const ch of String(text == null ? '' : text)) { h ^= ch.codePointAt(0); h = Math.imul(h, 0x01000193) >>> 0; }
+    return h.toString(16).padStart(8, '0');
+  }
+  // What What Claude will see compares with what was last sent: the parts a person typed (the class, the title, the
+  // teacher's text, the request, the answers). Today's date, the free minutes, the pace and the current plan change by
+  // themselves (each day, each draft) and would open the fold for nothing new to read.
+  const TYPED_PARTS = /<(subject|assignment_title|assignment_text|request|answers)(?: [^>]*)?>([\s\S]*?)<\/\1>/g;
+  function previewMark(text) {
+    const parts = [...String(text == null ? '' : text).matchAll(TYPED_PARTS)].map((m) => `${m[1]}:${m[2]}`);
+    return hashText(parts.length ? parts.join('\n') : text);
+  }
+
   function newId() {
     try {
       if (typeof crypto.randomUUID === 'function') return crypto.randomUUID();
@@ -1086,6 +1153,15 @@
     let parts = 2;
     let stopped = false;
     let seq = 0;
+    // The AI planner (PR B, §6.10, §9.4): only with opts.ai, never for his role.
+    let ai = null;           // the assignment's AI state { state, stop, draft, prev, at }, as last read
+    let aiLocal = null;      // { stop } hub-jobs answered at once (not_set_up, cap, month, offline), not stored anywhere
+    let aiOff = false;       // hub-jobs said off or not_found: no button until the page draws it again
+    let aiBusy = false;
+    let poll = null;         // { timer, until } while a run is open
+    let prev = { key: null, text: null, failed: false, open: null, seq: 0, timer: null };   // What Claude will see
+    let asks = { chips: [], note: '', answers: [] };   // Ask again's inputs, kept while the same assignment is on screen
+    let fromDraft = null;    // { stretch } once Use this plan loaded a draft, until the next save
 
     const L = () => langOf(o.lang);
     const w = (key, vars) => t(key, Object.assign({ tutor: o.tutor || null, kid: o.kid || '' }, vars), L());
@@ -1118,13 +1194,24 @@
 
     function set(next, more) {
       if (more) Object.assign(o, more);
+      const same = a && next && a.id === next.id;
       a = next || null;
       steps = ((a && a.steps) || []).map((s) => copy(s));
       dirty = false;
       open = -1;
       picking = false;
       msg = null;
+      if (!same) {
+        asks = { chips: [], note: '', answers: [] };
+        aiLocal = null;
+        aiOff = false;
+        fromDraft = null;
+        prev = { key: null, text: null, failed: false, open: null, seq: prev.seq + 1, timer: null };
+      }
+      ai = a && a.ai && typeof a.ai === 'object' ? a.ai : null;
+      if (ai && ai.state === 'running') watch();
       draw();
+      loadPreview(true);
     }
 
     // ---------- Drawing ----------
@@ -1192,9 +1279,11 @@
         ? `<button type="button" class="plan-more" data-act="more" data-i="${i}" aria-expanded="${open === i}" aria-label="${esc(w('more_for', { title }))}">${ICON.dots}</button>`
         : isKid() && !s.done ? `<span class="plan-lock" role="img" aria-label="${esc(w('checkpoint_short'))}" title="${esc(w('checkpoint_short'))}">${ICON.lock}</span>` : '';
       const cls = `plan-step k-${s.kind}${s.done ? ' is-done' : ''}${lk ? ' is-locked' : ''}${open === i ? ' is-open' : ''}${s.source === 'typed' || changed(s) ? '' : ` src-${esc(s.source)}`}`;
+      const aiMark = s.source === 'ai' && !changed(s) && !s.done
+        ? ` <span class="plan-ai-mark" title="${esc(w('ai_mark_label'))}">${esc(w('ai_mark'))}</span>` : '';
       return `<li class="${cls}" data-i="${i}"${s.id ? ` data-id="${esc(s.id)}"` : ''}>`
         + `<span class="plan-box${s.done ? ' is-done' : ''}" aria-hidden="true">${mark}</span>`
-        + `<div class="plan-step-main"><span class="plan-step-title">${esc(title)}</span>`
+        + `<div class="plan-step-main"><span class="plan-step-title">${esc(title)}${aiMark}</span>`
         + `<span class="plan-step-sub">${sub.join(' ')}</span>`
         + `${s.done_looks_like ? `<span class="plan-step-dll">${esc(w('dll_line', { text: s.done_looks_like }))}</span>` : ''}</div>`
         + `${tail}${open === i && !lk ? editHtml(s, i) : ''}</li>`;
@@ -1240,10 +1329,11 @@
       const text = o.showDetails !== false && !isKid() && a.details
         ? `<details class="plan-text"><summary>${esc(w('teachers_text'))}</summary><div class="plan-text-body">${esc(a.details)}</div></details>` : '';
       const dis = busy ? ' disabled' : '';
+      const send = aiCan() ? `<button type="button" class="btn btn-primary" data-act="ai-send"${busy || aiBusy || aiRunning() ? ' disabled' : ''}>${esc(w('ai_send'))}</button>` : '';
       const tools = isKid()
         ? `<div class="plan-tools"><button type="button" class="btn" data-act="add"${dis}>${esc(w('add_step'))}</button>`
           + `<button type="button" class="btn" data-act="replan"${busy || dirty ? ' disabled' : ''}${dirty ? ` title="${esc(w('save_first'))}"` : ''}>${esc(w('replan'))}</button></div>`
-        : `<div class="plan-tools"><button type="button" class="btn" data-act="starter" aria-expanded="${picking}"${dis}>${esc(w('starter_btn'))}</button>`
+        : `<div class="plan-tools">${send}<button type="button" class="btn" data-act="starter" aria-expanded="${picking}"${dis}>${esc(w('starter_btn'))}</button>`
           + `<button type="button" class="btn" data-act="add"${dis}>${esc(w('add_step'))}</button>`
           + `${steps.some((s) => !s.done) ? `<button type="button" class="btn" data-act="place"${dis}>${esc(w('place_again'))}</button>` : ''}</div>`;
       let picker = '';
@@ -1266,7 +1356,8 @@
         + `<button type="button" class="btn${give ? '' : ' btn-primary'}" data-act="save"${!dirty || busy ? ' disabled' : ''}>${esc(w('save'))}</button>`
         + `${give ? `<button type="button" class="btn btn-primary" data-act="give"${busy || !steps.length ? ' disabled' : ''}>${esc(w('give'))}</button>` : ''}`
         + `${givenHtml()}</div>`;
-      return `<div class="plan-editor" data-role="${esc(o.role)}"${busy ? ' aria-busy="true"' : ''}>${head}${text}${tools}${picker}${list}${lock}${fitHtml()}${note}${acts}</div>`;
+      return `<div class="plan-editor" data-role="${esc(o.role)}"${busy ? ' aria-busy="true"' : ''}>${head}${text}${aiPreviewHtml()}${tools}${aiStatusHtml()}${picker}`
+        + `${aiDraftHtml()}${list}${lock}${fitHtml()}${note}${acts}</div>`;
     }
 
     function draw() {
@@ -1317,9 +1408,15 @@
         return;
       }
       if (r && r.assignment) {
+        const used = fromDraft;
+        fromDraft = null;
         set(r.assignment);
         if (done && o.toast) o.toast(done);
         if (o.onSaved) o.onSaved(r.assignment);
+        // Use this plan, then Save or Give: the draft's stretch question goes to the assignment (§6.10).
+        if (used && used.stretch && used.stretch !== (r.assignment.stretch || null) && aiOpts() && aiOpts().stretch) {
+          Promise.resolve(aiOpts().stretch(used.stretch)).catch(() => {});
+        }
       } else {
         draw();
       }
@@ -1358,12 +1455,238 @@
       if (r) r.disabled = true;
     }
 
+    // ---------- The AI planner (§6.4, §6.9, §6.10) ----------
+    // opts.ai: { on (the asker may ask now), sent: { get(id), set(id, mark) } (the device's "last sent" marks, or null),
+    // preview({ kind, request, answers }) → the message text (or null), send({ kind, request, answers, key }) →
+    // { run_id } | { stop, run_id? } | { error }, state() → { ai } | { error } | { gone }, draft(action) → { ai } | { error },
+    // stretch(text) }. Each may throw; nothing here touches the database itself.
+    const aiOpts = () => (!isKid() && o.ai && typeof o.ai === 'object' ? o.ai : null);
+    const aiCan = () => !!(aiOpts() && aiOpts().on && !aiOff && a);
+    const aiRunning = () => !!(ai && ai.state === 'running');
+    const hasPlan = () => !!(a && ((a.steps || []).length || (ai && ai.draft)));
+    const aiKind = () => (hasPlan() ? 'revise' : 'plan');
+    const CHIPS = ['smaller', 'fewer', 'no_wed', 'later', 'writing'];
+    // The request: the chips' words and the note, in the asker's language; null when there is none (a plan never has one).
+    function aiRequest() {
+      if (aiKind() !== 'revise') return null;
+      const parts = CHIPS.filter((c) => asks.chips.includes(c)).map((c) => w(`ai_chip_${c}`));
+      const note = clean(asks.note, 300);
+      if (note) parts.push(note);
+      return parts.length ? parts.join('. ') : null;
+    }
+    function aiAnswers() {
+      const qs = ai && ai.draft && Array.isArray(ai.draft.questions) ? ai.draft.questions : [];
+      const out = qs.map((q, i) => clean(asks.answers[i], 300)).filter(Boolean).slice(0, 3);
+      return out.length ? out : null;
+    }
+    const tooLong = () => chars(aiRequest() || '') > 200 || (aiAnswers() || []).some((x) => chars(x) > 200);
+    function stopWords(stop) {
+      const k = String(stop || '');
+      if (/^refusal/.test(k)) return w('ai_s_refusal');
+      const key = { not_set_up: 'ai_s_not_set_up', cap: 'ai_s_cap', month: 'ai_s_month', auth: 'ai_s_auth', spend_limit: 'ai_s_spend',
+        billing: 'ai_s_billing', offline: 'offline' }[k];
+      if (key) return w(key);
+      if (k === 'late' || k === 'off' || k === 'not_found' || k === 'busy') return '';
+      return w('ai_s_later');
+    }
+    // What Claude will see: read again when what would be sent may have changed (debounced while typing).
+    function loadPreview(now) {
+      const x = aiOpts();
+      if (!aiCan() || !x.preview) return;
+      clearTimeout(prev.timer);
+      prev.timer = setTimeout(() => {
+        prev.timer = null;
+        const kind = aiKind();
+        const request = aiRequest();
+        const answers = aiAnswers();
+        const key = JSON.stringify([a && a.id, kind, request, answers]);
+        const n = ++prev.seq;
+        Promise.resolve().then(() => x.preview({ kind, request, answers })).then((text) => {
+          if (stopped || n !== prev.seq) return;
+          const was = prev.text;
+          prev.key = key;
+          prev.failed = typeof text !== 'string';
+          prev.text = typeof text === 'string' ? text : null;
+          if (was !== prev.text) prev.open = null;   // something new to read: the device decides again
+          draw();
+        }, () => {
+          if (stopped || n !== prev.seq) return;
+          prev.failed = true;
+          draw();
+        });
+      }, now ? 0 : 500);
+    }
+    // Open whenever what would be sent differs from what was last sent from this device (always, without storage).
+    function previewOpen() {
+      if (prev.open !== null) return prev.open;
+      if (prev.text == null) return true;
+      let last = null;
+      try { last = aiOpts().sent ? aiOpts().sent.get(a.id) : null; } catch (e) { last = null; }
+      return last !== previewMark(prev.text);
+    }
+    function aiPreviewHtml() {
+      if (!aiCan()) return '';
+      const body = prev.text != null ? `<pre class="plan-ai-text">${esc(prev.text)}</pre><p class="plan-ai-hint">${esc(w('ai_preview_hint'))}</p>`
+        : prev.failed ? `<p class="plan-ai-hint is-error">${esc(w('ai_preview_failed'))}</p>` : `<p class="plan-ai-hint">${esc(w('loading'))}</p>`;
+      return `<details class="plan-ai-preview"${previewOpen() ? ' open' : ''}><summary>${esc(w('ai_preview'))}</summary>${body}</details>`;
+    }
+    function aiStatusHtml() {
+      if (!aiOpts()) return '';
+      if (aiRunning()) return `<p class="plan-ai-status" role="status">${esc(w('ai_thinking'))}</p>`;
+      const stop = aiLocal ? aiLocal.stop : ai && ai.state === 'failed' ? ai.stop : null;
+      const words = stop && (aiCan() || aiLocal) ? stopWords(stop) : '';
+      return words ? `<p class="plan-ai-status is-stop" role="status">${esc(words)}</p>` : '';
+    }
+    function aiDraftHtml() {
+      const d = ai && ai.draft && Array.isArray(ai.draft.steps) ? ai.draft : null;
+      if (!aiOpts() || !d) return '';
+      const l = L();
+      const dis = busy || aiBusy ? ' disabled' : '';
+      const label = w('ai_label', { what: w(a.given_at ? 'ai_changes' : 'ai_draft') });
+      const [first, ...rest] = label.split(' · ');
+      const rows = d.steps.map((s) => {
+        const tag = s.kind && s.kind !== 'step' ? ` <span class="plan-tag">${esc(w(`tag_${s.kind}`))}</span>` : '';
+        return `<li class="plan-ai-step k-${esc(s.kind)}"><span class="plan-step-day">${esc(s.day ? fmt.day(s.day, l) : w('placed_on_save'))}</span>`
+          + `<span class="plan-ai-step-title">${s.kind === 'milestone' ? ICON.diamond : ''}${esc(s.title)} · ${esc(fmt.duration(s.minutes))}${tag}</span>`
+          + `<span class="plan-ai-mark">${esc(w('ai_mark'))}</span>`
+          + `${s.done_looks_like ? `<span class="plan-step-dll">${esc(w('dll_line', { text: s.done_looks_like }))}</span>` : ''}</li>`;
+      }).join('');
+      const fit = d.fits === false || Number(d.over) > 0 ? `<p class="plan-fit is-over">${esc(w('ai_over', { n: Number(d.over) || 0 }))}</p>`
+        : `<p class="plan-fit is-ok">${esc(w('ai_fits'))}</p>`;
+      const qs = Array.isArray(d.questions) ? d.questions : [];
+      const questions = qs.length ? `<div class="plan-ai-qs"><p class="plan-ai-sub">${esc(w('ai_questions'))}</p>${qs.map((q, i) => `<label class="field plan-ai-q">`
+        + `<span>${esc(q)}</span><input type="text" name="ai-answer" data-i="${i}" maxlength="200" value="${esc(asks.answers[i] || '')}" placeholder="${esc(w('ai_answer'))}" autocomplete="off"></label>`).join('')}</div>` : '';
+      const ask = aiCan() ? aiAskHtml(dis) : '';
+      return `<section class="plan-ai-draft" aria-label="${esc(first)}"><div class="plan-ai-head"><p class="plan-ai-label"><b>${esc(first)}</b> · ${esc(rest.join(' · '))}</p>`
+        + `<div class="plan-ai-acts"><button type="button" class="btn btn-sm btn-primary" data-act="ai-use"${dis}>${esc(w('ai_use'))}</button>`
+        + `${ai.prev ? `<button type="button" class="btn btn-sm" data-act="ai-undo"${dis}>${esc(w('ai_undo'))}</button>` : ''}`
+        + `<button type="button" class="btn btn-sm" data-act="ai-dismiss"${dis}>${esc(w('ai_dismiss'))}</button></div></div>`
+        + `${d.summary ? `<p class="plan-ai-summary">${esc(d.summary)}</p>` : ''}<ol class="plan-ai-steps">${rows}</ol>${fit}`
+        + `${d.note_for_adult ? `<p class="plan-ai-note">${esc(w('ai_note_adult', { text: d.note_for_adult }))}</p>` : ''}${questions}`
+        + `${d.stretch ? `<p class="plan-ai-stretch">${esc(w('ai_optional', { text: d.stretch }))}</p>` : ''}${ask}</section>`;
+    }
+    function aiAskHtml(dis) {
+      const chips = CHIPS.map((c) => `<button type="button" class="plan-chip" data-ai-chip="${c}" aria-pressed="${asks.chips.includes(c)}"${dis}>${esc(w(`ai_chip_${c}`))}</button>`).join('');
+      const long = tooLong();
+      return `<div class="plan-ai-ask"><p class="plan-ai-sub">${esc(w('ai_ask_for'))}</p><div class="plan-chips">${chips}</div>`
+        + `<label class="field"><span class="sr-only">${esc(w('ai_note'))}</span><input type="text" name="ai-note" maxlength="200" value="${esc(asks.note)}" placeholder="${esc(w('ai_note'))}" autocomplete="off"></label>`
+        + `${long ? `<p class="form-error">${esc(w('ai_too_long'))}</p>` : ''}`
+        + `<button type="button" class="btn" data-act="ai-again"${dis || aiRunning() || long ? ' disabled' : ''}>${esc(w('ai_again'))}</button></div>`;
+    }
+    // A run is open: read its state every 5 seconds until it ends or its lease (6 minutes) runs out.
+    function watch() {
+      const x = aiOpts();
+      if (!x || !x.state || poll) return;
+      poll = { until: Date.now() + 6.5 * 60 * 1000, timer: null };
+      const tick = async () => {
+        if (!poll || stopped) return;
+        poll.timer = null;
+        let r;
+        try { r = await x.state(); } catch (err) { r = { error: err }; }
+        if (stopped || !poll) return;
+        if (r && r.gone) { poll = null; if (o.onGone) o.onGone(); return; }
+        if (r && 'ai' in r) ai = r.ai && typeof r.ai === 'object' ? r.ai : null;
+        if (aiRunning() && Date.now() < poll.until) { poll.timer = setTimeout(tick, 5000); return; }
+        if (aiRunning()) ai = Object.assign({}, ai, { state: 'failed', stop: 'timeout' });
+        poll = null;
+        draw();
+        loadPreview(true);
+      };
+      poll.timer = setTimeout(tick, 5000);
+    }
+    async function aiSend() {
+      const x = aiOpts();
+      if (!aiCan() || aiBusy || busy || aiRunning() || tooLong()) return;
+      // Ask again: the editor is saved first, so current_plan is the plan as people left it (§6.10).
+      if (dirty) {
+        const before = a && a.plan_rev;
+        await new Promise((done) => { save(false, false); const wait = () => (busy ? setTimeout(wait, 50) : done()); wait(); });
+        if (stopped || dirty || (a && a.plan_rev === before)) return;
+      }
+      const kind = aiKind();
+      const request = aiRequest();
+      const answers = aiAnswers();
+      const sentText = prev.text;
+      aiBusy = true;
+      aiLocal = null;
+      draw();
+      let r;
+      try { r = await x.send({ kind, request, answers, key: newId() }); } catch (err) { r = { error: err }; }
+      aiBusy = false;
+      if (stopped) return;
+      if (!r || r.error) { aiLocal = { stop: 'offline' }; draw(); return; }
+      if (r.stop && r.stop !== 'busy') {
+        if (r.stop === 'off' || r.stop === 'not_found') aiOff = true;
+        aiLocal = { stop: r.stop };
+        draw();
+        return;
+      }
+      // The run is open (or one was already): what was sent is marked on the device, and the inputs are cleared.
+      if (sentText != null && x.sent) { try { x.sent.set(a.id, previewMark(sentText)); } catch (e) { /* no storage: always open */ } }
+      prev.open = null;
+      asks = { chips: [], note: '', answers: [] };
+      ai = Object.assign({}, ai || {}, { state: 'running', stop: null });
+      watch();
+      draw();
+    }
+    // Use this plan: the draft into the editor, nothing saved (§6.10). A ref of a step still in the plan keeps its id.
+    function aiUse() {
+      const d = ai && ai.draft;
+      if (!d || !Array.isArray(d.steps) || busy) return;
+      // A draft step with an id is a person's step the server put back as they left it (§6.8): it keeps its source
+      // ('typed'), so it stays locked the next time the AI is asked. Every other step is the AI's.
+      const mine = new Map(steps.filter((s) => !s.done && s.id).map((s) => [s.id, s]));
+      const fresh = d.steps.map((s) => {
+        const was = s.id ? mine.get(s.id) : null;
+        return copy({ id: was ? s.id : null, kind: s.kind, title: s.title, done_looks_like: s.done_looks_like, minutes: s.minutes, day: s.day || null },
+          was ? was.source : 'ai');
+      });
+      steps = steps.filter((s) => s.done).concat(fresh);
+      dirty = true;
+      open = -1;
+      picking = false;
+      fromDraft = { stretch: d.stretch || null };
+      msg = { text: w('ai_loaded') };
+      draw();
+    }
+    async function aiDraftAct(action) {
+      const x = aiOpts();
+      if (!x || !x.draft || aiBusy || busy) return;
+      aiBusy = true;
+      draw();
+      let r;
+      try { r = await x.draft(action); } catch (err) { r = { error: err }; }
+      aiBusy = false;
+      if (stopped) return;
+      if (r && r.gone) { draw(); if (o.onGone) o.onGone(); return; }
+      if (!r || r.error) { msg = { text: r && r.error ? say(r.error) : w('offline'), error: true }; draw(); return; }
+      if ('ai' in r) ai = r.ai && typeof r.ai === 'object' ? r.ai : null;
+      aiLocal = null;
+      asks.answers = [];
+      draw();
+      loadPreview(true);
+    }
+
     // ---------- Taps and typing ----------
     function onClick(e) {
       const btn = e.target.closest('button');
       if (!btn || !el.contains(btn) || btn.disabled || !a) return;
       const i = btn.hasAttribute('data-i') ? Number(btn.getAttribute('data-i')) : -1;
       if (btn.dataset.starter) { applyStarter(btn.dataset.starter); return; }
+      if (btn.dataset.aiChip) {
+        const c = btn.dataset.aiChip;
+        asks.chips = asks.chips.includes(c) ? asks.chips.filter((x) => x !== c) : asks.chips.concat([c]);
+        draw();
+        loadPreview(false);
+        return;
+      }
+      switch (btn.dataset.act) {
+        case 'ai-send': case 'ai-again': aiSend(); return;
+        case 'ai-use': aiUse(); return;
+        case 'ai-undo': aiDraftAct('undo'); return;
+        case 'ai-dismiss': aiDraftAct('dismiss'); return;
+        default:
+      }
       switch (btn.dataset.act) {
         case 'more':
           open = open === i ? -1 : i;
@@ -1430,6 +1753,16 @@
     function onInput(e) {
       const x = e.target;
       if (x.name === 'parts') { parts = Math.min(10, Math.max(1, Math.floor(Number(x.value)) || 2)); return; }
+      if (x.name === 'ai-note' || x.name === 'ai-answer') {
+        if (x.name === 'ai-note') asks.note = x.value;
+        else asks.answers[Number(x.getAttribute('data-i')) || 0] = x.value;
+        const err = el.querySelector('.plan-ai-ask .form-error');
+        const again = el.querySelector('[data-act="ai-again"]');
+        if (again) again.disabled = busy || aiBusy || aiRunning() || tooLong();
+        if (!!err !== tooLong()) draw();
+        loadPreview(false);
+        return;
+      }
       const i = Number(x.getAttribute('data-i'));
       const s = steps[i];
       if (!s || locked(s)) return;
@@ -1445,6 +1778,7 @@
     }
     function onChange(e) {
       const x = e.target;
+      if (x.name === 'ai-note' || x.name === 'ai-answer') return;
       const i = Number(x.getAttribute('data-i'));
       const s = steps[i];
       if (!s || locked(s)) return;
@@ -1454,6 +1788,10 @@
       else return;
       dirty = true;
       draw();
+    }
+    // The fold the person opened or closed stays so until what it shows changes.
+    function onToggle(e) {
+      if (e.target && e.target.classList && e.target.classList.contains('plan-ai-preview')) prev.open = e.target.open;
     }
     function onKey(e) {
       if (e.key === 'Enter' && e.target && (e.target.name === 'title' || e.target.name === 'dll')) {
@@ -1467,6 +1805,7 @@
     el.addEventListener('input', onInput);
     el.addEventListener('change', onChange);
     el.addEventListener('keydown', onKey);
+    el.addEventListener('toggle', onToggle, true);
     if (o.assignment) set(o.assignment);
 
     return Object.freeze({
@@ -1475,10 +1814,14 @@
       dirty: () => dirty,
       stop() {
         stopped = true;
+        if (poll && poll.timer) clearTimeout(poll.timer);
+        poll = null;
+        clearTimeout(prev.timer);
         el.removeEventListener('click', onClick);
         el.removeEventListener('input', onInput);
         el.removeEventListener('change', onChange);
         el.removeEventListener('keydown', onKey);
+        el.removeEventListener('toggle', onToggle, true);
       },
     });
   }
@@ -1676,7 +2019,8 @@
       const plans = v.plans || [];
       if (plans.length) {
         out.push(section('plans', plans.length, `<ul class="plan-rows">${plans.map((x) => `<li class="plan-row"><a class="plan-row-link" href="#a/${esc(x.assignment_id)}">`
-          + `<span class="plan-row-title">${esc(x.title)}</span><span class="plan-row-sub">${esc(x.state === 'none' ? w('no_plan') : w('plan_not_given'))} ›</span></a></li>`).join('')}</ul>`));
+          + `<span class="plan-row-title">${esc(x.title)}</span><span class="plan-row-sub">${esc(x.ai_state === 'ready' ? w('ai_draft_ready')
+            : x.ai_state === 'running' ? w('ai_thinking_short') : x.state === 'none' ? w('no_plan') : w('plan_not_given'))} ›</span></a></li>`).join('')}</ul>`));
       }
       const all = v.assignments || [];
       const open = all.filter((x) => x.status === 'open');
@@ -1754,7 +2098,7 @@
         edFor = x.id;
         ed = editor(el.querySelector('[data-ref="editor"]'), {
           role: 'tutor', lang, today: view.today, asOf: view.as_of, serverNow: view.server_now, length: view.length || null,
-          kid: view.kid || '', tutor: tutorName(), week: view.week || [], showDetails: false, toast: o.toast,
+          kid: view.kid || '', tutor: tutorName(), week: view.week || [], showDetails: false, toast: o.toast, ai: aiFor(x.id),
           friendly: (err) => friendly(err, lang, tutorName()), onGone: gone,
           api: {
             save: ({ steps, rev, give }) => write(() => api.plan(x.id, steps, rev, give), x.id),
@@ -1766,9 +2110,46 @@
       } else {
         el.querySelector('[data-ref="head"]').innerHTML = head;
         if (!formDirty) el.querySelector('[data-ref="fields"]').innerHTML = fieldsHtml(x, false);
-        if (!ed.dirty()) ed.set(x, { lang, today: view.today, asOf: view.as_of, serverNow: view.server_now, week: view.week || [] });
+        if (!ed.dirty()) ed.set(x, { lang, today: view.today, asOf: view.as_of, serverNow: view.server_now, week: view.week || [], ai: aiFor(x.id) });
         el.querySelector('[data-ref="qa"]').innerHTML = qaHtml(x);
       }
+    }
+
+    // The AI parts on the link (PR B): only while the parents' switch is on and the link may ask (the view's ai), or to
+    // show a draft that is there. hub-jobs gets the token in the body (api.ai); the preview is the view's own message
+    // (tutor_view_by_token(…, p_assignment)), with the request and his answers as hub-jobs will add them.
+    function aiFor(id) {
+      const on = !!(view && view.ai && view.ai.on);
+      if (!api.ai || (!on && !(detail && detail.id === id && detail.ai))) return null;
+      return {
+        on,
+        sent: o.sent || null,
+        preview: ({ request, answers }) => {
+          const base = detail && detail.id === id ? detail.preview : null;
+          if (typeof base !== 'string') return null;
+          const angle = (x) => String(x).replace(/</g, '‹').replace(/>/g, '›');
+          const extra = [];
+          if (request) extra.push(`<request from="tutor">${angle(request)}</request>`);
+          if (answers && answers.length) extra.push(`<answers>\n${answers.map((x) => `- ${angle(x)}`).join('\n')}\n</answers>`);
+          return [base].concat(extra).join('\n');
+        },
+        send: ({ kind, request, answers, key }) => serial(async () => {
+          let r;
+          try { r = await api.ai({ kind, assignment_id: id, request, answers, key }); } catch (err) { r = { error: err }; }
+          return r && r.data && !r.error ? r.data : { error: (r && r.error) || { message: 'Failed to fetch' } };
+        }),
+        state: () => serial(async () => {
+          let r;
+          try { r = await api.view(id, 'ai'); } catch (err) { r = { error: err }; }
+          const k = answer(r);
+          if (k === 'gone') return { gone: true };
+          if (k !== 'ok' || !r.data || !r.data.assignment) return { error: (r && r.error) || { message: 'Failed to fetch' } };
+          if (detail && detail.id === id) detail = Object.assign({}, detail, { ai: r.data.assignment.ai, plan_rev: r.data.assignment.plan_rev });
+          return { ai: r.data.assignment.ai };
+        }),
+        draft: (action) => write(() => api.assignment({ id, ai: action }), id).then((r) => (r.assignment ? { ai: r.assignment.ai } : r)),
+        stretch: (text) => write(() => api.assignment({ id, stretch: text }), id),
+      };
     }
 
     // A write from the editor, as the editor wants its answer: { assignment } | { error } | { gone }.
@@ -1946,7 +2327,7 @@
 
   window.HomePlan = Object.freeze({
     LENGTHS, KINDS, PLAIN, HORIZON, LIMITS, STARTERS, WORDS,
-    t, esc, clean, cleanBlock, friendly, answer, newId,
+    t, esc, clean, cleanBlock, friendly, answer, newId, hashText, previewMark,
     addDays, daysBetween, weekday, isoWeekday, fmt: Object.freeze(fmt),
     ended, firstDay, lastWorkDay, horizon, homeworkDays, place, timeLeft, workLeft, spare,
     guess, starter, check,

@@ -408,6 +408,13 @@ const keepAlive = setInterval(() => { /* waiting */ }, 1000);
     }, Object.assign({}, REVISE_FIELDS, { current_plan: [Object.assign({}, LOCKED[0], { done_looks_like: null })] }));
     check('... a locked step the people left without "done looks like" takes the AI\'s line, nothing else of it', !!noDll
       && same(noDll.steps[1], { ref: 's1', title: LOCKED[0].title, done_looks_like: 'two titles saved in your notes', minutes: 20, day: '2026-11-03', kind: 'step' }), noDll && noDll.steps[1]);
+    const leftOut = ok({
+      summary: 'A poster.', questions: [], stretch: '', fits: true, note_for_adult: '',
+      steps: [step({ kind: 'start', minutes: 5 }), step({ kind: 'turn_in', minutes: 5, title: 'Turn it in', done_looks_like: 'handed in' })],
+    }, Object.assign({}, REVISE_FIELDS, { current_plan: [Object.assign({}, LOCKED[0], { done_looks_like: null })] }));
+    check('... and one the answer left out as well is put back with its title as "done looks like", after the new tiny start (the plan isn\'t thrown away)', !!leftOut
+      && leftOut.steps.length === 3 && leftOut.steps[0].kind === 'start'
+      && same(leftOut.steps[1], { ref: 's1', title: LOCKED[0].title, done_looks_like: LOCKED[0].title, minutes: 20, day: '2026-11-03', kind: 'step' }), leftOut && leftOut.steps);
   }
 
   // ---- Through the action: an invalid answer, refusals, max_tokens, a parse error
