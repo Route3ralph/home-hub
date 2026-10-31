@@ -1151,7 +1151,9 @@ const calendarCalls = (s: ReturnType<typeof setup>) => s.G.calls.filter((c) => c
   const dir = new URL('../../supabase/functions/hub-jobs/', import.meta.url);
   const src = Object.fromEntries(readdirSync(dir).filter((f) => f.endsWith('.ts')).map((f) => [f, readFileSync(new URL(f, dir), 'utf8')]));
   const code = (f: string) => src[f].replace(/\/\/.*$/gm, '');
-  check('the hub-jobs files are index, handler, render, util, google and calendar', Object.keys(src).sort().join() === 'calendar.ts,google.ts,handler.ts,index.ts,render.ts,util.ts', Object.keys(src));
+  // v1.3's school feed (migration 0006) adds school.ts and ical.ts on purpose (docs/v1.3-homework.md §12).
+  check('the hub-jobs files are index, handler, render, util, google, calendar, school and ical',
+    Object.keys(src).sort().join() === 'calendar.ts,google.ts,handler.ts,ical.ts,index.ts,render.ts,school.ts,util.ts', Object.keys(src));
   check('the Google helper is gcal(…); nothing calls call(\'…\') (the contract check would read it as a database function)',
     /\bgcal\(/.test(code('google.ts')) && /\bgcal\(/.test(code('calendar.ts')) && Object.keys(src).every((f) => !/(^|[^\w.])call\s*\(\s*['"`]/.test(code(f))));
   check('GOOGLE_SA_JSON is read with a literal deps.env(\'GOOGLE_SA_JSON\'), and no other Google secret is read',

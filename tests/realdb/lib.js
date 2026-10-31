@@ -6,7 +6,9 @@
 //   await h.migrate('supabase/migrations/0005_homework.sql')   // as the owner applies it (setup(name, { v4: true }))
 // Signing in goes through the server's real /auth/v1/otp and /auth/v1/verify (code 123456); the session
 // is then put where supabase-js keeps it. The browser's clock starts at the household's pinned "now".
-// hub-jobs' Google calls (the calendar job, Test) reach a fake Google (fakeGoogle below): h.google.
+// hub-jobs' Google calls (the calendar job, Test) reach a fake Google (fakeGoogle below): h.google. Its school
+// reads (0006) reach a fake school site on *.school.example (fakeSchool below): h.school; school.ts's SCHOOL_HOST
+// suffix is set to that made-up one here, and a test sets the database's private.school_host_suffix() to match.
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
@@ -189,6 +191,26 @@ function fakeGoogle(nowIso) {
     writes: (since = 0) => requests.slice(since).filter((r) => r.method !== 'GET'),
   };
 }
+// A fake school site for hub-jobs' school reads (0006, docs/v1.3-homework.md §11.3): any https host ending in
+// .school.example. h.school.serve(z, text) sets what the link with that z answers (an iCal text, or
+// { status, body, headers }); every request is in h.school.requests ({ url, redirect }). An unknown z answers 404.
+function fakeSchool() {
+  const feeds = new Map();
+  const requests = [];
+  return {
+    requests,
+    handles: (url) => { try { const u = new URL(String(url)); return u.protocol === 'https:' && u.hostname.endsWith('.school.example'); } catch (e) { return false; } },
+    fetch: async (url, init = {}) => {
+      const u = new URL(String(url));
+      requests.push({ url: String(url), redirect: init.redirect || null });
+      const r = feeds.get(u.searchParams.get('z'));
+      if (r == null) return new Response('Not found', { status: 404 });
+      if (typeof r === 'string') return new Response(r, { status: 200, headers: { 'content-type': 'text/calendar; charset=utf-8' } });
+      return new Response(r.body || '', { status: r.status || 200, headers: r.headers || {} });
+    },
+    serve(z, text) { feeds.set(z, text); },
+  };
+}
 // supabase-js 2.117.3 (the vendored browser build) in Node, for the Edge Function's clients.
 let supabaseLib = null;
 function supabaseJs() {
@@ -210,9 +232,10 @@ async function setup(name, opts = {}) {
   const socket = env('REALDB_SOCKET');
   const port = env('REALDB_PORT');
   // The template: the full database (every migration), the v1 one (opts.v1), v2 without migration 0003
-  // (opts.v2), v1.1 without migration 0004 (opts.v3), or v1.2 without migration 0005 (opts.v4).
+  // (opts.v2), v1.1 without migration 0004 (opts.v3), v1.2 without migration 0005 (opts.v4), or v1.3 without
+  // migration 0006 (opts.v5).
   const template = opts.v1 ? env('REALDB_V1_TEMPLATE') : opts.v2 ? env('REALDB_V2_TEMPLATE') : opts.v3 ? env('REALDB_V3_TEMPLATE')
-    : opts.v4 ? env('REALDB_V4_TEMPLATE') : env('REALDB_TEMPLATE');
+    : opts.v4 ? env('REALDB_V4_TEMPLATE') : opts.v5 ? env('REALDB_V5_TEMPLATE') : env('REALDB_TEMPLATE');
   const dbName = `rt_${name}`;
   const admin = await connect({ socketDir: socket, port, database: 'postgres' });
   await admin.query(`drop database if exists ${ident(dbName)}`);
@@ -233,8 +256,11 @@ async function setup(name, opts = {}) {
   let server;
   const functions = {};
   const google = fakeGoogle(() => server.hubNow());
+  const school = fakeSchool();
   if (opts.hubJobs !== false && !opts.v1) {
     const { handle } = await import(path.join(REPO, 'supabase/functions/hub-jobs/handler.ts'));
+    // The made-up school's hosts (*.school.example), as the fn and db tests use, in place of *.myschoolapp.com.
+    (await import(path.join(REPO, 'supabase/functions/hub-jobs/school.ts'))).SCHOOL_HOST.suffix = '.school.example';
     const sb = supabaseJs();
     const auth = { persistSession: false, autoRefreshToken: false };
     functions['hub-jobs'] = (req) => handle(req, {
@@ -245,6 +271,7 @@ async function setup(name, opts = {}) {
           return new Response(JSON.stringify({ id: `re_${sent.length}` }), { status: 200, headers: { 'content-type': 'application/json' } });
         }
         if (google.handles(url)) return google.fetch(url, init);
+        if (school.handles(url)) return school.fetch(url, init);
         return new Response('ok', { status: 200 });
       },
       service: () => sb.createClient(server.base, SERVICE_KEY, { auth }),
@@ -375,7 +402,7 @@ async function setup(name, opts = {}) {
     const token = (await sessionFor(email)).access_token;
     return api('/functions/v1/hub-jobs', { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify(body) });
   };
-  return { base, browser, server, sent, google, runDigest, runCalendar, hubJobsAs, api, sql, migrate, clockNow, setClock, requests, mark, failed, sessionFor, open, settle, go, tc, texts, lastToast, titles, until, shot, check, flow, finish, errors };
+  return { base, browser, server, sent, google, school, runDigest, runCalendar, hubJobsAs, api, sql, migrate, clockNow, setClock, requests, mark, failed, sessionFor, open, settle, go, tc, texts, lastToast, titles, until, shot, check, flow, finish, errors };
 }
 
 // Homework (migration 0005, docs/v1.3-homework.md §3): its eleven tables and twenty-six public
@@ -387,5 +414,11 @@ const HOMEWORK_FNS = ['homework_week', 'save_homework_kid', 'add_homework_time',
   'homework_by_token', 'step_by_token', 'plan_by_token', 'focus_by_token', 'reward_by_token', 'assignment_by_token', 'homework_prefs_by_token',
   'tutor_view_by_token', 'tutor_assignment_by_token', 'tutor_plan_by_token', 'tutor_step_by_token', 'homework_ai_start', 'homework_ai_finish'];
 const HOMEWORK_CALLS = new RegExp(`^/rest/v1/(${HOMEWORK_TABLES.join('|')}|rpc/(${HOMEWORK_FNS.join('|')}))$`);
+// The school feed (migration 0006, docs/v1.3-homework.md §12): its two tables and nine public functions, as request
+// paths. A site on a database before 0006 asks for none of them.
+const SCHOOL_TABLES = ['school_feeds', 'school_items'];
+const SCHOOL_FNS = ['school_feed_status', 'set_school_feed', 'check_school_feed', 'pause_school_feed', 'school_item_action', 'school_item_by_token',
+  'school_begin', 'school_store', 'school_finish'];
+const SCHOOL_CALLS = new RegExp(`^/rest/v1/(${SCHOOL_TABLES.join('|')}|rpc/(${SCHOOL_FNS.join('|')}))$`);
 
-module.exports = { setup, HOMEWORK_TABLES, HOMEWORK_FNS, HOMEWORK_CALLS };
+module.exports = { setup, HOMEWORK_TABLES, HOMEWORK_FNS, HOMEWORK_CALLS, SCHOOL_TABLES, SCHOOL_FNS, SCHOOL_CALLS };

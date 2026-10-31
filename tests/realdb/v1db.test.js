@@ -2,7 +2,7 @@
 // step 2 publishes this site before the migration is applied, so it must run in v1 mode against the
 // real v1 database, with PostgREST's real answer for the missing hub_schema_version() (404 PGRST202).
 // Run through tests/realdb/run.sh (its own copy of the v1 template database).
-const { setup, HOMEWORK_CALLS } = require('./lib');
+const { setup, HOMEWORK_CALLS, SCHOOL_CALLS } = require('./lib');
 
 const KITCHEN = 'a0000000-0000-4000-8000-000000000001';
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
@@ -21,7 +21,7 @@ const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
       && (await page.evaluate(() => HomeHub.core.schemaVersion)) === 1 && !(await page.$('.bottombar')), tabs);
     const reqs = await h.requests();
     const v2reads = reqs.filter((r) => /\/rest\/v1\/(people|household|tasks|events|task_log|contractor_secrets|meals|shopping_items|my_day_use)|rpc\/(clock|agenda|mark_signed_in|late_items|heads_up|shopping_list|add_to_list|buy_item|get_list_by_token)/.test(r.path));
-    const hw = reqs.filter((r) => HOMEWORK_CALLS.test(r.path));
+    const hw = reqs.filter((r) => (HOMEWORK_CALLS.test(r.path) || SCHOOL_CALLS.test(r.path)));
     check('v1 db: no v2 reads or calls (nor v1.2\'s dinners and shopping list, nor v1.3\'s homework)', !v2reads.length && !hw.length, v2reads.concat(hw).map((r) => r.path));
     await go(page, `#/projects/${KITCHEN}`);
     await page.click('.g-label[data-id="design"]');

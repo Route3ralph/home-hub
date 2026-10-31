@@ -10,14 +10,15 @@
 // "alone"); Looks done with a note (and its Undo), Not yet needing a note, Answer; a new assignment planned from a
 // starter plan and given to Jordan, which then shows on his My day; read again on focus and coming back into
 // view; the screens for a link that no longer works (unknown, off, ended, malformed: no call) and for a
-// database without 0005 ("This link doesn't work yet."); Pat's token opens no My day; Spanish; 390px wide;
+// database without 0005 ("This link doesn't work yet."); Pat's token opens no My day; from 0006, an assignment made from
+// school marked so, with the school's marks (moved, gone), and nothing of his New from school; Spanish; 390px wide;
 // nothing kept on the device.
 // The browser runs in Pacific/Kiritimati with its clock a day ahead of the household's, as in day.test.js.
 // Run alone with: node tests/e2e/tutor.test.js
 const fs = require('fs');
 const { chromium } = require('playwright');
 const { makeDb, install, withHomeworkTokens, homeworkTokenRpc: homeworkRpc, tkKidRow: hwKidRow, tkLinkRow: tutorLinkRow, tkAssignmentRow: assignmentRow,
-  tkStepRow: stepRow, tkSessionRow: sessionRow, tkRewardRow: rewardRow, tkLedgerRow: ledgerRow } = require('./mock');
+  tkStepRow: stepRow, tkSessionRow: sessionRow, tkRewardRow: rewardRow, tkLedgerRow: ledgerRow, withSchool, schoolFeedRow, schoolItemRow } = require('./mock');
 const { serve } = require('./server');
 
 let BASE = '';
@@ -284,6 +285,38 @@ async function tokenRpcs(page, db) {
   check('Pat\'s token opens no My day ("This link isn\'t working…") and no homework', /This link isn't working/.test(await text(page, '.day-problem'))
     && same(db.calls.map((c) => c.name), ['get_person_day']), db.calls.map((c) => c.name).join(','));
   await page.context().close();
+
+  // 0006 (schema 6, §12.4, §12.8): an assignment made from school says "from school" on Pat's link, in the list and on its
+  // page, with the school's marks: the date the school moved it to, or that it is no longer on the school site.
+  {
+    const d = withSchool(tutorDb());
+    const feed = schoolFeedRow({ kid_id: P.jordan, kind: 'assignments', checked: true });
+    d.school_feeds.push(feed);
+    d.assignments.push(
+      assignmentRow({ id: hid(50), kid_id: P.jordan, added_by: 'school', title: 'Lab report', subject: 'Biology', due_date: '2026-11-20', created_by: 'Jordan (My day)',
+        created_at: '2026-10-30T20:00:00.000000+00:00' }),
+      assignmentRow({ id: hid(51), kid_id: P.jordan, added_by: 'school', title: 'Map quiz', subject: 'Geography', due_date: '2026-11-09', created_by: 'alex@example.com',
+        created_at: '2026-10-30T20:00:00.000000+00:00' }),
+    );
+    d.school_items.push(
+      schoolItemRow({ feed_id: feed.id, title: 'Lab report', subject: 'Biology', due_date: '2026-11-23', assignment_id: hid(50), made_at: '2026-10-30T20:00:00.000000+00:00',
+        applied: { title: 'Lab report', subject: 'Biology', due_date: '2026-11-20', details: null } }),
+      schoolItemRow({ feed_id: feed.id, title: 'Map quiz', subject: 'Geography', due_date: '2026-11-09', assignment_id: hid(51), made_at: '2026-10-30T20:00:00.000000+00:00',
+        applied: { title: 'Map quiz', subject: 'Geography', due_date: '2026-11-09', details: null }, gone_at: '2026-11-01T20:00:00.000000+00:00' }),
+      schoolItemRow({ feed_id: feed.id, title: 'Read chapter 5', subject: 'History', due_date: '2026-11-04' }),
+    );
+    ({ page, db } = await open({ label: 'pat-school', path: `/day.html?h=${PAT}`, db: d }));
+    await page.waitForSelector('.plan-arows');
+    const rows = await texts(page, '.plan-arow');
+    check('Pat\'s link: "from school · the school moved it to Mon Nov 23" and "from school · no longer on the school site" on assignments made from school',
+      rows.some((x) => /Lab report/.test(x) && /from school · the school moved it to Mon Nov 23/.test(x)) && rows.some((x) => /Map quiz/.test(x) && /from school · no longer on the school site/.test(x)),
+      JSON.stringify(rows));
+    check('... and nothing of his New from school (an item nobody made an assignment isn\'t on Pat\'s link)', !rows.some((x) => /Read chapter 5/.test(x)) && !(await page.content()).includes('Read chapter 5'));
+    await page.click(`.plan-arow-link[href="#a/${hid(50)}"]`);
+    await page.waitForSelector('.plan-tutor-a');
+    check('... its page says it too: "from school · the school moved it to Mon Nov 23"', /from school · the school moved it to Mon Nov 23/.test(await text(page, '.plan-head .meta')), await text(page, '.plan-head .meta'));
+    await page.context().close();
+  }
 
   ({ page, db } = await open({ label: 'pat-es', path: `/day.html?h=${PAT}`, db: tutorDb({ lang: 'es' }),
     ctx: { viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true } }));

@@ -9,7 +9,7 @@
 // and the morning email come out exactly as before (homework is on for nobody yet), and on the next
 // load the site shows Homework under More and on the desktop tabs, with nothing failing.
 // Run through tests/realdb/run.sh (its own copy of the v4 template database).
-const { setup, HOMEWORK_CALLS } = require('./lib');
+const { setup, HOMEWORK_CALLS, SCHOOL_CALLS } = require('./lib');
 
 const TODAY = '2026-10-27';
 const TOKEN_FNS = /^\/rest\/v1\/rpc\/(get_person_day|complete_by_token|undo_by_token|confirm_digest|stop_digest|get_list_by_token|add_to_list_by_token|buy_item_by_token)$/;
@@ -55,7 +55,7 @@ const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
     await desk.context.close();
 
     const reqs = await h.requests();
-    const hw = reqs.filter((r) => HOMEWORK_CALLS.test(r.path));
+    const hw = reqs.filter((r) => (HOMEWORK_CALLS.test(r.path) || SCHOOL_CALLS.test(r.path)));
     check('v4 db: no homework table or function request from any page', !hw.length, hw.map((r) => r.path));
     check('v4 db: the pages read the agenda and the dinners as before', reqs.some((r) => r.path === '/rest/v1/rpc/agenda') && reqs.some((r) => r.path === '/rest/v1/meals'),
       [...new Set(reqs.map((r) => r.path))]);
@@ -82,7 +82,7 @@ const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
     }
     const reqs = await h.requests();
     check('v4 db: My day calls the token functions only (signed out), and no homework function', reqs.length > 0
-      && reqs.every((r) => r.role === 'anon' && TOKEN_FNS.test(r.path)) && !reqs.some((r) => HOMEWORK_CALLS.test(r.path)), reqs.map((r) => `${r.role} ${r.path}`));
+      && reqs.every((r) => r.role === 'anon' && TOKEN_FNS.test(r.path)) && !reqs.some((r) => (HOMEWORK_CALLS.test(r.path) || SCHOOL_CALLS.test(r.path))), reqs.map((r) => `${r.role} ${r.path}`));
     const day = await anonRpc('get_person_day', { p_token: P.jordan.day_token });
     check('v4 db: get_person_day has no homework key', day.status === 200 && !!day.body && !('homework' in day.body), JSON.stringify(day.body).slice(0, 200));
     const f = await failures();

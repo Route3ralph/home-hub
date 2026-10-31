@@ -51,10 +51,10 @@ const MY_DAY_FNS = new RegExp(`^/rest/v1/rpc/(get_person_day|complete_by_token|u
     await page.click('#codeForm button[type="submit"]');
     await page.waitForSelector('.today-head', { timeout: 10000 });
     await settle(page, 600);
-    // Schema 5 since migration 0005 (v1.3): the template has every migration, so the version this
-    // check reads moves with each release, on purpose (it was 4 with v1.2).
-    check('sign-in: the code signs Alex in and the v2 Today page shows (schema version 5 from the real database: migration 0005)',
-      (await page.evaluate(() => HomeHub.core.schemaVersion)) === 5 && /Good morning, Alex/.test(await tc(page, '#main h1')), await tc(page, '#main h1'));
+    // Schema 6 since migration 0006 (v1.3's school feed): the template has every migration, so the version
+    // this check reads moves with each release, on purpose (it was 4 with v1.2, 5 with 0005).
+    check('sign-in: the code signs Alex in and the v2 Today page shows (schema version 6 from the real database: migration 0006)',
+      (await page.evaluate(() => HomeHub.core.schemaVersion)) === 6 && /Good morning, Alex/.test(await tc(page, '#main h1')), await tc(page, '#main h1'));
     check('sign-in: Today shows the household\'s date (Tuesday, October 27)', /Tuesday, October 27/.test(await tc(page, '.today-head .eyebrow')), await tc(page, '.today-head .eyebrow'));
     const alex = await one(`select email_verified_at is not null as ok, (select token from people_confirm c where c.person_id = p.id) as secret from people p where email = 'alex@example.com'`);
     const again = alex.secret ? await h.api('/rest/v1/rpc/confirm_digest', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ p_confirm: alex.secret }) }) : null;

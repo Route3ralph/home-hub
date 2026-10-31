@@ -150,12 +150,28 @@ update public.tutor_links set active = false;
 
 To hide the page altogether, follow the design's §16.3.
 
+### The school's calendar links (v1.3, migration 0006)
+
+Home Hub can read Jordan's assignments, and his class schedule and games, from the school's Blackbaud site, so his assignments appear on his My day as **New from school** and his classes and games are busy time when steps are placed. A parent's own login is enough.
+
+**Turning it on** (`hub-jobs` and `supabase/cron.sql` change, so the order matters):
+1. `tests/run.sh` ends with `0 failed`; merge. Nothing changes until step 3: the school parts show only on schema 6.
+2. **Claude deploys `hub-jobs`** from main with JWT verification off, as before. There is **no new secret**: the links live in the database. Until step 3 its `school` action answers 503 `no_schema`, which is harmless.
+3. **About 5 minutes:** run [`supabase/migrations/0006_homework_school.sql`](supabase/migrations/0006_homework_school.sql) in the Supabase SQL editor. "isn't installed" means 0005 is missing; "already installed" means it's done; either way nothing was changed.
+4. **About 2 minutes:** run [`supabase/cron.sql`](supabase/cron.sql) again. It adds the `hub-school` job (every hour at 23 minutes past) and is safe to run again.
+5. **About 5 minutes, on a computer, the links:** sign in to the school's Blackbaud site **as yourself** → under **Jordan's Calendars**, open **Calendar** → the feed button → **WebCal Feed for External Calendar** → under **Individual Filter Feeds**, right-click **Assignments** → **Copy Link Address** (not **Entire Calendar**). In Home Hub: **Homework → Switches → School links → Assignments** → paste → **Save**. Do the same for **Schedule** and **Games/Practices** if you like (busy time only). Then **Check now**, and answer the first-import check: the card shows the next five items; tap **Looks right** if their dates are the due dates Blackbaud shows (or **Use the first date**, or **One day off**). Nothing from the Assignments link reaches Jordan or Pat until you do.
+
+**Treat each link like a password.** Anyone with it can read his calendar, and Blackbaud offers no way to cancel one. Home Hub keeps it where no page, no tutor link and no My day can read it back; it shows only the school's address and the link's last 4 characters ("…a1b2"), and never writes it to a log. To stop using one, **Remove** it on the switches card. Don't paste it anywhere else.
+
+**Day to day:** the hub reads each link every hour; Blackbaud itself can take up to an hour to show a change. On Jordan's My day, **New from school** lists what's coming up: **Quick** (one tap: a small one becomes tonight's step), **Plan with Pat** (it goes on Pat's link) or **Hide**. Once an assignment is on his homework, the school's later changes (a new title, a new due date, the description) reach it, except anything you, Jordan or Pat changed by hand; a due date never moves by itself on an assignment with a plan (the page says "Due date moved", and you place it again). One taken off the school site stays, marked. The switches card says when each link was last read, how many items it had, and what went wrong, in words: "Blackbaud answered with a sign-in page" (the link was replaced at the school: copy it again), "came back empty: new school year?", "not checked for over 3 hours: run supabase/cron.sql again". If Assignments shows nothing, the school may need to switch on calendar feeds for families (the email to send is in the design's §11.2 C).
+
 ### What goes where
 
 - **Never in an email, a text or on the wall:** the teacher's text, steps, questions, notes, points, rewards or asks. Only the homework-time event shows there, as any event does.
 - **Jordan's My day** never shows the teacher's text, and never a parent's name or email: notes are "Pat:" or "Your parents:".
 - **Pat's link** never shows points, rewards, asks, family names, event titles (only "Busy"), or anything live.
 - **Everyone who signs in** reads the Homework page; only the parents change it.
+- **The school links** are never shown again once saved, not even to the parents: only "…a1b2". An assignment's description from the school is its teacher's text: for the grown-ups and Pat, never on Jordan's screen.
 - **How long things are kept:** the teacher's text until 30 days after the due date; done and dropped assignments, focus blocks, questions and notes 180 days; points until **Erase**.
 
 ## Messaging contractors
@@ -215,7 +231,7 @@ The order matters, and it's written out in [`CLAUDE.md`](CLAUDE.md) under **Depl
    - `HEALTHCHECK_URL` (optional): a ping address, such as one from healthchecks.io, called after every good run, so you hear about it if the email stops.
    - `RESEND_API_KEY`, `EMAIL_FROM` and `EMAIL_FROM_NAME` are the same as for `send-email`.
    - `GOOGLE_SA_JSON` (optional, for [Google Calendar and Hearth](#google-calendar-and-hearth)): the whole service-account key file (step B there). Without it the calendar job stops at once and the morning email is unchanged.
-5. Create two Vault secrets by hand (`hub_cron_secret`, with the same value as `HUB_CRON_SECRET`, and `hub_jobs_url`), then run [`supabase/cron.sql`](supabase/cron.sql). Its header shows the exact commands. It refuses to run with a missing or placeholder secret and is safe to run again. Run it again after a release that changes it: v1.1 adds the `hub-calendar` job.
+5. Create two Vault secrets by hand (`hub_cron_secret`, with the same value as `HUB_CRON_SECRET`, and `hub_jobs_url`), then run [`supabase/cron.sql`](supabase/cron.sql). Its header shows the exact commands. It refuses to run with a missing or placeholder secret and is safe to run again. Run it again after a release that changes it: v1.1 adds the `hub-calendar` job, and v1.3's school feed (migration 0006) the `hub-school` job.
 6. Smoke checks: a POST to hub-jobs without the header answers 401; **Settings → Preview my morning email** shows an email; **Settings → Morning email** shows the last run; the next morning `notification_log` has `sent` rows.
 7. Ops hardening: set the Auth email rate limit to about 6 an hour, keep the signup hook on, and turn Resend's click and open tracking off (so links in emails aren't rewritten).
 

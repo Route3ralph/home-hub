@@ -124,6 +124,38 @@
 .hw-link-label { overflow-wrap: anywhere; }
 .hw-link-meta { margin: 0; color: var(--text-3); font-size: 13px; }
 .hw-link-acts { display: flex; flex-wrap: wrap; gap: 8px; }
+/* School links (0006): the three links, their status, the box for a link, the first-import check, his items, the how-to */
+.hw-feeds { list-style: none; margin: 0; padding: 0; }
+.hw-feed { display: grid; gap: 4px; padding: 10px 0; border-bottom: 1px solid var(--line); min-width: 0; }
+.hw-feed:last-child { border-bottom: 0; }
+.hw-feed-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 10px; }
+.hw-feed-state { color: var(--text-2); font-size: 13px; font-weight: 600; }
+.hw-feed-what { color: var(--text-3); font-size: 13px; overflow-wrap: anywhere; }
+.hw-feed-error { margin: 0; color: var(--text); font-size: 13px; overflow-wrap: anywhere; }
+.hw-feed-acts { display: flex; flex-wrap: wrap; gap: 8px; }
+.hw-schoolform { display: grid; gap: 8px; padding: 10px 12px; border-radius: 12px; background: var(--surface-2); }
+.hw-schoolform input { min-height: 44px; font-size: 16px; }
+.hw-schoolform .form-actions { margin: 0; }
+.hw-school-how > summary {
+  display: flex; align-items: center; min-height: 44px; color: var(--accent); font-size: 14px; font-weight: 650; cursor: pointer;
+}
+.hw-school-how ol { margin: 4px 0 8px; padding-left: 22px; color: var(--text-2); font-size: 14px; }
+.hw-school-how li { margin: 4px 0; overflow-wrap: anywhere; }
+.hw-school-how p { margin: 0 0 6px; color: var(--text-3); font-size: 13px; }
+.hw-feed-link { color: var(--text-3); font-size: 13px; overflow-wrap: anywhere; }
+.hw-school-check { display: grid; gap: 8px; margin: 10px 0 0; padding: 10px 12px; border-radius: 12px; background: var(--surface-2); min-width: 0; }
+.hw-school-check .hw-switch-title, .hw-school-check .hw-switch-line { margin: 0; }
+.hw-school-items { list-style: none; margin: 0; padding: 0; }
+.hw-school-items > li { padding: 6px 0; border-bottom: 1px solid var(--line); font-size: 14px; overflow-wrap: anywhere; }
+.hw-school-items > li:last-child { border-bottom: 0; }
+.hw-school-row { display: grid; gap: 6px; }
+.hw-school-marks { margin: 10px 0 0; padding-left: 20px; font-size: 14px; }
+.hw-school-marks li { margin: 4px 0; overflow-wrap: anywhere; }
+.hw-school-marks a { color: var(--accent); }
+.hw-school-list { margin: 8px 0 0; }
+.hw-school-list > summary {
+  display: flex; align-items: center; min-height: 44px; color: var(--accent); font-size: 14px; font-weight: 650; cursor: pointer;
+}
 
 /* ---------- The first visit ---------- */
 .hw-setup { margin: 10px 0 4px; padding: 16px; }

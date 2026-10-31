@@ -234,6 +234,19 @@
 .hw-asg .plan-bars { margin: 8px 0 4px; }
 .hw-asg .hw-note, .hw-talk, .hw-stretch { margin: 6px 0 0; font-size: 14px; }
 .hw-stretch { color: var(--text-2); font-style: italic; overflow-wrap: anywhere; }
+/* New from school (0006): after Due soon, a short list, each with Quick, Plan with Pat and Hide in one tap */
+.hw-card-school-p { margin: -4px 0 8px; }
+.hw-card-school { display: inline-flex; align-items: center; min-height: 44px; color: var(--accent); font-weight: 650; text-decoration: none; overflow-wrap: anywhere; }
+.hw-school-item { padding: 10px 0; border-bottom: 1px solid var(--line); }
+.hw-school-item:last-child { border-bottom: 0; }
+.hw-school-line { margin: 0; font-weight: 600; overflow-wrap: anywhere; }
+.hw-school-acts { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 0; }
+.hw-school-acts .btn { min-height: 44px; padding: 8px 14px; font-size: 15px; }
+.hw-school-more { border-top: 1px solid var(--line); }
+.hw-school-more > summary {
+  display: flex; align-items: center; min-height: 48px; color: var(--text-2); font-weight: 650; cursor: pointer; list-style: none;
+}
+.hw-school-more > summary::-webkit-details-marker { display: none; }
 .hw-pace, .hw-who { margin: 16px 0 0; color: var(--text-3); font-size: 14px; }
 .hw-opt { margin: 10px 0 0; }
 .hw-check { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; font-size: 14px; }

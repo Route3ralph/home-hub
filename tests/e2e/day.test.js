@@ -45,6 +45,11 @@
 // silent ('playback' just for the chime) and the chime set again after time away on any view (#focus, #homework,
 // the day), called off when the ring ran out meanwhile, and made at the first tap after a reload (HW_CLOCKED: an
 // AudioContext on the page's clock that stands still while the page is hidden); "Pasado al mié".
+// 0006 (schema 6, docs/v1.3-homework.md §11.4), with mock.js's withSchool: New from school on #homework (his view's
+// from_school), after Due soon: a short list (five, the rest folded), each with Quick (his length, only for one due within
+// 3 days), Plan with Pat and Hide in one tap (school_item_by_token); a refusal; one call for a double tap; the card's
+// "New from school" line opening it; nothing from an unchecked link; the school's marks (moved, gone) under Due soon;
+// the description never on his screen; Spanish; hostile text; none on schema 5.
 // mock.js answers RPCs for signed-in members only, so the token functions (called signed out) are
 // answered by a route added here; everything else (config.js, supabase-js) comes from mock.js.
 // The browser runs in Pacific/Kiritimati (UTC+14) with its clock set so the device's date is a day
@@ -55,7 +60,7 @@ const crypto = require('crypto');
 const { chromium } = require('playwright');
 const { makeDb, install, signIn, SUPA, withFood, foodRpc, personDayFood, shopItem, mealRow, withHomeworkTokens, homeworkTokenRpc: homeworkRpc,
   personDayHomework, tkKidRow: hwKidRow, tkLinkRow: tutorLinkRow, tkAssignmentRow: assignmentRow, tkStepRow: stepRow, tkSessionRow: sessionRow,
-  tkRewardRow: rewardRow, tkLedgerRow: ledgerRow } = require('./mock');
+  tkRewardRow: rewardRow, tkLedgerRow: ledgerRow, withSchool, schoolFeedRow, schoolItemRow } = require('./mock');
 const { serve, ROOT } = require('./server');
 
 let BASE = '';
@@ -1761,6 +1766,7 @@ const HW_AUDIO_DROP = `(${HW_STUBS})(); (${HW_CLOCKED})(); (${HW_WAKE_DROP})();`
     (await hwText(page, '.hw-card .plan-goal-text')) === "You can get Choose Friday's dinner now!" && (await hwText(page, '.hw-card .plan-goal-next')) === '32 points to A new book'
     && (await page.$eval('.hw-card .plan-goal-fill', (f) => f.style.width)) === '78.7%', await hwText(page, '.hw-card'));
   check('homework card: drawn from get_person_day alone (no homework_by_token on the day view)', !calls(db, 'homework_by_token').length);
+  check('homework card on schema 5 (no from_school count): no New from school line', !(await page.$('.hw-card-school')));
   check('homework card: nothing asked for before a tap (no wake lock, no audio, no notification)',
     await page.evaluate(() => !window.__hw.wake.length && !window.__hw.audio.length && !window.__hw.ask.length));
 
@@ -1957,6 +1963,7 @@ const HW_AUDIO_DROP = `(${HW_STUBS})(); (${HW_CLOCKED})(); (${HW_WAKE_DROP})();`
       && /Flashcards made was planned for Fri Oct 30\. Pick a new day with Pat ›/.test(due.join(' | ')), JSON.stringify(due));
     check('Due soon: a lesson being planned', due.some((x) => x === 'Math · Fractions practice · lesson · do by Fri · Being planned'), JSON.stringify(due));
     check('the who-sees line', (await hwText(page, '.hw-who')) === 'Pat and the grown-ups in your family see your plan and your notes. The grown-ups see your points.');
+    check('#homework on schema 5 (no from_school): no New from school section', !(await page.$('.hw-school')));
     check('focused minutes this week against last week', (await hwText(page, '.hw-pace')) === '0 min focused this week (last week 20 min)', await hwText(page, '.hw-pace'));
     check('a phone: no "Show a notification" offer', !(await page.$('[data-act="hw-notify"]')));
     check('no Notification asked for, ever, on a phone', !(await hwRec(page)).ask.length);
@@ -2988,6 +2995,147 @@ const HW_AUDIO_DROP = `(${HW_STUBS})(); (${HW_CLOCKED})(); (${HW_WAKE_DROP})();`
     await page.waitForSelector('.hw-now-card');
     check('a hostile title and answer are drawn as text', (await hwText(page, '.hw-now-title')) === '<img src=x onerror="window.__xss=1">'
       && !(await page.$('.hw-now-card img, .hw-note b')) && !(await page.evaluate(() => window.__xss)));
+    await page.context().close();
+  }
+
+  // =====================================================================
+  // 22. New from school (schema 6, 0006; docs/v1.3-homework.md §11.4, §12.8): the school's items he hasn't planned or hidden
+  // =====================================================================
+  {
+    // His checked Assignments link (the made-up school's host): Read chapter 5 due Wed (Quick), Lab report due Fri Nov 20 (too far
+    // for Quick), and two assignments made from school: Map quiz, no longer on the school site, and a poem whose date the school moved.
+    const schoolDb = (o, extra) => {
+      const d = withSchool(hwDb(o));
+      const feed = schoolFeedRow({ id: hid(99), kid_id: P.jordan, kind: 'assignments', checked: true, last_ok_at: '2026-11-02T20:23:00.000000+00:00', last_count: 4 });
+      d.school_feeds.push(feed);
+      const I = (x) => d.school_items.push(schoolItemRow(Object.assign({ feed_id: feed.id }, x)));
+      I({ id: hid(100), title: 'Read chapter 5', subject: 'History', due_date: '2026-11-04' });
+      I({ id: hid(101), title: 'Lab report', subject: 'Biology', due_date: '2026-11-20', details: 'Write up the bean plant lab: hypothesis, method, results.' });
+      d.assignments.push(
+        assignmentRow({ id: hid(102), kid_id: P.jordan, added_by: 'school', title: 'Map quiz', subject: 'Geography', due_date: '2026-11-09', created_by: 'Jordan (My day)',
+          created_at: '2026-10-30T20:00:00.000000+00:00' }),
+        assignmentRow({ id: hid(103), kid_id: P.jordan, added_by: 'school', title: 'Poem', subject: 'English', due_date: '2026-11-12', created_by: 'alex@example.com',
+          created_at: '2026-10-30T20:00:00.000000+00:00' }),
+      );
+      I({ id: hid(104), title: 'Map quiz', subject: 'Geography', due_date: '2026-11-09', assignment_id: hid(102), made_at: '2026-10-30T20:00:00.000000+00:00',
+        applied: { title: 'Map quiz', subject: 'Geography', due_date: '2026-11-09', details: null }, gone_at: '2026-11-01T20:00:00.000000+00:00' });
+      I({ id: hid(105), title: 'Poem', subject: 'English', due_date: '2026-11-16', assignment_id: hid(103), made_at: '2026-10-30T20:00:00.000000+00:00',
+        applied: { title: 'Poem', subject: 'English', due_date: '2026-11-12', details: null } });
+      (extra || []).forEach((x, i) => I(Object.assign({ id: hid(110 + i), subject: 'Art', due_date: '2026-11-25' }, x)));
+      return d;
+    };
+    const SCH = (id) => `.hw-school .hw-school-item[data-item="${id}"]`;
+    // The refusal below comes back as 403, which Chrome logs.
+    ({ page, db } = await open({ label: 'hw-school-card', path: `/day.html?t=${JORDAN}`, db: schoolDb(), device: HW_DEVICE, init: HW_STUBS, ctx: phone(), allowConsole: /status of 403/ }));
+    check('the card: "New from school: 2 ›" (get_person_day\'s from_school count)', (await hwText(page, '.hw-card .hw-card-school')) === 'New from school: 2 ›', await hwText(page, '.hw-card'));
+    await page.click('.hw-card .hw-card-school');
+    await page.waitForSelector('.hw-school', { timeout: 3000 }).catch(() => {});
+    check('... a tap opens #homework at New from school', (await page.evaluate(() => location.hash)) === '#homework'
+      && await until(() => page.evaluate(() => { const r = document.querySelector('.hw-school').getBoundingClientRect(); return r.top >= 0 && r.top < window.innerHeight; })));
+    check('New from school: after Due soon, "New from school (2)"', (await hwText(page, '#hw-school-h')) === 'New from school (2)'
+      && await page.evaluate(() => { const d = document.querySelector('.hw-due'); const s = document.querySelector('.hw-school'); return !!(d && s && (d.compareDocumentPosition(s) & 4)); }),
+      await hwText(page, '#hw-school-h'));
+    check('... each item its class, title and due day, soonest first', same(await hwTexts(page, '.hw-school .hw-school-line'), ['History · Read chapter 5 · due Wed', 'Biology · Lab report · due Fri Nov 20']),
+      JSON.stringify(await hwTexts(page, '.hw-school .hw-school-line')));
+    check('... one tap each: Quick (his first length) only for the one due within 3 days; Plan with Pat; Hide', same(await hwTexts(page, `${SCH(hid(100))} button`), ['Quick · 20 min', 'Plan with Pat', 'Hide'])
+      && same(await hwTexts(page, `${SCH(hid(101))} button`), ['Plan with Pat', 'Hide']), JSON.stringify([await hwTexts(page, `${SCH(hid(100))} button`), await hwTexts(page, `${SCH(hid(101))} button`)]));
+    check('... the school\'s description never on his screen', !(await page.content()).includes('bean plant'));
+    const due = await hwTexts(page, '.hw-due .hw-asg-line');
+    check('Due soon: an assignment from school the school took off its site says so, and one whose date the school moved says where to',
+      due.some((x) => /^Geography · Map quiz · due .* · No longer on the school site · /.test(x)) && due.some((x) => /^English · Poem · due .* · The school moved it to Mon Nov 16 · /.test(x)), JSON.stringify(due));
+    check('phone: no sideways scroll; the buttons at least 44px tall', await noSideScroll(page)
+      && (await page.$$eval('.hw-school button', (bs) => bs.every((b) => b.getBoundingClientRect().height >= 44))));
+    await page.screenshot({ path: SHOTS + 'day-hw-school.png', fullPage: true });
+    await page.locator('.hw-school').screenshot({ path: SHOTS + 'day-hw-school-list.png' });
+
+    // ---- A refusal: said, the item stays, its buttons work again
+    db.hwError = [403, '42501', "That isn't on your list from school."];
+    await page.click(`${SCH(hid(101))} [data-act="hw-school-pat"]`);
+    check('a refusal: "That isn\'t on your list from school any more.", the item stays and can be tapped again', (await hwToast(page)) === "That isn't on your list from school any more."
+      && await until(async () => !!(await page.$(`${SCH(hid(101))} [data-act="hw-school-pat"]:not([disabled])`))), await text(page, '.toasts'));
+    await hwClear(page);
+
+    // ---- Quick: one tap at his length (a double tap is one call)
+    db.slow = { school_item_by_token: 500 };
+    await page.click(`${SCH(hid(100))} [data-act="hw-school-quick"]`);
+    await page.click(`${SCH(hid(100))} [data-act="hw-school-quick"]`, { force: true }).catch(() => {});
+    await until(async () => !(await page.$(SCH(hid(100)))));
+    db.slow = {};
+    const qk = calls(db, 'school_item_by_token');
+    const made = db.assignments.find((a) => a.title === 'Read chapter 5');
+    const placed = made && db.homework_steps.find((s) => s.assignment_id === made.id);
+    check('Quick: one school_item_by_token quick with his length (a second tap while it goes sends nothing)', qk.length === 2
+      && same(qk[1].body, { p_token: JORDAN, p_item: hid(100), p_action: 'quick', p_minutes: 20 }), JSON.stringify(qk.map((c) => c.body)));
+    check('... an assignment from school with one plain step of 20 minutes, placed and given; it leaves New from school (1 left)',
+      !!made && made.added_by === 'school' && !!placed && placed.minutes === 20 && !!made.given_at && (await hwText(page, '#hw-school-h')) === 'New from school (1)', JSON.stringify(placed));
+    const dayWord = placed && placed.day === '2026-11-03' ? 'tomorrow' : placed && placed.day === HWT ? 'today' : null;
+    check('... "Planned for tomorrow: Read chapter 5" (the day the database placed it)', !!dayWord && (await hwToast(page)) === `Planned for ${dayWord}: Read chapter 5`, `${placed && placed.day} ${await text(page, '.toasts')}`);
+    await hwClear(page);
+
+    // ---- Plan with Pat: an assignment from school with no plan, under Due soon
+    await page.click(`${SCH(hid(101))} [data-act="hw-school-pat"]`);
+    await until(async () => !(await page.$('.hw-school')));
+    const lab = db.assignments.find((a) => a.title === 'Lab report');
+    check('Plan with Pat: school_item_by_token with_tutor; an assignment from school with no plan and its description as the teacher\'s text; the section goes with its last item',
+      same(calls(db, 'school_item_by_token').slice(-1)[0].body, { p_token: JORDAN, p_item: hid(101), p_action: 'with_tutor' }) && !!lab && lab.added_by === 'school'
+      && /bean plant/.test(lab.details || '') && !db.homework_steps.some((s) => s.assignment_id === lab.id) && !(await page.$('.hw-school')), JSON.stringify(calls(db, 'school_item_by_token').slice(-1)[0].body));
+    check('... "On your homework, to plan with Pat: Lab report", and under Due soon "No plan yet · Plan this one with Pat."', (await hwToast(page)) === 'On your homework, to plan with Pat: Lab report'
+      && (await hwTexts(page, '.hw-due .hw-asg-line')).includes('Biology · Lab report · due Fri Nov 20 · No plan yet · Plan this one with Pat.'), JSON.stringify(await hwTexts(page, '.hw-due .hw-asg-line')));
+    await page.context().close();
+
+    // ---- A short list: five, then "3 more" folded; Hide
+    const many = schoolDb(null, ['Collage', 'Sketchbook page', 'Color wheel', 'Clay pot', 'Gallery notes', 'Self-portrait'].map((title) => ({ title })));
+    ({ page, db } = await open({ label: 'hw-school-many', path: `/day.html?t=${JORDAN}#homework`, db: many, device: HW_DEVICE, init: HW_STUBS }));
+    await page.waitForSelector('.hw-school');
+    check('eight from school: "New from school (8)", five shown, then "3 more" folded with the rest', (await hwText(page, '#hw-school-h')) === 'New from school (8)'
+      && (await page.$$('.hw-school .hw-list > .hw-school-item')).length === 5 && (await hwText(page, '.hw-school details.hw-school-more summary')) === '3 more'
+      && (await page.$$('.hw-school details.hw-school-more .hw-school-item')).length === 3 && !(await page.$eval('.hw-school details.hw-school-more', (x) => x.open)),
+      await hwText(page, '.hw-school'));
+    await page.click(`${SCH(hid(110))} [data-act="hw-school-hide"]`);
+    await until(async () => !(await page.$(SCH(hid(110)))));
+    check('Hide: school_item_by_token hide; "Hidden: Collage. A parent can bring it back."; 7 left; no assignment made', same(calls(db, 'school_item_by_token').slice(-1)[0].body,
+      { p_token: JORDAN, p_item: hid(110), p_action: 'hide' }) && (await hwToast(page)) === 'Hidden: Collage. A parent can bring it back.'
+      && (await hwText(page, '#hw-school-h')) === 'New from school (7)' && db.school_items.find((i) => i.id === hid(110)).hidden && !db.assignments.some((a) => a.title === 'Collage'),
+      await text(page, '.toasts'));
+    await hwClear(page);
+    // Homework turned off a moment ago: Quick is answered null, and the day shows with the word, not #homework.
+    db.homework_kids[0].active = false;
+    await page.click(`${SCH(hid(100))} [data-act="hw-school-quick"]`);
+    check('homework off while New from school is open: Quick goes back to the day, with "Homework isn\'t on your My day right now."',
+      await until(async () => !!(await page.$('.day-sec')) && !(await page.$('.hw-school')) && !(await page.$('.hw-head')))
+      && (await hwToast(page)) === "Homework isn't on your My day right now." && !db.assignments.some((a) => a.title === 'Read chapter 5'),
+      await hwText(page, 'main'));
+    await page.context().close();
+
+    // ---- An Assignments link no parent has checked yet: nothing from it on his screen
+    const unchecked = schoolDb();
+    unchecked.school_feeds[0].checked = false;
+    ({ page, db } = await open({ label: 'hw-school-unchecked', path: `/day.html?t=${JORDAN}#homework`, db: unchecked, device: HW_DEVICE, init: HW_STUBS }));
+    await page.waitForSelector('.hw-tonight');
+    check('an unchecked Assignments link: no New from school, no card line', !(await page.$('.hw-school')) && !(await page.$('.hw-card-school')));
+    await page.context().close();
+
+    // ---- Spanish, and a hostile title
+    const es = schoolDb({ lang: 'es' }, [{ title: '<img src=x onerror="window.__xss2=1">' }]);
+    ({ page, db } = await open({ label: 'hw-school-es', path: `/day.html?t=${JORDAN}`, db: es, device: HW_DEVICE, init: HW_STUBS }));
+    check('Spanish card: "Nuevo de la escuela: 3 ›"', (await hwText(page, '.hw-card .hw-card-school')) === 'Nuevo de la escuela: 3 ›', await hwText(page, '.hw-card'));
+    await page.click('.hw-card .hw-card-school');
+    await page.waitForSelector('.hw-school');
+    check('Spanish: "Nuevo de la escuela (3)", "Rápido · 20 min", "Planear con Pat", "Ocultar"', (await hwText(page, '#hw-school-h')) === 'Nuevo de la escuela (3)'
+      && same(await hwTexts(page, `${SCH(hid(100))} button`), ['Rápido · 20 min', 'Planear con Pat', 'Ocultar']), await hwText(page, '.hw-school'));
+    const dueEs = await hwTexts(page, '.hw-due .hw-asg-line');
+    check('Spanish: "Ya no está en el sitio de la escuela", "La escuela la pasó al lun 16 nov"-style', dueEs.some((x) => /Ya no está en el sitio de la escuela/.test(x))
+      && dueEs.some((x) => /La escuela la pasó al? /.test(x) && !/pasó a el /.test(x)), JSON.stringify(dueEs.slice(3)));
+    check('a hostile title from school is drawn as text', (await hwTexts(page, '.hw-school .hw-school-line')).some((x) => x.includes('<img src=x onerror="window.__xss2=1">'))
+      && !(await page.$('.hw-school img')) && !(await page.evaluate(() => window.__xss2)));
+    await page.click(`${SCH(hid(101))} [data-act="hw-school-hide"]`);
+    check('Spanish: "Oculta: Lab report. Tus padres pueden recuperarla."', (await hwToast(page)) === 'Oculta: Lab report. Tus padres pueden recuperarla.', await text(page, '.toasts'));
+    await hwClear(page);
+    await page.click(`${SCH(hid(110))} [data-act="hw-school-pat"]`);
+    check('Spanish: "En tu tarea, para planear con Pat: …"', /^En tu tarea, para planear con Pat: /.test(await hwToast(page)), await text(page, '.toasts'));
+    await hwClear(page);
+    await page.click(`${SCH(hid(100))} [data-act="hw-school-quick"]`);
+    check('Spanish: "Planeado para mañana: Read chapter 5"', (await hwToast(page)) === 'Planeado para mañana: Read chapter 5', await text(page, '.toasts'));
     await page.context().close();
   }
 
