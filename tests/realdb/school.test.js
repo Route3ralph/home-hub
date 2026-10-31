@@ -168,17 +168,21 @@ const ESSAY = { uid: 'asg-1004', summary: 'English - 7: Essay outline', lines: [
     await page.click('.hw-card .hw-card-school');
     await until(async () => !!(await page.$('.hw-school')), 6000);
     const sch = (t) => `.hw-school .hw-school-item:has(.hw-school-line:text-matches("${t}"))`;
-    check('New from school (3): Quick only on the one due Wednesday; Plan with Pat and Hide on each', (await tc(page, '#hw-school-h')) === 'New from school (3)'
-      && same(await texts(page, `${sch('Read chapter 5')} button`), ['Quick · 20 min', 'Plan with your parents', 'Hide'])
+    // Quick is his first length: nobody set one here, so it is homework_kids.focus_minutes' default, 10 (the owner's
+    // "10 minutes first", docs/v1.3-homework.md's build notes).
+    const len = (await one(`select focus_minutes from homework_kids where kid_id = '${P.jordan.id}'`)).focus_minutes;
+    check('his first length is the default, 10 minutes', len === '10', len);
+    check('New from school (3): Quick (his first length) only on the one due Wednesday; Plan with Pat and Hide on each', (await tc(page, '#hw-school-h')) === 'New from school (3)'
+      && same(await texts(page, `${sch('Read chapter 5')} button`), [`Quick · ${len} min`, 'Plan with your parents', 'Hide'])
       && same(await texts(page, `${sch('Lab report')} button`), ['Plan with your parents', 'Hide']) && !(await page.content()).includes('bean plant'), await tc(page, '.hw-school'));
     await page.click(`${sch('Read chapter 5')} [data-act="hw-school-quick"]`);
     await toastIs(page, /^Planned for/);
     const ch5 = await item('Read chapter 5');
     const a1 = ch5 && ch5.assignment_id ? await one(`select added_by, title, subject, due_date, given_by, created_by from assignments where id = '${ch5.assignment_id}'`) : null;
     const s1 = ch5 && ch5.assignment_id ? await sql(`select minutes, day from homework_steps where assignment_id = '${ch5.assignment_id}'`) : [];
-    check('Quick: an assignment from school (History, due Wed), with one 20-minute step placed today and given by him: "Planned for today: Read chapter 5"',
+    check('Quick: an assignment from school (History, due Wed), with one step of his first length placed today and given by him: "Planned for today: Read chapter 5"',
       !!a1 && same([a1.added_by, a1.title, a1.subject, a1.due_date, a1.created_by], ['school', 'Read chapter 5', 'History', '2026-11-04', 'Jordan (My day)'])
-      && /\(My day\)$/.test(a1.given_by || '') && same(s1, [{ minutes: '20', day: MON }]) && (await lastToast(page)) === 'Planned for today: Read chapter 5', { a1, s1, toast: await lastToast(page) });
+      && /\(My day\)$/.test(a1.given_by || '') && same(s1, [{ minutes: len, day: MON }]) && (await lastToast(page)) === 'Planned for today: Read chapter 5', { a1, s1, toast: await lastToast(page) });
     await page.click(`${sch('Lab report')} [data-act="hw-school-pat"]`);
     await toastIs(page, /^On your homework/);
     const lab = await item('Lab report');
