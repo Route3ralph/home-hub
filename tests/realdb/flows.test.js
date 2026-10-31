@@ -54,8 +54,8 @@ const MY_DAY_FNS = new RegExp(`^/rest/v1/rpc/(get_person_day|complete_by_token|u
     // Schema 9 since migration 0009 (the school items' keys): the template has every migration, so the version this
     // check reads moves with each release, on purpose (it was 4 with v1.2, 5 with 0005, 6 with 0006, 7 with 0007, 8
     // with 0008).
-    check('sign-in: the code signs Alex in and the v2 Today page shows (schema version 9 from the real database: migration 0009)',
-      (await page.evaluate(() => HomeHub.core.schemaVersion)) === 9 && /Good morning, Alex/.test(await tc(page, '#main h1')), await tc(page, '#main h1'));
+    check('sign-in: the code signs Alex in and the v2 Today page shows (schema version 10 from the real database: migration 0010)',
+      (await page.evaluate(() => HomeHub.core.schemaVersion)) === 10 && /Good morning, Alex/.test(await tc(page, '#main h1')), await tc(page, '#main h1'));
     check('sign-in: Today shows the household\'s date (Tuesday, October 27)', /Tuesday, October 27/.test(await tc(page, '.today-head .eyebrow')), await tc(page, '.today-head .eyebrow'));
     const alex = await one(`select email_verified_at is not null as ok, (select token from people_confirm c where c.person_id = p.id) as secret from people p where email = 'alex@example.com'`);
     const again = alex.secret ? await h.api('/rest/v1/rpc/confirm_digest', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ p_confirm: alex.secret }) }) : null;

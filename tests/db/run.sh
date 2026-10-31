@@ -14,7 +14,9 @@
 # school status card's first-import check and what a removed link added again keeps of its last read (its refusals,
 # its undo, and "same status card"); and that migration 0009 keys the school items by what they are, not by
 # Blackbaud's UIDs, and makes the copies a database at 0008 has one row an item (its refusals, its undo, the live
-# database's shape: 54 rows of 18 assignments and 570 of 285 classes, and "same views" where there were no copies).
+# database's shape: 54 rows of 18 assignments and 570 of 285 classes, and "same views" where there were no copies); and that
+# migration 0010 (Hearth people) refuses what it should (twice, too early, set back to 9, a half-applied shape), leaves every
+# answer as 0009 made it while no calendar is sorted (step 5g), and can be undone (hub_09 is the database at 0009).
 # Prints one "PASS  name" or "FAIL  name  (detail)" line per check, then the totals,
 # and exits non-zero if anything failed.
 # Needs the PostgreSQL 16 server binaries (PG_BIN overrides where they are); cluster.sh starts
@@ -231,8 +233,9 @@ else report "FAIL  migration 0007 stamps the tasks and events already there  (${
 
 # 0008 (the first-import check's past items) refuses to run twice, on a v1 database, and without 0007 (at 0005 and
 # at 0006): each says why, and changes nothing.
+# (hub_again is a copy of a fresh install, at 10 since 0010.)
 out=$(quiet -d hub_again -f supabase/migrations/0008_school_check.sql 2>&1)
-if [[ $out == *"already installed"* ]] && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 9 ]]; then
+if [[ $out == *"already installed"* ]] && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 10 ]]; then
   report "PASS  migration 0008 refuses to run twice"
 else report "FAIL  migration 0008 refuses to run twice  (${out:0:200})"; fi
 out=$(quiet -d hub_v1_again -f supabase/migrations/0008_school_check.sql 2>&1)
@@ -389,7 +392,7 @@ else report "FAIL  same status card: 0008 changes only the check  (${out:0:150};
 # without 0008 (at 0006 and at 0007), and on a database at 0008 that isn't as 0008 left it: each says why, and
 # changes nothing.
 out=$(quiet -d hub_again -f supabase/migrations/0009_school_keys.sql 2>&1)
-if [[ $out == *"already installed"* ]] && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 9 ]]; then
+if [[ $out == *"already installed"* ]] && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 10 ]]; then
   report "PASS  migration 0009 refuses to run twice"
 else report "FAIL  migration 0009 refuses to run twice  (${out:0:200})"; fi
 out=$(quiet -d hub_v1_again -f supabase/migrations/0009_school_keys.sql 2>&1)
@@ -425,10 +428,16 @@ for broken in 'drop function private.school_rows(text, jsonb, text, int, date)' 
     report "PASS  migration 0009 refuses a database at 0008 not as 0008 left it ($broken), and changes nothing"
   else report "FAIL  migration 0009 refuses a database at 0008 not as 0008 left it ($broken)  (${out:0:200})"; fi
 done
+# A database at 0009 (hub_08, with 0009), as 0009 made hub_08: a fresh install is at 10 since 0010, so 0009's undo starts
+# from it, and 0010's refusals and undo are checked on copies of it.
+sql -d postgres -c 'create database hub_09 template hub_08'
+if ! quiet -d hub_09 -f supabase/migrations/0009_school_keys.sql >"$dir/load.log" 2>&1; then
+  report "FAIL  migration 0009 applies to hub_09  ($(tail -n 1 "$dir/load.log"))"
+fi
 # Undo, as docs/v1.3-homework.md §16.9 says: 0006's school_rows again (its "create function private.school_rows(…)"
 # block, to its "$$;", with create or replace) and hub_schema_version() returning 8. school_rows is then 0006's (as on a
-# database at 0008, with the same grants), and 0009 runs again, leaving the functions as on a fresh install.
-sql -d postgres -c 'create database hub_set_back_8 template hub'
+# database at 0008, with the same grants), and 0009 runs again, leaving the functions as on a database at 0009.
+sql -d postgres -c 'create database hub_set_back_8 template hub_09'
 { sed -n '/^create function private\.school_rows(p_kind text, p_items jsonb, p_rule text, p_shift int, p_today date)$/,/^\$\$;$/p' \
     supabase/migrations/0006_homework_school.sql | sed '1s/^create function/create or replace function/'
   echo "create or replace function public.hub_schema_version() returns int language sql immutable set search_path = '' as \$\$ select 8 \$\$;"
@@ -440,9 +449,9 @@ rows_of() { quiet -d "$1" -A -t -c "select p.proname || ' ' || md5(p.prosrc) || 
 undo=$(quiet -d hub_set_back_8 -f "$dir/undo_0009.sql" 2>&1)
 got_undo="$(quiet -d hub_set_back_8 -A -t -c "select public.hub_schema_version()") $([[ -n $(rows_of hub_08) && $(rows_of hub_set_back_8) == "$(rows_of hub_08)" ]] && echo same-as-0008)"
 out=$(quiet -d hub_set_back_8 -f supabase/migrations/0009_school_keys.sql 2>&1)
-got_again="$(quiet -d hub_set_back_8 -A -t -c "select public.hub_schema_version()") $([[ $(catalog_of hub_set_back_8) == "$(catalog_of hub)" && -n $(rows_of hub) && $(rows_of hub_set_back_8) == "$(rows_of hub)" ]] && echo same-as-fresh)"
-if [[ $(wc -l <"$dir/undo_0009.sql") -gt 20 && -z $undo && $got_undo == "8 same-as-0008" && -z $out && $got_again == "9 same-as-fresh" ]]; then
-  report "PASS  migration 0009's undo: 0006's school_rows back, schema 8; then 0009 runs again, as on a fresh install"
+got_again="$(quiet -d hub_set_back_8 -A -t -c "select public.hub_schema_version()") $([[ $(catalog_of hub_set_back_8) == "$(catalog_of hub_09)" && -n $(rows_of hub_09) && $(rows_of hub_set_back_8) == "$(rows_of hub_09)" ]] && echo same-as-hub_09)"
+if [[ $(wc -l <"$dir/undo_0009.sql") -gt 20 && -z $undo && $got_undo == "8 same-as-0008" && -z $out && $got_again == "9 same-as-hub_09" ]]; then
+  report "PASS  migration 0009's undo: 0006's school_rows back, schema 8; then 0009 runs again, as on a database at 0009 (hub_09)"
 else report "FAIL  migration 0009's undo  (undo: ${undo:0:150}; then: $got_undo; again: ${out:0:150} $got_again)"; fi
 # The live database's shape (2026-10-31): on 0008, a kid's Assignments link read with 18 assignments whose UIDs all
 # change at 19:23 and again at 21:23 UTC (the 20:23 read matched 19:23's), and her Schedule link with 285 classes
@@ -551,6 +560,236 @@ if [[ -z $out && $views_08 == *'"moved_to": "2026-11-09"'* && $views_08 == *'"go
       && $views_09 == "$views_08" && $keys_09 == "22 0" ]]; then
   report "PASS  same views: with no new UIDs, 0009 changes no status card, homework view or My day (only the keys, has_uid false on 22 rows)"
 else report "FAIL  same views: with no new UIDs, 0009 changes no answer  (${out:0:150}; rows $keys_09; first difference: $(diff <(echo "$views_08") <(echo "$views_09") | head -n 3 | cut -c 1-300 | tr '\n' ' '))"; fi
+
+# 0010 (Hearth people, docs/v1.1-google-calendar.md §11) refuses to run twice, on a v1 database, without 0009 (at
+# 0008), on a database set back to 9, and on a database at 0009 that isn't as 0009 left it (half-applied hand edits
+# included): each says why, and changes nothing.
+m10=supabase/migrations/0010_hearth_people.sql
+out=$(quiet -d hub_again -f $m10 2>&1)
+if [[ $out == *"Hearth people (migration 0010) is already installed (hub_schema_version() is 10)"* ]] \
+   && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 10 ]]; then
+  report "PASS  migration 0010 refuses to run twice"
+else report "FAIL  migration 0010 refuses to run twice  (${out:0:200})"; fi
+out=$(quiet -d hub_v1_again -f $m10 2>&1)
+if [[ $out == *"Home Hub v2 (migration 0002) isn't installed. Run 0002 to 0009 first. Nothing was changed."* ]] \
+   && [[ -z $(quiet -d hub_v1_again -A -t -c "select to_regclass('public.hearth_tags')") ]]; then
+  report "PASS  migration 0010 refuses to run on a v1 database (0002 isn't installed), and changes nothing"
+else report "FAIL  migration 0010 refuses to run on a v1 database  (${out:0:200})"; fi
+sql -d postgres -c 'create database hub_08_again template hub_08'
+before=$(catalog_of hub_08_again)
+out=$(quiet -d hub_08_again -f $m10 2>&1)
+if [[ $out == *"The school items' keys (migration 0009) aren't installed (hub_schema_version() is 8). Run 0009_school_keys.sql first. Nothing was changed."* ]] \
+   && [[ $(catalog_of hub_08_again) == "$before" && $(quiet -d hub_08_again -A -t -c "select public.hub_schema_version() || ' ' || (to_regclass('public.hearth_tags') is null)") == "8 true" ]]; then
+  report "PASS  migration 0010 refuses to run without 0009 (a database at 0008), and changes nothing"
+else report "FAIL  migration 0010 refuses to run without 0009  (${out:0:200})"; fi
+# Set back to 9 alone (not an undo, §11.9): the database still sorts while a switch is on. 0010 says so.
+sql -d postgres -c 'create database hub_set_back_9 template hub'
+quiet -d hub_set_back_9 -c "create or replace function public.hub_schema_version() returns int language sql immutable set search_path = '' as \$\$ select 9 \$\$" >/dev/null
+before=$(catalog_of hub_set_back_9)
+out=$(quiet -d hub_set_back_9 -f $m10 2>&1)
+if [[ $out == *"Hearth people (migration 0010) is already installed, but hub_schema_version() was set back to 9. To switch it on again, make hub_schema_version() return 10 (docs/v1.1-google-calendar.md §11.9). Nothing was changed."* ]] \
+   && [[ $(catalog_of hub_set_back_9) == "$before" && $(quiet -d hub_set_back_9 -A -t -c "select public.hub_schema_version()") == 9 ]]; then
+  report "PASS  migration 0010 on a database set back to 9: says so (\"set back to 9\"), and changes nothing"
+else report "FAIL  migration 0010 on a database set back to 9  (${out:0:200})"; fi
+# ... and on copies of hub_09 not as 0009 left it: the new columns already there, calendar_read_due answering 9 columns,
+# private.google_item missing, or one of 0010's functions already there.
+n=0
+for broken in 'alter table public.calendars add column sort_by_guest boolean not null default false' \
+              "alter table public.google_events add column guests text[] not null default '{}'" \
+              'drop function public.calendar_read_due(boolean, int); create function public.calendar_read_due(p_force boolean default false, p_limit int default 10) returns table (calendar_id uuid, google_id text, writes boolean, w_from date, w_to date, time_min timestamptz, time_max timestamptz, tz text, sort_by_guest boolean) language sql set search_path = '"''"' as $$ select null::uuid, null::text, null::boolean, null::date, null::date, null::timestamptz, null::timestamptz, null::text, null::boolean where false $$' \
+              'drop function private.google_item(public.google_events, public.calendars)' \
+              'create function public.set_hearth_tag(p_id uuid, p_to text, p_person uuid default null) returns jsonb language sql as $$ select null::jsonb $$' \
+              'create function private.hearth_tag(p_email text) returns text language sql immutable as $$ select null::text $$'; do
+  n=$((n + 1))
+  sql -d postgres -c "create database hub_09_shape$n template hub_09"
+  quiet -d "hub_09_shape$n" -c "$broken" >/dev/null
+  before=$(catalog_of "hub_09_shape$n")
+  cols=$(quiet -d "hub_09_shape$n" -A -t -c "select count(*) from pg_attribute where attrelid in ('public.calendars'::regclass, 'public.google_events'::regclass) and attnum > 0 and not attisdropped")
+  out=$(quiet -d "hub_09_shape$n" -f $m10 2>&1)
+  if [[ $out == *"This database isn't as migration 0009 left it. Nothing was changed."* ]] && [[ $(catalog_of "hub_09_shape$n") == "$before" ]] \
+     && [[ $(quiet -d "hub_09_shape$n" -A -t -c "select public.hub_schema_version() || ' ' || (to_regclass('public.hearth_tags') is null) || ' ' || (select count(*) from pg_attribute where attrelid in ('public.calendars'::regclass, 'public.google_events'::regclass) and attnum > 0 and not attisdropped)") == "9 true $cols" ]]; then
+    report "PASS  migration 0010 refuses a database at 0009 not as 0009 left it (${broken:0:90}), and changes nothing"
+  else report "FAIL  migration 0010 refuses a database at 0009 not as 0009 left it (${broken:0:90})  (${out:0:200})"; fi
+done
+
+# 5g. Migration 0010 replaces google_item, google_for, calendars_tidy and calendar_store_events and makes
+#     calendar_read_due again. With no calendar sorted, every answer must be 9's: calendar_fixtures.sql's household
+#     at 0009 (hub_g09: the v1 database with 0002 to 0009, as hub_03 to hub_05 are made; hub_06_stamps' rows are dated by
+#     the real clock), with Jordan's homework on and Pat's link with the coach view on, Google events read into five
+#     calendars (two read-only Family ones, one with Show to kids) with Hearth-shaped and other guests sent for every
+#     one, and a copy that gets 0010: both give the same digest_for, day_text, get_person_day, google_items,
+#     homework_week, tutor view and coach view JSON for every person and the link over the 14 days around Nov 1;
+#     again after a second read with guests on both; and again after, on the copy, Sort by Hearth person is turned on
+#     for the read-only Family calendar, a read lists its tags, two are matched, and the switch goes off.
+g_data() { cat <<'SQL'
+set hub.now = '2026-10-27 09:00 America/New_York';
+select set_config('request.jwt.claims', '{"role": "authenticated", "email": "alex@example.com"}', false);
+insert into public.homework_kids (kid_id) select id from public.people where name = 'Jordan';
+select public.add_homework_time((select id from public.people where name = 'Jordan'), '{1,2,3,4,5}', '16:00', '17:30');
+insert into public.tutor_links (kid_id, token, label, expires_on, coach)
+select id, 'ab000000000000000000000000000cd9', 'Pat Lee, tutor', '2027-05-01', true from public.people where name = 'Jordan';
+insert into public.calendars (google_id, kind, label, writes, for_kids, status, access_role, google_name, read_at, checked_at)
+values ('school@example.com', 'family', 'School', false, true, 'ok', 'reader', 'Example School', '2026-10-27 12:55+00', '2026-10-27 12:55+00');
+select set_config('request.jwt.claims', '', false);
+SQL
+}
+g_store() { # one read of every calendar, guests sent for every event ($1: 2 adds an event)
+  cat <<SQL
+set hub.now = '2026-10-27 09:0$1 America/New_York';
+create function pg_temp.ev(p_id text, p_title text, p_start text, p_end text, p_extra jsonb default '{}') returns jsonb language sql immutable as \$\$
+  select jsonb_build_object('id', p_id, 'status', 'confirmed', 'title', p_title,
+                            'start', case when p_start ~ 'T' then jsonb_build_object('dateTime', p_start) else jsonb_build_object('date', p_start) end,
+                            'end', case when p_end ~ 'T' then jsonb_build_object('dateTime', p_end) else jsonb_build_object('date', p_end) end,
+                            'organizer_self', true, 'updated', '2026-10-26T12:00:00Z') || p_extra
+\$\$;
+create function pg_temp.store(p_label text, p_events jsonb) returns jsonb language sql as \$\$
+  select public.calendar_store_events(c.id, c.google_id, public.today_local() - 1, public.today_local() + 60, coalesce(c.google_name, c.label),
+                                      case when c.writes then 'writer' else 'reader' end, true, p_events, '[]')
+  from public.calendars c where c.label = p_label
+\$\$;
+select pg_temp.store('Jordan', jsonb_build_array(
+  pg_temp.ev('soccer1', 'Soccer', '2026-10-28T21:00:00Z', '2026-10-28T22:00:00Z', '{"guests": ["jordan@team-example-0000", "coach@example.com"]}')));
+select pg_temp.store('Family account', jsonb_build_array(
+  pg_temp.ev('piano1', 'Piano', '2026-10-28T20:30:00Z', '2026-10-28T21:15:00Z', '{"guests": ["jordan@team-example-0000"]}'),
+  pg_temp.ev('visit1', 'Visit', '2026-10-30T20:00:00Z', '2026-10-30T20:30:00Z', '{"guests": ["familyanddogs@team-example-0000"]}'),
+  pg_temp.ev('movie1', 'Movie', '2026-11-01T21:00:00Z', '2026-11-01T22:30:00Z', '{"guests": []}'),
+  pg_temp.ev('private1', 'Orthodontist', '2026-11-02T21:00:00Z', '2026-11-02T21:30:00Z', '{"guests": ["jordan@team-example-0000"], "visibility": "private"}'),
+  pg_temp.ev('trip1', 'Field trip', '2026-11-03', '2026-11-04', '{"guests": ["jordan@team-example-0000", "Sam@Team-Example-0000"]}'),
+  pg_temp.ev('dinner1', 'Dinner', '2026-11-04T23:00:00Z', '2026-11-05T00:00:00Z', '{"guests": ["familyanddogs@team-example-0000", "taylor@team-example-0000", "morgan@example.com"]}'))
+  || case when '$1' <> '0' then jsonb_build_array(pg_temp.ev('swim1', 'Swim', '2026-11-05T21:00:00Z', '2026-11-05T22:00:00Z', '{"guests": ["jordan@team-example-0000", "dogs@team-example-0000"]}'))
+          else '[]' end);
+select pg_temp.store('School', jsonb_build_array(pg_temp.ev('hol1', 'School holiday', '2026-10-29', '2026-10-30', '{"guests": ["jordan@team-example-0000"]}')));
+select pg_temp.store('Dogs', jsonb_build_array(pg_temp.ev('vet1', 'Vet', '2026-10-29T14:00:00Z', '2026-10-29T15:00:00Z', '{"guests": ["dogs@team-example-0000"]}')));
+select pg_temp.store('Taylor', jsonb_build_array(pg_temp.ev('dentista1', 'Dentista', '2026-10-30', '2026-10-31', '{"guests": ["taylor@team-example-0000"]}')));
+SQL
+}
+same_g() { # one line per day (07:00 and 16:45), function and person or link, sorted
+  quiet -d "$1" -A -t <<'SQL'
+create temp table same_g (k text, v text);
+do $$
+declare
+  d date;
+  t text;
+  tok text := 'ab000000000000000000000000000cd9';
+  kid uuid := (select id from public.people where name = 'Jordan');
+begin
+  for d in select g::date from generate_series(date '2026-10-25', date '2026-11-07', interval '1 day') g loop
+    foreach t in array array['07:00', '16:45'] loop
+      perform set_config('hub.now', to_char(d, 'YYYY-MM-DD') || ' ' || t || ' America/New_York', false);
+      insert into same_g
+      select d || ' ' || t || ' ' || p.name || ' ' || f, v
+      from public.people p
+      cross join lateral (
+        select 'digest_for', public.digest_for(p.id, d)::text
+        union all select 'day_text', public.day_text(p.id, d)
+        union all select 'get_person_day', public.get_person_day(p.day_token)::text) x (f, v);
+      insert into same_g values
+        (d || ' ' || t || ' google_items', (select string_agg(g::text, ' | ' order by g.day, g.local_start, g.title, g.item_id) from public.google_items(d, d) g)),
+        (d || ' ' || t || ' homework_week', public.homework_week(kid, d, 1)::text),
+        (d || ' ' || t || ' tutor_view_by_token', public.tutor_view_by_token(tok)::text),
+        (d || ' ' || t || ' coach_view_by_token', public.coach_view_by_token(tok)::text);
+    end loop;
+  end loop;
+end;
+$$;
+select k || ' = ' || coalesce(v, 'null') from same_g order by k;
+SQL
+}
+sql -d postgres -c 'create database hub_g09 template hub_v1'
+ok=1
+for m in supabase/migrations/*.sql; do
+  [[ $(basename "$m") < 0010 ]] || continue
+  if ! quiet -d hub_g09 -f "$m" >"$dir/load.log" 2>&1; then report "FAIL  5g: migration $(basename "$m") applies  ($(tail -n 1 "$dir/load.log"))"; ok=0; fi
+done
+quiet -d hub_g09 -f tests/db/lib.sql >/dev/null
+if ! (cd tests/db && quiet -d hub_g09 -f roles.sql -f calendar_fixtures.sql) >"$dir/load.log" 2>&1 \
+   || ! { g_data; g_store 0; } | quiet -d hub_g09 >"$dir/load.log" 2>&1; then
+  report "FAIL  5g: loading the household  ($(grep -m 1 ERROR "$dir/load.log" || tail -n 1 "$dir/load.log"))"; ok=0
+fi
+sql -d postgres -c 'create database hub_g10 template hub_g09'
+if ! quiet -d hub_g10 -f $m10 >"$dir/load.log" 2>&1; then report "FAIL  5g: migration 0010 applies to a database with calendars  ($(tail -n 1 "$dir/load.log"))"; ok=0; fi
+same_g hub_g09 >"$dir/g09_1.txt" 2>&1
+same_g hub_g10 >"$dir/g10_1.txt" 2>&1
+g_store 2 | quiet -d hub_g09 >/dev/null 2>&1
+g_store 2 | quiet -d hub_g10 >/dev/null 2>&1
+same_g hub_g09 >"$dir/g09_2.txt" 2>&1
+same_g hub_g10 >"$dir/g10_2.txt" 2>&1
+# The switch on and off on the copy, with a read in between that lists the tags, and two matches.
+toggled=$({ cat <<'SQL'
+set hub.now = '2026-10-27 09:03 America/New_York';
+select set_config('request.jwt.claims', '{"role": "authenticated", "email": "alex@example.com"}', false);
+update public.calendars set sort_by_guest = true where label = 'Family account';
+SQL
+  g_store 2 | sed '1d'
+  cat <<'SQL'
+select public.set_hearth_tag((select id from public.hearth_tags where name = 'jordan'), 'person', (select id from public.people where name = 'Jordan'));
+select public.set_hearth_tag((select id from public.hearth_tags where name = 'familyanddogs'), 'family');
+select count(*) || ' ' || (select count(*) from public.google_events where guests <> '{}') || ' ' || (select count(*) from public.calendar_read_due()) from public.hearth_tags;
+update public.calendars set sort_by_guest = false where label = 'Family account';
+SQL
+} | quiet -d hub_g10 -A -t 2>&1 | tail -n 1)
+same_g hub_g10 >"$dir/g10_3.txt" 2>&1
+rows=$(grep -c ' = ' "$dir/g09_1.txt")
+if [[ $ok -eq 1 && $rows -gt 300 && $toggled == "5 6 0" ]] && grep -q 'Soccer' "$dir/g09_1.txt" && grep -q '"busy": \[{' "$dir/g09_1.txt" && grep -q 'Swim' "$dir/g09_2.txt" \
+   && ! grep -q 'coach_view_by_token = null' "$dir/g09_1.txt" \
+   && cmp -s "$dir/g09_1.txt" "$dir/g10_1.txt" && cmp -s "$dir/g09_2.txt" "$dir/g10_2.txt" && cmp -s "$dir/g09_2.txt" "$dir/g10_3.txt"; then
+  report "PASS  5g: with no calendar sorted, 0010 leaves digest_for, day_text, get_person_day, google_items, homework_week and the tutor and coach views as 0009 made them, guests sent for every calendar, and after the switch on and off ($rows results)"
+else
+  report "FAIL  5g: with no calendar sorted, 0010 leaves every answer as 0009's  ($rows results; toggled: $toggled; first difference: $(diff "$dir/g09_1.txt" "$dir/g10_1.txt" | head -n 3 | cut -c 1-300 | tr '\n' ' ') $(diff "$dir/g09_2.txt" "$dir/g10_2.txt" | head -n 3 | cut -c 1-300 | tr '\n' ' ') $(diff "$dir/g09_2.txt" "$dir/g10_3.txt" | head -n 3 | cut -c 1-300 | tr '\n' ' '))"
+fi
+
+# Undo, as docs/v1.1-google-calendar.md §11.9 and 0010's header say: every switch off; 0003's google_item, google_for,
+# calendars_tidy and calendar_store_events blocks again (create or replace); calendar_read_due dropped and made again from
+# 0003's block, with 0003's revoke and grant; 0010's three functions, hearth_tags and the two columns dropped;
+# hub_schema_version() returning 9. On a copy of a fresh install: the replaced functions are then 9's (hub_09's, grants
+# and all), every other function is too (hub_schema_version aside, whose text the undo writes), and the tables' columns;
+# and 0010 runs again, leaving the functions and columns as on a fresh install. On a copy of 5g's hub_g10 (its tags
+# listed and matched, the guests cached): every answer is 9's (hub_g09's), also after one more read with guests (0003's
+# calendar_store_events storing into google_events with its dropped column), and again after 0010 runs again.
+sql -d postgres -c 'create database hub_undo_10 template hub'
+{ echo "update public.calendars set sort_by_guest = false;"
+  for f in 'private\.google_item(g public\.google_events, c public\.calendars)' 'private\.google_for(p_person uuid, p_from date, p_to date, p_grown_up boolean)' \
+           'private\.calendars_tidy()' 'public\.calendar_store_events(p_calendar uuid, p_google_id text, p_from date, p_to date, p_name text,'; do
+    sed -n "/^create function $f/,/^\\$\\$;\$/p" supabase/migrations/0003_google_calendar.sql | sed '1s/^create function/create or replace function/'
+  done
+  echo "drop function public.calendar_read_due(boolean, int);"
+  sed -n '/^create function public\.calendar_read_due(p_force boolean default false, p_limit int default 10)$/,/^\$\$;$/p' supabase/migrations/0003_google_calendar.sql
+  grep -E '^(revoke|grant) +execute on function public\.calendar_read_due\(boolean, int\)' supabase/migrations/0003_google_calendar.sql
+  echo "drop function public.set_hearth_tag(uuid, text, uuid);"
+  echo "drop function private.hearth_whose(public.google_events, public.calendars);"
+  echo "drop function private.hearth_tag(text);"
+  echo "drop table public.hearth_tags;"
+  echo "alter table public.google_events drop column guests;"
+  echo "alter table public.calendars drop column sort_by_guest;"
+  echo "create or replace function public.hub_schema_version() returns int language sql immutable set search_path = '' as \$\$ select 9 \$\$;"
+} >"$dir/undo_0010.sql"
+fns_10() { quiet -d "$1" -A -t -c "select string_agg(p.oid::regprocedure::text || ' ' || md5(p.prosrc) || ' ' || p.prosecdef || ' ' || p.provolatile::text || ' ' || array_to_string(p.proconfig, ',')
+                                           || ' ' || has_function_privilege('anon', p.oid, 'execute') || ' ' || has_function_privilege('authenticated', p.oid, 'execute')
+                                           || ' ' || has_function_privilege('service_role', p.oid, 'execute'), ' | ' order by p.oid::regprocedure::text)
+                                    from pg_proc p where p.pronamespace in ('public'::regnamespace, 'private'::regnamespace)
+                                      and p.proname in ('google_item', 'google_for', 'calendars_tidy', 'calendar_store_events', 'calendar_read_due')"; }
+others_10() { quiet -d "$1" -A -t -c "select count(*) || ' ' || md5(string_agg(p.oid::regprocedure::text || md5(p.prosrc), ',' order by p.oid::regprocedure::text)) from pg_proc p
+                                      where p.pronamespace in ('public'::regnamespace, 'private'::regnamespace) and p.proname <> 'hub_schema_version'"; }
+shape_10() { quiet -d "$1" -A -t -c "select string_agg(c.relname || '.' || a.attname, ',' order by c.relname, a.attname) from pg_attribute a join pg_class c on c.oid = a.attrelid
+                                     where c.relname in ('calendars', 'google_events', 'hearth_tags') and c.relnamespace = 'public'::regnamespace and a.attnum > 0 and not a.attisdropped"; }
+undo=$(quiet -d hub_undo_10 -f "$dir/undo_0010.sql" 2>&1)
+got_undo="$(quiet -d hub_undo_10 -A -t -c "select public.hub_schema_version()") $([[ -n $(fns_10 hub_09) && $(fns_10 hub_undo_10) == "$(fns_10 hub_09)" && $(others_10 hub_undo_10) == "$(others_10 hub_09)" && $(shape_10 hub_undo_10) == "$(shape_10 hub_09)" ]] && echo same-as-0009)"
+out=$(quiet -d hub_undo_10 -f $m10 2>&1)
+got_again="$(quiet -d hub_undo_10 -A -t -c "select public.hub_schema_version()") $([[ $(catalog_of hub_undo_10) == "$(catalog_of hub)" && -n $(fns_10 hub) && $(fns_10 hub_undo_10) == "$(fns_10 hub)" && $(shape_10 hub_undo_10) == "$(shape_10 hub)" ]] && echo same-as-fresh)"
+sql -d postgres -c 'create database hub_undo_10g template hub_g10'
+sql -d postgres -c 'create database hub_g09_again template hub_g09'
+undo_g=$(quiet -d hub_undo_10g -f "$dir/undo_0010.sql" 2>&1)
+same_g hub_undo_10g >"$dir/gu_1.txt" 2>&1
+g_store 3 | quiet -d hub_undo_10g >/dev/null 2>&1
+g_store 3 | quiet -d hub_g09_again >/dev/null 2>&1
+same_g hub_undo_10g >"$dir/gu_2.txt" 2>&1
+same_g hub_g09_again >"$dir/g09_3.txt" 2>&1
+again_g=$(quiet -d hub_undo_10g -f $m10 2>&1)
+same_g hub_undo_10g >"$dir/gu_3.txt" 2>&1
+if [[ $(wc -l <"$dir/undo_0010.sql") -gt 200 && -z $undo && $got_undo == "9 same-as-0009" && -z $out && $got_again == "10 same-as-fresh" && -z $undo_g && -z $again_g ]] \
+   && grep -q ' = ' "$dir/gu_1.txt" && cmp -s "$dir/g09_2.txt" "$dir/gu_1.txt" && cmp -s "$dir/g09_3.txt" "$dir/gu_2.txt" && cmp -s "$dir/g09_3.txt" "$dir/gu_3.txt"; then
+  report "PASS  migration 0010's undo: 0003's functions back, the new table, columns and functions gone, schema 9, every answer as on 9; then 0010 runs again, as on a fresh install"
+else report "FAIL  migration 0010's undo  (undo: ${undo:0:150} ${undo_g:0:150}; then: $got_undo; 5g: $(diff "$dir/g09_2.txt" "$dir/gu_1.txt" | head -n 2 | cut -c 1-200 | tr '\n' ' ') $(diff "$dir/g09_3.txt" "$dir/gu_2.txt" | head -n 2 | cut -c 1-200 | tr '\n' ' '); again: ${out:0:150} ${again_g:0:150} $got_again)"; fi
 
 # 5. preflight.sql's promise, "nothing migration 0002 creates exists yet", covers everything the
 #    migration creates that a live database could already have under the same name (which would

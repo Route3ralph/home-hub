@@ -39,6 +39,16 @@ export const RECORD_BATCH = 20;       // results per calendar_record
 export const REACHABLE_MS = 10 * 60000;
 export const READ_FIELDS = 'accessRole,summary,nextPageToken,items(id,status,summary,location,start,end,visibility,'
   + 'recurringEventId,updated,organizer/self,attendees(self,responseStatus),extendedProperties/private)';
+// A calendar sorted by Hearth person (calendar_read_due's sort_by_guest, migration 0010): the guests' addresses too,
+// so the Hearth profiles on each event can be kept (docs/v1.1-google-calendar.md §11.3). Every other calendar is read
+// with READ_FIELDS: no address is asked for. maxAttendees is never sent (with it, Google answers a longer guest list
+// with only the calendar's own entry).
+export const READ_FIELDS_GUESTS = READ_FIELDS.replace('attendees(self,responseStatus)', 'attendees(email,self,responseStatus)');
+// A Hearth profile's guest address ("<profile>@team-<family>-<digits>", no dot after the @): the pattern of
+// private.hearth_tag(p_email) in migration 0010.
+export const HEARTH_TAG = /^[a-z0-9._+-]{1,64}@team-[a-z0-9-]{1,120}$/;
+const TAGS_READ = 100;   // guest entries looked at per event
+const TAGS_KEPT = 16;    // tags kept per event (google_events.guests holds at most 16)
 
 const NO_SCHEMA = 'Google Calendar needs the database update (migration 0003_google_calendar.sql).';
 const UNEXPECTED = 'Google answered differently than expected: tell Claude.';
@@ -92,10 +102,26 @@ export function verdict(writes: boolean, name: unknown, role: unknown, account: 
 const nonOrganizer = (r: GResult) => r.status === 403 && r.reasons.includes('forbiddenForNonOrganizer');
 const takenElsewhere = (r: GResult) => ['missing', 'no_access', 'forbidden'].includes(classify(r));
 
+// The Hearth tags among an event's guests (§11.3): of the first 100 entries, not the calendar's own (self), each email
+// that is a string, trimmed and lowercased, kept only if it is shaped like a Hearth tag; each once, sorted, the first
+// 16. Nothing is rewritten into a tag: an address is kept exactly as lowercased, or dropped, so a guest's real address,
+// the family's own, a room's or the calendar's never leaves this function.
+export function hearthTags(list: unknown): string[] {
+  if (!Array.isArray(list)) return [];
+  const tags = new Set<string>();
+  for (const a of list.slice(0, TAGS_READ)) {
+    if (!a || typeof a !== 'object' || (a as any).self === true || typeof (a as any).email !== 'string') continue;
+    const t = (a as any).email.trim().toLowerCase();
+    if (HEARTH_TAG.test(t)) tags.add(t);
+  }
+  return [...tags].sort().slice(0, TAGS_KEPT);
+}
+
 // One Google event as calendar_store_events takes it (§5.1): it keeps no email address, description
-// or attendee other than the calendar's own answer.
+// or attendee other than the calendar's own answer, but a sorted calendar's Hearth tags (guests: hearthTags, on every
+// event of a read that asked Google for guests, [] for one with none; never on the hub's own, p_seen).
 type Item = Record<string, unknown>;
-async function storeItem(it: any): Promise<Item> {
+async function storeItem(it: any, guests = false): Promise<Item> {
   const when = (t: any) => (t && typeof t === 'object'
     ? (t.date != null ? { date: String(t.date) } : t.dateTime != null ? { dateTime: String(t.dateTime) } : null)
     : null);
@@ -115,6 +141,7 @@ async function storeItem(it: any): Promise<Item> {
     response: mine?.responseStatus ?? null,
     props: props && typeof props === 'object' && !Array.isArray(props) ? props : null,
     hash: await contentHash(it),
+    ...(guests ? { guests: hearthTags(it.attendees) } : {}),
   };
 }
 // The hub's own events: marked homehub, with an id the hub chose.
@@ -246,7 +273,11 @@ class Job {
     return this.timeUp() ? 'time' : null;
   }
 
-  async readOne(c: { calendar_id: string; google_id: string; writes: boolean; w_from: string; w_to: string; time_min: string; time_max: string; tz: string }) {
+  async readOne(c: { calendar_id: string; google_id: string; writes: boolean; w_from: string; w_to: string; time_min: string; time_max: string; tz: string;
+    sort_by_guest?: boolean }) {
+    // Sorted by Hearth person (0010): guest addresses are asked for, and only the Hearth tags among them are sent. On
+    // schema 9 calendar_read_due has no sort_by_guest, so no address is asked for.
+    const sorted = c.sort_by_guest === true;
     const items: any[] = [];
     let name: string | null = null;
     let access: string | null = null;
@@ -261,7 +292,7 @@ class Job {
         r = await this.g.gcal('GET', eventsPath(c.google_id), {
           query: {
             singleEvents: 'true', orderBy: 'startTime', showDeleted: 'false', maxResults: 2500, eventTypes: 'default',
-            timeMin: rfc3339(c.time_min), timeMax: rfc3339(c.time_max), timeZone: c.tz, fields: READ_FIELDS, pageToken: page,
+            timeMin: rfc3339(c.time_min), timeMax: rfc3339(c.time_max), timeZone: c.tz, fields: sorted ? READ_FIELDS_GUESTS : READ_FIELDS, pageToken: page,
           },
           until: this.started + READ_BUDGET_MS,
         });
@@ -298,7 +329,7 @@ class Job {
     for (const it of items) {
       if (!it || typeof it !== 'object') continue;
       if (isHubEvent(it)) seen.push(await storeItem(it));
-      else if (events.length < SEND_MAX) events.push(await storeItem(it));
+      else if (events.length < SEND_MAX) events.push(await storeItem(it, sorted));
       else complete = false;
     }
     const out = this.need('calendar_store_events', await this.db.rpc('calendar_store_events', {

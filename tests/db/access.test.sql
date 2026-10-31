@@ -39,7 +39,9 @@ select test.is((whoami() -> 'person' ->> 'id')::uuid, test.person('Alex'), 'whoa
 -- though no page asks for anything new on 8: it only replaces school_feed_status, whose answer the page reads on 7 too.
 -- Migration 0009 (the school items' keys) changes it again, and no page asks for anything new on 9 either: it only
 -- replaces private.school_rows (an item is keyed by what it is, never by Blackbaud's UIDs) and rekeys the rows.
-select test.is(hub_schema_version(), 9, 'hub_schema_version is 9');
+-- Migration 0010 (Hearth people) changes it on purpose again: the client shows Sort by Hearth person and the Hearth
+-- people under Calendars to read, and asks for hearth_tags and calendars.sort_by_guest, only on 10.
+select test.is(hub_schema_version(), 10, 'hub_schema_version is 10');
 -- 0009 replaces private.school_rows with the same signature: still not a definer function, stable, search_path = '',
 -- and no API role may call it (as 0006 revoked it; 0009 revokes it again). Its private.school_rekey (run once by 0009,
 -- again only by the owner) runs as the owner too, and no API role may call it either.
@@ -118,13 +120,14 @@ select test.is((select string_agg(p.proname, ', ' order by p.proname) from pg_pr
                'give_points, homework_ai_draft, homework_ai_finish, homework_ai_preview, homework_ai_start, homework_by_token, homework_prefs_by_token, '
                'homework_step, hook_family_only_signup, mark_signed_in, new_tutor_token, pause_school_feed, plan_by_token, remove_person, reward_by_token, '
                'rotate_day_token, save_homework_kid, save_homework_plan, save_person, save_tutor_link, school_begin, school_feed_status, '
-               'school_finish, school_item_action, school_item_by_token, school_store, set_school_feed, set_tutor_coach, skip_task, step_by_token, '
+               'school_finish, school_item_action, school_item_by_token, school_store, set_hearth_tag, set_school_feed, set_tutor_coach, skip_task, step_by_token, '
                'stop_digest, tutor_assignment_by_token, tutor_plan_by_token, tutor_step_by_token, tutor_view_by_token, undo_by_token, '
                'undo_task, void_points',
                'the only definer functions in public are the RPCs that check membership, admin, a token or the service key '
                '(0005: the parents'' homework actions, the eleven token functions and hub-jobs'' two AI functions; add_homework_time '
                'and homework_week run as the caller; 0006: the parents'' school links, the status card, his New from school and hub-jobs'' '
-               'three school functions; 0007: the coach view''s two token functions and the parents'' switch and Done)');
+               'three school functions; 0007: the coach view''s two token functions and the parents'' switch and Done; 0010: the parents'' '
+               'Hearth matches)');
 select test.is((select string_agg(p.proname, ', ' order by p.proname) from pg_proc p
                 where p.pronamespace = 'private'::regnamespace and has_function_privilege('authenticated', p.oid, 'execute')
                   and p.proname in ('complete_task', 'undo_task', 'roll_task', 'person_by_token', 'my_day_item', 'digest_item', 'people_confirm_sync',
@@ -141,7 +144,9 @@ select test.is((select string_agg(p.proname, ', ' order by p.proname) from pg_pr
                                     -- 0007: the coach view, and its stamp triggers
                                     'coach_view', 'task_log_in_charge', 'tasks_in_charge_since', 'events_people_since',
                                     -- 0009: the rekey of the school items
-                                    'school_rekey')),
+                                    'school_rekey',
+                                    -- 0010: a guest address as a Hearth tag (hub-jobs' store only)
+                                    'hearth_tag')),
                null, 'members cannot call the private helpers that act for someone else');
 -- What 0005 grants members in private: free_minutes (homework_week runs as the member), and clean_block
 -- and homework_word (the tidy triggers and add_homework_time run as the parent who saves).
@@ -162,20 +167,20 @@ select test.is((select string_agg(r, ', ' order by r) from unnest(array['anon', 
 -- Migration 0003's tables: Supabase's default privileges would give anon and authenticated everything
 -- (truncate ignores row-level security). Anon gets nothing; signed-in users read, and on calendars
 -- admins (by the policies) write the setting columns only.
-select test.is((select string_agg(t, ', ' order by t) from unnest(array['calendars', 'calendar_links', 'google_events', 'calendar_sync']) t
+select test.is((select string_agg(t, ', ' order by t) from unnest(array['calendars', 'calendar_links', 'google_events', 'calendar_sync', 'hearth_tags']) t
                 where has_table_privilege('anon', 'public.' || t, 'select, insert, update, delete, truncate, references, trigger')
                    or has_any_column_privilege('anon', 'public.' || t, 'select, insert, update, references')),
-               null, 'anon has no privilege on calendars, calendar_links, google_events or calendar_sync');
+               null, 'anon has no privilege on calendars, calendar_links, google_events, calendar_sync or (0010) hearth_tags');
 select test.is((select string_agg(t, ', ' order by t) from unnest(array['calendars', 'calendar_links', 'google_events', 'calendar_sync']) t
                 where has_table_privilege('authenticated', 'public.' || t, 'truncate, references, trigger')),
                null, 'signed-in users cannot truncate, reference or put triggers on the calendar tables');
-select test.is((select string_agg(t, ', ' order by t) from unnest(array['calendar_links', 'google_events', 'calendar_sync']) t
-                where has_table_privilege('authenticated', 'public.' || t, 'insert, update, delete')
+select test.is((select string_agg(t, ', ' order by t) from unnest(array['calendar_links', 'google_events', 'calendar_sync', 'hearth_tags']) t
+                where has_table_privilege('authenticated', 'public.' || t, 'insert, update, delete, truncate, references, trigger')
                    or has_any_column_privilege('authenticated', 'public.' || t, 'insert, update')),
-               null, 'signed-in users cannot write calendar_links, google_events or calendar_sync (only hub-jobs does)');
-select test.is((select string_agg(t, ', ' order by t) from unnest(array['calendars', 'calendar_links', 'google_events', 'calendar_sync']) t
+               null, 'signed-in users cannot write calendar_links, google_events, calendar_sync or (0010) hearth_tags (only hub-jobs and set_hearth_tag do)');
+select test.is((select string_agg(t, ', ' order by t) from unnest(array['calendars', 'calendar_links', 'google_events', 'calendar_sync', 'hearth_tags']) t
                 where has_table_privilege('authenticated', 'public.' || t, 'select')),
-               'calendar_links, calendar_sync, calendars, google_events', 'signed-in users may select the calendar tables (row-level security decides)');
+               'calendar_links, calendar_sync, calendars, google_events, hearth_tags', 'signed-in users may select the calendar tables (row-level security decides)');
 select test.is(has_table_privilege('authenticated', 'public.calendars', 'insert') or has_table_privilege('authenticated', 'public.calendars', 'update'),
                false, 'calendars: no table-wide insert or update for signed-in users');
 select test.is(has_table_privilege('authenticated', 'public.calendars', 'delete'), true, 'calendars: signed-in users may delete (Disconnect; admins only, by policy)');
@@ -186,7 +191,8 @@ select test.is((select string_agg(a.attname, ', ' order by a.attname) from pg_at
 select test.is((select string_agg(a.attname, ', ' order by a.attname) from pg_attribute a
                 where a.attrelid = 'public.calendars'::regclass and a.attnum > 0 and not a.attisdropped
                   and has_column_privilege('authenticated', 'public.calendars', a.attname, 'update')),
-               'copy_approved_at, for_kids, google_id, kind, label, person_id, writes', 'calendars: the columns signed-in users may update');
+               'copy_approved_at, for_kids, google_id, kind, label, person_id, sort_by_guest, writes',
+               'calendars: the columns signed-in users may update (0010 adds sort_by_guest, Sort by Hearth person)');
 select test.is((select string_agg(p.oid::regprocedure::text, ', ' order by p.proname) from pg_proc p
                 where p.pronamespace = 'public'::regnamespace and p.proname like 'calendar\_%'
                   and (has_function_privilege('authenticated', p.oid, 'execute') or has_function_privilege('anon', p.oid, 'execute'))),
@@ -706,7 +712,13 @@ insert into rpc values
   ('coach_view_by_token', $$select coach_view_by_token(repeat('0', 32))$$,                                  'ok',     'ok',     'ok',     'ok',     'ok',     'denied'),
   ('coach_note_by_token', $$select coach_note_by_token(repeat('0', 32), gen_random_uuid(), 'Hi')$$,         'ok',     'ok',     'ok',     'ok',     'ok',     'denied'),
   ('set_tutor_coach',    $$select set_tutor_coach((select id from tutor_links limit 1), true)$$,           'denied', 'denied', 'denied', 'denied', 'ok',     'denied'),
-  ('coach_note_done',    $$select coach_note_done(gen_random_uuid())$$,                                     'denied', 'denied', 'denied', 'denied', 'error: That note is gone.', 'denied');
+  ('coach_note_done',    $$select coach_note_done(gen_random_uuid())$$,                                     'denied', 'denied', 'denied', 'denied', 'error: That note is gone.', 'denied'),
+  -- Migration 0010: the parents' Hearth matches; and two private helpers: hub-jobs' store reads a guest address as a tag,
+  -- and google_item (which runs with a member's rights in google_items) works out whom a sorted calendar's row reaches.
+  ('set_hearth_tag',     $$select set_hearth_tag(gen_random_uuid(), 'family')$$,                            'denied', 'denied', 'denied', 'denied', 'error: That Hearth person isn''t there any more.', 'denied'),
+  ('hearth_tag',         $$select private.hearth_tag('jordan@team-example-0000')$$,                         'denied', 'denied', 'denied', 'denied', 'denied', 'ok'),
+  ('hearth_whose',       $$select private.hearth_whose(g, c) from public.google_events g join public.calendars c on c.id = g.calendar_id$$,
+                                                                                                            'denied', 'ok',     'ok',     'ok',     'ok',     'ok');
 
 :as_anon
 select test.is(test.can(call), anon, 'anon → ' || fn) from rpc order by fn;

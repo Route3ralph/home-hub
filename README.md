@@ -312,7 +312,7 @@ Hearth, the kitchen wall display, shows Google calendars only, one column per ca
 - Private items and health tasks show as "Private item", with no place and no details.
 - Someone without a Hub calendar gets nothing on Google: Settings lists them under **Not on Google**.
 - Hub items reach Google up to 60 days ahead. Events read from Google show in the hub from yesterday to 60 days ahead.
-- Events read from Google show on the Calendar and Today pages (with a "Google" tag and no box to tick) and in grown-ups' morning emails. A kid's or helper's My day, texts and email get the events of a calendar that is theirs (their Hub calendar, or a calendar to read given to them under **Whose**), and of Pets or House if they look after those. A kid also gets Hub – Family's and those of a Family calendar marked **Show to kids**; a helper never gets a Family calendar's. The hub never changes them: change them in Google Calendar.
+- Events read from Google show on the Calendar and Today pages (with a "Google" tag and no box to tick) and in grown-ups' morning emails. A kid's or helper's My day, texts and email get the events of a calendar that is theirs (their Hub calendar, or a calendar to read given to them under **Whose**), and of Pets or House if they look after those. A kid also gets Hub – Family's and those of a Family calendar marked **Show to kids**; a helper never gets a Family calendar's. The wall's own calendar can instead be sorted by Hearth person (below). The hub never changes them: change them in Google Calendar.
 
 ### Turning it on
 
@@ -406,6 +406,39 @@ The parents' morning email also says "Google Calendar isn't up to date…" when 
 3. Delete her Hearth profile.
 4. For the next helper, make a new Hub calendar rather than reusing the old one.
 
+### Sorting the wall's own calendar (migration 0010)
+
+Hearth keeps every event made on the wall in one Google calendar, "Hearth Calendar", for everyone, and marks whose an event is by adding that Hearth profile as a guest, with an address like `jordan@team-example-0000` (not a real mailbox). Read as Family, every one of those events is everyone's: all of them reach the grown-ups' emails and a kid gets none (or, with **Show to kids**, all of them). With **Sort by Hearth person** on that calendar, the hub sends each event to its people instead. The family keeps adding events on the wall as now; the hub never writes to that calendar. The design is [`docs/v1.1-google-calendar.md`](docs/v1.1-google-calendar.md) §11.
+
+**Turning it on** (the order is the design's §11.9):
+1. `tests/run.sh` ends with `0 failed`; merge. The site goes live on schema 9: nothing new shows or is asked for.
+2. Deploy `hub-jobs` from main with JWT verification off. On 9 nothing changes (no guest address is asked for).
+3. The owner pastes [`supabase/migrations/0010_hearth_people.sql`](supabase/migrations/0010_hearth_people.sql) into the Supabase SQL editor → **Run** (about 2 minutes). "isn't installed" means 0009 is missing, "already installed" that it's done; either way nothing was changed. No calendar is sorted yet, so nothing changes.
+4. On a computer (about 10 minutes):
+   1. In Google Calendar, signed in as the family Gmail: **Hearth Calendar → Settings and sharing → Share with specific people → Add people**: the hub's address (Settings has a **Copy** button for it), **See event details** → **Send**. Then **Integrate calendar → Calendar ID**: copy it. (If Hearth Calendar is already under **Calendars to read** as Family, go to step 3; if it is there as someone's, **Disconnect** it first.)
+   2. Hub **Settings → Google Calendar & Hearth → Calendars to read → Add a calendar to read**: paste the ID, call it "Hearth", **Whose: Family**, Show to kids off → **Add**.
+   3. On its row: **Sort by Hearth person** on.
+   4. **Sync now.** Within a minute the Hearth people show under the row, each **New**.
+   5. Match each one: jordan → Jordan, sam → Sam, taylor → Taylor, familyanddogs → Family; anything unclear → **The grown-ups**. When none is New, the line at the top of the card goes.
+   6. Check: **Calendar**, filtered to Jordan, shows his wall lessons in his colour; **Today**, Taylor's day, has only her own wall events; Jordan's **My day**, on a day he has a lesson, has it; Alex's **Preview my morning email** has the family's wall events and not Jordan's lesson; Homework shows a lesson as busy only where it touches his homework time.
+5. Smoke checks in the SQL editor: `select name, matched_to, person_id is not null as person from hearth_tags order by name` lists what Settings shows; after the next read, `select count(*) from google_events g join calendars c on c.id = g.calendar_id where g.guests <> '{}' and not c.sort_by_guest` is 0.
+
+**What each match does.**
+- **A person** (Taylor included): that person's events: their My day, texts and morning email, and for a kid his busy time for homework (his tutor sees only that he is busy, never what). Nobody else's email gets them, unless another tag on the event reaches them or a parent's email has everyone's items.
+- **Family**: every kid's My day, texts and email, and every parent's and adult's email; never the helper's.
+- **The grown-ups** (and a tag still New, one matched to someone off the family list or removed, events with no Hearth person, and private events): only the parents' and adults' morning emails and their days on Today.
+- An event for several reaches each of them ("jordan" and "dogs": Jordan's and the grown-ups'). Everything still shows on the Calendar and Today pages for everyone who signs in. A match works at once. A new person on Hearth shows as New after the next read and goes to the grown-ups until it is matched. **Forget** takes a tag off the list; if Hearth still uses it, it comes back as New. A New or grown-ups' tag not seen for 90 days goes by itself; a matched one stays.
+- Turning the switch off makes it an ordinary read-only Family calendar again at once (the grown-ups'; Show to kids can be turned on); the matches are kept for next time.
+
+**Privacy.**
+- The hub asks Google for guest addresses only on a calendar with the switch on, and keeps only the ones shaped like a Hearth profile (`name@team-…`): a guest's real address never leaves hub-jobs, and nothing about tags is logged or put in an email, a text or a Google write.
+- Only signed-in grown-ups see the tags and the matches (Settings shows the profile's name). Kids, the helper, the tutor and anyone signed out never do. Only parents match; every member can see every match.
+- A private wall event comes without its guests (Google hides them from See event details), so it goes to the grown-ups only, as "Private item".
+- Pat's coach view shows none of the wall's events; his week shows Jordan busy, without titles.
+- Anyone at the wall can make an event for any profile, and it reaches that person's My day and texts with the title as typed. That is wider than a person's own Google calendar; the wall is in the house, and nothing typed there reaches Pat but as busy time.
+
+**Undoing it.** For one calendar: Sort by Hearth person off. The migration itself needn't be undone (with the switch off everywhere, every answer is as before); its header has the steps if wanted.
+
 ### Looking at the job, and stopping it
 
 In the Supabase SQL editor:
@@ -429,7 +462,7 @@ To stop it: **Disconnect** a calendar in Settings (the hub's events are taken of
 - **The key is a password for every Hub calendar.** It lives only in Supabase's Edge Function secrets, never in this repository, the database, a chat or a log. To rotate it: Cloud Console → the service account → **Keys → Add key**, replace `GOOGLE_SA_JSON`, delete the old key, and check that Settings shows the new key id. If it ever leaks, delete it in Cloud Console at once: that revokes it.
 - **The hub writes only** to a calendar that an admin set in Settings, whose ID ends in `@group.calendar.google.com` (never someone's main calendar), whose Google name starts with "Hub", that is shared with **Make changes and see event details** (which can't change sharing), and whose preview (everything it copies, yesterday to 60 days ahead) an admin looked at before pressing **Start copying**.
 - **Reading is opt-in per calendar.** Only calendars an admin sets are read, and only ordinary events the calendar made or accepted: an invitation from a stranger never reaches an email or a helper's My day. A Google event marked private is kept without its title or place. A place from Google is shown as plain text, never as a link.
-- **No attendees and no reminders** are ever set, so Google sends nobody an invitation or an email.
+- **No attendees and no reminders** are ever set, so Google sends nobody an invitation or an email. Guest addresses are read only on the wall's own calendar with Sort by Hearth person on, and only Hearth's profile tags are kept (above).
 - **Phones:** share Hub calendars only with personal Google accounts, never a school or work account. Never turn on **Make available to public**, and never hand out the **Secret address in iCal format**.
 
 ## If the hub says it can't reach the database
