@@ -18,11 +18,11 @@
 --     the only reader of the addresses), school_store, school_finish.
 --   • A trigger on homework_kids (homework_kids_school_due): homework turned back on makes the kid's
 --     links due now.
---   • Replaced, with the same signatures: free_minutes (his schedule and games are busy time),
---     homework_card (a count of what is new from school) and hub_schema_version() (6). Wrapped:
---     homework_view_kid and homework_view_tutor; 0005's bodies are renamed homework_view_kid_v5 and
---     homework_view_tutor_v5 and are not changed. The wrappers add the school's marks to an
---     assignment made from school, and his view New from school once an Assignments link is checked.
+--   • Replaced, with the same signatures: free_minutes (his schedule and games are busy time) and
+--     hub_schema_version() (6). Wrapped: homework_view_kid, homework_view_tutor and homework_card;
+--     0005's bodies are renamed homework_view_kid_v5, homework_view_tutor_v5 and homework_card_v5 and
+--     are not changed. The wrappers add the school's marks to an assignment made from school, his view
+--     New from school once an Assignments link is checked, and his card a count of it.
 --     A later change to a wrapped function replaces the wrapper and its _v5 body together.
 --
 -- Rules
@@ -61,6 +61,7 @@ begin
      or to_regprocedure('private.homework_card(uuid, text)') is null
      or to_regprocedure('public.assignment_by_token(text, text, uuid, text, text, date, int)') is null
      or to_regprocedure('private.homework_view_kid_v5(uuid, text)') is not null
+     or to_regprocedure('private.homework_card_v5(uuid, text)') is not null
      or not exists (select 1 from pg_constraint where conrelid = 'public.assignments'::regclass and conname = 'assignments_added_by_check') then
     raise exception 'This database isn''t as migration 0005 left it. Nothing was changed.';
   end if;
@@ -599,6 +600,7 @@ $$;
 -- ---------------------------------------------------------------------
 alter function private.homework_view_kid(uuid, text) rename to homework_view_kid_v5;
 alter function private.homework_view_tutor(uuid, uuid, text) rename to homework_view_tutor_v5;
+alter function private.homework_card(uuid, text) rename to homework_card_v5;
 
 -- His view: 0005's (homework_view_kid_v5), with the school's marks on each assignment made from
 -- school (school: {gone, moved_to}) and, once he has a checked Assignments link, from_school (his New
@@ -662,14 +664,11 @@ begin
 end;
 $$;
 
--- The card on his My day (get_person_day's homework key): 0005's, plus from_school, how many items
--- are new from school, when there are any (marked "0006"). {next: {id, title, assignment, minutes} |
--- null, length, steps, minutes, earlier?, window?, session?: {ends_in_s}, points?, from_school?}. next
--- is his view's now; steps and minutes count today's open steps; earlier is left out when there are
--- none or no homework time today, window when there is none today, session when no block is open,
--- points when points are off, from_school when nothing is new. Never raises: anything wrong leaves
--- the card out.
-create or replace function private.homework_card(p_kid uuid, p_lang text)
+-- The card on his My day (get_person_day's homework key): 0005's (homework_card_v5, which reads his
+-- view, now the wrapper above), plus from_school, how many items are new from school, when there are
+-- any. Wrapped rather than copied, so whatever 0005's card says (answer_due, goal, ...) it still says.
+-- Never raises: anything wrong leaves the card out, as 0005's does.
+create function private.homework_card(p_kid uuid, p_lang text)
 returns jsonb
 language plpgsql
 stable
@@ -677,31 +676,17 @@ set search_path = ''
 as $$
 declare
   v jsonb;
+  n jsonb;
 begin
-  v := private.homework_view_kid(p_kid, p_lang);
+  v := private.homework_card_v5(p_kid, p_lang);
   if v is null then
     return null;
   end if;
-  return jsonb_build_object(
-           'next', case when jsonb_typeof(v -> 'now') = 'object'
-                        then jsonb_build_object('id', v -> 'now' -> 'id', 'title', v -> 'now' -> 'title',
-                                                'assignment', v -> 'now' -> 'assignment', 'minutes', v -> 'now' -> 'minutes') end,
-           'length', v -> 'me' -> 'length',
-           'steps', (select count(*) from jsonb_array_elements(v -> 'tonight') x where not (x ->> 'done')::boolean),
-           'minutes', coalesce((select sum((x ->> 'minutes')::int) from jsonb_array_elements(v -> 'tonight') x
-                                where not (x ->> 'done')::boolean), 0))
-         || case when jsonb_typeof(v -> 'window') = 'object' and jsonb_array_length(v -> 'earlier') > 0
-                 then jsonb_build_object('earlier', jsonb_array_length(v -> 'earlier')) else '{}' end
-         || case when jsonb_typeof(v -> 'window') = 'object' then jsonb_build_object('window', v -> 'window') else '{}' end
-         || case when jsonb_typeof(v -> 'session') = 'object'
-                 then jsonb_build_object('session', jsonb_build_object(
-                        'ends_in_s', greatest(0, ceil(extract(epoch from (v -> 'session' ->> 'ends_at')::timestamptz - private.now())))::int))
-                 else '{}' end
-         || case when jsonb_typeof(v -> 'points') = 'object' then jsonb_build_object('points', v -> 'points' -> 'balance') else '{}' end
-         -- 0006
-         || case when jsonb_typeof(v -> 'from_school') = 'array' and jsonb_array_length(v -> 'from_school') > 0
-                 then jsonb_build_object('from_school', jsonb_array_length(v -> 'from_school')) else '{}' end;
-         -- end 0006
+  n := private.school_new(p_kid);
+  if jsonb_typeof(n) = 'array' and jsonb_array_length(n) > 0 then
+    v := v || jsonb_build_object('from_school', jsonb_array_length(n));
+  end if;
+  return v;
 exception when others then
   return null;
 end;
@@ -1320,5 +1305,6 @@ revoke execute on function private.school_trim()                                
 revoke execute on function private.school_feeds_due()                             from public, anon, authenticated;
 revoke execute on function private.homework_view_kid(uuid, text)                  from public, anon, authenticated;
 revoke execute on function private.homework_view_tutor(uuid, uuid, text)          from public, anon, authenticated;
+revoke execute on function private.homework_card(uuid, text)                      from public, anon, authenticated;
 
 commit;
