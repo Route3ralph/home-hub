@@ -15,6 +15,11 @@
 //                      quiz; Alex shows it again.
 //   The school changes Two more reads: the planned one's date moved is marked, never moved; the lab report gone from
 //                      the site is marked, never deleted; both on the parents' page and Jordan's Due soon.
+//   0007 and 0008      The owner pastes 0007 (the coach view) and 0008 (the first-import check's past items) while the
+//                      hub runs: each in one go, the status card of a checked link exactly as before, 0008 twice refused.
+//   Nothing due yet    Over a break the link is removed and added again, and every assignment on it is past (the
+//                      reader keeps those due from 14 days back): Check now, and the check shows the five latest, each
+//                      past, in date order; Looks right checks the link, and it reaches Jordan.
 // Run through tests/realdb/run.sh (its own copy of the v5 template database).
 const { setup, SCHOOL_CALLS, COACH_CALLS } = require('./lib');
 
@@ -248,6 +253,66 @@ const ESSAY = { uid: 'asg-1004', summary: 'English - 7: Essay outline', lines: [
     await jordan.context.close();
     const f = await failures();
     check('the school changes: no API request failed', !f.length, f);
+  });
+
+  await flow('0007 and 0008 on a running hub', async () => {
+    const before = await rpcAs('alex@example.com', 'school_feed_status', { p_kid: P.jordan.id });
+    const m7 = await h.migrate('supabase/migrations/0007_homework_coach.sql');
+    const m8 = await h.migrate('supabase/migrations/0008_school_check.sql');
+    const v = await one('select public.hub_schema_version() as v');
+    check('0007, then 0008: each applies in one go, in its own session, and the schema version is 8', !m7.error && !m8.error && v.v === '8', m7.error || m8.error || v);
+    const after = await rpcAs('alex@example.com', 'school_feed_status', { p_kid: P.jordan.id });
+    check('... the status card of his checked link is exactly as before (its check empty; 0008 changes only the check)', ok(before) && ok(after)
+      && same(after.body, before.body) && same(after.body.check, []), { before: before.body, after: after.body });
+    const again = await h.migrate('supabase/migrations/0008_school_check.sql');
+    check('a second paste of 0008 is refused ("already installed"), and nothing changes', !!again.error && /already installed/.test(again.error.message || again.error)
+      && (await one('select public.hub_schema_version() as v')).v === '8', again.error);
+  });
+
+  await flow('nothing due yet', async () => {
+    // Sat Nov 28, 10:00am in New York, in the Thanksgiving break: every assignment on the link was due before today, from
+    // Mon Nov 16 (within the 14 days the reader keeps). Five latest: Nov 17 to Nov 24.
+    await h.setClock('2026-11-28T15:00:00Z');
+    const past = [['asg-2001', 'English - 7: Poem recital', '20261116'], ['asg-2002', 'Math - 7 (A): Fractions worksheet', '20261117'],
+      ['asg-2003', 'Spanish - 7: Vocabulary list', '20261118'], ['asg-2004', 'Biology - 7 (A): Lab safety quiz', '20261119'],
+      ['asg-2005', 'English - 7: Book report', '20261120'], ['asg-2006', 'Geography - 7: Map of Europe', '20261124']];
+    const next = (d) => { const t = new Date(`${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6)}T12:00:00Z`); t.setUTCDate(t.getUTCDate() + 1); return t.toISOString().slice(0, 10).replace(/-/g, ''); };
+    h.school.serve(SECRET, ics(past.map(([uid, summary, d]) => ({ uid, summary, lines: [`DTSTART;VALUE=DATE:${d}`, `DTEND;VALUE=DATE:${next(d)}`] }))));
+    // Removed and added again (as for a new school year's link): the first-import check is asked again.
+    const rm = await rpcAs('alex@example.com', 'set_school_feed', { p_kid: P.jordan.id, p_kind: 'assignments', p_url: null });
+    const add = await rpcAs('alex@example.com', 'set_school_feed', { p_kid: P.jordan.id, p_kind: 'assignments', p_url: `webcal://${LINK}` });
+    check('Remove, then Add link again: the same link\'s row, not checked', ok(rm) && ok(add) && add.body.id === feedId
+      && (await one(`select checked from school_feeds where id = '${feedId}'`)).checked === 'f', { rm: rm.status, add: add.body });
+    await h.mark();
+    const { page, context } = await open({ email: 'alex@example.com', path: '/#/homework', label: 'school-past-alex' });
+    await until(async () => !!(await page.$('[data-row="school"] [data-act="school-now"]')), 8000);
+    check('the Homework page on schema 8', (await page.evaluate(() => HomeHub.core.schemaVersion)) === 8, await page.evaluate(() => HomeHub.core.schemaVersion));
+    await page.click('[data-row="school"] [data-act="school-now"]');
+    await toastIs(page, /^Checked/);
+    check('Check now: "Checked 1 link · 6 items", every one past', (await lastToast(page)) === 'Checked 1 link · 6 items', await lastToast(page));
+    const st = await rpcAs('alex@example.com', 'school_feed_status', { p_kid: P.jordan.id });
+    const want = [['Fractions worksheet', '2026-11-17'], ['Vocabulary list', '2026-11-18'], ['Lab safety quiz', '2026-11-19'], ['Book report', '2026-11-20'], ['Map of Europe', '2026-11-24']];
+    check('school_feed_status: the check is the five latest, each past, in date order (the assignments made from the old link, older or gone, not on it)',
+      ok(st) && same(st.body.check.map((x) => [x.title, x.due_date, x.past]), want.map(([t, d]) => [t, d, true])), st.body && st.body.check);
+    await until(async () => (await texts(page, '[data-ref="school-check"] .hw-school-items li')).length === 5, 6000);
+    const lines = await texts(page, '[data-ref="school-check"] .hw-school-items li');
+    const days = ['Tue Nov 17', 'Wed Nov 18', 'Thu Nov 19', 'Fri Nov 20', 'Tue Nov 24'];
+    check('the parents\' page: Check the dates with those five, each with its day, and Looks right',
+      lines.length === 5 && want.every(([t], i) => lines[i].includes(t) && lines[i].endsWith(days[i]))
+      && !!(await page.$('[data-ref="school-check"] [data-act="school-dates"][data-rule="end"][data-shift="0"]')), lines);
+    const before = (await anonRpc('homework_by_token', { p_token: P.jordan.day_token })).body;
+    check('until a parent answers, nothing from the link reaches Jordan', !!before && !('from_school' in before), Object.keys(before || {}));
+    await shot(page, 'school-past-check');
+    await page.click('[data-ref="school-check"] [data-act="school-dates"][data-rule="end"][data-shift="0"]');
+    await toastIs(page, /^Dates checked/);
+    const fc = await one(`select checked, date_rule, date_shift from school_feeds where id = '${feedId}'`);
+    check('Looks right: check_school_feed(the link, end, 0); the link checked and the box gone', same(fc, { checked: 't', date_rule: 'end', date_shift: '0' })
+      && await until(async () => !(await page.$('[data-ref="school-check"]'))), fc);
+    const after = (await anonRpc('homework_by_token', { p_token: P.jordan.day_token })).body;
+    check('... and the link reaches Jordan (his New from school, with nothing to come yet)', !!after && same(after.from_school, []), after && after.from_school);
+    const f = await failures();
+    check('nothing due yet: no API request failed', !f.length, f);
+    await context.close();
   });
 
   await h.finish();

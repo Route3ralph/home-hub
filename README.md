@@ -160,7 +160,7 @@ Home Hub can read Jordan's assignments, and his class schedule and games, from t
 2. **Claude deploys `hub-jobs`** from main with JWT verification off, as before. There is **no new secret**: the links live in the database. Until step 3 its `school` action answers 503 `no_schema`, which is harmless.
 3. **About 5 minutes:** run [`supabase/migrations/0006_homework_school.sql`](supabase/migrations/0006_homework_school.sql) in the Supabase SQL editor. "isn't installed" means 0005 is missing; "already installed" means it's done; either way nothing was changed.
 4. **About 2 minutes:** run [`supabase/cron.sql`](supabase/cron.sql) again. It adds the `hub-school` job (every hour at 23 minutes past) and is safe to run again.
-5. **About 5 minutes, on a computer, the links:** sign in to the school's Blackbaud site **as yourself** → under **Jordan's Calendars**, open **Calendar** → the feed button → **WebCal Feed for External Calendar** → under **Individual Filter Feeds**, right-click **Assignments** → **Copy Link Address** (not **Entire Calendar**). In Home Hub: **Homework → Switches → School links → Assignments** → paste → **Save**. Do the same for **Schedule** and **Games/Practices** if you like (busy time only). Then **Check now**, and answer the first-import check: the card shows the next five items; tap **Looks right** if their dates are the due dates Blackbaud shows (or **Use the first date**, or **One day off**). Nothing from the Assignments link reaches Jordan or Pat until you do.
+5. **About 5 minutes, on a computer, the links:** sign in to the school's Blackbaud site **as yourself** → under **Jordan's Calendars**, open **Calendar** → the feed button → **WebCal Feed for External Calendar** → under **Individual Filter Feeds**, right-click **Assignments** → **Copy Link Address** (not **Entire Calendar**). In Home Hub: **Homework → Switches → School links → Assignments** → paste → **Save**. Do the same for **Schedule** and **Games/Practices** if you like (busy time only). Then **Check now**, and answer the first-import check: the card shows the next five items, or, when fewer than five are due yet (a weekend or a holiday), the five latest ones, marked "was due" (from [migration 0008](#the-first-import-check-when-nothing-is-due-yet-v13-migration-0008); Blackbaud still lists past assignments, so you can compare those too); tap **Looks right** if their dates are the due dates Blackbaud shows (or **Use the first date**, or **One day off**). Nothing from the Assignments link reaches Jordan or Pat until you do.
 
 **Treat each link like a password.** Anyone with it can read his calendar, and Blackbaud offers no way to cancel one. Home Hub keeps it where no page, no tutor link and no My day can read it back; it shows only the school's address and the link's last 4 characters ("…a1b2"), and never writes it to a log. To stop using one, **Remove** it on the switches card. Don't paste it anywhere else.
 
@@ -206,6 +206,16 @@ Never the rest of the family: no one else's events, tasks or names, no dinners, 
 3. **About 1 minute:** Homework → **Switches** → **Tutor links** → Pat Lee, tutor → tick **Coach view** (off by default; turn it on for the tutor). Tell Pat (the Coach section shows the next time the link is opened) and Jordan.
 
 To stop it for one link, untick **Coach view**: it stops at once, and Pat's link is as before. **Off** and **New link** stop the whole link, as always. If the hub can't be reached: `update public.tutor_links set coach = false;` in the SQL editor.
+
+### The first-import check when nothing is due yet (v1.3, migration 0008)
+
+The school links' first-import check (**Check the dates**) used to show only assignments still to come. A link added over a weekend or a holiday may hold only past ones (the hub keeps those due in the last 14 days), so the card had nothing to ask, and nothing from the link could reach Jordan or Pat until the school posted something new. From 0008 the card shows the next five, or, when fewer than five are due yet, the five latest, each marked "was due …", and says so; answer it as before. When it is still empty it says why: not read yet, read with nothing in it, or everything on it already past.
+
+**Turning it on** (nothing to deploy: no Edge Function and no `cron.sql` change):
+1. `tests/run.sh` ends with `0 failed`; merge. The page works as before on schema 7, and says why an empty check is empty.
+2. **About 1 minute:** run [`supabase/migrations/0008_school_check.sql`](supabase/migrations/0008_school_check.sql) in the Supabase SQL editor. "isn't installed" means 0007 is missing; "already installed" means it's done; either way nothing was changed.
+
+There is nothing to switch off: the answer only adds the past ones, and the page reads both. The design's §16.7 has the undo, if ever wanted.
 
 ### What goes where
 
@@ -469,7 +479,7 @@ Never commit the token. The rules for changing the repo (tests, migrations, depl
 | `manifest.webmanifest`, `assets/icons/` | The Home Screen app: name, colours and icons |
 | `config.js` | Database connection settings |
 | `supabase/schema.sql` | The v1 tables, security rules and functions (the baseline) |
-| `supabase/migrations/` | Every database change since, in order: `0002_home_hub_v2.sql` is v2, `0003_google_calendar.sql` is v1.1 (Google Calendar), `0004_meals_and_shopping.sql` is v1.2 (Food), `0005_homework.sql` is v1.3 (Homework), `0006_homework_school.sql` its school feed and `0007_homework_coach.sql` its coach view |
+| `supabase/migrations/` | Every database change since, in order: `0002_home_hub_v2.sql` is v2, `0003_google_calendar.sql` is v1.1 (Google Calendar), `0004_meals_and_shopping.sql` is v1.2 (Food), `0005_homework.sql` is v1.3 (Homework), `0006_homework_school.sql` its school feed, `0007_homework_coach.sql` its coach view and `0008_school_check.sql` its first-import check when nothing is due yet |
 | `supabase/preflight.sql` | Read-only checks to run before applying the v2 migration (0002 only) |
 | `supabase/cron.sql` | Schedules the morning email and the Google Calendar job (pg_cron) once hub-jobs is deployed |
 | `supabase/config.toml` | Supabase CLI settings: both Edge Functions deploy with JWT verification off |
