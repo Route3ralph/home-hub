@@ -574,6 +574,29 @@ select test.is(:'view'::jsonb -> 'now' ->> 'title', 'Copy the requirements into 
 select test.is(:'view'::jsonb -> 'load', '{"free": 30, "planned": 30}'::jsonb, 'load: tonight''s open minutes and her free minutes');
 select test.is((select string_agg((x ->> 'title') || ' ' || (x ->> 'from_day'), ' | ') from jsonb_array_elements(:'view'::jsonb -> 'earlier') x),
                'Do the worksheet 2026-11-02', 'earlier: Monday''s open step (today has homework time)');
+-- A plan still being made (not given), due before the poster, with a step tonight and one from
+-- Monday: none of it is on her screen until it is given ("Being planned", §3.4, §4.3). Due first,
+-- its steps would come first in tonight, and be Now and the card's Next, if they were let through.
+begin;
+:as_owner
+insert into assignments (kid_id, title, due_date) values (test.person('Taylor'), 'Reading log', '2026-11-06');
+insert into homework_steps (assignment_id, pos, title, minutes, day)
+values (pg_temp.aid('Reading log'), 1, 'Read chapter 1', 10, '2026-11-02'), (pg_temp.aid('Reading log'), 2, 'Read chapter 2', 10, '2026-11-03');
+:as_anon
+select homework_by_token(test.token('Taylor')) as drafting \gset
+select test.is((select string_agg(x ->> 'title', ' | ' order by n) from jsonb_array_elements(:'drafting'::jsonb -> 'tonight') with ordinality t (x, n)),
+               'Copy the requirements into your notes | Find 2 sources and save their links',
+               'a plan not given to her: none of its steps is in tonight, though it is due first');
+select test.is((:'drafting'::jsonb -> 'now' ->> 'title') || ' | ' || (:'drafting'::jsonb -> 'load')::text,
+               'Copy the requirements into your notes | {"free": 30, "planned": 30}', '... nor Now, nor in tonight''s planned minutes');
+select test.is((select string_agg((x ->> 'title') || ' ' || (x ->> 'from_day'), ' | ') from jsonb_array_elements(:'drafting'::jsonb -> 'earlier') x),
+               'Do the worksheet 2026-11-02', '... nor from earlier (its Monday step)');
+select test.is((select (c -> 'next' ->> 'title') || ' | ' || (c ->> 'steps') || ' | ' || (c ->> 'minutes') || ' | ' || (c ->> 'earlier')
+                from (select get_person_day(test.token('Taylor')) -> 'homework' as c) c),
+               'Copy the requirements into your notes | 2 | 30 | 1', '... nor on the card on My day (its Next and its counts)');
+select test.is((select jsonb_build_object('state', a -> 'state', 'steps', a -> 'steps') from pg_temp.el(:'drafting'::jsonb -> 'assignments', 'Reading log') a),
+               '{"state": "planning", "steps": []}'::jsonb, '... its assignment is "Being planned" (state planning), with no steps');
+rollback;
 
 select step_by_token(test.token('Taylor'), pg_temp.sid('Copy the requirements into your notes'), 'done') -> 'tonight' -> 0 as ticked \gset
 select test.is((:'ticked'::jsonb ->> 'done') || ' ' || (:'ticked'::jsonb ->> 'undo'), 'true true', 'a tick: done, and hers to undo for 15 minutes');
@@ -1124,7 +1147,17 @@ select reward_by_token(test.token('Taylor'), 'ask', pg_temp.rid('Choose Friday''
 select test.is(pg_temp.n_asks('Choose Friday''s dinner') || ' ' || pg_temp.used(test.person('Taylor')), '1 ' || :before_resend,
                'a resent ask (same key, or another key for a reward already waiting) finds the waiting one, uncounted');
 select test.throws($$select reward_by_token(test.token('Taylor'), 'ask', pg_temp.rid('A new book'), null, gen_random_uuid())$$, 'Not enough points yet.',
-                   'an ask needs her free points (122 less 60 held) to cover it');
+                   'an ask for more than her whole balance (150, she has 122) is refused');
+-- 70 is within her balance but not her free points: 122 less the 60 held for Friday's dinner is 62 (§8.5).
+begin;
+:as_admin
+insert into rewards (kid_id, title, cost, sort_order) values (test.person('Taylor'), 'Bike lights', 70, 6);
+:as_anon
+select test.is((select x -> 'can_ask' from jsonb_array_elements(homework_by_token(test.token('Taylor')) -> 'rewards') x where x ->> 'title' = 'Bike lights'),
+               'false'::jsonb, 'a reward her balance covers (70 of 122) but her free points don''t (122 less 60 held is 62) isn''t marked');
+select test.throws($$select reward_by_token(test.token('Taylor'), 'ask', pg_temp.rid('Bike lights'), null, gen_random_uuid())$$, 'Not enough points yet.',
+                   'an ask needs her free points (122 less 60 held) to cover it: 70 is refused');
+rollback;
 select reward_by_token(test.token('Taylor'), 'ask', pg_temp.rid('Extra game time'), null, 'c0000000-0000-4000-8000-000000000002');
 select reward_by_token(test.token('Taylor'), 'ask', pg_temp.rid('Movie pick'), null, 'c0000000-0000-4000-8000-000000000003');
 select test.throws($$select reward_by_token(test.token('Taylor'), 'ask', pg_temp.rid('Park trip'), null, gen_random_uuid())$$,
@@ -1173,6 +1206,14 @@ insert into reward_asks (kid_id, title, cost, asked_at) values (test.person('Tay
 select test.throws($$select decide_reward((pg_temp.ask('A bike')).id, true)$$, 'Not enough points yet.', 'Yes checks the balance again');
 :as_owner
 delete from reward_asks where title = 'A bike';
+-- Yes counts the points her other waiting asks hold: with 62, asks of 50 and 20 (after a Void, say) can't both be paid.
+begin;
+insert into reward_asks (kid_id, title, cost, asked_at)
+values (test.person('Taylor'), 'Bike lights', 50, private.now()), (test.person('Taylor'), 'Skates', 20, private.now());
+:as_admin
+select test.throws($$select decide_reward((pg_temp.ask('Bike lights')).id, true)$$, 'Not enough points yet.',
+                   '... less the points her other waiting asks hold (62 less 20 held can''t pay 50)');
+rollback;
 
 -- Points a parent gives, and a parent's correction.
 :as_admin
@@ -1469,6 +1510,17 @@ select test.is((select string_agg(coalesce(x ->> 'done_by', '-'), ',' order by n
                'kid,-,kid,-,kid,-,-,-', '... who ticked a step is a role (here the kid), never a name');
 select test.is((select string_agg(x::text, ' ') from jsonb_array_elements(:'pa'::jsonb -> 'steps') s cross join lateral jsonb_array_elements(s -> 'qa_log') x)
                  ~ 'answered_by|cleared_by|alex@', false, '... qa_log carries roles, never a writer''s label or email');
+-- A step a parent ticked: its done_by is the parent's email, and on the link it is "family" (§3.4).
+begin;
+:as_admin
+select homework_step(pg_temp.sid('Draft the poster text'), 'done');
+:as_anon
+select tutor_view_by_token(pg_temp.pat(), pg_temp.aid('Science project: river poster')) -> 'assignment' as pa_parent \gset
+select test.is((select string_agg(coalesce(x ->> 'done_by', '-'), ',' order by n) from jsonb_array_elements(:'pa_parent'::jsonb -> 'steps') with ordinality t (x, n)),
+               'kid,-,kid,-,kid,family,-,-', '... a step a parent ticked is "family", never the parent''s email');
+select test.is(pg_temp.strings(:'pa_parent'::jsonb) ~* ('@|alex|morgan|\msam\M|jordan|' || test.person('Taylor')::text), false,
+               '... and the assignment Pat opens carries no email, no other person''s name and no person''s id');
+rollback;
 select test.is(tutor_view_by_token(pg_temp.pat(), pg_temp.aid('Book report')) -> 'assignment', 'null'::jsonb,
                'another kid''s assignment: null, as an unknown one');
 select test.is(tutor_view_by_token(pg_temp.pat(), pg_temp.aid('Science project: river poster'), 'ai'),
@@ -1810,6 +1862,35 @@ update household set homework_ai = true;
 :as_service
 select pg_temp.ai_start(pg_temp.pat(), null, 'a0000000-0000-4000-8000-000000000021', 'plan', 'aa000000-0000-4000-8000-000000000002') as run1 \gset
 select test.is(:'run1'::jsonb -> 'input' ->> 'message', :'preview', 'the tutor asks: {run_id, input}, input.message being what the preview showed');
+-- Pat's own preview (§6.4) is the message itself, scrubbed with the same lists as the parents': here a
+-- revise, as the assignment has steps (Build notes). So a word typed into the teacher's text from the
+-- link that comes back as [name] is a name the hub knows (anyone active, any tutor link's label or its
+-- words) or a never-send word: an accepted risk while the AI is on and the link may ask (§13.6). The
+-- lists can't be read, and there is no preview while either switch is off.
+begin;
+:as_anon
+select test.is(tutor_assignment_by_token(pg_temp.pat(), jsonb_build_object('id', 'a0000000-0000-4000-8000-000000000021',
+                 'details', 'Robin Casey Morgan Example Academy library Quinn')) ->> 'assignment_id',
+               'a0000000-0000-4000-8000-000000000021', 'the link types guesses into the teacher''s text');
+select tutor_view_by_token(pg_temp.pat(), 'a0000000-0000-4000-8000-000000000021') -> 'assignment' ->> 'preview' as pat_preview \gset
+:as_admin
+select test.is(:'pat_preview', homework_ai_preview('a0000000-0000-4000-8000-000000000021', 'revise'),
+               'Pat''s preview is what a revise sends, scrubbed with the same lists as the parents''');
+select test.is(substring(:'pat_preview' from E'<assignment_text>\\n([^\\n]*)\\n</assignment_text>'), '[name] [name] [name] [name] library Quinn',
+               '... so the words typed in that the hub knows (another kid, another kid''s tutor, the helper, a never-send word) come back as [name] (§13.6)');
+:as_owner
+update tutor_links set can_ai = false where label = 'Pat Lee, tutor';
+:as_anon
+select test.is(tutor_view_by_token(pg_temp.pat(), 'a0000000-0000-4000-8000-000000000021') -> 'assignment' -> 'preview', 'null'::jsonb,
+               '... no preview while the link can''t ask the AI');
+rollback;
+begin;
+:as_admin
+update household set homework_ai = false;
+:as_anon
+select test.is(tutor_view_by_token(pg_temp.pat(), 'a0000000-0000-4000-8000-000000000021') -> 'assignment' -> 'preview', 'null'::jsonb,
+               '... nor while the parents'' switch is off');
+rollback;
 select test.is((select asked_by || ' ' || (link_id = pg_temp.lid('Pat Lee, tutor')) || ' ' || kind from ai_runs where id = (:'run1'::jsonb ->> 'run_id')::uuid),
                'Pat Lee, tutor (tutor link) true plan', '... the run: the link''s label, the link, the kind');
 select test.is((pg_temp.asg('Answer Pat''s questions about the river')).ai_state, 'running', '... the assignment says running');
