@@ -1181,7 +1181,8 @@
   // assignment_by_token, homework_prefs_by_token. A null answer: homework is off (the day, and a word) or the
   // link no longer works. The timer counts from the server's clock (plan.js timer(): the answer's ends_at less
   // its server_now, kept on performance.now()), never the phone's; the chime is scheduled on the audio clock
-  // at Start, and the screen kept awake while a block runs. Points are only ever what the server answered.
+  // at Start (and set again when the ring and the audio clock drift apart, as after time away), and the
+  // screen kept awake while a block's ring runs, on any view. Points are only ever what the server answered.
   // Rows the page makes (a block, a smaller step, his own homework, an ask, a suggestion) take their id
   // from the page, so a resend finds them: a Start or an End with no answer is sent again with the same id.
   // ============================================
@@ -1208,8 +1209,12 @@
   let lengthPick = readLength();
   let fx = {};              // the block on #focus: { id, onTime, timeUp, afterDone, result, end (unanswered), breakTm }
   let pendingStart = null;  // a Start with no answer: { id, step, assignment }, sent again with the same id
-  let audio = null;         // { ctx, session, nodes }: made inside the Start tap
-  let wake = null;          // the screen wake lock while a block runs
+  let audio = null;         // { ctx, session, at, nodes, loudTimer }: made inside a tap (Start, or after a reload any tap on #focus)
+  let loud = false;         // "Chime even on silent": navigator.audioSession is 'playback' around the chime
+  let wake = null;          // the screen wake lock while a block's ring runs, on any view
+  let wakeAsk = null;       // a wake lock asked for and not answered yet (never two at once)
+  let wakeTimer = null;     // lets go of the lock when the ring runs out, whatever is on screen
+  let starting = false;     // a Start on its way: the lock taken in its tap waits for its answer
   let wakeOk = null;        // false: refused or missing (the tip shows)
   let notifyAsked = false;
   let ed = null;            // the plan editor on #plan/<id>
@@ -1232,12 +1237,18 @@
     let raw = pick(key);
     if (raw == null) return plan ? plan.t(key, v, lang) : key;
     if (raw.includes('{tutor}') && v.tutor == null && pick(`${key}_none`) != null) raw = pick(`${key}_none`);
-    return String(raw).replace(/\{(\w+)\}/g, (m, k) => (v[k] != null ? v[k] : m));
+    let s = String(raw);
+    // As plan.js's t(): a Spanish {day} comes with its article (fmt.rel's 'el mié'), so "a el"/"de el" become "al"/"del".
+    if (lang === 'es') {
+      s = s.replace(/(^|[^\p{L}])(de|a) \{(\w+)\}/gu, (m, pre, p, k) => (v[k] != null && /^el /.test(String(v[k]))
+        ? `${pre}${p === 'de' ? 'del' : 'al'} ${String(v[k]).slice(3)}` : m));
+    }
+    return s.replace(/\{(\w+)\}/g, (m, k) => (v[k] != null ? v[k] : m));
   }
   const hwRel = (iso) => plan.fmt.rel(iso, hv ? hv.today : state && state.today, lang);
   // The database's homework messages in his words (plan.js), before anything else: "Only your own tick…" is
   // the shopping list's too, where it has its own words.
-  const HW_MESSAGES = /That step isn't on your plan|Only your own tick|That's a checkpoint|Finish the block you started first|That block isn't yours|That's a lot for one day|No homework day before it's due has room|was changed since you opened it|Not enough points yet|Points are off|Choose 10, 15, 20 or 25|Plan this one with|Set a homework time first|That plan isn't on your list|is done or dropped|That's too long|That plan is too long/i;
+  const HW_MESSAGES = /That step isn't on your plan|Only your own tick|That's a checkpoint|Finish the block you started first|That block isn't yours|That's a lot for one day|No homework day before it's due has room|was changed since you opened it|Not enough points yet|Points are off|Choose 10, 15, 20 or 25|Plan this one with|Set a homework time first|That plan isn't on your list|is done or dropped|That's too long|That plan is too long|^At most 20 steps\.?$|Three asks are waiting already|Five suggestions are waiting already|Fifteen of your own are open already/i;
   function hwFriendly(err) {
     const msg = String((err && (err.message || err.error_description)) || err || '');
     if (plan && HW_MESSAGES.test(msg)) return plan.friendly(err, lang, hwTutor());
@@ -1252,6 +1263,7 @@
     hvAt = perfNow();
     lang = data.language === 'es' ? 'es' : 'en';
     document.documentElement.lang = lang;
+    wakeFollow();
     return true;
   }
   // One homework_by_token at a time; resolves to the view, null (homework off, or the link gone) or throws.
@@ -1287,6 +1299,7 @@
   // longer works. get_person_day says which.
   async function hwNull() {
     hv = null;
+    wakeFollow();
     stopViews();
     root.innerHTML = `<p class="loading">${esc(t('loading'))}</p>`;
     view = 'loading';
@@ -1393,11 +1406,13 @@
   }
 
   // ---------- Starting a block: one tap, on the card, Now, a step or an assignment ----------
-  // The wake lock and the AudioContext are asked for inside the tap (iOS needs one for sound).
+  // The wake lock and the AudioContext are asked for inside the tap (iOS needs one for sound). The lock
+  // taken in the tap waits for the Start's answer: kept for a block that runs, let go of otherwise.
   function startBlock(o) {
     if (hv && hv.session) { location.hash = '#focus'; return; }
     if (navigator.onLine === false) { toast(plan.t('needs_signal', null, lang), { error: true }); return; }
     armAudio();
+    starting = true;
     keepAwake();
     const same = pendingStart && pendingStart.step === (o.step || null) && pendingStart.assignment === (o.assignment || null);
     const id = same ? pendingStart.id : plan.newId();
@@ -1405,6 +1420,10 @@
     const minutes = o.minutes || lengthOf();
     focusCall('start', { session: id, minutes, step: o.step || undefined, assignment: o.step ? undefined : o.assignment || undefined, with: o.with || 'alone' }, true)
       .then((r) => {
+        starting = false;
+        // A block that runs keeps the lock until its ring runs out; no answer, gone or refused: let go now
+        // (a Start that did reach the server shows on the next read, and #focus asks again).
+        wakeFollow();
         if (r.data) {
           pendingStart = null;
           fx = { id, onTime: !!(r.data.block && r.data.block.on_time) };
@@ -1416,7 +1435,6 @@
         if (r.gone) return;
         if (r.kind === 'retry') { toast(plan.t('needs_signal', null, lang), { error: true }); return; }
         pendingStart = null;
-        releaseWake();
         if (/Finish the block you started first/i.test(String(r.error && r.error.message))) {
           toast(hwFriendly(r.error), { error: true });
           readHomework().then((v) => { if (take(v)) location.hash = '#focus'; }).catch(() => {});
@@ -1425,23 +1443,31 @@
         toast(hwFriendly(r.error), { error: true });
       });
   }
+  // Made (or woken) inside a tap; once it runs, the chime is set on its clock again.
   function armAudio() {
     try {
       const AC = window.AudioContext || window.webkitAudioContext;
       if (!AC) return;
-      if (!audio) audio = { ctx: new AC(), session: null, nodes: [] };
-      if (audio.ctx.resume) audio.ctx.resume().catch(() => {});
+      if (!audio) audio = { ctx: new AC(), session: null, at: null, nodes: [], loudTimer: null };
+      const p = audio.ctx.resume && audio.ctx.resume();
+      if (p && p.then) p.then(() => scheduleChime(), () => {});
+      else scheduleChime();
     } catch (e) { audio = null; }
   }
   // Two soft tones at the block's end, on the audio clock, so a hidden page's slow timers can't delay them.
+  // Set at Start, and again whenever they no longer fall on the ring's end: iOS stops a hidden page's audio
+  // clock, so after a while away the tones would come that much late. Never for a ring that has run out, nor
+  // for a block he has ended (an End on its way).
   function scheduleChime() {
     const s = hv && hv.session;
-    if (!audio || !s || audio.session === s.id) return;
+    if (!audio || !s || fx.end || fx.result) return;
     try {
-      cancelChime();
       const tm = plan.timer({ ends_at: s.ends_at, server_now: hv.server_now, started_at: s.started_at, minutes: s.minutes }, hvAt);
+      const l = plan.left(tm, perfNow());
+      if (l.done) return;
       const at = plan.audioAt(tm, perfNow(), audio.ctx.currentTime);
-      if (readSilent() && navigator.audioSession) navigator.audioSession.type = 'playback';
+      if (audio.session === s.id && audio.at != null && Math.abs(at - audio.at) < 1) return;   // still on time
+      cancelChime();
       [[660, 0], [880, 0.4]].forEach(([freq, delay]) => {
         const o = audio.ctx.createOscillator();
         const g = audio.ctx.createGain();
@@ -1457,30 +1483,75 @@
         audio.nodes.push(o);
       });
       audio.session = s.id;
+      audio.at = at;
+      // Chime even on silent (§7.2): 'playback' just for the chime, from a few seconds before it until its
+      // last tone has stopped (or it is called off), never for the whole block (it may pause his music).
+      if (readSilent() && navigator.audioSession) {
+        const nodes = audio.nodes;
+        audio.loudTimer = setTimeout(() => { if (audio && audio.nodes === nodes) loudChime(true); }, Math.max(0, l.ms - 3000));
+        nodes[nodes.length - 1].onended = () => { if (audio && audio.nodes === nodes) loudChime(false); };
+      }
     } catch (e) { /* the end is visual all the same */ }
   }
   function cancelChime() {
     if (!audio) return;
+    clearTimeout(audio.loudTimer);
+    audio.loudTimer = null;
     audio.nodes.forEach((o) => { try { o.stop(0); } catch (e) { /* already stopped */ } });
     audio.nodes = [];
     audio.session = null;
+    audio.at = null;
+    loudChime(false);
+  }
+  function loudChime(on) {
+    if (!navigator.audioSession || loud === on) return;
+    try { navigator.audioSession.type = on ? 'playback' : 'auto'; loud = on; } catch (e) { /* as it was */ }
   }
   function keepAwake() {
+    if (wake || wakeAsk) return;
     try {
       if (!navigator.wakeLock || !navigator.wakeLock.request) { wakeOk = false; return; }
-      navigator.wakeLock.request('screen').then((w) => {
+      const ask = navigator.wakeLock.request('screen');
+      wakeAsk = ask;
+      ask.then((w) => {
+        // Let go of while it was asked for (the block ended, or the Start got no block): give it back.
+        if (wakeAsk !== ask || (!starting && !blockRunning())) {
+          if (wakeAsk === ask) wakeAsk = null;
+          if (w && w.release) w.release().catch(() => {});
+          return;
+        }
+        wakeAsk = null;
         wake = w;
         wakeOk = true;
         // The browser lets go of it when the page is hidden: asked for again on coming back (keepAwakeAgain).
         if (w && w.addEventListener) w.addEventListener('release', () => { if (wake === w) wake = null; });
-      }, () => { wakeOk = false; drawTip(); });
-    } catch (e) { wakeOk = false; }
+        wakeFollow();
+      }, () => { if (wakeAsk === ask) wakeAsk = null; wakeOk = false; drawTip(); });
+    } catch (e) { wakeAsk = null; wakeOk = false; }
   }
   function releaseWake() {
     const w = wake;
     wake = null;
+    wakeAsk = null;   // one still on its way is given back when it comes
+    clearTimeout(wakeTimer);
+    wakeTimer = null;
     if (w && w.release) w.release().catch(() => {});
-    if (readSilent() && navigator.audioSession) { try { navigator.audioSession.type = 'auto'; } catch (e) { /* as it was */ } }
+  }
+  // A block's ring is running (by the server's clock).
+  function blockRunning() {
+    const tm = focusTimer();
+    return !!tm && !plan.left(tm, perfNow()).done;
+  }
+  // The lock follows the view: kept while a block's ring runs, whatever is on screen (#homework, the day),
+  // and let go of when it runs out (a timer), or when no block runs. A Start on its way keeps the tap's.
+  function wakeFollow() {
+    clearTimeout(wakeTimer);
+    wakeTimer = null;
+    if (starting || (!wake && !wakeAsk)) return;
+    const tm = focusTimer();
+    const l = tm ? plan.left(tm, perfNow()) : null;
+    if (!l || l.done) { releaseWake(); return; }
+    wakeTimer = setTimeout(wakeFollow, l.ms + 100);
   }
   const drawTip = () => { const el = root.querySelector('.hw-tip'); if (el) el.hidden = wakeOk !== false; };
 
@@ -1848,9 +1919,12 @@
     if (cue && !cue.hidden && elapsed(s) >= 60) cue.hidden = true;
   }
   // The ring ran out: always visual; a buzz where there is one; a notification only on a computer that asked,
-  // while the page is hidden. The chime was scheduled at Start.
+  // while the page is hidden. The chime was scheduled at Start (and again on coming back); tones still more
+  // than a moment away (an audio clock that stood still while he was away) are called off, so no chime comes
+  // long after the end.
   function timeUp() {
     releaseWake();
+    try { if (audio && audio.at != null && audio.at - audio.ctx.currentTime > 2) cancelChime(); } catch (e) { /* visual all the same */ }
     try { if (navigator.vibrate) navigator.vibrate([200, 100, 200]); } catch (e) { /* no buzz */ }
     try {
       if (!phoneKind() && document.visibilityState === 'hidden' && typeof window.Notification === 'function' && window.Notification.permission === 'granted') {
@@ -1863,6 +1937,9 @@
   function endBlock(result) {
     const s = hv && hv.session;
     if (!s) return;
+    // A second tap while this block's End is on its way changes nothing: that End's answer is the one drawn.
+    if (fx.end && fx.end.session === s.id) return;
+    root.querySelectorAll('.hw-focus-acts button, .hw-after-done button, .hw-end-acts button').forEach((b) => { b.disabled = true; });
     const input = root.querySelector('.hw-end input[name="note"]');
     const note = input ? plan.clean(input.value, 120) : '';
     fx.end = { session: s.id, step: s.step_id, result, note: note || undefined };
@@ -1936,12 +2013,15 @@
       const plan0 = me.if_stuck
         ? `<h2 class="hw-stuck-plan" id="hw-sheet-h">${esc(hw('hw_stuck_plan', { text: me.if_stuck }))}</h2><button type="button" class="hw-edit" data-act="hw-ifstuck" aria-label="${esc(hw('hw_stuck_edit'))}">✎</button>`
         : `<h2 class="sr-only" id="hw-sheet-h">${esc(hw('hw_stuck_title'))}</h2><button type="button" class="hw-link hw-stuck-plan" data-act="hw-ifstuck">${esc(hw('hw_stuck_none'))}</button>`;
+      // A smaller step and a question belong to a step. A block on an assignment with no plan (Start on a
+      // Tonight row) gets one when he picks either (blockStep); a block on neither has only Next step.
+      const onWork = !!(s && (s.step_id || s.assignment_id));
       inner = `<div class="hw-sheet-head">${plan0}</div>
         <div class="hw-sheet-acts">
-          <button type="button" class="btn day-big" data-act="hw-smaller" data-step="${esc(s ? s.step_id || '' : '')}">${esc(plan.t('make_smaller', null, lang))}</button>
+          ${onWork ? `<button type="button" class="btn day-big" data-act="hw-smaller" data-step="${esc(s.step_id || '')}">${esc(plan.t('make_smaller', null, lang))}</button>
           <p class="hw-sheet-hint">${esc(`${hw('hw_smaller_hint')}: ${[0, 1, 2].map((i) => hw(`hw_chip_${i}`)).join(' · ')} · ${hw('hw_own')}`)}</p>
-          <button type="button" class="btn day-big" data-act="hw-ask" data-step="${esc(s ? s.step_id || '' : '')}">${esc(hw('ask_tutor'))}</button>
-          <p class="hw-sheet-hint">${esc(hw('hw_ask_hint'))}</p>
+          <button type="button" class="btn day-big" data-act="hw-ask" data-step="${esc(s.step_id || '')}">${esc(hw('ask_tutor'))}</button>
+          <p class="hw-sheet-hint">${esc(hw('hw_ask_hint'))}</p>` : ''}
           <button type="button" class="btn day-big" data-act="hw-next-step" data-step="${esc(next ? next.id : '')}"${next ? '' : ' disabled'}>${esc(plan.t('next_step', null, lang))}</button>
           <p class="hw-sheet-hint">${esc(next ? [next.assignment, next.title].filter(Boolean).join(' · ') : '')}</p>
           <button type="button" class="btn day-big" data-act="hw-sheet-close">${esc(hw('hw_back_timer'))}</button>
@@ -1967,20 +2047,53 @@
     el.innerHTML = `<div class="hw-sheet-card">${inner}</div>`;
     root.appendChild(el);
   }
+  // The step the stuck sheet's Make it smaller and Ask Pat work on: the block's. A block started on an
+  // assignment with no plan (Start on a Tonight row) has none: Quick makes it one step of the block's length,
+  // given at once (as his Quick does), and the block moves to it ('switch'), so Step done still finishes the
+  // assignment. A resend finds his Quick done already, and the block on it.
+  async function blockStep() {
+    const s = hv && hv.session;
+    if (!s) return null;
+    if (s.step_id) return s.step_id;
+    if (!s.assignment_id) return null;
+    const open = () => { const a = asgById(s.assignment_id); return (a && (a.steps || []).find((x) => !x.done)) || null; };
+    let st = open();
+    if (!st) {
+      const q = await asgCall('quick', { assignment: s.assignment_id, minutes: s.minutes });
+      if (!q.data) return null;
+      st = open();
+      if (!st) return null;
+    }
+    const r = await focusCall('switch', { session: s.id, step: st.id });
+    return r.data ? st.id : null;
+  }
+  // A sheet sends once at a time; Make it smaller keeps one key (the new step's id) until an answer, so a
+  // second tap, or a tap again after "Can't reach Home Hub" when the first one landed, finds the step the
+  // first one made (one step, never two).
   async function sheetSend(text) {
     const sh = sheet;
-    if (!sh) return;
+    if (!sh || sh.sending) return;
     const typed = plan.clean(text, 200);
     if (sh.kind === 'smaller') {
       if (Array.from(typed).length < 3) { toast(plan.t('chk_title_len', null, lang), { error: true }); return; }
-      const key = plan.newId();
-      const r = await stepCall(sh.step, 'smaller', { text: typed, key });
+      const key = sh.key || (sh.key = plan.newId());
+      sh.sending = true;
+      let r;
+      try {
+        const step = sh.step || await blockStep();
+        r = step ? await stepCall(step, 'smaller', { text: typed, key }) : {};
+      } finally { sh.sending = false; }
       if (!r.data) return;
       sheet = null;
       if (view === 'focus') { fx.afterDone = false; renderFocus(); } else { nowId = key; renderHomework(true); }
     } else if (sh.kind === 'ask') {
       if (!typed) return;
-      const r = await stepCall(sh.step, 'ask', { text: typed });
+      sh.sending = true;
+      let r;
+      try {
+        const step = sh.step || await blockStep();
+        r = step ? await stepCall(step, 'ask', { text: typed }) : {};
+      } finally { sh.sending = false; }
       if (!r.data) return;
       sheet = null;
       toast(hw('hw_question_sent'));
@@ -2176,19 +2289,26 @@
   // (the ring takes the server's clock again), never under a finger or an unsaved plan.
   function homeworkSoon() {
     if (fx.end) sendEnd();
-    if (view === 'focus' && hv && hv.session) keepAwakeAgain();
+    if (view === 'focus' && hv && hv.session) {
+      keepAwakeAgain();
+      // The Start tap unlocked the audio: wake it (iOS stops a hidden page's) and set the chime on its clock again.
+      if (audio && blockRunning() && !fx.end && !fx.result) armAudio();
+    }
     if (hwBusy || Date.now() - hvLast < 1000) return;
     if (view === 'plan' && ed && ed.dirty()) return;
     if (view === 'homework' && (addOpen || sheet)) return;
     hwRead();
   }
+  // Only while the ring runs: never for an end screen whose ring already ran out, nor once he ended it.
   function keepAwakeAgain() {
-    if (wake || wakeOk === false || document.visibilityState !== 'visible') return;
+    if (wake || wakeAsk || wakeOk === false || document.visibilityState !== 'visible' || fx.end || fx.result || !blockRunning()) return;
     keepAwake();
   }
 
   // ---------- Taps ----------
   function hwClick(e) {
+    // After a reload there is no AudioContext (one needs a tap): his first tap on #focus makes it, and the chime.
+    if (view === 'focus' && !audio && hv && hv.session && !fx.end && !fx.result && blockRunning()) armAudio();
     const el = e.target.closest('[data-act^="hw-"], .hw-box, .hw-len, [data-quick], [data-chip]');
     if (!el || !root.contains(el) || el.disabled) return false;
     const stepId = el.getAttribute('data-step');

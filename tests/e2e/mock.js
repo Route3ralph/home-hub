@@ -1665,8 +1665,11 @@ async function install(page, db, log, opts = {}) {
           return 0;
         });
       } else if (table === 'contractors') rows.sort((a, b) => a.name.localeCompare(b.name));
+      // limit and offset (supabase-js's .range()), and Supabase's API "Max rows" (1,000 unless changed;
+      // db.maxRows here): an answer is cut to it with no error, as PostgREST's db-max-rows does.
+      const offset = Number(url.searchParams.get('offset')) || 0;
       const limit = url.searchParams.get('limit');
-      if (limit) rows = rows.slice(0, Number(limit));
+      rows = rows.slice(offset, offset + Math.min(limit ? Number(limit) : Infinity, db.maxRows || 1000));
       return out(rows);
     }
     if (method === 'POST') {

@@ -38,7 +38,11 @@
 // Ask Pat, the who-sees line), tick and Undo, Not today, Quick and + Homework, his cue; #points (ask, cancel,
 // suggest, decided, the last entries, points off); #plan/<id> in his role; every new word and database message
 // in Spanish; no tutor link; homework off while open; hostile text; a phone where plan.js didn't load (the day as
-// before, with no card).
+// before, with no card). Then (18b) a second tap on an End on its way (one End, its screen drawn), the wake lock
+// held while the ring runs on any view and let go of at its end or for a Start with no block, the stuck sheet on
+// a block with no plan (Quick and 'switch' first), Make it smaller sent twice (one key, one step), Chime even on
+// silent ('playback' just for the chime) and the chime set again after time away and made at the first tap after a
+// reload (HW_CLOCKED: an AudioContext on the page's clock that stands still while the page is hidden); "Pasado al mié".
 // mock.js answers RPCs for signed-in members only, so the token functions (called signed out) are
 // answered by a route added here; everything else (config.js, supabase-js) comes from mock.js.
 // The browser runs in Pacific/Kiritimati (UTC+14) with its clock set so the device's date is a day
@@ -428,6 +432,74 @@ const HW_STUBS = () => {
   FakeNote.requestPermission = () => { rec.ask.push(active()); FakeNote.permission = 'granted'; return Promise.resolve('granted'); };
   window.Notification = FakeNote;
 };
+
+// After HW_STUBS: an AudioContext on a clock (its currentTime follows the page's clock and stands still while
+// the page is hidden, as iOS stops a hidden page's audio), oscillators that end at their stop time, and
+// navigator.audioSession, each change recorded with the audio clock's time. window.__hide() / __show() hide
+// the page and bring it back (visibilityState and visibilitychange).
+const HW_CLOCKED = () => {
+  const rec = window.__hw;
+  rec.ctx = [];
+  rec.tones = [];
+  rec.session = [];
+  let hiddenSince = null;
+  let away = 0;
+  const vis = (v) => {
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => v });
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => v === 'hidden' });
+    document.dispatchEvent(new Event('visibilitychange'));
+  };
+  window.__hide = () => { hiddenSince = performance.now(); vis('hidden'); };
+  window.__show = () => { away += performance.now() - hiddenSince; hiddenSince = null; vis('visible'); };
+  class Clocked {
+    constructor() {
+      this.t0 = performance.now();
+      this.state = 'running';
+      this.destination = {};
+      rec.audio.push({ active: !!(navigator.userActivation && navigator.userActivation.isActive) });
+      rec.ctx.push(this);
+    }
+    get currentTime() { return 5 + ((hiddenSince != null ? hiddenSince : performance.now()) - this.t0 - away) / 1000; }
+    resume() { return Promise.resolve(); }
+    close() { return Promise.resolve(); }
+    createOscillator() {
+      const ctx = this;
+      const o = {
+        type: 'sine', frequency: { value: 0 }, connect() {}, onended: null, when: null, stopAt: null, ended: false, cancelled: false,
+        start(when) { o.when = when; rec.osc.push(when); rec.tones.push(o); },
+        stop(when) {
+          if (o.cancelled || o.ended) return;
+          if (!when) { o.cancelled = true; return; }
+          o.stopAt = when;
+          // Ends when the audio clock reaches its stop time (later, if the clock stood still meanwhile).
+          const wait = () => setTimeout(() => {
+            if (o.cancelled || o.ended) return;
+            if (ctx.currentTime < o.stopAt) { wait(); return; }
+            o.ended = true;
+            if (o.onended) o.onended({});
+          }, Math.max(1, (o.stopAt - ctx.currentTime) * 1000));
+          wait();
+        },
+      };
+      return o;
+    }
+    createGain() { return { gain: { value: 0, setValueAtTime() {}, linearRampToValueAtTime() {}, exponentialRampToValueAtTime() {} }, connect() {} }; }
+  }
+  window.AudioContext = Clocked;
+  window.webkitAudioContext = Clocked;
+  let type = 'auto';
+  Object.defineProperty(navigator, 'audioSession', { configurable: true, value: {
+    get type() { return type; },
+    set type(v) { type = v; const c = rec.ctx[rec.ctx.length - 1]; rec.session.push({ type: v, at: c ? Math.round(c.currentTime * 1000) / 1000 : null }); },
+  } });
+  // When the next tone not called off or played is due, in seconds on the audio clock (null: none).
+  window.__chimeIn = () => {
+    const c = rec.ctx[rec.ctx.length - 1];
+    const due = rec.tones.filter((t) => !t.cancelled && !(t.stopAt != null && c && c.currentTime >= t.stopAt)).map((t) => t.when);
+    return c && due.length ? Math.min(...due) - c.currentTime : null;
+  };
+};
+const HW_AUDIO = `(${HW_STUBS})(); (${HW_CLOCKED})();`;
 
 (async () => {
   fs.mkdirSync(SHOTS, { recursive: true });
@@ -2019,6 +2091,233 @@ const HW_STUBS = () => {
   }
 
   // =====================================================================
+  // 18b. A second tap on an End on its way; the wake lock on every view; the stuck sheet on a block with
+  //      no plan; Make it smaller sent twice; the chime on silent and after time away
+  // =====================================================================
+  const endsSent = (d) => calls(d, 'focus_by_token').filter((c) => c.body.p_action === 'end').length;
+  {
+    // Stop tapped again while the first End is on its way (a slow answer): the buttons wait, one End is sent,
+    // and its end screen comes when it answers, with no focus or visibilitychange to send it again.
+    ({ page, db } = await open({ label: 'hw-stop-twice', path: `/day.html?t=${JORDAN}`, db: hwDb(), device: HW_DEVICE, init: HW_STUBS }));
+    await page.click('.hw-card [data-act="hw-card-start"]');
+    await page.waitForSelector('.hw-ring');
+    await hwPause(page);
+    await hwTick(page, db, 12 * 60 * 1000 + 5000);
+    db.slow = { focus_by_token: 800 };
+    await page.click('[data-act="hw-stop"]');
+    await new Promise((r) => setTimeout(r, 150));
+    const waiting = await page.$$eval('.hw-focus-acts button', (bs) => bs.map((b) => b.disabled));
+    await page.$eval('[data-act="hw-stop"]', (b) => b.click()).catch(() => {});
+    check('Stop twice while the End is on its way: the buttons wait; one End; then "+2 · 12 minutes" and Break, with no focus or visibilitychange',
+      same(waiting, [true, true, true]) && await until(async () => (await hwText(page, '.hw-points-line')) === '+2 · 12 minutes · +5 on time' && !!(await page.$('[data-act="hw-break"]')))
+      && endsSent(db) === 1, `${JSON.stringify(waiting)} ${endsSent(db)} ${await hwText(page, '.hw-focus')}`);
+    db.slow = null;
+    await page.context().close();
+    // The end screen's Step done ✓, tapped twice.
+    ({ page, db } = await open({ label: 'hw-done-twice', path: `/day.html?t=${JORDAN}`, db: hwDb(), device: HW_DEVICE, init: HW_STUBS }));
+    await page.click('.hw-card [data-act="hw-card-start"]');
+    await page.waitForSelector('.hw-ring');
+    await hwPause(page);
+    await hwTick(page, db, 20 * 60 * 1000 + 2000);
+    await page.waitForSelector('.hw-end [data-act="hw-end"]');
+    db.slow = { focus_by_token: 800 };
+    await page.click('.hw-end [data-act="hw-end"][data-result="done"]');
+    await new Promise((r) => setTimeout(r, 150));
+    await page.$eval('.hw-end [data-act="hw-end"][data-result="done"]', (b) => b.click()).catch(() => {});
+    check('Step done ✓ twice on the end screen: one End, then its points line',
+      await until(async () => /^\+\d+ · \d+ minutes/.test(await hwText(page, '.hw-points-line'))) && endsSent(db) === 1, `${endsSent(db)} ${await hwText(page, '.hw-focus')}`);
+    db.slow = null;
+    await page.context().close();
+  }
+  {
+    // The wake lock follows the block, not the screen: kept while the ring runs on #homework, let go of when it
+    // runs out on the day view, not asked for again on an end screen whose ring ran out.
+    const held = async (pg) => { const r = await hwRec(pg); return r.wake.length - r.released; };
+    ({ page, db } = await open({ label: 'hw-wake', path: `/day.html?t=${JORDAN}`, db: hwDb(), device: HW_DEVICE, init: HW_STUBS }));
+    await page.click('.hw-card [data-act="hw-card-start"]');
+    await until(async () => (await page.evaluate(() => location.hash)) === '#focus' && !!(await page.$('.hw-ring')));
+    await page.click('.hw-head a.list-back[href="#homework"]');
+    await page.waitForSelector('.hw-tonight');
+    await hwPause(page);
+    await hwTick(page, db, 10 * 60 * 1000);
+    check('the wake lock: kept while the block runs, on #homework too', (await held(page)) === 1, JSON.stringify(await hwRec(page)));
+    await page.click('[data-act="hw-day"]');
+    await page.waitForSelector('.hw-card');
+    await hwTick(page, db, 11 * 60 * 1000);
+    check('the wake lock: let go of when the ring runs out, on the day view (not only on #focus)', (await held(page)) === 0, JSON.stringify(await hwRec(page)));
+    await page.click('.hw-card a.hw-card-focus');
+    await page.waitForSelector('.hw-end [data-act="hw-end"]');
+    await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+    await hwTick(page, db, 2000);
+    check('the wake lock: not asked for again on coming back to a block whose ring ran out', (await hwRec(page)).wake.length === 1 && (await held(page)) === 0, JSON.stringify(await hwRec(page)));
+    await page.context().close();
+    // A Start with no answer (503): the lock taken in the tap is let go of; a Start that works keeps its own.
+    const d = hwDb();
+    d.status = { focus_by_token: 503 };
+    ({ page, db } = await open({ label: 'hw-wake-503', path: `/day.html?t=${JORDAN}`, db: d, device: HW_DEVICE, init: HW_STUBS, allowConsole: /status of 503/ }));
+    await page.click('.hw-card [data-act="hw-card-start"]');
+    check('a Start answered 503: "Starting needs a connection." and the wake lock let go of',
+      (await hwToast(page)) === 'Starting needs a connection.' && await until(async () => (await held(page)) === 0), JSON.stringify(await hwRec(page)));
+    db.status = {};
+    await hwClear(page);
+    await page.click('.hw-card [data-act="hw-card-start"]');
+    check('…Start again: the lock taken again in the tap and kept for the block',
+      await until(async () => !!(await page.$('.hw-ring'))) && (await held(page)) === 1 && (await hwRec(page)).wake.length === 2, JSON.stringify(await hwRec(page)));
+    await page.context().close();
+  }
+  for (const first of ['smaller', 'ask']) {
+    // A block on an assignment with no plan (Start on a Tonight row) has no step: Make it smaller or Ask Pat
+    // first gives it one (Quick, the block's length; the block moves to it), then acts on that step.
+    ({ page, db } = await open({ label: `hw-noplan-${first}`, path: `/day.html?t=${JORDAN}#homework`, db: hwDb(), device: HW_DEVICE, init: HW_STUBS }));
+    await page.waitForSelector(`.hw-noplan[data-asg="${H.ws51}"]`);
+    await page.click(`.hw-noplan[data-asg="${H.ws51}"] [data-act="hw-asg-start"]`);
+    await until(async () => !!(await page.$('.hw-ring')));
+    const block = (calls(db, 'focus_by_token')[0] || {}).body.p_session;
+    await page.click('[data-act="hw-stuck"]');
+    if (first === 'smaller') {
+      await page.click('.hw-sheet [data-act="hw-smaller"]');
+      await page.click('.hw-sheet [data-chip="0"]');
+    } else {
+      await page.click('.hw-sheet [data-act="hw-ask"]');
+      await page.fill('.hw-sheet input[name="text"]', 'Do I show my work?');
+      await page.click('.hw-sheet [data-act="hw-sheet-send"]');
+    }
+    await until(() => calls(db, 'step_by_token').length === 1 && !!calls(db, 'step_by_token')[0].done);
+    await page.waitForTimeout(200);
+    const one = db.homework_steps.find((x) => x.assignment_id === H.ws51 && x.title === 'Worksheet 5.1');
+    const act = (calls(db, 'step_by_token')[0] || {}).body || {};
+    check(`stuck on a block with no plan (${first} first): Quick with the block's length, the block moved to that step, then ${first} on it`,
+      !!one && same(calls(db, 'assignment_by_token').map((c) => c.body), [{ p_token: JORDAN, p_action: 'quick', p_assignment: H.ws51, p_minutes: 20 }])
+      && same(calls(db, 'focus_by_token').slice(1).map((c) => c.body), [{ p_token: JORDAN, p_action: 'switch', p_session: block, p_step: one.id }])
+      && act.p_step === one.id && act.p_action === first && !(await page.$('.toast-error')),
+      JSON.stringify([db.calls.map((c) => [c.name, c.body.p_action, c.body.p_step]), await text(page, '.toasts')]));
+    if (first === 'smaller') {
+      check('... the block goes on with the smaller step', await until(async () => (await hwText(page, '.hw-focus-title')) === 'Write one sentence')
+        && db.focus_sessions.find((f) => f.id === block).step_id === act.p_key, await hwText(page, '.hw-focus-title'));
+    } else {
+      check('... his question is sent ("Question sent."), on the step', (await hwToast(page)) === 'Question sent.' && one.question === 'Do I show my work?', JSON.stringify(one));
+    }
+    await page.context().close();
+  }
+  {
+    // Make it smaller sent twice: a second tap while the first is on its way, and a tap again after a lost answer
+    // (the step was made). One key per sheet, so the server finds the step it made: one step, never two.
+    for (const how of ['twice', 'lost']) {
+      ({ page, db } = await open({ label: `hw-smaller-${how}`, path: `/day.html?t=${JORDAN}#homework`, db: hwDb(), device: HW_DEVICE, init: HW_STUBS, ctx: phone(),
+        allowConsole: /ERR_INTERNET_DISCONNECTED/ }));
+      await page.waitForSelector('.hw-now-card');
+      if (how === 'twice') db.slow = { step_by_token: 600 };
+      else db.loseAnswer = { step_by_token: 1 };
+      await page.click(`.hw-tonight .hw-step[data-step="${H.s2}"] [data-act="hw-more"]`);
+      await page.click(`.hw-step[data-step="${H.s2}"] .hw-menu [data-act="hw-smaller"]`);
+      await page.click('.hw-sheet [data-chip="0"]');
+      if (how === 'twice') await page.waitForTimeout(100);
+      else {
+        await until(() => calls(db, 'step_by_token').length === 1 && !!calls(db, 'step_by_token')[0].done);
+        check('Make it smaller with a lost answer: "Can\'t reach Home Hub", the sheet stays', /^Can't reach Home Hub/.test(await hwToast(page)) && !!(await page.$('.hw-sheet [data-chip="0"]')), await text(page, '.toasts'));
+      }
+      await page.click('.hw-sheet [data-chip="0"]', { timeout: 1000 }).catch(() => {});
+      await until(async () => calls(db, 'step_by_token').every((c) => c.done) && !(await page.$('.hw-sheet')));
+      db.slow = null;
+      const made = db.homework_steps.filter((x) => x.title === 'Write one sentence');
+      const keys = [...new Set(calls(db, 'step_by_token').map((c) => c.body.p_key))];
+      check(`Make it smaller, ${how === 'twice' ? 'tapped twice while the answer is on its way' : 'tapped again after a lost answer'}: one new step, one key, and it is Now`,
+        made.length === 1 && keys.length === 1 && made[0].id === keys[0] && (await hwText(page, '.hw-now-title')) === 'Write one sentence',
+        `steps=${made.length} keys=${JSON.stringify(keys)} now=${await hwText(page, '.hw-now-title')}`);
+      await page.context().close();
+    }
+  }
+  {
+    // Chime even on silent: navigator.audioSession is 'playback' just for the chime (from a moment before it until
+    // its last tone has played), not at Start; and never for a block stopped before its end.
+    const silentInit = `${HW_AUDIO} try { localStorage.setItem('homehub.myday.chime-silent', '1'); } catch (e) {}`;
+    ({ page, db } = await open({ label: 'hw-silent', path: `/day.html?t=${JORDAN}`, db: hwDb(), device: HW_DEVICE, init: silentInit, ctx: phone() }));
+    await page.click('.hw-card [data-act="hw-card-start"]');
+    await until(async () => !!(await page.$('.hw-ring')));
+    await hwPause(page);
+    check('Chime even on silent: nothing changed at Start (his music plays on)', !(await hwRec(page)).session.length, JSON.stringify((await hwRec(page)).session));
+    db.hwNow += 20 * 60 * 1000 + 3000;
+    await page.clock.runFor(20 * 60 * 1000 + 3000);
+    await page.waitForSelector('.hw-end', { timeout: 3000 });
+    let r = await hwRec(page);
+    const first = Math.min(...r.osc);
+    const last = Math.max(...r.tones.map((t) => t.stopAt || 0));
+    check('…"playback" from a moment before the chime, back to "auto" only once its last tone has played',
+      same(r.session.map((x) => x.type), ['playback', 'auto']) && r.session[0].at >= first - 3.5 && r.session[0].at <= first && r.session[1].at >= last - 0.001,
+      JSON.stringify({ session: r.session, first, last }));
+    await page.context().close();
+    ({ page, db } = await open({ label: 'hw-silent-stop', path: `/day.html?t=${JORDAN}`, db: hwDb(), device: HW_DEVICE, init: silentInit, ctx: phone() }));
+    await page.click('.hw-card [data-act="hw-card-start"]');
+    await until(async () => !!(await page.$('.hw-ring')));
+    await hwPause(page);
+    db.hwNow += 5 * 60 * 1000;
+    await page.clock.runFor(5 * 60 * 1000);
+    await page.click('[data-act="hw-stop"]');
+    await page.waitForSelector('.hw-points-line', { timeout: 3000 });
+    await page.clock.runFor(20 * 60 * 1000);
+    r = await hwRec(page);
+    check('…a block stopped before its end: never "playback"', !r.session.some((x) => x.type === 'playback'), JSON.stringify(r.session));
+    await page.context().close();
+  }
+  {
+    // The chime after time away: iOS stops a hidden page's audio clock, so the tones are set again on coming
+    // back (on the ring's end), called off when the ring ran out meanwhile, and made at the first tap after a reload.
+    const chimeIn = (pg) => pg.evaluate(() => window.__chimeIn());
+    ({ page, db } = await open({ label: 'hw-chime-away', path: `/day.html?t=${JORDAN}`, db: hwDb(), device: HW_DEVICE, init: HW_AUDIO, ctx: phone() }));
+    await page.click('.hw-card [data-act="hw-card-start"]');
+    await until(async () => !!(await page.$('.hw-ring')));
+    await hwPause(page);
+    check('the chime: set at Start for the ring\'s end (20 minutes)', Math.abs((await chimeIn(page)) - 1200) < 2, String(await chimeIn(page)));
+    await hwTick(page, db, 2 * 60 * 1000);
+    await page.evaluate(() => window.__hide());
+    await hwTick(page, db, 5 * 60 * 1000);
+    await page.evaluate(() => window.__show());
+    await until(async () => (await hwText(page, '.hw-left')) === '13 min');
+    await page.waitForTimeout(200);
+    check('back after 5 minutes away (the audio clock stood still): the chime set again for the ring\'s end, 13 minutes on', Math.abs((await chimeIn(page)) - 780) < 2,
+      String(await chimeIn(page)));
+    await page.evaluate(() => window.__hide());
+    await hwTick(page, db, 20 * 60 * 1000);
+    await page.evaluate(() => window.__show());
+    await page.waitForSelector('.hw-end', { timeout: 3000 });
+    await page.waitForTimeout(200);
+    const late = await chimeIn(page);
+    check('back after the ring ran out while away: the end screen, and no chime still to come', late === null || late <= 2, String(late));
+    await page.context().close();
+    ({ page, db } = await open({ label: 'hw-chime-reload', path: `/day.html?t=${JORDAN}`, db: hwDb(), device: HW_DEVICE, init: HW_AUDIO, ctx: phone() }));
+    await page.click('.hw-card [data-act="hw-card-start"]');
+    await until(async () => !!(await page.$('.hw-ring')));
+    await hwPause(page);
+    await hwTick(page, db, 3 * 60 * 1000);
+    await page.reload();
+    await page.waitForSelector('.hw-ring', { timeout: 5000 });
+    await hwPause(page);
+    check('a reload: no AudioContext until a tap', !(await hwRec(page)).ctx.length);
+    await page.click('[data-act="hw-stuck"]');
+    await page.click('.hw-sheet [data-act="hw-sheet-close"]');
+    await page.waitForTimeout(200);
+    const after = await hwRec(page);
+    check('…his first tap on #focus makes it (inside the tap) and sets the chime for the ring\'s end (17 minutes)',
+      after.ctx.length === 1 && after.audio.length === 1 && after.audio[0].active && after.osc.length === 2 && Math.abs((await chimeIn(page)) - 1020) < 2,
+      JSON.stringify({ audio: after.audio, osc: after.osc, chimeIn: await chimeIn(page) }));
+    await page.context().close();
+    // ... but a first tap that ends the block (Stop) sets no chime for it.
+    ({ page, db } = await open({ label: 'hw-chime-reload-stop', path: `/day.html?t=${JORDAN}`, db: hwDb(), device: HW_DEVICE, init: HW_AUDIO, ctx: phone() }));
+    await page.click('.hw-card [data-act="hw-card-start"]');
+    await until(async () => !!(await page.$('.hw-ring')));
+    await hwPause(page);
+    await hwTick(page, db, 3 * 60 * 1000);
+    await page.reload();
+    await page.waitForSelector('.hw-ring', { timeout: 5000 });
+    await hwPause(page);
+    await page.click('[data-act="hw-stop"]');
+    await page.waitForSelector('.hw-points-line', { timeout: 3000 });
+    await page.waitForTimeout(200);
+    check('…a first tap after a reload that is Stop: the block ends, and no chime is set for it', (await chimeIn(page)) === null, JSON.stringify((await hwRec(page)).osc));
+    await page.context().close();
+  }
+
+  // =====================================================================
   // 19. #points: the balance and "+9 today", asks, rewards, suggest, the last entries
   // =====================================================================
   {
@@ -2159,6 +2458,11 @@ const HW_STUBS = () => {
       [400, '22023', 'Choose 10, 15, 20 or 25 minutes.', 'Elige 10, 15, 20 o 25 minutos.'],
       [403, '42501', 'Plan this one with Pat.', 'Planéalo con Pat.'],
       [400, '22023', 'Set a homework time first.', 'Primero hay que poner un tiempo de tarea.'],
+      // His limits: retrying can't help, so never "Algo salió mal. Inténtalo de nuevo.".
+      [400, '22023', 'At most 20 steps.', 'Como mucho 20 pasos.'],
+      [400, 'P0001', 'Three asks are waiting already. Wait for a parent first.', 'Ya hay tres pedidos esperando. Espera primero a tus padres.'],
+      [400, 'P0001', 'Five suggestions are waiting already. Wait for a parent first.', 'Ya hay cinco propuestas esperando. Espera primero a tus padres.'],
+      [400, 'P0001', 'Fifteen of your own are open already.', 'Ya tienes quince tareas tuyas abiertas.'],
     ];
     for (const [status, code, msg, words] of msgs) {
       await hwClear(page);
@@ -2169,6 +2473,18 @@ const HW_STUBS = () => {
       check(`Spanish: "${msg}" → "${words}"`, shown === words, shown);
       await page.waitForTimeout(50);
     }
+    // Not today to a day past tomorrow (Tuesday's homework time is full): "Pasado al mié", as plan.js's t()
+    // says it ("a el" → "al").
+    await hwClear(page);
+    db.hwError = null;
+    db.hwBusy[P.jordan]['2026-11-03'] = [{ starts: '16:00', ends: '18:00', title: 'Piano' }];
+    const movedCalls = calls(db, 'step_by_token').length;
+    await page.click(`.hw-tonight .hw-step[data-step="${H.s1}"] [data-act="hw-more"]`);
+    await page.click(`.hw-step[data-step="${H.s1}"] .hw-menu [data-act="hw-not-today"]`);
+    await until(() => calls(db, 'step_by_token').length === movedCalls + 1 && !!calls(db, 'step_by_token').slice(-1)[0].done);
+    const movedEs = await hwToast(page);
+    check('Spanish Not today to Wednesday: "Pasado al mié" (a + el → al), never "a el"',
+      db.homework_steps.find((x) => x.id === H.s1).day === '2026-11-04' && movedEs === 'Pasado al mié', `${movedEs} | ${db.homework_steps.find((x) => x.id === H.s1).day}`);
     await page.context().close();
   }
   {

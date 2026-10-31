@@ -4,7 +4,8 @@
 // for whichever email typed the code 123456.
 //
 //   /rest/v1/<table>      GET (select=*|cols, eq/neq/gt/gte/lt/lte/like/ilike/is/in/cs/cd/ov and not.*,
-//                         order, limit, offset; Accept: application/vnd.pgrst.object+json), POST (insert,
+//                         order, limit, offset, at most 1,000 rows as Supabase's API answers; Accept:
+//                         application/vnd.pgrst.object+json), POST (insert,
 //                         Prefer: return=representation|minimal, resolution=merge-duplicates|ignore-duplicates
 //                         with on_conflict, the columns parameter), PATCH, DELETE
 //   /rest/v1/rpc/<fn>     POST (or GET) with named arguments, shaped as PostgREST shapes them: a scalar, an
@@ -290,6 +291,7 @@ function parsePrefer(h) {
 // Server
 // ---------------------------------------------------------------------
 async function start(opts = {}) {
+  const maxRows = opts.maxRows !== undefined ? opts.maxRows : Number(process.env.REALDB_MAX_ROWS || 1000);
   const db = await connect({ socketDir: opts.socket, port: opts.port, database: opts.db });
   let cache = await loadCache(db);
   const roots = Object.assign({ '/': REPO }, opts.roots || {});
@@ -365,7 +367,11 @@ async function start(opts = {}) {
 
     if (method === 'GET' || method === 'HEAD') {
       const sel = selectSql(cache, name, sp.get('select'));
-      const limit = sp.get('limit') != null ? `limit ${Number(sp.get('limit'))}` : '';
+      // Supabase's API "Max rows" (PostgREST's db-max-rows, 1,000 unless changed): a read is cut to it, with
+      // no error, whatever limit it asks for. opts.maxRows (null: no cap) or REALDB_MAX_ROWS sets another.
+      const want = sp.get('limit') != null ? Number(sp.get('limit')) : null;
+      const cut = maxRows == null ? want : want == null ? maxRows : Math.min(want, maxRows);
+      const limit = cut != null ? `limit ${cut}` : '';
       const offset = sp.get('offset') != null ? `offset ${Number(sp.get('offset'))}` : '';
       const sql = `select coalesce(json_agg(_t), '[]')::text, count(_t) from (select ${sel} from ${T} ${whereSql(cache, name, T, params)} ${orderSql(cache, name, sp.get('order'))} ${limit} ${offset}) _t`;
       const out = await tx({ ...ident0, readOnly: true, method, reqPath: url.pathname }, async (run) => {

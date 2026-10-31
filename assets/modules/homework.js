@@ -148,6 +148,23 @@
   // ============================================
   const A_COLS = 'id,kid_id,kind,added_by,title,subject,due_date,details,stretch,status,done_at,given_at,given_by,plan_rev,created_at,created_by,updated_at,updated_by';
 
+  // Every row a read matches, page by page. The API answers at most its "Max rows" (Supabase's Settings
+  // → API, 1,000 unless changed) and cuts the rest without an error, and his points ledger is never
+  // trimmed (his balance is the sum of all of it). build() makes the read afresh, ordered oldest first
+  // and ending in a unique column, so a row written between two pages lands on the last one; pages until
+  // one comes back empty (or brings nothing new), whatever the cap is. (today.js has the same.)
+  async function readAll(build) {
+    const out = [];
+    const seen = new Set();
+    for (let from = 0; ;) {
+      const page = (await q(build().range(from, from + 999))) || [];
+      const fresh = page.filter((r) => !seen.has(r.id));
+      if (!fresh.length) return out;
+      fresh.forEach((r) => { seen.add(r.id); out.push(r); });
+      from += page.length;
+    }
+  }
+
   // His week from today, 56 days (the editor's day picker, the bars' time left, the strip). Never throws.
   async function readWeek(kid, today) {
     try {
@@ -183,7 +200,8 @@
         ids.length ? q(sb().from('events').select('id,title,start_date,start_time,end_time,repeat,repeat_weekdays,repeat_until').in('id', ids)) : Promise.resolve([]),
         q(sb().from('assignments').select(A_COLS).eq('kid_id', kid).order('due_date')),
         q(sb().from('focus_sessions').select('*').eq('kid_id', kid).order('started_at', { ascending: false })),
-        q(sb().from('points_ledger').select('*').eq('kid_id', kid).order('at', { ascending: false })),
+        // All of his rows (the balance is their sum), shown newest first.
+        readAll(() => sb().from('points_ledger').select('*').eq('kid_id', kid).order('at').order('id')).then((rows) => rows.reverse()),
         q(sb().from('rewards').select('*').eq('kid_id', kid).order('sort_order').order('cost')),
         q(sb().from('reward_asks').select('*').eq('kid_id', kid).order('asked_at', { ascending: false })),
         readWeek(kid, today),
@@ -341,7 +359,7 @@
     const f = st.form;
     if (!f || f.key !== key) return '';
     const spec = {
-      decline: ['A word for him (optional)', 'Not now', LEN.note, 'text'],
+      decline: ['A word for him (optional)', 'Not now', LEN.decline, 'text'],
       check: ['Say what\'s good about it (optional)', 'Looks done', LEN.note, 'text'],
       not_yet: ['Say what\'s missing', 'Not yet', LEN.note, 'text'],
       answer: ['Your answer', 'Answer', LEN.answer, 'text'],
@@ -636,6 +654,7 @@
     }
     const y = window.scrollY;
     main.innerHTML = `<div class="hw-page">${head}${kidLine(st)}${st.failed ? '' : setupHTML(st)}${body}</div>`;
+    st.typing = false;   // the homework time, rewards, points values and link forms are drawn afresh from what was read
     if (window.scrollY !== y) window.scrollTo(window.scrollX, y);
     const input = st.form && main.querySelector(`form[data-key="${CSS.escape(st.form.key)}"] input, form[data-link] input[name="label"]`);
     if (input && st.form.focus) { input.focus(); st.form.focus = false; }
@@ -872,11 +891,20 @@
     return write(st, () => saveKid(st, patch), () => toast('Saved'));
   }
 
+  // Yes or Not now on his ask. An ask already decided (the other parent, or Today, a moment ago) or that
+  // he cancelled comes back as it is, with no error: the toast says what it is, not what was tapped.
   function decide(st, askId, approve, note) {
     const x = st.asks.find((a) => a.id === askId);
-    return write(st, () => run(approve ? sb().rpc('decide_reward', { p_ask: askId, p_approve: true })
-      : sb().rpc('decide_reward', { p_ask: askId, p_approve: false, p_note: note || null })),
-      () => toast(approve ? `Yes: ${x ? x.title : 'the reward'} for ${kidName(st)}` : `Not now: ${x ? x.title : 'the reward'}`));
+    const what = x ? x.title : 'the reward';
+    let was = null;
+    return write(st, async () => {
+      const res = await run(approve ? sb().rpc('decide_reward', { p_ask: askId, p_approve: true })
+        : sb().rpc('decide_reward', { p_ask: askId, p_approve: false, p_note: note || null }));
+      was = res && res.ask && res.ask.status;
+    }, () => toast(was === 'approved' && !approve ? `Already approved: ${what}`
+      : was === 'declined' && approve ? `Already answered Not now: ${what}`
+        : was === 'cancelled' ? `${v2.person(st.kid) ? kidName(st) : 'He'} cancelled that ask: ${what}`
+          : approve ? `Yes: ${what} for ${kidName(st)}` : `Not now: ${what}`));
   }
 
   function stepAction(st, stepId, action, text) {
@@ -908,7 +936,7 @@
         if (!rows || !rows.length) throw new Error('That suggestion is gone.');
       }, () => toast('Priced. He can ask for it now.'));
     }
-    const max = f.action === 'answer' ? LEN.answer : LEN.note;
+    const max = f.action === 'answer' ? LEN.answer : f.action === 'decline' ? LEN.decline : LEN.note;
     const text = P.clean(form.elements.text.value, max + 1);
     if (Array.from(text).length > max) return fail('That\'s too long.');
     if (f.action === 'not_yet' && !text) return fail('Say what\'s missing.');
@@ -1126,16 +1154,31 @@
       st.fieldsDirty = false;
       if (!('due_date' in patch) && !('kind' in patch)) return;
       // The steps not done that now fall after the last work day (or the turn-in off the due date) go
-      // without a day, so the database places them again.
-      const steps = stepsOf(st, a.id);
+      // without a day, so the database places them again. The list is the plan as it is now, not the
+      // page's copy (Jordan or Pat may have changed it since the page read it): its plan_rev is read
+      // first, then its steps, and that plan_rev is sent, so a step added, moved or changed since the
+      // page's read is kept, and a change made between the two reads gets the save refused (§4.4), and
+      // read again once, rather than undone. Done steps go without a day: the database keeps them as
+      // they are whatever the list says (§4.4), and one ticked early can sit after a due date moved
+      // before it.
       const last = P.lastWorkDay(next.due_date, st.today, next.kind);
       const behind = (s) => !s.done_at && (s.kind === 'turn_in' ? s.day !== next.due_date : s.day > last || (s.day >= next.due_date && next.kind !== 'lesson'));
-      if (!steps.some(behind)) return;
-      const fresh = (await q(sb().from('assignments').select('plan_rev').eq('id', a.id)))[0];
-      const list = steps.map((s) => ({ id: s.id, kind: s.kind, title: s.title, done_looks_like: s.done_looks_like || null, minutes: s.minutes,
-        day: behind(s) ? null : s.day, source: s.source }));
-      moved = list.filter((s) => s.day === null).length;
-      const { error } = await sb().rpc('save_homework_plan', { p_assignment: a.id, p_steps: list, p_rev: fresh ? fresh.plan_rev : a.plan_rev, p_give: false });
+      const placeAgain = async () => {
+        const fresh = (await q(sb().from('assignments').select('plan_rev').eq('id', a.id)))[0];
+        if (!fresh) return { error: null, n: 0 };
+        const steps = ((await q(sb().from('homework_steps').select('*').eq('assignment_id', a.id).order('pos'))) || [])
+          .sort((x, y) => x.pos - y.pos || (x.id < y.id ? -1 : 1));
+        const n = steps.filter(behind).length;
+        if (!n) return { error: null, n: 0 };
+        const list = steps.map((s) => ({ id: s.id, kind: s.kind, title: s.title, done_looks_like: s.done_looks_like || null, minutes: s.minutes,
+          day: s.done_at || behind(s) ? null : s.day, source: s.source }));
+        const { error } = await sb().rpc('save_homework_plan', { p_assignment: a.id, p_steps: list, p_rev: fresh.plan_rev, p_give: false });
+        return { error, n };
+      };
+      let r = await placeAgain();
+      if (r.error && r.error.code === 'P0001' && /changed since you opened it/i.test(r.error.message || '')) r = await placeAgain();
+      const { error } = r;
+      moved = r.n;
       if (error) {
         moved = 0;
         toast(`Saved, but the steps weren't placed again: ${hwError(error)}`, { error: true });
@@ -1183,7 +1226,7 @@
   // ============================================
   function onClick(st, e) {
     const chip = e.target.closest('[data-wd]');
-    if (chip && st.main.contains(chip)) { chip.setAttribute('aria-pressed', String(chip.getAttribute('aria-pressed') !== 'true')); return; }
+    if (chip && st.main.contains(chip)) { chip.setAttribute('aria-pressed', String(chip.getAttribute('aria-pressed') !== 'true')); st.typing = true; return; }
     const act = e.target.closest('[data-act]');
     if (!act || !st.main.contains(act) || act.closest('[data-ref="editor"]')) return;
     const d = act.dataset;
@@ -1269,7 +1312,8 @@
   // ============================================
   async function renderHomework(main, ctx) {
     const st = { main, ctx, params: ctx.params, today: dates.today(), kids: [], kid: null, row: null, times: [], links: [], events: [], assignments: [], steps: [],
-      sessions: [], ledger: [], rewards: [], asks: [], week: [], weekFailed: false, loaded: false, failed: false, busy: false, form: null, editor: null, fieldsDirty: false };
+      sessions: [], ledger: [], rewards: [], asks: [], week: [], weekFailed: false, loaded: false, failed: false, busy: false, form: null, editor: null, fieldsDirty: false,
+      typing: false };
     ctx.signal.addEventListener('abort', () => stopEditor(st));
     main.innerHTML = '<p class="loading">Loading…</p>';
     main.addEventListener('click', (e) => onClick(st, e), { signal: ctx.signal });
@@ -1278,6 +1322,7 @@
       const x = e.target;
       if (x.closest('[data-ref="editor"]')) return;
       if (st.form && x.closest('form.hw-note, form.hw-price')) st.form.text = x.value;
+      if (x.closest('form[data-form]')) st.typing = true;   // the homework time, rewards, points values and link forms
       if (x.closest('form.hw-afields')) {
         st.fieldsDirty = true;
         if (x.name === 'kind') x.closest('form').classList.toggle('is-lesson', x.value === 'lesson');
@@ -1289,11 +1334,12 @@
       if (x.name === 'kid' && x.tagName === 'SELECT') { chosen = x.value; st.form = null; reload(st); return; }
       if (x.dataset.act === 'kid-on') { write(st, () => run(sb().rpc('save_homework_kid', { p_kid: st.kid, p_active: x.checked })), () => toast(x.checked ? `Homework is on for ${kidName(st)}` : `Homework is off for ${kidName(st)}`)); return; }
       if (x.dataset.act === 'points-on') { write(st, () => saveKid(st, { points_on: x.checked }), () => toast(x.checked ? 'Points are on' : 'Points are off')); return; }
+      if (x.closest('form[data-form]')) st.typing = true;
       if (x.closest('form.hw-afields')) st.fieldsDirty = true;
     }, { signal: ctx.signal });
-    // On focus: read again, unless something is being typed.
+    // On focus: read again, unless something is being typed (st.typing: the forms drawList draws afresh).
     window.addEventListener('focus', () => {
-      if (ctx.stale() || st.busy || st.fieldsDirty || (st.form && st.form.text) || (st.editor && st.editor.dirty())) return;
+      if (ctx.stale() || st.busy || st.fieldsDirty || st.typing || (st.form && st.form.text) || (st.editor && st.editor.dirty())) return;
       reload(st, true);
     }, { signal: ctx.signal });
     await reload(st);

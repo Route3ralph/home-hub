@@ -13,7 +13,11 @@
 // blocks); Points and rewards (Give points, Void, a reward added); the switches (homework on, points
 // and their values with both caps, homework time, Pat's link: Copy · WhatsApp · Text · New link · Off
 // · Extend; Erase asks for ERASE); Sam sees everything with no buttons; a hostile title and text drawn
-// as text; nothing about the AI; phones and desktops, light and dark.
+// as text; nothing about the AI; phones and desktops, light and dark. Also: a ledger past the API's 1,000
+// rows read page by page; Not now's word at most 120; a Yes on an ask answered elsewhere says so; a
+// moved due date placed again from the plan as it is now (Jordan's changes kept, a change during the
+// save refused once and read again, a step ticked early sent without a day); a focus read never wipes
+// what is being typed in the rewards, link and points-values forms.
 //
 // mock.js has the tables and the signed-in functions (withHomework, homeworkRpc) with the migration's
 // rules and shapes. The other v2 pages are small stubs. The household's clock is Thu Nov 5 2026,
@@ -306,6 +310,13 @@ const emailOf = (req) => {
   check('then "Add 3 rewards" in three sizes (about 15, 60 and 150)', same(rw.map((r) => r[1]), ['15', '60', '150']) && rw.every((r) => r[0].length > 3), JSON.stringify(rw));
   const titles = ['15 minutes of extra game time', 'Choose Friday\'s dinner', 'A new book'];
   for (let i = 0; i < 3; i++) await page.fill(`.hw-setup form[data-form="rewards"] .hw-rw:nth-child(${i + 1}) [name="title"]`, titles[i]);
+  // A window focus (back from asking Jordan what he'd like) while they are being typed: no read, nothing lost.
+  const typedReads = log.length;
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await sleep(400);
+  const kept = await page.$$eval('.hw-setup form[data-form="rewards"] [name="title"]', (is) => is.map((i) => i.value)).catch(() => []);
+  check('a window focus while the rewards are typed: no read, the titles stay', same(kept, titles) && !log.slice(typedReads).some((l) => /^GET \/rest\/v1\/homework_kids/.test(l)),
+    JSON.stringify([kept, log.slice(typedReads)]));
   await page.click('.hw-setup form[data-form="rewards"] button[type="submit"]');
   await settle(page);
   const rpost = writes(db, 'rewards', 'POST')[0] || {};
@@ -343,6 +354,17 @@ const emailOf = (req) => {
     await tc(page, '.hw-ask .hw-ask-line'));
   check('his suggestion: "Suggested by Jordan: "Skip one chore"" with Price it', (await tc(page, '.hw-sugg .hw-sugg-line')) === 'Suggested by Jordan: “Skip one chore”'
     && !!(await page.$('.hw-sugg [data-act="price"]')), await tc(page, '.hw-sugg'));
+  // Not now's word is at most 120 characters, as decide_reward and reward_asks.note allow (a note on a step may be 160).
+  await page.click('.hw-ask [data-act="not-now"]');
+  check('Not now: the word box takes at most 120 characters, as decide_reward does', (await page.getAttribute('.hw-ask form.hw-note [name="text"]', 'maxlength')) === '120',
+    await page.getAttribute('.hw-ask form.hw-note [name="text"]', 'maxlength'));
+  await page.$eval('.hw-ask form.hw-note [name="text"]', (e) => { e.value = 'A'.repeat(121); });
+  await page.click('.hw-ask form.hw-note button[type="submit"]');
+  await sleep(150);
+  check('... and a 121-character word says "That\'s too long." under the box, with no call; the ask still waits', !calls(db, 'decide_reward').length
+    && (await tc(page, '.hw-ask form.hw-note .form-error')) === 'That\'s too long.' && db.reward_asks[0].status === 'waiting',
+    JSON.stringify([calls(db, 'decide_reward').length, await tc(page, '.hw-ask form.hw-note .form-error'), await lastToast(page)]));
+  await page.click('.hw-ask form.hw-note [data-act="cancel-note"]');
   await page.click('.hw-ask [data-act="not-now"]');
   await page.fill('.hw-ask form.hw-note [name="text"]', 'Not on a school night');
   await page.click('.hw-ask form.hw-note button[type="submit"]');
@@ -351,6 +373,17 @@ const emailOf = (req) => {
     && db.reward_asks[0].status === 'declined' && !(await page.$('.hw-ask')), JSON.stringify(lastCall(db, 'decide_reward').body));
   db.reward_asks[0].status = 'waiting';
   db.reward_asks[0].note = null;
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await until(page, () => !!document.querySelector('.hw-ask'));
+  // Morgan answers Not now on her phone; this page still shows the ask. Yes here: the database keeps her
+  // answer (as it is, no error), and the toast says so, not "Yes".
+  Object.assign(db.reward_asks[0], { status: 'declined', decided_at: at(TODAY, '15:09'), decided_by: 'morgan@example.com' });
+  await page.click('.hw-ask [data-act="yes"]');
+  await settle(page);
+  check('Yes on an ask already answered Not now elsewhere: "Already answered Not now: Pick the movie", no trade, the ask goes',
+    (await lastToast(page)) === 'Already answered Not now: Pick the movie' && !db.points_ledger.some((l) => l.kind === 'trade') && !(await page.$('.hw-ask')),
+    JSON.stringify([await toasts(page), db.reward_asks[0].status]));
+  Object.assign(db.reward_asks[0], { status: 'waiting', decided_at: null, decided_by: null });
   await page.evaluate(() => window.dispatchEvent(new Event('focus')));
   await until(page, () => !!document.querySelector('.hw-ask'));
   await page.click('.hw-ask [data-act="yes"]');
@@ -501,6 +534,23 @@ const emailOf = (req) => {
   await settle(page);
   check('Off: save_tutor_link with p_active false; the row says Off', lastCall(db, 'save_tutor_link').body.p_active === false && /Off/.test(await tc(page, '.hw-link .hw-link-meta'))
     && !!(await page.$('.hw-link [data-act="link-on"]')), await tc(page, '.hw-link .hw-link-meta'));
+  // A window focus while a new link's name and a points value are being typed: no read, both kept; after
+  // Cancel, a focus reads again.
+  let weekReads = calls(db, 'homework_week').length;
+  await page.click('[data-act="add-link"]');
+  await page.fill('form[data-form="link"] [name="label"]', 'Morgan Example, tutor');
+  await page.fill('form[data-form="values"] [name="pts_on_time"]', '7');
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await sleep(400);
+  check('a window focus while a link\'s name and a points value are typed: no read, both kept', calls(db, 'homework_week').length === weekReads
+    && (await page.inputValue('form[data-form="link"] [name="label"]').catch(() => '')) === 'Morgan Example, tutor'
+    && (await page.inputValue('form[data-form="values"] [name="pts_on_time"]').catch(() => '')) === '7', `reads ${weekReads}->${calls(db, 'homework_week').length}`);
+  await page.click('form[data-form="link"] [data-act="cancel-note"]');
+  weekReads = calls(db, 'homework_week').length;
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await settle(page);
+  check('... after Cancel, a window focus reads again', calls(db, 'homework_week').length === weekReads + 1 && (await page.inputValue('form[data-form="values"] [name="pts_on_time"]')) === '5',
+    `reads ${weekReads}->${calls(db, 'homework_week').length}`);
   // Points values and both caps, saved with the updated_at check.
   await page.fill('form[data-form="values"] [name="pts_day_cap"]', '25');
   await page.fill('form[data-form="values"] [name="pts_milestone_week"]', '60');
@@ -535,6 +585,25 @@ const emailOf = (req) => {
     && same(await texts(page, '.hw-setup [data-act="turn-on"]'), ['Turn on homework for Jordan']) && db.events.length === 3, JSON.stringify(lastCall(db, 'erase_homework').body));
   check('nothing on the page mentions the AI (that comes with PR B)', !/\bAI\b|Claude|Anthropic/.test(await text(page, 'body')));
   await page.context().close();
+
+  // A ledger past the API's 1,000 rows (he never loses a row: about two school years of homework): 1,200
+  // older +1s before this week's. The kid line, To approve and the points line count every row; Recent
+  // is still the newest ten.
+  {
+    const long = fullDb();
+    long.points_ledger.unshift(...Array.from({ length: 1200 }, (x, i) => { const day = addDays('2025-01-06', Math.floor(i / 4));
+      return ledgerRow({ kid_id: ID.jordan, at: at(day, `1${6 + (i % 4)}:00`), day, kind: 'focus', delta: 1, note: 'Old block' }); }));
+    ({ page, db, log } = await open({ label: 'long', db: long }));
+    const pages = log.filter((l) => /^GET \/rest\/v1\/points_ledger\?/.test(l)).map(decodeURIComponent);
+    check('1,212 ledger rows (past the API\'s 1,000): "Jordan · 1318 points", "balance 1318 (this week: +31 focus and on time, +20 milestones checked by Pat)", "1318 ·", Recent the newest',
+      (await tc(page, '.hw-kidline')).startsWith('Jordan · 1318 points ·')
+      && (await tc(page, '.hw-ask .hw-ask-line')) === 'Pick the movie · 100 · asked yesterday · balance 1318 (this week: +31 focus and on time, +20 milestones checked by Pat)'
+      && (await tc(page, '.hw-points-line')).startsWith('1318 ·') && (await texts(page, '.hw-ledger li .hw-ledger-line'))[0] === '+2 Focus · Worksheet 5.1 · today',
+      JSON.stringify([await tc(page, '.hw-kidline'), await tc(page, '.hw-ask .hw-ask-line'), await tc(page, '.hw-points-line'), (await texts(page, '.hw-ledger li .hw-ledger-line'))[0]]));
+    check('... read a page at a time, oldest first, until an empty page', same(pages.map((l) => l.replace(/^GET \/rest\/v1\/points_ledger\?/, '')),
+      [0, 1000, 1212].map((n) => `select=*&kid_id=eq.${ID.jordan}&order=at.asc,id.asc&offset=${n}&limit=1000`)), JSON.stringify(pages.map((l) => l.replace(/^.*\?/, ''))));
+    await page.context().close();
+  }
 
   // =====================================================================
   // 3. Homework off, points off
@@ -703,6 +772,83 @@ const emailOf = (req) => {
   check('its blocks: day, length, with whom, result, his note', ablocks.length === 4 && ablocks.includes('Tue Nov 3 4:35pm · 20 min · with Pat · Step done · Find 2 sources and save their links'), JSON.stringify(ablocks));
   check('the page shows no AI part', !/\bAI\b|Claude|Anthropic/.test(await text(page, 'body')));
   await page.context().close();
+
+  // A moved due date places again from the plan as it is now, not the page's copy: while the date is
+  // being typed, Jordan makes a step smaller and moves one with Not today on his phone (plan_rev 7 → 9).
+  // His new step and his move are kept; only the steps the new date leaves behind are placed again.
+  ({ page, db } = await open({ label: 'sci-due', path: `/#/homework/${SCI}` }));
+  {
+    const sci = db.assignments.find((a) => a.id === SCI);
+    const mine = () => db.homework_steps.filter((s) => s.assignment_id === SCI).sort((a, b) => a.pos - b.pos);
+    await page.fill('form.hw-afields [name="due_date"]', '2026-11-12');
+    const first = mine().find((s) => s.title === 'Draft the first half');
+    mine().filter((s) => s.pos >= first.pos).forEach((s) => { s.pos += 1; });
+    db.homework_steps.push(stepRow({ assignment_id: SCI, pos: first.pos - 1, title: 'Write the first sentence', minutes: 10, day: TODAY, source: 'typed', updated_by: KID }));
+    Object.assign(mine().find((s) => s.title === 'Draft the second half'), { day: '2026-11-10', moved_from: '2026-11-09' });
+    sci.plan_rev += 2;
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));   // held back: the fields are being edited
+    await page.click('form.hw-afields button[type="submit"]');
+    await settle(page);
+    const sent = lastCall(db, 'save_homework_plan').body || {};
+    const after = mine();
+    check('a moved due date after Jordan changed the plan: sent with plan_rev 9 and his new step; his step and his Not today kept; only the turn-in placed again',
+      sent.p_rev === 9 && (sent.p_steps || []).some((x) => x.title === 'Write the first sentence') && after.some((x) => x.title === 'Write the first sentence')
+      && after.find((x) => x.title === 'Draft the second half').day === '2026-11-10' && after.find((x) => x.kind === 'turn_in').day === '2026-11-12'
+      && /1 step moved: due date changed/.test((await toasts(page)).join(' | ')),
+      JSON.stringify([sent.p_rev, (await toasts(page)).join(' | '), after.map((x) => `${x.title}@${x.day}`)]));
+  }
+  await page.context().close();
+  // ... and a change made between that read and the save (plan_rev moves on once more) is refused once,
+  // read again and kept: never undone.
+  ({ page, db } = await open({ label: 'sci-race', path: `/#/homework/${SCI}`, allowConsole: /status of 400/ }));
+  {
+    const sci = db.assignments.find((a) => a.id === SCI);
+    let raced = false;
+    await page.route('**/rest/v1/rpc/save_homework_plan', async (route) => {
+      if (route.request().method() === 'POST' && !raced) {
+        raced = true;
+        const last = db.homework_steps.filter((s) => s.assignment_id === SCI).sort((a, b) => a.pos - b.pos).slice(-1)[0];
+        last.pos += 1;
+        db.homework_steps.push(stepRow({ assignment_id: SCI, pos: last.pos - 1, title: 'Read it aloud once', minutes: 10, day: '2026-11-09', source: 'typed', updated_by: PAT }));
+        sci.plan_rev += 1;
+      }
+      return route.fallback();
+    });
+    await page.fill('form.hw-afields [name="due_date"]', '2026-11-12');
+    await page.click('form.hw-afields button[type="submit"]');
+    await settle(page);
+    const saves = calls(db, 'save_homework_plan');
+    check('a change landing during the save: refused once (plan_rev), read again, saved with it kept',
+      saves.length === 2 && saves[1].body.p_rev === 8 && saves[1].body.p_steps.some((x) => x.title === 'Read it aloud once')
+      && db.homework_steps.some((x) => x.assignment_id === SCI && x.title === 'Read it aloud once')
+      && db.homework_steps.find((x) => x.assignment_id === SCI && x.kind === 'turn_in').day === '2026-11-12' && /steps? moved: due date changed/.test((await toasts(page)).join(' | ')),
+      JSON.stringify([saves.map((c) => c.body.p_rev), (await toasts(page)).join(' | ')]));
+  }
+  await page.context().close();
+  // A step ticked early, then a due date moved before its day: the done step goes without a day (the
+  // database keeps it as it is), so the plan can still be saved, from the fields and from the editor.
+  {
+    const d = fullDb();
+    Object.assign(d.homework_steps.find((x) => x.title === 'Draft the second half'), { done_at: at(TODAY, '15:00'), done_by: KID });   // its day: Mon Nov 9
+    ({ page, db } = await open({ label: 'early-tick', db: d, path: `/#/homework/${SCI}` }));
+    const doneIds = new Set(db.homework_steps.filter((x) => x.assignment_id === SCI && x.done_at).map((x) => x.id));
+    await page.fill('form.hw-afields [name="due_date"]', '2026-11-08');
+    await page.click('form.hw-afields button[type="submit"]');
+    await settle(page);
+    const sent = (lastCall(db, 'save_homework_plan').body || {}).p_steps || [];
+    const open2 = db.homework_steps.filter((x) => x.assignment_id === SCI && !x.done_at);
+    check('a due date moved before a step ticked early: done steps sent without a day; "2 steps moved: due date changed"; nothing open after Sun Nov 8',
+      sent.length === 8 && sent.filter((x) => doneIds.has(x.id)).every((x) => x.day === null) && (await toasts(page)).some((x) => x === '2 steps moved: due date changed')
+      && open2.every((x) => x.day <= '2026-11-08') && db.homework_steps.find((x) => x.title === 'Draft the second half').day === '2026-11-09',
+      JSON.stringify([(await toasts(page)).join(' | '), open2.map((x) => x.day)]));
+    const before = calls(db, 'save_homework_plan').length;
+    await page.click(`${ED} [data-act="place"]`);
+    await settle(page);
+    const placed = lastCall(db, 'save_homework_plan').body || {};
+    check('... and the editor\'s Place again saves too, its done steps without a day', calls(db, 'save_homework_plan').length === before + 1 && !(await tc(page, `${ED} .plan-msg`))
+      && (placed.p_steps || []).filter((x) => doneIds.has(x.id)).length === 4 && placed.p_steps.every((x) => x.day === null), await tc(page, `${ED} .plan-msg`));
+    await page.context().close();
+  }
 
   // =====================================================================
   // 5. Sam reads it all, with no buttons
