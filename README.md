@@ -112,6 +112,10 @@ It is help with starting, timing and planning that suits any kid. Nothing in the
 - **Switches:** homework on or off, points on or off and their values (with the instant rewards a day and the focus length offered first), the tutor's link (**Copy**, **WhatsApp**, **Text**, **New link**, **Off**, **Extend 180 days**, **Can ask the AI**), the [AI planner](#the-ai-planner-v13-optional), and **Erase Jordan's homework** (type ERASE; the homework-time events stay on the calendar, and Erase also deletes his AI run records).
 - Sam sees all of it, read-only. Taylor's link shows none of it.
 
+**Seeing the weeks (timelines)** — for assignments that run two weeks or more, with milestones. Nothing to turn on: it comes with the pages ([§21](docs/v1.3-homework.md#21-timelines-no-migration)).
+- **The parents and Pat:** **Next 3 weeks**, every open assignment as a bar from its first step to its due date, the done part filled, milestones as diamonds, the due date a flag, today a line (on the Homework page between Assignments and lessons and This week; at the top of Assignments on Pat's link). Each bar opens its assignment, where a **chart** above the plan shows every step on its day, grouped by milestone, with the days without homework time shaded.
+- **Jordan:** a simple **path** instead, under Tonight on his homework screen, for each plan due 4 or more days out or with a milestone: a dot a day to the due date, flags on his milestones, today highlighted, and one line on top: "Next flag: Outline · Thu (3 days)". Tapping it opens his plan with the path at the top. It never says "late".
+
 **Points**
 
 | What | Points |
@@ -461,7 +465,7 @@ Never commit the token. The rules for changing the repo (tests, migrations, depl
 | `index.html`, `assets/hub.js` | The private hub: `hub.js` is the core (sign-in, the shell and bottom bar, forms, data access, messages, toasts, the shared v2 pieces) |
 | `assets/modules/` | The hub's pages, one file each. v2: `today.js`, `calendar.js`, `tasks.js`, `projects.js` (v1 and v2), `directory.js`, `people.js` (Family), `settings.js`; v1.2: `food.js` (Food); v1.3: `homework.js` (Homework). v1: `home.js`, `contractors.js`, `family.js`. Each page shows only for the database version it was made for |
 | `assets/shoplist.js` | The shopping list's shared pieces, for the Food page and My day: aisles in English and Spanish, grouping, and the outbox that keeps changes on the phone until they are sent |
-| `assets/plan.js` | Homework's shared pieces, for the Homework page, My day and the tutor link: the plan editor, the starter plans, the week strip and the two bars, the timer's arithmetic, the tutor's view, and their words in English and Spanish |
+| `assets/plan.js` | Homework's shared pieces, for the Homework page, My day and the tutor link: the plan editor, the starter plans, the week strip and the two bars, the timelines (Next 3 weeks, an assignment's chart, Jordan's path), the timer's arithmetic, the tutor's view, and their words in English and Spanish |
 | `assets/styles.css`, `assets/css/` | Styles with automatic light and dark mode: the shared ones, then one file per v2 page (`food.css` for Food; `plan.css` and `homework.css` for Homework) |
 | `day.html`, `assets/day.js` | The public My day page for kids and helpers (no sign-in; the link carries the person's code), with the helper's shopping list (`#list`) and a kid's homework (`#homework`, `#focus`, `#points`); and the tutor's link (`day.html?h=…`), which shows one kid's homework only |
 | `share.html` | The public, read-only project page |

@@ -10,6 +10,14 @@
 //            on their days, the due date a flag, its label for screen readers), a link to its page; there, its chart
 //            above the plan editor (Mon Nov 2 to Mon Nov 16, a row per phase, the done step filled, Fri–Sun without
 //            homework time shaded from homework_week's real rows); a phone with no sideways scroll; no request fails.
+//   jordan   his My day (homework_by_token's real answer): under Tonight, "Your path" with the essay's path (its name a
+//            link to #plan/<id>; "Next flag: Outline · Wed (2 days)", 14 dots from Today, flags on the two milestones'
+//            days, "… due Mon Nov 16"; no points, as his view carries none); #plan/<id> with the path at the top; a phone
+//            (dark) with no sideways scroll; no request fails.
+//   pat      Pat's link (tutor_view_by_token's real answers; the link made by Alex with save_tutor_link in setup): Next 3
+//            weeks at the top of Assignments (the essay's bar from today, as Pat's list has no step days, 1 of 8 done, its
+//            next milestone a diamond, the due date a flag, a link to #a/<id>); there, the chart above the editor from the
+//            assignment's real steps and Pat's week (Fri–Sun shaded); a phone with no sideways scroll; no request fails.
 // Screenshots: tests/e2e/shots/realdb-timeline-*.png (and TIMELINE_SHOTS, when set).
 const fs = require('fs');
 const { setup } = require('./lib');
@@ -72,6 +80,7 @@ const PLAN = [
 
   await h.setClock(at(MON, '09:00'));
   let essay = null;   // the essay's id
+  let pat = null;     // Pat's link's token
   await flow('setup', async () => {
     const on = await as('alex@example.com', '/rest/v1/rpc/save_homework_kid', { p_kid: P.jordan.id, p_active: true });
     const time = await as('alex@example.com', '/rest/v1/rpc/add_homework_time', { p_kid: P.jordan.id, p_weekdays: [1, 2, 3, 4], p_start: '16:30', p_end: '17:15' });
@@ -88,6 +97,10 @@ const PLAN = [
     const tick = await anonRpc('step_by_token', { p_token: P.jordan.day_token, p_step: steps[0] && steps[0].id, p_action: 'done', p_key: '9e1c0000-0000-4000-8000-000000000001' });
     check('setup: Jordan ticks the first step on his My day (step_by_token)', tick.status === 200 && !!(await one(`select done_at from homework_steps where id = '${steps[0] && steps[0].id}'`)).done_at,
       [tick.status, tick.body && tick.body.message]);
+    const link = await as('alex@example.com', '/rest/v1/rpc/save_tutor_link', { p_link: null, p_kid: P.jordan.id, p_label: 'Pat Lee, tutor', p_language: 'en',
+      p_expires_on: null, p_can_ai: false, p_active: true });
+    pat = link.status === 200 ? (await one(`select token from tutor_links where id = '${link.body}'`) || {}).token : null;
+    check('setup: Alex makes Pat\'s link (save_tutor_link)', /^[0-9a-f]{32}$/.test(pat || ''), [link.status, link.body]);
   });
 
   await flow('parents', async () => {
@@ -135,6 +148,79 @@ const PLAN = [
     check('parents: on a phone (dark), Next 3 weeks and the chart with no sideways page scroll', listFits && await noSideScroll(ph.page));
     await shot(ph.page, 'timeline-parents-phone');
     if (TL_SHOTS) await ph.page.locator('.hw-a [data-ref="chart"]').screenshot({ path: `${TL_SHOTS}realdb-chart-390-dark.png` });
+    await ph.context.close();
+  });
+
+  // What My day drew: each path with its link, its line, its day names and which days have a flag.
+  const readPaths = (page, sel) => page.$$eval(sel, (ps) => ps.map((p) => {
+    const txt = (el) => (el ? el.textContent.replace(/\s+/g, ' ').trim() : null);
+    const a = p.querySelector('a.hw-path-title');
+    const days = Array.from(p.querySelectorAll('.plan-path-day'));
+    return { id: p.dataset.asg || null, href: a ? a.getAttribute('href') : null, title: txt(a), line: txt(p.querySelector('.plan-path-line')),
+      names: days.map((x) => txt(x.querySelector('.plan-path-name'))), flags: days.map((x, i) => (x.querySelector('.plan-path-flag') ? i : -1)).filter((i) => i >= 0),
+      fold: txt(p.querySelector('.plan-path-fold')), pts: !!p.querySelector('.plan-path-pts') };
+  }));
+
+  await flow('jordan', async () => {
+    await h.mark();
+    const { page, context } = await open({ phone: true, dark: true, path: `/day.html?t=${P.jordan.day_token}#homework`, label: 'timeline-jordan' });
+    await page.waitForSelector('.hw-paths .hw-path', { timeout: 8000 });
+    check('jordan: "Your path" under Tonight (Tonight first), before Due soon', (await tc(page, '#hw-paths-h')) === 'Your path'
+      && await page.evaluate(() => { const t = document.querySelector('.hw-tonight'); const p = document.querySelector('.hw-paths'); const d = document.querySelector('.hw-due');
+        return !!(t && p && d && (t.compareDocumentPosition(p) & 4) && (p.compareDocumentPosition(d) & 4)); }));
+    const paths = await readPaths(page, '.hw-paths .hw-path');
+    const p = paths[0] || {};
+    check('jordan: the essay\'s path from his real view: its name a link to its plan, "Next flag: Outline · Wed (2 days)", 14 dots from Today, flags on Wed and the next Wed, "… due Mon Nov 16"',
+      paths.length === 1 && p.id === essay && p.href === `#plan/${essay}` && p.title === `${TITLE} ›` && p.line === 'Next flag: Outline · Wed (2 days)'
+      && p.names.length === 14 && p.names[0] === 'Today' && same(p.flags, [2, 9]) && p.fold === '… due Mon Nov 16', JSON.stringify(paths));
+    check('jordan: no points in the line (his view carries no milestone\'s value)', !!p.line && !p.pts && !/\+\d|points? now/i.test(p.line), p.line);
+    check('jordan: on a phone (dark), #homework with no sideways page scroll', await noSideScroll(page));
+    await shot(page, 'timeline-jordan-homework');
+    if (TL_SHOTS) await page.locator('.hw-paths').screenshot({ path: `${TL_SHOTS}realdb-myday-path-390-dark.png` });
+    await page.click(`.hw-path[data-asg="${essay}"] a.hw-path-title`);
+    await until(async () => (await page.evaluate(() => location.hash)) === `#plan/${essay}` && !!(await page.$('.hw-plan .plan-editor')), 6000);
+    const top = await readPaths(page, '.hw-plan-path');
+    check('jordan: its link opens his plan, the path at the top', top.length === 1 && top[0].line === 'Next flag: Outline · Wed (2 days)' && top[0].names.length === 14
+      && await page.evaluate(() => { const x = document.querySelector('.hw-plan-path .plan-path'); const e = document.querySelector('.hw-plan .plan-editor'); return !!(x && e && (x.compareDocumentPosition(e) & 4)); })
+      && await noSideScroll(page), JSON.stringify(top));
+    await shot(page, 'timeline-jordan-plan');
+    if (TL_SHOTS) await page.screenshot({ path: `${TL_SHOTS}realdb-myday-plan-390-dark.png` });
+    check('jordan: no request failed', !(await failures()).length, await failures());
+    await context.close();
+  });
+
+  await flow('pat', async () => {
+    await h.mark();
+    const { page, context } = await open({ path: `/day.html?h=${pat}`, label: 'timeline-pat' });
+    await page.waitForSelector('[data-sec="assignments"] .plan-tl-overview', { timeout: 8000 });
+    check('pat: Next 3 weeks at the top of Assignments', (await tc(page, '[data-sec="assignments"] > .plan-tl-box > .plan-tl-h')) === 'Next 3 weeks'
+      && await page.evaluate(() => document.querySelector('[data-sec="assignments"]').children[1].classList.contains('plan-tl-box')));
+    const ov = await readTl(page, '[data-sec="assignments"] .plan-tl-overview');
+    const row = ov ? ov.rows[0] || {} : {};
+    check('pat: the overview from the link\'s real answer, 21 days from today, the essay\'s row: from today (no step days on Pat\'s list) to Mon Nov 16, 1 of 8 done, Outline a diamond on Wed, the due date a flag, a link to its screen',
+      !!ov && ov.label === 'Open assignments, Mon Nov 2 to Sun Nov 22' && ov.days === 21 && ov.rows.length === 1 && row.href === `#a/${essay}` && row.bar === '1 / 16'
+      && row.fill === '12.5%' && same(row.ms, ['3']) && row.due === '15' && row.sr === 'Essay: a river\'s journey · milestone Outline Wed Nov 4 · due Mon Nov 16 · 1 of 8 steps done',
+      JSON.stringify(ov && [ov.label, ov.days, row]));
+    if (TL_SHOTS) await page.locator('[data-sec="assignments"]').screenshot({ path: `${TL_SHOTS}realdb-tutor-next-3-weeks-1280.png` });
+    await page.click(`[data-sec="assignments"] .plan-tl-row[data-id="${essay}"] a.plan-tl-name`);
+    await until(async () => (await page.evaluate(() => location.hash)) === `#a/${essay}` && !!(await page.$('.plan-tutor-a [data-ref="chart"] .plan-tl-chart')), 6000);
+    const ch = await readTl(page, '.plan-tutor-a [data-ref="chart"] .plan-tl-chart');
+    check('pat: the row opens the essay; its chart above the editor, Mon Nov 2 to Mon Nov 16, Fri–Sun shaded from his week on the link, a row per phase from the real steps',
+      !!ch && ch.label === 'Plan by day, Mon Nov 2 to Mon Nov 16' && ch.days === 15 && same(ch.today, [0]) && same(ch.off, [4, 5, 6, 11, 12, 13]) && same(ch.due, [14])
+      && same(ch.rows.map((r) => [r.title, r.steps]), [['Outline', ['1:10 done', '2:20', '3:20']], ['Full draft', ['8:20', '9:20', '10:20']], ['Check and turn in', ['11:15', '15:5']]])
+      && await page.evaluate(() => { const c = document.querySelector('.plan-tutor-a [data-ref="chart"]'); const e = document.querySelector('.plan-tutor-a [data-ref="editor"] .plan-editor');
+        return !!(c && e && (c.compareDocumentPosition(e) & 4)); }), JSON.stringify(ch && [ch.label, ch.days, ch.off, ch.rows.map((r) => [r.title, r.steps])]));
+    await shot(page, 'timeline-pat-assignment');
+    if (TL_SHOTS) await page.locator('.plan-tutor-a [data-ref="chart"]').screenshot({ path: `${TL_SHOTS}realdb-tutor-chart-1280.png` });
+    check('pat: no request failed', !(await failures()).length, await failures());
+    await context.close();
+    const ph = await open({ phone: true, path: `/day.html?h=${pat}`, label: 'timeline-pat-phone' });
+    await ph.page.waitForSelector('[data-sec="assignments"] .plan-tl-overview', { timeout: 8000 });
+    const listFits = await noSideScroll(ph.page);
+    await ph.page.evaluate((id) => { location.hash = `#a/${id}`; }, essay);
+    await until(async () => !!(await ph.page.$('.plan-tutor-a [data-ref="chart"] .plan-tl-chart')), 6000);
+    check('pat: on a phone, Next 3 weeks and the chart with no sideways page scroll', listFits && await noSideScroll(ph.page));
+    await shot(ph.page, 'timeline-pat-phone');
     await ph.context.close();
   });
 

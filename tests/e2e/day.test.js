@@ -50,6 +50,9 @@
 // 3 days), Plan with Pat and Hide in one tap (school_item_by_token); a refusal; one call for a double tap; the card's
 // "New from school" line opening it; nothing from an unchecked link; the school's marks (moved, gone) under Due soon;
 // the description never on his screen; Spanish; hostile text; none on schema 5.
+// The timelines (no migration, docs/v1.3-homework.md §21), section 23: his path on #homework under Tonight (plans given to
+// him due 4 or more days out or with a milestone, three then "+2 more"), each line, the links to #plan/<id> with the path at
+// the top, drawn again from reads, no points, Spanish, 390px and 1280px light and dark (screenshots to TIMELINE_SHOTS).
 // mock.js answers RPCs for signed-in members only, so the token functions (called signed out) are
 // answered by a route added here; everything else (config.js, supabase-js) comes from mock.js.
 // The browser runs in Pacific/Kiritimati (UTC+14) with its clock set so the device's date is a day
@@ -3158,6 +3161,167 @@ const HW_AUDIO_DROP = `(${HW_STUBS})(); (${HW_CLOCKED})(); (${HW_WAKE_DROP})();`
     await page.click(`${SCH(hid(100))} [data-act="hw-school-quick"]`);
     check('Spanish: "Planeado para mañana: Read chapter 5"', (await hwToast(page)) === 'Planeado para mañana: Read chapter 5', await text(page, '.toasts'));
     await page.context().close();
+  }
+
+  // =====================================================================
+  // 23. His path (no migration; docs/v1.3-homework.md §21): on #homework, under Tonight, a path for each plan given to
+  // him that is due 4 or more days out or has a milestone (at most 3, then "+N more"); on #plan/<id>, the path at the top
+  // =====================================================================
+  // tlKidDb() is hwDb() and three more plans given to him: the two-week essay (due Fri Nov 20, Outline on Thu, Full draft
+  // on Mon Nov 16), the reading log (due Fri, 4 days out, no milestone) and one with a hostile title and milestone. Already
+  // there: the science project (due Fri Nov 13; its first milestone done and checked before today, Outline with 3 main
+  // points on Wed), the vocabulary project (due Mon Nov 9; Flashcards made, planned for Fri Oct 30, not done) and
+  // Worksheet 4.2 (due tomorrow, no milestone: no path). His view carries no milestone's points, so no line names any.
+  {
+    const KT = { essay: hid(200), read: hid(210), bad: hid(220) };
+    const BADT = '<img src=x onerror="window.__tlx=1">';
+    const BADM = '<img src=y onerror="window.__tly=1">';
+    const tlKidDb = (o) => {
+      const d = hwDb(o);
+      const at = (iso) => `${iso}.000000+00:00`;
+      const A = (x) => d.assignments.push(assignmentRow(Object.assign({ kid_id: P.jordan, given_at: at('2026-11-01T15:00:00'), given_by: 'alex@example.com', plan_rev: 1,
+        created_at: at('2026-11-01T14:00:00') }, x)));
+      const S = (aid, list) => list.forEach(([kind, title, minutes, day], i) => d.homework_steps.push(stepRow({ assignment_id: aid, pos: i + 1, kind, title, minutes, day })));
+      A({ id: KT.essay, title: 'Essay: a river\'s journey', subject: 'English', due_date: '2026-11-20' });
+      S(KT.essay, [['start', 'Copy the requirements into your notes', 10, '2026-11-03'], ['milestone', 'Outline', 20, '2026-11-05'], ['step', 'Draft the first half', 20, '2026-11-09'],
+        ['step', 'Draft the second half', 20, '2026-11-10'], ['milestone', 'Full draft', 20, '2026-11-16'], ['check', 'Check it against the instructions', 15, '2026-11-18'],
+        ['turn_in', 'Turn it in', 5, '2026-11-20']]);
+      A({ id: KT.read, title: 'Reading log', subject: 'English', due_date: '2026-11-06' });
+      S(KT.read, [['step', 'Read chapter 3', 20, '2026-11-03'], ['step', 'Read chapter 4', 20, '2026-11-04'], ['turn_in', 'Turn it in', 5, '2026-11-06']]);
+      A({ id: KT.bad, title: BADT, subject: '<b>Art</b>', due_date: '2026-11-12' });
+      S(KT.bad, [['milestone', BADM, 20, '2026-11-10'], ['turn_in', 'Turn it in', 5, '2026-11-12']]);
+      return d;
+    };
+    // What #homework or #plan/<id> drew: each path with its link, its line, its day names, which days have a flag (and done).
+    const readPaths = (pg, sel) => pg.$$eval(sel, (ps) => ps.map((p) => {
+      const txt = (el) => (el ? el.textContent.replace(/\s+/g, ' ').trim() : null);
+      const a = p.querySelector('a.hw-path-title');
+      const days = Array.from(p.querySelectorAll('.plan-path-day'));
+      const idx = (f) => days.map((x, i) => (f(x) ? i : -1)).filter((i) => i >= 0);
+      return { id: p.dataset.asg || null, href: a ? a.getAttribute('href') : null, title: txt(a), line: txt(p.querySelector('.plan-path-line')),
+        names: days.map((x) => txt(x.querySelector('.plan-path-name'))), flags: idx((x) => !!x.querySelector('.plan-path-flag')),
+        done: idx((x) => !!x.querySelector('.plan-path-flag.is-done')), fold: txt(p.querySelector('.plan-path-fold')), won: p.querySelectorAll('.plan-path-won .plan-path-flag').length,
+        pts: !!p.querySelector('.plan-path-pts'), shown: !p.closest('details:not([open])') && !!(p.offsetWidth || p.offsetHeight) };
+    }));
+    const PATHS = '.hw-paths .hw-path';
+    const TL_SHOTS = `${(process.env.TIMELINE_SHOTS || SHOTS).replace(/\/+$/, '')}/`;
+    fs.mkdirSync(TL_SHOTS, { recursive: true });
+    ({ page, db } = await open({ label: 'hw-path', path: `/day.html?t=${JORDAN}#homework`, db: tlKidDb(), device: HW_DEVICE, init: HW_STUBS }));
+    await page.waitForSelector('.hw-tonight');
+    check('#homework: "Your path" under Tonight (Tonight stays first), before Due soon', (await hwText(page, '#hw-paths-h')) === 'Your path'
+      && await page.evaluate(() => { const t = document.querySelector('.hw-tonight'); const p = document.querySelector('.hw-paths'); const d = document.querySelector('.hw-due');
+        return !!(t && p && d && (t.compareDocumentPosition(p) & 4) && (p.compareDocumentPosition(d) & 4)); }), await hwText(page, '.hw-paths'));
+    let paths = await readPaths(page, PATHS);
+    const pathOf = (id) => paths.find((p) => p.id === id) || {};
+    check('a path for each plan given to him due 4 or more days out or with a milestone, by due date: the first 3 shown, the rest under "+2 more" (Worksheet 4.2, due tomorrow with no milestone, has none)',
+      same(paths.map((p) => [p.id, p.shown]), [[KT.read, true], [H.span, true], [KT.bad, true], [H.sci, false], [KT.essay, false]])
+      && (await hwText(page, '.hw-paths-more > summary')) === '+2 more' && !(await page.$eval('.hw-paths-more', (x) => x.open)), JSON.stringify(paths.map((p) => [p.title, p.shown])));
+    check('each path\'s name is a link to its plan (#plan/<id>), at least 44px tall', same(paths.map((p) => p.href), [KT.read, H.span, KT.bad, H.sci, KT.essay].map((id) => `#plan/${id}`))
+      && pathOf(KT.read).title === 'Reading log ›' && pathOf(H.sci).title === 'Science project: river poster ›'
+      && (await page.$$eval('.hw-paths .hw-path:not(.hw-paths-more .hw-path) a.hw-path-title', (as) => as.every((a) => a.getBoundingClientRect().height >= 44))), JSON.stringify(paths.map((p) => [p.href, p.title])));
+    const rd = pathOf(KT.read);
+    check('the reading log (no milestone, due Fri): "Due Fri (4 days)", a dot a day from "Today" to Friday, no flag',
+      rd.line === 'Due Fri (4 days)' && same(rd.names, ['Today', 'T', 'W', 'T', 'F']) && !rd.flags.length && rd.fold === null, JSON.stringify(rd));
+    const sp = pathOf(H.span);
+    check('the vocabulary project: its milestone (Fri Oct 30, not done) is the next flag, on today\'s dot: "Next flag: Flashcards made · from Fri"',
+      sp.line === 'Next flag: Flashcards made · from Fri' && sp.names.length === 8 && same(sp.flags, [0]) && !sp.done.length, JSON.stringify(sp));
+    const bd = pathOf(KT.bad);
+    check('a hostile title and milestone: as text ("Next flag: <img …> · in 8 days"), no element made from them',
+      bd.title === `${BADT} ›` && bd.line === `Next flag: ${BADM} · in 8 days` && same(bd.flags, [8]) && !(await page.$('.hw-paths img, .hw-paths b'))
+      && !(await page.evaluate(() => window.__tlx || window.__tly)), JSON.stringify(bd));
+    check('no line names points (his view doesn\'t carry what a milestone pays: left out, not guessed)', paths.every((p) => p.line && !p.pts && !/\+\d|points? now/i.test(p.line)),
+      JSON.stringify(paths.map((p) => p.line)));
+    // "+2 more" opens the rest, and stays open through a read that changes them.
+    await page.click('.hw-paths-more > summary');
+    paths = await readPaths(page, PATHS);
+    const sc = pathOf(H.sci);
+    const es = pathOf(KT.essay);
+    check('"+2 more" opens the science project ("Next flag: Outline with 3 main points · Wed (2 days)", its first flag won before today) and the essay',
+      sc.shown && es.shown && sc.line === 'Next flag: Outline with 3 main points · Wed (2 days)' && sc.won === 1 && sc.names.length === 12 && same(sc.flags, [2]), JSON.stringify(sc));
+    check('the two-week essay: 14 dots from Today, then "… due Fri Nov 20"; "Next flag: Outline · Thu (3 days)" (Full draft, past the 14 dots, not drawn)',
+      es.line === 'Next flag: Outline · Thu (3 days)' && es.names.length === 14 && es.names[0] === 'Today' && same(es.flags, [3]) && es.fold === '… due Fri Nov 20', JSON.stringify(es));
+    // Outline done on the server (his tick from another phone), then a read.
+    const outline = db.homework_steps.find((s) => s.assignment_id === KT.essay && s.title === 'Outline');
+    outline.done_at = '2026-11-02T21:00:00.000000+00:00';
+    outline.done_by = 'Jordan (My day)';
+    await page.waitForTimeout(1100);
+    const reads = calls(db, 'homework_by_token').length;
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await until(() => calls(db, 'homework_by_token').length > reads);
+    await until(async () => (await readPaths(page, PATHS)).some((p) => p.id === KT.essay && /Full draft/.test(p.line)));
+    paths = await readPaths(page, PATHS);
+    check('a read draws the paths again: the essay\'s next flag is Full draft ("in 14 days"), Outline\'s flag filled; "+2 more" still open',
+      pathOf(KT.essay).line === 'Next flag: Full draft · in 14 days' && same(pathOf(KT.essay).done, [3]) && await page.$eval('.hw-paths-more', (x) => x.open), JSON.stringify(pathOf(KT.essay)));
+    // The essay's link opens its plan, with the path at the top.
+    await page.click(`.hw-path[data-asg="${KT.essay}"] a.hw-path-title`);
+    await until(async () => (await page.evaluate(() => location.hash)) === `#plan/${KT.essay}` && !!(await page.$('.hw-plan .plan-editor')), 4000);
+    let top = await readPaths(page, '.hw-plan-path');
+    check('#plan/<id>: the path at the top, above the plan', top.length === 1 && top[0].line === 'Next flag: Full draft · in 14 days' && top[0].names.length === 14
+      && await page.evaluate(() => { const p = document.querySelector('.hw-plan-path .plan-path'); const e = document.querySelector('.hw-plan .plan-editor'); const h = document.querySelector('.hw-head');
+        return !!(p && e && h && (h.compareDocumentPosition(p) & 4) && (p.compareDocumentPosition(e) & 4)); }), JSON.stringify(top));
+    // Every flag done: a short cheer and the due date.
+    const full = db.homework_steps.find((s) => s.assignment_id === KT.essay && s.title === 'Full draft');
+    full.done_at = '2026-11-02T21:05:00.000000+00:00';
+    full.done_by = 'Jordan (My day)';
+    await page.waitForTimeout(1100);
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await until(async () => /Every flag/.test((await readPaths(page, '.hw-plan-path'))[0].line || ''), 4000);
+    top = await readPaths(page, '.hw-plan-path');
+    check('every flag done: "Every flag done! Due Fri Nov 20 (18 days)" at the top of his plan, drawn again from the read', top.length === 1
+      && top[0].line === 'Every flag done! Due Fri Nov 20 (18 days)' && same(top[0].done, [3]), JSON.stringify(top));
+    await page.context().close();
+
+    // #plan/<id> for a plan not given yet (being planned): no path.
+    ({ page, db } = await open({ label: 'hw-path-noplan', path: `/day.html?t=${JORDAN}#plan/${H.frac}`, db: tlKidDb(), device: HW_DEVICE, init: HW_STUBS }));
+    await page.waitForSelector('.hw-plan');
+    check('#plan/<id> of a plan not given to him yet: "Being planned", no path', !(await page.$('.plan-path')) && /Being planned/.test(await hwText(page, '.hw-plan')), await hwText(page, 'main'));
+    await page.context().close();
+
+    // Nothing that needs a path (only the worksheet due tomorrow): no section at all.
+    const few = hwDb();
+    few.assignments = few.assignments.filter((a) => a.id === H.math);
+    few.homework_steps = few.homework_steps.filter((s) => s.assignment_id === H.math);
+    ({ page, db } = await open({ label: 'hw-path-none', path: `/day.html?t=${JORDAN}#homework`, db: few, device: HW_DEVICE, init: HW_STUBS }));
+    await page.waitForSelector('.hw-tonight');
+    check('no plan due 4 or more days out and none with a milestone: no "Your path" at all', !(await page.$('.hw-paths')) && !(await page.$('.plan-path')));
+    await page.context().close();
+
+    // Spanish.
+    ({ page, db } = await open({ label: 'hw-path-es', path: `/day.html?t=${JORDAN}#homework`, db: tlKidDb({ lang: 'es' }), device: HW_DEVICE, init: HW_STUBS }));
+    await page.waitForSelector('.hw-paths');
+    await page.click('.hw-paths-more > summary');
+    paths = await readPaths(page, PATHS);
+    check('Spanish: "Tu camino", "+2 más", "Se entrega el vie (4 días)", "Siguiente bandera: Outline · el jue (3 días)", "Hoy", "… para el vie 20 nov"',
+      (await hwText(page, '#hw-paths-h')) === 'Tu camino' && (await hwText(page, '.hw-paths-more > summary')) === '+2 más'
+      && pathOf(KT.read).line === 'Se entrega el vie (4 días)' && same(pathOf(KT.read).names, ['Hoy', 'M', 'X', 'J', 'V'])
+      && pathOf(KT.essay).line === 'Siguiente bandera: Outline · el jue (3 días)' && pathOf(KT.essay).fold === '… para el vie 20 nov'
+      && pathOf(H.span).line === 'Siguiente bandera: Flashcards made · del vie', JSON.stringify(paths.map((p) => [p.line, p.fold])));
+    await page.context().close();
+
+    // Phones and desktops, light and dark: no sideways page scroll.
+    for (const [w, ctxOpts] of [[390, phone()], [1280, { viewport: { width: 1280, height: 900 } }]]) {
+      for (const scheme of ['light', 'dark']) {
+        ({ page, db } = await open({ label: `hw-path-${w}-${scheme}`, path: `/day.html?t=${JORDAN}#homework`, db: tlKidDb(), device: HW_DEVICE, init: HW_STUBS,
+          ctx: Object.assign({ colorScheme: scheme }, ctxOpts) }));
+        await page.waitForSelector('.hw-paths');
+        await page.click('.hw-paths-more > summary');
+        check(`his path ${w}px (${scheme}): #homework with no sideways page scroll, every dot inside its card`, await noSideScroll(page)
+          && await page.$$eval('.hw-paths .hw-path', (ps) => ps.every((p) => { const r = p.getBoundingClientRect(); return Array.from(p.querySelectorAll('.plan-path-day, .plan-path-fold'))
+            .every((x) => { const b = x.getBoundingClientRect(); return b.left >= r.left - 0.5 && b.right <= r.right + 0.5; }); })));
+        const level = await page.$eval(`.hw-path[data-asg="${H.sci}"]`, (p) => { const mid = (el) => { const b = el.getBoundingClientRect(); return b.top + b.height / 2; };
+          return [mid(p.querySelector('.plan-path-won .plan-path-flag')), mid(p.querySelector('.plan-path-day.is-today .plan-path-dot'))]; });
+        check(`his path ${w}px (${scheme}): the flag he won before today sits level with the dots`, Math.abs(level[0] - level[1]) <= 3, JSON.stringify(level));
+        await page.evaluate(() => { if (document.activeElement) document.activeElement.blur(); window.scrollTo(0, 0); });
+        await page.locator('.hw-paths').screenshot({ path: `${TL_SHOTS}myday-paths-${w}-${scheme}.png` });
+        await page.screenshot({ path: `${TL_SHOTS}myday-homework-${w}-${scheme}.png`, fullPage: true });
+        await page.evaluate((id) => { location.hash = `#plan/${id}`; }, KT.essay);
+        await page.waitForSelector('.hw-plan .plan-editor');
+        check(`his path ${w}px (${scheme}): #plan/<id> with the path at the top and no sideways page scroll`, !!(await page.$('.hw-plan-path .plan-path')) && await noSideScroll(page));
+        await page.evaluate(() => { if (document.activeElement) document.activeElement.blur(); window.scrollTo(0, 0); });
+        await page.screenshot({ path: `${TL_SHOTS}myday-plan-${w}-${scheme}.png` });
+        await page.context().close();
+      }
+    }
   }
 
   console.log(results.join('\n'));

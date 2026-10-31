@@ -212,6 +212,9 @@
              sent ({ get(id), set(id, mark) }: the preview's "last sent" marks on the device, or null)
        ctl.show(hash)   the page calls it on load and on every hashchange: '#a/<id>' an assignment and its
                         plan, '#new/assignment' and '#new/lesson' the add form, anything else the list
+                        (§21: the list's Assignments open with Next 3 weeks, overview() of its assignments with
+                        links to '#a/<id>'; an assignment's screen has its chart() above the editor, from its
+                        steps and the view's week, drawn again after each read and save)
        ctl.refresh()    read again (on focus and visibilitychange), unless something is being edited
        ctl.stop()
        Calls go one at a time. A null answer draws "This link no longer works…" and calls onGone; PGRST202
@@ -2468,7 +2471,11 @@
       const open = all.filter((x) => x.status === 'open');
       const closed = all.filter((x) => x.status !== 'open');
       const adds = `<span class="plan-adds"><a class="btn btn-sm" href="#new/assignment">${esc(w('add_assignment'))}</a><a class="btn btn-sm" href="#new/lesson">${esc(w('add_lesson'))}</a></span>`;
-      out.push(section('assignments', null, `${open.length ? `<ul class="plan-arows">${open.map(assignmentRow).join('')}</ul>` : `<p class="empty-line">${esc(w('no_plan'))}</p>`}`
+      // Next 3 weeks (§21) at the top: every open one as a bar from today (the list has no step days) to its due date,
+      // the next milestone a diamond, each row a link to its screen; nothing when none is open.
+      const tl = overview(all, { today: v.today, days: 21, lang, link: (id) => `#a/${id}` });
+      out.push(section('assignments', null, `${tl ? `<div class="plan-tl-box"><h3 class="plan-tl-h">${esc(w('tl_next_weeks', { n: 3 }))}</h3>${tl}</div>` : ''}`
+        + `${open.length ? `<ul class="plan-arows">${open.map(assignmentRow).join('')}</ul>` : `<p class="empty-line">${esc(w('no_plan'))}</p>`}`
         + `${closed.length ? `<details class="plan-done"><summary>${esc(w('done_30'))}</summary><ul class="plan-arows">${closed.map(assignmentRow).join('')}</ul></details>` : ''}`, adds));
       const days = v.week || [];
       out.push(section('week', null, `${week(days, { today: v.today, lang })}`
@@ -2536,7 +2543,8 @@
       if (fresh) {
         if (ed) ed.stop();
         el.innerHTML = `<div class="plan-tutor plan-tutor-a"><div data-ref="head">${head}</div><div data-ref="fields">${fieldsHtml(x, false)}</div>`
-          + `<div class="plan-ed" data-ref="editor"></div><div data-ref="qa">${qaHtml(x)}</div></div>`;
+          + `<div data-ref="chart"></div><div class="plan-ed" data-ref="editor"></div><div data-ref="qa">${qaHtml(x)}</div></div>`;
+        drawChart();
         edFor = x.id;
         ed = editor(el.querySelector('[data-ref="editor"]'), {
           role: 'tutor', lang, today: view.today, asOf: view.as_of, serverNow: view.server_now, length: view.length || null,
@@ -2554,7 +2562,18 @@
         if (!formDirty) el.querySelector('[data-ref="fields"]').innerHTML = fieldsHtml(x, false);
         if (!ed.dirty()) ed.set(x, { lang, today: view.today, asOf: view.as_of, serverNow: view.server_now, week: view.week || [], ai: aiFor(x.id) });
         el.querySelector('[data-ref="qa"]').innerHTML = qaHtml(x);
+        drawChart();
       }
+    }
+    // The open assignment's chart (§21) above its editor: the plan as last read or saved, days without homework time
+    // shaded from his week on the link; none for a plan on fewer than 2 days. Drawn only when it changed, so a chart
+    // scrolled inside its box stays where it was.
+    function drawChart() {
+      const box = screen.kind === 'assignment' ? el.querySelector('.plan-tutor-a [data-ref="chart"]') : null;
+      if (!box || !view) return;
+      const html = detail && detail.id === screen.id ? chart(detail, { today: view.today, lang, week: view.week || [] }) : '';
+      const out = html ? `<div class="plan-tl-card">${html}</div>` : '';
+      if (box.planDrawn !== out) { box.innerHTML = out; box.planDrawn = out; }
     }
 
     // The AI parts on the link (PR B): only while the parents' switch is on and the link may ask (the view's ai), or to
@@ -2626,6 +2645,7 @@
           x = rr.data.assignment;
         }
         detail = withTime(x);
+        drawChart();
         return { assignment: detail };
       });
     }

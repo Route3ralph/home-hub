@@ -200,7 +200,9 @@ a.plan-tl-name:hover .plan-tl-title, a.plan-tl-name:focus-visible .plan-tl-title
 .plan-path-day.is-due .plan-path-dot svg { width: 22px; height: 22px; fill: currentColor; }
 .plan-path-name { grid-row: 3; margin-top: 4px; color: var(--text-3); font-size: 12px; font-weight: 650; white-space: nowrap; }
 .plan-path-day.is-today .plan-path-name { color: var(--accent); font-size: 13px; font-weight: 800; }
-.plan-path-won { flex: none; display: flex; align-items: center; gap: 1px; padding: 22px 6px 0 0; color: var(--accent); }
+/* Flags won before today, at the start of the path, level with the dots (25px down: the 22px flag row, then the dot row's middle). */
+.plan-path-won { flex: none; display: flex; align-items: flex-start; gap: 1px; padding: 25px 6px 0 0; color: var(--accent); }
+.plan-path-won .plan-path-flag { align-self: flex-start; }
 .plan-path-won .plan-path-flag svg { width: 16px; height: 16px; }
 .plan-path-fold { margin: 2px 0 0; color: var(--text-2); font-size: 14px; font-weight: 650; text-align: right; overflow-wrap: anywhere; }
 
@@ -327,6 +329,14 @@ a.plan-tl-name:hover .plan-tl-title, a.plan-tl-name:focus-visible .plan-tl-title
 .plan-record li { padding: 10px 0; border-bottom: 1px solid var(--line); font-size: 14px; overflow-wrap: anywhere; }
 .plan-record li:last-child { border-bottom: 0; }
 .plan-pace { margin: 8px 0 0; color: var(--text-2); font-size: 14px; }
+/* Next 3 weeks at the top of Assignments, and an assignment's chart above its editor (§21): a card each; a timeline
+   wider than its card scrolls inside it. */
+.plan-tl-box, .plan-tl-card {
+  min-width: 0; padding: 6px 12px 10px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow);
+}
+.plan-tl-box { margin: 0 0 12px; }
+.plan-tl-card { margin-top: 18px; }
+.plan-tl-h { margin: 6px 0 0; color: var(--text-2); font-size: 14px; font-weight: 700; }
 .plan-tutor-a .back { display: inline-flex; align-items: center; min-height: 44px; font-weight: 600; }
 .plan-tutor-a .plan-head { margin-bottom: 12px; }
 .plan-ed { margin-top: 18px; }
