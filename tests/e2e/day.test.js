@@ -2658,6 +2658,11 @@ const HW_AUDIO_DROP = `(${HW_STUBS})(); (${HW_CLOCKED})(); (${HW_WAKE_DROP})();`
     await page.click('[data-act="hw-cash-yes"]');
     await until(() => calls(db, 'reward_by_token').length === 1 && !!calls(db, 'reward_by_token')[0].done && db.loseAnswer.homework_by_token === 0);
     await page.waitForTimeout(300);
+    // Its "Can't reach" stays 6 seconds: cleared, so the toast checked below is the one the second Yes brings
+    // (the fake marks a call done before its answer reaches the page).
+    check('a cash-in with a lost answer, and the read after it lost too: "Can\'t reach Home Hub", its Yes still there',
+      (await hwToast(page)) === "Can't reach Home Hub. Check your internet connection and try again." && !!(await page.$('[data-act="hw-cash-yes"]')), await text(page, '.toasts'));
+    await hwClear(page);
     await page.click('[data-act="hw-cash-no"]');
     await page.evaluate(() => { location.hash = '#homework'; });
     await page.waitForSelector('.hw-tonight');
@@ -2667,9 +2672,12 @@ const HW_AUDIO_DROP = `(${HW_STUBS})(); (${HW_CLOCKED})(); (${HW_WAKE_DROP})();`
     await page.click('[data-act="hw-cash-yes"]');
     await until(() => calls(db, 'reward_by_token').length === 2 && !!calls(db, 'reward_by_token')[1].done);
     const keys = calls(db, 'reward_by_token').map((c) => c.body.p_key);
+    const got = await hwToast(page);
+    const cashed = db.reward_asks.filter((q) => q.status === 'cashed').length;
+    const trades = db.points_ledger.filter((l) => l.kind === 'trade' && l.delta === -15).length;
     check('a lost answer, Cancel, another view, Get it now and Yes again: the same key, one cash-in, one trade of −15',
-      keys[0] === keys[1] && db.reward_asks.filter((q) => q.status === 'cashed').length === 1 && db.points_ledger.filter((l) => l.kind === 'trade' && l.delta === -15).length === 1
-      && (await hwToast(page)) === 'Got it: 15 minutes of extra game time. Tell a parent.', `keys same=${keys[0] === keys[1]} cashed=${db.reward_asks.filter((q) => q.status === 'cashed').length}`);
+      keys[0] === keys[1] && cashed === 1 && trades === 1 && got === 'Got it: 15 minutes of extra game time. Tell a parent.',
+      `keys same=${keys[0] === keys[1]} cashed=${cashed} trades=${trades} toast=${JSON.stringify(got)} toasts=${JSON.stringify(await texts(page, '.toast'))}`);
     await page.context().close();
   }
   {
