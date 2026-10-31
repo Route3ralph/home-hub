@@ -486,6 +486,16 @@ const WEEK = [
       'Todavía no tienes puntos suficientes.', 'Los puntos están desactivados.', 'Es mucho para un día. Sigue mañana.',
       'Ese paso no está en este enlace.', 'Ese plan no está en tu lista.', 'Este trabajo está terminado o descartado. Vuelve a abrirlo primero.',
       'Ese plan es demasiado largo.', 'Es demasiado largo.']), JSON.stringify(said.es));
+  // 0005's Uncheck once the milestone's points were traded (Pat's link, as a Void) and the token writers' last
+  // guard: in plain words in English, in Spanish in Spanish (never "Algo salió mal").
+  const spent = await ev(() => {
+    const P = window.HomePlan;
+    const e = (message, code) => ({ message, code });
+    return [P.friendly(e('Those points are already spent.', 'P0001'), 'en'), P.friendly(e("That can't be saved.", '22023'), 'en'),
+      P.friendly(e('Those points are already spent.', 'P0001'), 'es'), P.friendly(e("That can't be saved.", '22023'), 'es')];
+  });
+  check('friendly(): "Those points are already spent." and "That can\'t be saved." in English and Spanish',
+    same(spent, ['Those points are already spent.', "That can't be saved.", 'Esos puntos ya se gastaron.', 'Eso no se puede guardar.']), JSON.stringify(spent));
 
   // =====================================================================
   // 8. The plan editor (§9.4): a parent's whole plan, with a fake api in the page

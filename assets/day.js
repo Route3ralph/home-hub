@@ -1248,7 +1248,7 @@
   const hwRel = (iso) => plan.fmt.rel(iso, hv ? hv.today : state && state.today, lang);
   // The database's homework messages in his words (plan.js), before anything else: "Only your own tick…" is
   // the shopping list's too, where it has its own words.
-  const HW_MESSAGES = /That step isn't on your plan|Only your own tick|That's a checkpoint|Finish the block you started first|That block isn't yours|That's a lot for one day|No homework day before it's due has room|was changed since you opened it|Not enough points yet|Points are off|Choose 10, 15, 20 or 25|Plan this one with|Set a homework time first|That plan isn't on your list|is done or dropped|That's too long|That plan is too long|^At most 20 steps\.?$|Three asks are waiting already|Five suggestions are waiting already|Fifteen of your own are open already/i;
+  const HW_MESSAGES = /That step isn't on your plan|Only your own tick|That's a checkpoint|Finish the block you started first|That block isn't yours|That's a lot for one day|No homework day before it's due has room|was changed since you opened it|Not enough points yet|Points are off|Choose 10, 15, 20 or 25|Plan this one with|Set a homework time first|That plan isn't on your list|is done or dropped|That's too long|That plan is too long|^At most 20 steps\.?$|Three asks are waiting already|Five suggestions are waiting already|Fifteen of your own are open already|That can't be saved/i;
   function hwFriendly(err) {
     const msg = String((err && (err.message || err.error_description)) || err || '');
     if (plan && HW_MESSAGES.test(msg)) return plan.friendly(err, lang, hwTutor());

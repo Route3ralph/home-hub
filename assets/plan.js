@@ -273,6 +273,7 @@
       closed: 'This assignment is done or dropped. Open it again first.', plan_too_long: 'That plan is too long.',
       asks_full: 'Three asks are waiting already. Wait for a parent first.', suggest_full: 'Five suggestions are waiting already. Wait for a parent first.',
       own_full: 'Fifteen of your own are open already.',
+      points_spent: 'Those points are already spent.', cant_save: "That can't be saved.",
     },
     es: {
       homework: 'Tarea', now: 'Ahora', tonight: 'Esta tarde', due_soon: 'Para pronto', start_n: 'Empezar · {n} min',
@@ -364,6 +365,7 @@
       closed: 'Este trabajo está terminado o descartado. Vuelve a abrirlo primero.', plan_too_long: 'Ese plan es demasiado largo.',
       asks_full: 'Ya hay tres pedidos esperando. Espera primero a tus padres.', suggest_full: 'Ya hay cinco propuestas esperando. Espera primero a tus padres.',
       own_full: 'Ya tienes quince tareas tuyas abiertas.',
+      points_spent: 'Esos puntos ya se gastaron.', cant_save: 'Eso no se puede guardar.',
     },
   };
 
@@ -474,6 +476,10 @@
     [/Three asks are waiting already/i, 'asks_full'],
     [/Five suggestions are waiting already/i, 'suggest_full'],
     [/Fifteen of your own are open already/i, 'own_full'],
+    // Pat's Uncheck once the milestone's points were traded (as a Void), and the token writers' last guard
+    // (a constraint error said without its detail).
+    [/Those points are already spent/i, 'points_spent'],
+    [/That can't be saved/i, 'cant_save'],
   ];
   const messageOf = (err) => String((err && (err.message || err.error_description)) || err || '');
   function friendly(err, lang, tutor) {

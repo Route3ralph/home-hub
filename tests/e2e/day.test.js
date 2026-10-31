@@ -2483,6 +2483,8 @@ const HW_AUDIO = `(${HW_STUBS})(); (${HW_CLOCKED})();`;
       [400, 'P0001', 'Three asks are waiting already. Wait for a parent first.', 'Ya hay tres pedidos esperando. Espera primero a tus padres.'],
       [400, 'P0001', 'Five suggestions are waiting already. Wait for a parent first.', 'Ya hay cinco propuestas esperando. Espera primero a tus padres.'],
       [400, 'P0001', 'Fifteen of your own are open already.', 'Ya tienes quince tareas tuyas abiertas.'],
+      // A token writer's last guard: a constraint error said without its detail.
+      [400, '22023', "That can't be saved.", 'Eso no se puede guardar.'],
     ];
     for (const [status, code, msg, words] of msgs) {
       await hwClear(page);
