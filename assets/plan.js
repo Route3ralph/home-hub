@@ -250,6 +250,7 @@
       ticked_on: 'ticked {day}', talk_line: '"{title}" was planned for {day} · Ask what got in the way, then pick a new day together.',
       plan_not_given: 'Plan not given yet', add_assignment: '+ Assignment', add_lesson: '+ Lesson', n_of_m: '{n} of {m}',
       added_by_kid: 'added by {kid}', lesson_tag: 'lesson', with_you: 'with you', next_week: 'The 7 days after',
+      from_school: 'from school', school_gone: 'no longer on the school site', school_moved: 'the school moved it to {day}',
       res_stopped: 'Stopped', res_expired: 'Not answered', done_30: 'Done (30 days)', st_done: 'Done', st_dropped: 'Dropped', st_open: 'Open',
       back: '‹ All homework', new_assignment: 'New assignment', new_lesson: 'New lesson',
       a_kind: 'This is', kind_assignment: 'An assignment', kind_lesson: 'A lesson', a_title: 'Title', a_subject: 'Class',
@@ -343,6 +344,7 @@
       ticked_on: 'marcado {day}', talk_line: '"{title}" estaba planeado para {day} · Pregunta qué se lo impidió y elijan juntos otro día.',
       plan_not_given: 'Plan todavía sin dar', add_assignment: '+ Trabajo', add_lesson: '+ Lección', n_of_m: '{n} de {m}',
       added_by_kid: 'añadido por {kid}', lesson_tag: 'lección', with_you: 'contigo', next_week: 'Los 7 días siguientes',
+      from_school: 'de la escuela', school_gone: 'ya no está en el sitio de la escuela', school_moved: 'la escuela la pasó a {day}',
       res_stopped: 'Parado', res_expired: 'Sin respuesta', done_30: 'Hechos (30 días)', st_done: 'Hecho', st_dropped: 'Cancelado', st_open: 'Abierto',
       back: '‹ Toda la tarea', new_assignment: 'Trabajo nuevo', new_lesson: 'Lección nueva',
       a_kind: 'Es', kind_assignment: 'Un trabajo', kind_lesson: 'Una lección', a_title: 'Título', a_subject: 'Asignatura',
@@ -1558,12 +1560,19 @@
     }
     const isOpen = (step, action) => note && note.step === step && (!action || note.action === action);
 
+    // 0006: an assignment made from school says so, and when the school moved its date or took it off its site.
+    function schoolBits(x) {
+      const m = x.school && typeof x.school === 'object' ? x.school : null;   // the detail has its marks but no added_by
+      if (x.added_by !== 'school' && !m) return [];
+      return [w('from_school')].concat(m && m.gone ? [w('school_gone')] : m && m.moved_to ? [w('school_moved', { day: rel(m.moved_to) })] : []);
+    }
     function assignmentRow(x) {
       const top = [x.subject, x.title].filter(Boolean).join(' · ');
       const sub = [];
       if (x.kind === 'lesson') sub.push(w('lesson_tag'));
       sub.push(w(x.kind === 'lesson' ? 'do_by' : 'due_on', { day: rel(x.due_date) }));
       if (x.added_by === 'kid') sub.push(w('added_by_kid'));
+      sub.push(...schoolBits(x));
       let state;
       if (x.status !== 'open') state = w(x.status === 'done' ? 'st_done' : 'st_dropped');
       else if (x.state === 'none' || !Number(x.steps)) state = `${w('no_plan')} ›`;
@@ -1683,7 +1692,7 @@
       const x = detail;
       if (!x) { el.innerHTML = `<div class="plan-tutor"><a class="back" href="#">${esc(w('back'))}</a><p class="empty-line">${esc(friendly({ message: "That assignment isn't on this link." }, lang))}</p></div>`; return; }
       const head = `<a class="back" href="#">${esc(w('back'))}</a><header class="plan-head"><p class="eyebrow">${esc(w('tutor_title'))}</p><h1>${esc(x.title)}</h1>`
-        + `<p class="meta">${esc([x.subject, w(x.kind === 'lesson' ? 'do_by' : 'due_on', { day: rel(x.due_date) }), x.added_by === 'kid' ? w('added_by_kid') : ''].filter(Boolean).join(' · '))}</p></header>`;
+        + `<p class="meta">${esc([x.subject, w(x.kind === 'lesson' ? 'do_by' : 'due_on', { day: rel(x.due_date) }), x.added_by === 'kid' ? w('added_by_kid') : '', ...schoolBits(x)].filter(Boolean).join(' · '))}</p></header>`;
       const fresh = edFor !== x.id || !el.querySelector('[data-ref="editor"]');
       if (fresh) {
         if (ed) ed.stop();

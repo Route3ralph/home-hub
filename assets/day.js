@@ -149,9 +149,12 @@
       hw_k_trade: 'Trade', hw_back_home: '‹ Homework', hw_notify: 'Show a notification when a block ends', hw_notify_body: 'Your block is over.',
       hw_being_planned: 'Being planned', hw_start: 'Start',
       // 0006: New from school (docs/v1.3-homework.md §11.4)
-      hw_school: 'New from school ({n})', hw_school_card: 'New from school: {n} ›', hw_school_new: 'New', hw_school_plan: 'Plan it · {n} min',
-      hw_school_not: 'Not homework', hw_school_planned: 'Planned for {day}: {title}', hw_school_left: 'Left off your list: {title}. A parent can bring it back.',
-      hw_school_more: '{n} more',
+      hw_school: 'New from school ({n})', hw_school_card: 'New from school: {n} ›', hw_school_quick: 'Quick · {n} min',
+      hw_school_pat: 'Plan with {tutor}', hw_school_pat_none: 'Plan with your parents', hw_school_hide: 'Hide',
+      hw_school_planned: 'Planned for {day}: {title}', hw_school_for_pat: 'On your homework, to plan with {tutor}: {title}',
+      hw_school_for_pat_none: 'On your homework, to plan with your parents: {title}', hw_school_hidden: 'Hidden: {title}. A parent can bring it back.',
+      hw_school_more: '{n} more', hw_school_gone: 'No longer on the school site', hw_school_moved: 'The school moved it to {day}',
+      hw_school_not_yours: "That isn't on your list from school any more.", hw_school_already: 'That one is on your homework already.',
     },
     es: {
       my_day: 'Mi día', hi: 'Hola, {name}', today: 'Hoy', tomorrow: 'Mañana', yesterday: 'Ayer', late: 'Atrasado',
@@ -225,9 +228,12 @@
       hw_k_focus: 'Concentración', hw_k_on_time: 'A tiempo', hw_k_milestone: 'Hito revisado', hw_k_given: 'De tus padres', hw_k_void: 'Anulado',
       hw_k_trade: 'Cambio', hw_back_home: '‹ Tarea', hw_notify: 'Avisar con una notificación cuando termine un bloque', hw_notify_body: 'Tu bloque terminó.',
       hw_being_planned: 'En preparación', hw_start: 'Empezar',
-      hw_school: 'Nuevo de la escuela ({n})', hw_school_card: 'Nuevo de la escuela: {n} ›', hw_school_new: 'Nuevo', hw_school_plan: 'Planear · {n} min',
-      hw_school_not: 'No es tarea', hw_school_planned: 'Planeado para {day}: {title}', hw_school_left: 'Fuera de tu lista: {title}. Tus padres pueden recuperarla.',
-      hw_school_more: '{n} más',
+      hw_school: 'Nuevo de la escuela ({n})', hw_school_card: 'Nuevo de la escuela: {n} ›', hw_school_quick: 'Rápido · {n} min',
+      hw_school_pat: 'Planear con {tutor}', hw_school_pat_none: 'Planear con tus padres', hw_school_hide: 'Ocultar',
+      hw_school_planned: 'Planeado para {day}: {title}', hw_school_for_pat: 'En tu tarea, para planear con {tutor}: {title}',
+      hw_school_for_pat_none: 'En tu tarea, para planear con tus padres: {title}', hw_school_hidden: 'Oculta: {title}. Tus padres pueden recuperarla.',
+      hw_school_more: '{n} más', hw_school_gone: 'Ya no está en el sitio de la escuela', hw_school_moved: 'La escuela la pasó a {day}',
+      hw_school_not_yours: 'Eso ya no está en tu lista de la escuela.', hw_school_already: 'Esa ya está en tu tarea.',
     },
   };
   // Until the person is known (or when the link doesn't work), the device's language is a guess.
@@ -1196,9 +1202,10 @@
   // screen kept awake while a block's ring runs, on any view. Points are only ever what the server answered.
   // Rows the page makes (a block, a smaller step, his own homework, an ask, a suggestion) take their id
   // from the page, so a resend finds them: a Start or an End with no answer is sent again with the same id.
-  // From 0006 (schema 6), New from school: the view's from_school, the school's assignments he hasn't planned, as a
-  // short list after Due soon with Plan it (Quick at his length) and Not homework (drop), through assignment_by_token;
-  // the card's from_school count is a line that opens it.
+  // From 0006 (schema 6), New from school: the view's from_school, the school's items he hasn't planned or hidden, as a
+  // short list after Due soon with Quick (at his length, for one due within 3 days), Plan with Pat and Hide, through
+  // school_item_by_token; the card's from_school count is a line that opens it. An assignment made from school says if
+  // the school moved its date or took it off its site (its school marks).
   // ============================================
   const HW_VIEWS = new Set(['homework', 'focus', 'points', 'plan']);
   const LENGTH_KEY = 'homehub.myday.length';
@@ -1219,7 +1226,7 @@
   let addOpen = false;      // the + Homework form
   let earlierOpen = false;  // From earlier unfolded
   let schoolMoreOpen = false;   // New from school's folded rest unfolded (0006)
-  const schoolBusy = new Set(); // New from school: the items with a Plan it or Not homework on its way
+  const schoolBusy = new Set(); // New from school: the items with a Quick, Plan with Pat or Hide on its way
   let schoolScroll = false;     // the card's "New from school" line was tapped: #homework opens at the list
   let sheet = null;         // { kind: 'stuck' | 'smaller' | 'ask' | 'cue' | 'ifstuck', step, text }
   let withPick = 'alone';
@@ -1270,6 +1277,9 @@
     const msg = String((err && (err.message || err.error_description)) || err || '');
     if (plan && HW_MESSAGES.test(msg)) return plan.friendly(err, lang, hwTutor());
     if (/That (assignment|reward) isn't on your list|That ask isn't yours/i.test(msg)) return hw('hw_not_yours');
+    // 0006: New from school's refusals (school_item_by_token).
+    if (/That isn't on your list from school/i.test(msg)) return hw('hw_school_not_yours');
+    if (/That one is on your homework already/i.test(msg)) return hw('hw_school_already');
     return friendly(err);
   }
 
@@ -1357,6 +1367,10 @@
   const rewardCall = (action, o) => hwWrite(() => sb.rpc('reward_by_token', { p_token: token, p_action: action, p_reward: o.reward, p_text: o.text, p_key: o.key }));
   const asgCall = (action, o) => hwWrite(() => sb.rpc('assignment_by_token', {
     p_token: token, p_action: action, p_assignment: o.assignment, p_title: o.title, p_subject: o.subject, p_due_date: o.due, p_minutes: o.minutes,
+  }));
+  // 0006: an item of New from school ('quick' with his minutes, 'with_tutor', 'hide'); its answer is {assignment_id} and his view.
+  const schoolCall = (action, item, minutes) => hwWrite(() => sb.rpc('school_item_by_token', {
+    p_token: token, p_item: item, p_action: action, p_minutes: minutes,
   }));
   const prefsCall = (cue, ifStuck) => hwWrite(() => sb.rpc('homework_prefs_by_token', { p_token: token, p_cue: cue, p_if_stuck: ifStuck, p_minutes: null }));
 
@@ -1669,6 +1683,11 @@
     if (a.status === 'open' && a.state === 'given' && a.next_milestone && !(passed && passed.title === a.next_milestone.title && passed.day === a.next_milestone.day)) {
       bits.push(`◆ ${a.next_milestone.title} ${hwRel(a.next_milestone.day)}`);
     }
+    // 0006: an assignment made from school says when the school moved its date, or took it off its site.
+    if (a.school && a.status === 'open') {
+      if (a.school.gone) bits.push(hw('hw_school_gone'));
+      else if (a.school.moved_to) bits.push(hw('hw_school_moved', { day: hwRel(a.school.moved_to) }));
+    }
     let tail = '';
     if (a.status !== 'open') bits.push(plan.t(a.status === 'done' ? 'st_done' : 'st_dropped', null, lang));
     else if (a.state === 'planning') bits.push(hw('hw_being_planned'));
@@ -1687,10 +1706,11 @@
       ${a.stretch && a.status === 'open' ? `<p class="hw-stretch">${esc(hw('hw_stretch', { text: a.stretch }))}</p>` : ''}
     </div>`;
   }
-  // New from school (0006, §11.4): his view's from_school, the school's assignments he hasn't planned yet, after Due
-  // soon. A short list (five, the rest folded), each with one tap to plan it (Quick at his length: one step, placed by
-  // the database on the first homework day with room) or to say it isn't homework (off his list; a parent can bring it
-  // back). They show only here, never also under Tonight or Due soon.
+  // New from school (0006, §11.4): his view's from_school ([{id, title, subject, due_date, quick}], id the school item's),
+  // after Due soon. A short list (five, the rest folded), each in one tap: Quick (only for one due within 3 days, quick:
+  // true: one step of his length, placed by the database on the first homework day with room, given at once), Plan with
+  // Pat (an assignment from school with no plan yet: it shows under Due soon and on Pat's link) or Hide (off his list; a
+  // parent can show it again). Once made an assignment, an item is no longer in from_school.
   const SCHOOL_SHOWN = 5;
   const schoolList = () => (hv && Array.isArray(hv.from_school) ? hv.from_school.filter((x) => x && typeof x.id === 'string') : []);
   const schoolItem = (id) => schoolList().find((x) => x.id === id) || null;
@@ -1698,10 +1718,10 @@
   function schoolRowHTML(x) {
     const line = [x.subject, x.title, plan.t('due_on', { day: hwRel(x.due_date) }, lang)].filter(Boolean).join(' · ');
     const off = schoolBusy.has(x.id) ? ' disabled' : '';
-    return `<div class="hw-school-item" data-asg="${esc(x.id)}">
-      <p class="hw-school-line">${x.new ? `<span class="hw-school-new">${esc(hw('hw_school_new'))}</span> ` : ''}${esc(line)}</p>
-      <p class="hw-school-acts"><button type="button" class="btn btn-primary" data-act="hw-school-plan" data-asg="${esc(x.id)}"${off}>${esc(hw('hw_school_plan', { n: schoolMinutes() }))}</button>
-        <button type="button" class="btn" data-act="hw-school-not" data-asg="${esc(x.id)}"${off}>${esc(hw('hw_school_not'))}</button></p>
+    const b = (act, label, cls) => `<button type="button" class="btn${cls ? ` ${cls}` : ''}" data-act="${act}" data-item="${esc(x.id)}"${off}>${esc(label)}</button>`;
+    return `<div class="hw-school-item" data-item="${esc(x.id)}">
+      <p class="hw-school-line">${esc(line)}</p>
+      <p class="hw-school-acts">${x.quick === true ? b('hw-school-quick', hw('hw_school_quick', { n: schoolMinutes() }), 'btn-primary') : ''}${b('hw-school-pat', hw('hw_school_pat'), x.quick === true ? '' : 'btn-primary')}${b('hw-school-hide', hw('hw_school_hide'))}</p>
     </div>`;
   }
   function schoolHTML(list) {
@@ -1774,10 +1794,9 @@
     const tonight = hv.tonight || [];
     const earlier = hv.earlier || [];
     const school = schoolList();
-    const fromSchool = new Set(school.map((x) => x.id));
-    const open = (hv.assignments || []).filter((a) => a.status === 'open' && !fromSchool.has(a.id));
+    const open = (hv.assignments || []).filter((a) => a.status === 'open');
     const quick = open.filter((a) => a.state === 'none' && quickDue(a));
-    const due = (hv.assignments || []).filter((a) => !quick.includes(a) && !fromSchool.has(a.id));
+    const due = (hv.assignments || []).filter((a) => !quick.includes(a));
     const tonightHead = hv.window ? hw('hw_tonight_line', { p: hv.load ? hv.load.planned : 0, f: hv.load ? hv.load.free : 0 }) : hw('tonight');
     const earlierMin = earlier.reduce((n, s) => n + (Number(s.minutes) || 0), 0);
     const earlierHTML = earlier.length ? `<details class="hw-earlier"${earlierOpen ? ' open' : ''}>
@@ -2228,35 +2247,28 @@
     }
     renderHomework(true);
   }
-  // New from school: Plan it (Quick at his length) and Not homework (drop). Both buttons of the item stay off while
-  // one is on its way, so a second tap sends nothing.
+  // New from school: Quick (his length), Plan with Pat and Hide, each one tap through school_item_by_token. The item's
+  // buttons stay off while one is on its way, so a second tap sends nothing; a refusal is said and the item stays.
   function schoolHold(id, on) {
     if (on) schoolBusy.add(id); else schoolBusy.delete(id);
-    root.querySelectorAll(`.hw-school-item[data-asg="${CSS.escape(id)}"] button`).forEach((b) => { b.disabled = on; });
+    root.querySelectorAll(`.hw-school-item[data-item="${CSS.escape(id)}"] button`).forEach((b) => { b.disabled = on; });
   }
-  async function schoolPlan(id) {
+  async function schoolAct(id, action) {
     const x = schoolItem(id);
-    if (!x || schoolBusy.has(id)) return;
+    if (!x || schoolBusy.has(id) || (action === 'quick' && x.quick !== true)) return;
     schoolHold(id, true);
-    const r = await asgCall('quick', { assignment: id, minutes: schoolMinutes() });
+    const r = await schoolCall(action, id, action === 'quick' ? schoolMinutes() : undefined);
     schoolHold(id, false);
     if (r.gone) return;   // homework went off, or the link: hwNull shows the day
     if (r.data) {
-      const a = asgById(id);
-      const s = a && (a.steps || []).find((y) => !y.done);
-      if (s && s.day === hv.today) nowId = s.id;
-      if (s) toast(hw('hw_school_planned', { title: x.title, day: hwRel(s.day) }));
+      const a = r.data.assignment_id ? asgById(r.data.assignment_id) : null;
+      if (action === 'quick') {
+        const s = a && (a.steps || []).find((y) => !y.done);
+        if (s && s.day === hv.today) nowId = s.id;
+        if (s) toast(hw('hw_school_planned', { title: x.title, day: hwRel(s.day) }));
+      } else if (action === 'with_tutor') toast(hw('hw_school_for_pat', { title: x.title }));
+      else toast(hw('hw_school_hidden', { title: x.title }));
     }
-    renderHomework(true);
-  }
-  async function schoolNot(id) {
-    const x = schoolItem(id);
-    if (!x || schoolBusy.has(id)) return;
-    schoolHold(id, true);
-    const r = await asgCall('drop', { assignment: id });
-    schoolHold(id, false);
-    if (r.gone) return;
-    if (r.data) toast(hw('hw_school_left', { title: x.title }));
     renderHomework(true);
   }
   async function addHomework(form) {
@@ -2448,8 +2460,9 @@
       case 'hw-edit': location.hash = `#plan/${asg}`; break;
       case 'hw-quick': quickOpen = quickOpen === asg ? null : asg; renderHomework(true); break;
       case 'hw-school-open': schoolScroll = true; break;   // the link itself opens #homework
-      case 'hw-school-plan': schoolPlan(asg); break;
-      case 'hw-school-not': schoolNot(asg); break;
+      case 'hw-school-quick': schoolAct(el.dataset.item, 'quick'); break;
+      case 'hw-school-pat': schoolAct(el.dataset.item, 'with_tutor'); break;
+      case 'hw-school-hide': schoolAct(el.dataset.item, 'hide'); break;
       case 'hw-add': addOpen = true; renderHomework(true); { const i = root.querySelector('.hw-add-form input[name="title"]'); if (i) i.focus(); } break;
       case 'hw-add-cancel': addOpen = false; renderHomework(true); break;
       case 'hw-replan-earlier': replan([...new Set(((hv && hv.earlier) || []).map((s) => s.assignment_id))]); break;

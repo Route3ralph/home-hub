@@ -33,7 +33,7 @@
 const { chromium } = require('playwright');
 const { createHash } = require('crypto');
 const { makeDb, install, signIn, SUPA, withHomework, homeworkRpc, foodRpc, hwKidRow, tutorLinkRow, assignmentRow, stepRow, sessionRow,
-  rewardRow, askRow, ledgerRow, withSchool, schoolRpc } = require('./mock');
+  rewardRow, askRow, ledgerRow, withSchool, schoolRpc, schoolFeedRow, schoolItemRow, schoolUrlOf } = require('./mock');
 const { serve } = require('./server');
 
 let BASE = '';
@@ -985,24 +985,30 @@ const emailOf = (req) => {
   }
 
   // =====================================================================
-  // 9. School links (schema 6, 0006; docs/v1.3-homework.md §11, §12)
+  // 9. School links (schema 6, 0006; docs/v1.3-homework.md §11, §12.8)
   // =====================================================================
   // The made-up school's host is academy.school.example (the database's .myschoolapp.com, replaced in tests).
   const RPC6 = Object.assign({}, RPC, { hub_schema_version: () => 6 }, schoolRpc);
   const SECRET = 'SECRETMARKER7f3a';
   const LINK = (z) => `academy.school.example/podium/feed/iCal.aspx?z=${z}`;
   const FEED = (f) => `[data-row="school"] .hw-feed[data-feed="${f}"]`;
+  const LAB = 'a5c10000-0000-4000-8000-000000000006';
   const schoolDb = () => {
     const d = withSchool(fullDb());
-    d.assignments.push(assignmentRow({ id: 'a5c10000-0000-4000-8000-000000000006', kid_id: ID.jordan, added_by: 'school', title: 'Lab report', subject: 'Biology',
-      due_date: '2026-11-20', created_by: 'school', updated_by: 'school' }));
+    d.assignments.push(assignmentRow({ id: LAB, kid_id: ID.jordan, added_by: 'school', title: 'Lab report', subject: 'Biology',
+      due_date: '2026-11-20', created_by: 'Jordan Example (My day)', updated_by: 'Jordan Example (My day)' }));
     return d;
   };
+  const pageKeeps = async (page) => page.evaluate(() => {
+    const all = [document.documentElement.outerHTML, location.href, document.title, [...document.querySelectorAll('input, textarea')].map((i) => i.value).join(' ')];
+    try { all.push(JSON.stringify(Object.assign({}, localStorage)), JSON.stringify(Object.assign({}, sessionStorage))); } catch (e) { all.push('storage?'); }
+    return all.join('\n');
+  });
   {
     // Schema 5: no row, no request.
     ({ page, db } = await open({ label: 'school-5', db: withSchool(fullDb()) }));
-    check('schema 5: no School links row and no school_status request', !(await page.$('[data-row="school"]')) && !calls(db, 'school_status').length
-      && !!(await page.$('[data-row="links"]')), JSON.stringify(calls(db, 'school_status')));
+    check('schema 5: no School links row and no school_feed_status request', !(await page.$('[data-row="school"]')) && !calls(db, 'school_feed_status').length
+      && !!(await page.$('[data-row="links"]')), JSON.stringify(calls(db, 'school_feed_status')));
     await page.context().close();
   }
   {
@@ -1010,25 +1016,27 @@ const emailOf = (req) => {
     ({ page, db } = await open({ label: 'school', db: schoolDb(), rpc: RPC6, allowConsole: /status of 400/ }));
     const said = [];
     page.on('console', (m) => said.push(m.text()));
-    check('schema 6: school_status read once, for Jordan', same(calls(db, 'school_status').map((c) => c.body), [{ p_kid: ID.jordan }]), JSON.stringify(calls(db, 'school_status').map((c) => c.body)));
+    check('schema 6: school_feed_status read once, for Jordan', same(calls(db, 'school_feed_status').map((c) => c.body), [{ p_kid: ID.jordan }]),
+      JSON.stringify(calls(db, 'school_feed_status').map((c) => c.body)));
     check('School links: a row of the switches, after the tutor links and before Erase', same(await page.$$eval('[data-sec="switches"] .hw-switch-row', (rs) => rs.map((r) => r.dataset.row)),
       ['kid', 'points', 'time', 'links', 'school', 'erase']), JSON.stringify(await page.$$eval('[data-sec="switches"] .hw-switch-row', (rs) => rs.map((r) => r.dataset.row))));
     check('School links: what it does, and that a link is never shown again', /Home Hub reads them every hour/.test(await tc(page, '[data-row="school"] .hw-switch-line'))
       && /never shown again/.test(await tc(page, '[data-row="school"] .hw-switch-line')), await tc(page, '[data-row="school"] .hw-switch-line'));
-    check('the three feeds, each "Not added" with Add link: Assignments, Schedule, Games/Practices',
+    check('the three links, each "Not added" with Add link: Assignments, Schedule, Games/Practices; no Check now, no date check',
       same(await texts(page, '[data-row="school"] .hw-feed .hw-feed-name'), ['Assignments', 'Schedule', 'Games/Practices'])
       && same(await texts(page, '[data-row="school"] .hw-feed .hw-feed-state'), ['Not added', 'Not added', 'Not added'])
-      && same(await texts(page, '[data-row="school"] .hw-feed button'), ['Add link', 'Add link', 'Add link']), await tc(page, '[data-row="school"]'));
-    check('each feed says what it becomes: his homework, marked from school; busy time',
+      && same(await texts(page, '[data-row="school"] .hw-feed button'), ['Add link', 'Add link', 'Add link'])
+      && !(await page.$('[data-act="school-now"]')) && !(await page.$('[data-ref="school-check"]')), await tc(page, '[data-row="school"]'));
+    check('each link says what it becomes: his homework, marked from school; busy time',
       same(await texts(page, '[data-row="school"] .hw-feed .hw-feed-what'), ['Jordan\'s assignments, as homework marked "from school"', 'His classes, as busy time', 'Games and practices, as busy time']),
       JSON.stringify(await texts(page, '[data-row="school"] .hw-feed .hw-feed-what')));
     const how = await tc(page, '[data-row="school"] details.hw-school-how');
     check('How to copy a link: folded, the plain steps on a parent\'s own login (the feed button, WebCal Feed for External Calendar, Individual Filter Feeds, Copy Link Address), the 2 months and 12 months, up to an hour',
       !(await page.$eval('[data-row="school"] details.hw-school-how', (d) => d.open)) && (await tc(page, '[data-row="school"] details.hw-school-how summary')) === 'How to copy a link'
       && /your own parent login/.test(how) && /Jordan's Calendars/.test(how) && /WebCal Feed for External Calendar/.test(how) && /Individual Filter Feeds/.test(how)
-      && /right-click Assignments and choose Copy Link Address/.test(how) && /past 2 months and the next 12/.test(how) && /up to an hour/.test(how)
-      && /anyone who has it can read/.test(how) && (await page.$$('[data-row="school"] details.hw-school-how ol li')).length === 5, how);
-    check('"from school" on an assignment the school feed brought', (await texts(page, '.hw-arows .hw-arow-sub')).includes('Biology · due Fri Nov 20 · from school'), JSON.stringify(await texts(page, '.hw-arows .hw-arow-sub')));
+      && /right-click Assignments and choose Copy Link Address/.test(how) && /Check now, and check the dates/.test(how) && /past 2 months and the next 12/.test(how)
+      && /up to an hour/.test(how) && /anyone who has it can read/.test(how) && (await page.$$('[data-row="school"] details.hw-school-how ol li')).length === 5, how);
+    check('"from school" on an assignment made from school', (await texts(page, '.hw-arows .hw-arow-sub')).includes('Biology · due Fri Nov 20 · from school'), JSON.stringify(await texts(page, '.hw-arows .hw-arow-sub')));
 
     // ---- Add link: the form, the checks before anything is sent, a refusal from the database
     await page.click('[data-row="school"] details.hw-school-how summary');
@@ -1042,67 +1050,155 @@ const emailOf = (req) => {
     const formErr = `${FEED('assignments')} form[data-form="school"] .form-error`;
     await page.click(`${FEED('assignments')} form[data-form="school"] button[type="submit"]`);
     await sleep(150);
-    check('an empty box: "Paste the link first." and nothing sent', (await tc(page, formErr)) === 'Paste the link first.' && !calls(db, 'save_school_link').length, await tc(page, formErr));
+    check('an empty box: "Paste the link first." and nothing sent', (await tc(page, formErr)) === 'Paste the link first.' && !calls(db, 'set_school_feed').length, await tc(page, formErr));
     await page.fill(input, `http://${LINK(SECRET)}`);
     await page.click(`${FEED('assignments')} form[data-form="school"] button[type="submit"]`);
     await sleep(150);
-    check('an http:// link: refused on the page, nothing sent', /^That isn't a calendar feed link/.test(await tc(page, formErr)) && !calls(db, 'save_school_link').length, await tc(page, formErr));
+    check('an http:// link: refused on the page, nothing sent', /^That isn't a calendar feed link/.test(await tc(page, formErr)) && !calls(db, 'set_school_feed').length, await tc(page, formErr));
     // A window focus while the link is in the box: no read, the box kept.
-    const reads = calls(db, 'school_status').length;
+    const reads = calls(db, 'school_feed_status').length;
     await page.evaluate(() => window.dispatchEvent(new Event('focus')));
     await sleep(400);
-    check('a window focus while a link is in the box: no read, the box kept', calls(db, 'school_status').length === reads && (await page.inputValue(input).catch(() => '')) === `http://${LINK(SECRET)}`);
+    check('a window focus while a link is in the box: no read, the box kept', calls(db, 'school_feed_status').length === reads && (await page.inputValue(input).catch(() => '')) === `http://${LINK(SECRET)}`);
     await page.fill(input, `https://calendar.example.com/podium/feed/iCal.aspx?z=${SECRET}`);
     await page.click(`${FEED('assignments')} form[data-form="school"] button[type="submit"]`);
     await until(page, () => !document.querySelector('#main [aria-busy="true"]') && !!document.querySelector('[data-row="school"] form[data-form="school"] .form-error:not([hidden])'));
-    check('a link on another host: the database refuses it, and the form says why (still open, nothing saved)',
-      calls(db, 'save_school_link').length === 1 && /^That isn't a school calendar link/.test(await tc(page, formErr)) && !!(await page.$(input)) && !db.schoolLinks.length, await tc(page, formErr));
+    check('a link on another host: the database refuses it in its own words, and the form says so (still open, nothing saved)',
+      calls(db, 'set_school_feed').length === 1 && (await tc(page, formErr)) === "That isn't a school calendar link. Copy it from the calendar's feed button: it starts with webcal:// or https:// and has /podium/feed/iCal.aspx?z= in it."
+      && !!(await page.$(input)) && !db.school_feeds.length, await tc(page, formErr));
 
     // ---- Saved: webcal:// sent as https://; never shown back
     await page.fill(input, `  webcal://${LINK(SECRET)}  `);
     await page.click(`${FEED('assignments')} form[data-form="school"] button[type="submit"]`);
     await settle(page);
-    check('Save: save_school_link(kid, assignments, the link with webcal:// as https://, trimmed)', same(lastCall(db, 'save_school_link').body,
-      { p_kid: ID.jordan, p_feed: 'assignments', p_url: `https://${LINK(SECRET)}` }) && db.schoolLinks.length === 1, JSON.stringify(lastCall(db, 'save_school_link').body));
+    const feedA = () => db.school_feeds.find((f) => f.kind === 'assignments');
+    check('Save: set_school_feed(kid, assignments, the link with webcal:// as https://, trimmed)', same(lastCall(db, 'set_school_feed').body,
+      { p_kid: ID.jordan, p_kind: 'assignments', p_url: `https://${LINK(SECRET)}` }) && db.school_feeds.length === 1 && schoolUrlOf(db, feedA().id) === `https://${LINK(SECRET)}`,
+    JSON.stringify(lastCall(db, 'set_school_feed').body));
     check('... "Assignments link saved. Home Hub reads it within the hour.", the status read again', (await lastToast(page)) === 'Assignments link saved. Home Hub reads it within the hour.'
-      && calls(db, 'school_status').length === reads + 1, await lastToast(page));
-    check('... the feed: "Added · first read within the hour", with Replace and Remove; no box', (await tc(page, `${FEED('assignments')} .hw-feed-state`)) === 'Added · first read within the hour'
-      && same(await texts(page, `${FEED('assignments')} button`), ['Replace', 'Remove']) && !(await page.$(input)), await tc(page, FEED('assignments')));
-    const kept = await page.evaluate(() => {
-      const all = [document.documentElement.outerHTML, location.href, document.title, [...document.querySelectorAll('input, textarea')].map((i) => i.value).join(' ')];
-      try { all.push(JSON.stringify(Object.assign({}, localStorage)), JSON.stringify(Object.assign({}, sessionStorage))); } catch (e) { all.push('storage?'); }
-      return all.join('\n');
-    });
-    check('the link is never shown back: not in the page, its boxes, its address, its storage, a toast or the console', !kept.includes(SECRET) && !kept.includes('storage?')
+      && calls(db, 'school_feed_status').length === reads + 1, await lastToast(page));
+    check('... the link: "Added · first read within the hour", its host and last 4 characters ("academy.school.example …f3a" style), Replace, Pause and Remove; no box',
+      (await tc(page, `${FEED('assignments')} .hw-feed-state`)) === 'Added · first read within the hour' && (await tc(page, `${FEED('assignments')} .hw-feed-link`)) === 'academy.school.example …7f3a'
+      && same(await texts(page, `${FEED('assignments')} button`), ['Replace', 'Pause', 'Remove']) && !(await page.$(input)), await tc(page, FEED('assignments')));
+    check('... Check now, and "Check the dates" waiting for the first read', !!(await page.$('[data-row="school"] [data-act="school-now"]'))
+      && /Once the Assignments link is read, its next 5 items show here/.test(await tc(page, '[data-ref="school-check"]'))
+      && /nothing from it reaches Jordan or Pat/.test(await tc(page, '[data-ref="school-check"]')) && !(await page.$('[data-ref="school-check"] button')), await tc(page, '[data-ref="school-check"]'));
+    check('the link is never shown back: not in the page, its boxes, its address, its storage, a toast or the console', !(await pageKeeps(page)).includes(SECRET) && !(await pageKeeps(page)).includes('storage?')
       && !(await toasts(page)).some((x) => x.includes(SECRET)) && !said.some((x) => x.includes(SECRET)), said.filter((x) => x.includes(SECRET)).join(' | ') || 'in the page');
 
-    // ---- What the hourly read left: last read and items; each stop in words
-    Object.assign(db.schoolLinks[0], { read_at: at(TODAY, '10:23'), items: 23 });
+    // ---- Check now: hub-jobs' school action, as the parent; what it read
+    db.schoolRead = (d, f) => {
+      if (f.kind !== 'assignments' || d.school_items.length) return;
+      const I = (o) => d.school_items.push(schoolItemRow(Object.assign({ feed_id: f.id }, o)));
+      I({ id: '5c100000-0000-4000-8000-000000000001', title: 'Read chapter 5', subject: 'History', first_day: '2026-11-02', last_day: '2026-11-06', due_date: '2026-11-06' });
+      I({ id: '5c100000-0000-4000-8000-000000000002', title: 'Lab report', subject: 'Biology', first_day: '2026-11-13', last_day: '2026-11-20', due_date: '2026-11-20' });
+      I({ id: '5c100000-0000-4000-8000-000000000003', title: 'Map quiz', subject: 'Geography', first_day: '2026-11-09', last_day: '2026-11-09', due_date: '2026-11-09' });
+    };
+    await page.click('[data-row="school"] [data-act="school-now"]');
+    await settle(page);
+    const job = (db.functionCalls || []).filter((c) => c.path === '/functions/v1/hub-jobs');
+    check('Check now: hub-jobs {action: school} as Alex, then the status read again', job.length === 1 && same(job[0].body, { action: 'school' }) && job[0].email === 'alex@example.com'
+      && calls(db, 'school_feed_status').length === reads + 2, JSON.stringify(job));
+    check('... "Checked 1 link · 3 items"; the link "Last read today 3:10pm · 3 items"', (await lastToast(page)) === 'Checked 1 link · 3 items'
+      && (await tc(page, `${FEED('assignments')} .hw-feed-state`)) === 'Last read today 3:10pm · 3 items', `${await lastToast(page)} | ${await tc(page, `${FEED('assignments')} .hw-feed-state`)}`);
+
+    // ---- The first-import check
+    const chk = '[data-ref="school-check"]';
+    check('Check the dates: the next items, soonest first, with Looks right, Use the first date and One day off; until then nothing for him',
+      same(await texts(page, `${chk} .hw-school-items li`), ['History · Read chapter 5 · due Fri Nov 6', 'Geography · Map quiz · due Mon Nov 9', 'Biology · Lab report · due Fri Nov 20'])
+      && same(await texts(page, `${chk} button`), ['Looks right', 'Use the first date', 'One day off']) && /Is this what Blackbaud shows\?/.test(await tc(page, chk))
+      && !(await page.$('[data-keep="new"]')), await tc(page, chk));
+    await page.click(`${chk} [data-act="school-off"]`);
+    check('One day off: "Blackbaud shows each one:" A day earlier, A day later', same(await texts(page, `${chk} button`), ['Looks right', 'Use the first date', 'A day earlier', 'A day later'])
+      && /Blackbaud shows each one:/.test(await tc(page, chk)) && !calls(db, 'check_school_feed').length, await tc(page, chk));
+    await page.click(`${chk} button:text-is("A day earlier")`);
+    await settle(page);
+    check('A day earlier: check_school_feed(the link, end, -1); "Dates checked. Jordan\'s New from school shows them now."', same(lastCall(db, 'check_school_feed').body,
+      { p_feed: feedA().id, p_date_rule: 'end', p_date_shift: -1 }) && (await lastToast(page)) === "Dates checked. Jordan's New from school shows them now."
+      && !(await page.$(chk)) && feedA().checked, JSON.stringify(lastCall(db, 'check_school_feed').body));
+
+    // ---- What is new for him: Add to homework, Hide; Show what he hid
+    const nw = '[data-row="school"] details[data-keep="new"]';
+    const folded = !(await page.$eval(nw, (d) => d.open));
+    await page.click(`${nw} summary`);
+    check('New from school for Jordan (3), folded: each item a day earlier now, with Add to homework and Hide', (await tc(page, `${nw} summary`)) === 'New from school for Jordan (3)'
+      && folded && same(await texts(page, `${nw} .hw-school-row > span:first-child`), ['History · Read chapter 5 · due Thu Nov 5', 'Geography · Map quiz · due Sun Nov 8', 'Biology · Lab report · due Thu Nov 19'])
+      && same(await texts(page, `${nw} .hw-school-row:first-child button`), ['Add to homework', 'Hide']), await tc(page, nw));
+    await page.click(`${nw} [data-item="5c100000-0000-4000-8000-000000000003"][data-do="hide"]`);
+    await settle(page);
+    check('Hide: school_item_action(item, hide); "Hidden from Jordan\'s list: Map quiz"; the fold stays open', same(lastCall(db, 'school_item_action').body,
+      { p_item: '5c100000-0000-4000-8000-000000000003', p_action: 'hide' }) && (await lastToast(page)) === "Hidden from Jordan's list: Map quiz"
+      && (await page.$eval(nw, (d) => d.open)) && (await tc(page, `${nw} summary`)) === 'New from school for Jordan (2)', await lastToast(page));
+    const hid = '[data-row="school"] details[data-keep="hidden"]';
+    check('... Hidden from Jordan\'s list (1), with Show', (await tc(page, `${hid} summary`)) === "Hidden from Jordan's list (1)"
+      && same(await page.$$eval(`${hid} button`, (bs) => bs.map((b) => b.textContent)), ['Show']));
+    await page.click(`${hid} summary`);
+    await page.click(`${hid} [data-do="show"]`);
+    await settle(page);
+    check('Show: school_item_action(item, show); "Back on Jordan\'s New from school: Map quiz"', same(lastCall(db, 'school_item_action').body,
+      { p_item: '5c100000-0000-4000-8000-000000000003', p_action: 'show' }) && (await lastToast(page)) === "Back on Jordan's New from school: Map quiz" && !(await page.$(hid)));
+    await page.click(`${nw} [data-item="5c100000-0000-4000-8000-000000000001"][data-do="add"]`);
+    await settle(page);
+    const made = db.assignments.find((a) => a.title === 'Read chapter 5');
+    check('Add to homework: school_item_action(item, add); an assignment from school, due Thu Nov 5, by Alex; "On Jordan\'s homework: Read chapter 5"',
+      same(lastCall(db, 'school_item_action').body, { p_item: '5c100000-0000-4000-8000-000000000001', p_action: 'add' }) && !!made && made.added_by === 'school'
+      && made.due_date === '2026-11-05' && made.created_by === 'alex@example.com' && (await lastToast(page)) === "On Jordan's homework: Read chapter 5"
+      && (await texts(page, '.hw-arows .hw-arow-sub')).some((x) => /^History · due today · from school/.test(x)), JSON.stringify(await texts(page, '.hw-arows .hw-arow-sub')));
+
+    // ---- The school moves one, and takes another off its site: marked on the assignment, never moved or deleted
+    const labItem = db.school_items.find((i) => i.id === '5c100000-0000-4000-8000-000000000002');
+    Object.assign(labItem, { assignment_id: LAB, made_at: T, applied: { title: 'Lab report', subject: 'Biology', due_date: '2026-11-20', details: null }, due_date: '2026-11-23' });
+    db.school_items.find((i) => i.assignment_id === made.id).gone_at = T;
     await page.evaluate(() => window.dispatchEvent(new Event('focus')));
     await settle(page);
-    check('after a read: "Last read today 10:23am · 23 items"', (await tc(page, `${FEED('assignments')} .hw-feed-state`)) === 'Last read today 10:23am · 23 items'
-      && !(await page.$(`${FEED('assignments')} .hw-feed-error`)), await tc(page, FEED('assignments')));
+    check('moved and gone: "Lab report: the school moved its due date from Fri Nov 20 to Mon Nov 23…", "Read chapter 5 is no longer on the school site", each opening its assignment',
+      same(await texts(page, '[data-row="school"] .hw-school-marks a'), ['Lab report: the school moved its due date from Fri Nov 20 to Mon Nov 23. Open it to place it again ›',
+        'Read chapter 5 is no longer on the school site ›'])
+      && same(await page.$$eval('[data-row="school"] .hw-school-marks a', (as) => as.map((a) => a.getAttribute('href'))), [`#/homework/${LAB}`, `#/homework/${made.id}`]),
+    await tc(page, '[data-row="school"] .hw-school-marks'));
+    check('... and on the assignments: "the school moved it to Mon Nov 23", "no longer on the school site"', (await texts(page, '.hw-arows .hw-arow-sub')).includes('Biology · due Fri Nov 20 · from school · the school moved it to Mon Nov 23')
+      && (await texts(page, '.hw-arows .hw-arow-sub')).some((x) => /^History · due today · from school · no longer on the school site/.test(x)), JSON.stringify(await texts(page, '.hw-arows .hw-arow-sub')));
+
+    // ---- What the hourly read left: each stop in words, stale, repeating events
+    Object.assign(feedA(), { last_ok_at: at(TODAY, '10:23'), last_count: 23 });
     const stops = [
       ['sign_in', 'Blackbaud answered with a sign-in page: the link may have been replaced. Copy it again and use Replace.'],
       ['timeout', 'The school\'s site took too long to answer. Home Hub tries again within the hour.'],
       ['gone', 'Blackbaud doesn\'t know this link any more. Copy it again and use Replace.'],
       ['too_many', 'It holds more than Home Hub can use, so nothing was changed.'],
       ['empty', 'It came back empty (a new school year?), so nothing was changed.'],
-      ['something_new', 'The last read didn\'t work. Home Hub tries again within the hour.'],
+      ['error', 'The last read didn\'t work. Home Hub tries again within the hour.'],
     ];
     for (const [code, words] of stops) {
-      db.schoolLinks[0].error = code;
+      feedA().last_stop = code;
       await page.evaluate(() => window.dispatchEvent(new Event('focus')));
       await settle(page);
       check(`the last read stopped with ${code}: "${words}", and the last good read still shown`, (await tc(page, `${FEED('assignments')} .hw-feed-error`)) === words
         && (await tc(page, `${FEED('assignments')} .hw-feed-state`)) === 'Last read today 10:23am · 23 items', await tc(page, FEED('assignments')));
     }
-    Object.assign(db.schoolLinks[0], { read_at: null, items: null, error: 'unreachable' });
+    Object.assign(feedA(), { last_ok_at: null, last_count: null, last_stop: 'unreachable' });
     await page.evaluate(() => window.dispatchEvent(new Event('focus')));
     await settle(page);
     check('never read, and the first read failed: "Added · not read yet" and the stop in words', (await tc(page, `${FEED('assignments')} .hw-feed-state`)) === 'Added · not read yet'
       && (await tc(page, `${FEED('assignments')} .hw-feed-error`)) === 'The school\'s site couldn\'t be reached. Home Hub tries again within the hour.', await tc(page, FEED('assignments')));
-    Object.assign(db.schoolLinks[0], { read_at: at(TODAY, '14:23'), items: 1, error: null });
+    Object.assign(feedA(), { last_ok_at: at(TODAY, '11:23'), last_count: 1, last_stop: null, next_at: at(TODAY, '12:13'), last_repeats: 2 });
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await settle(page);
+    check('a link not read for over 2 hours past due: stale, "…Run supabase/cron.sql again (see the README)."; repeating events counted',
+      (await tc(page, `${FEED('assignments')} .hw-feed-stale`)) === 'Not read for over 3 hours: the hourly read may have stopped. Run supabase/cron.sql again (see the README).'
+      && (await tc(page, `${FEED('assignments')} .hw-feed-repeats`)) === '2 repeating events: Home Hub uses only the first date of each.', await tc(page, FEED('assignments')));
+    Object.assign(feedA(), { next_at: at(TODAY, '15:00'), last_repeats: 0 });
+
+    // ---- Pause and Resume
+    await page.click(`${FEED('assignments')} [data-act="school-pause"]`);
+    await settle(page);
+    check('Pause: pause_school_feed(the link, true); "Paused · Last read today 11:23am · 1 item", with Resume', same(lastCall(db, 'pause_school_feed').body, { p_feed: feedA().id, p_paused: true })
+      && (await tc(page, `${FEED('assignments')} .hw-feed-state`)) === 'Paused · Last read today 11:23am · 1 item'
+      && same(await texts(page, `${FEED('assignments')} button`), ['Replace', 'Resume', 'Remove']) && /paused/.test(await lastToast(page)), await tc(page, FEED('assignments')));
+    await page.click(`${FEED('assignments')} [data-act="school-resume"]`);
+    await settle(page);
+    check('Resume: pause_school_feed(the link, false)', same(lastCall(db, 'pause_school_feed').body, { p_feed: feedA().id, p_paused: false }) && !feedA().paused
+      && (await lastToast(page)) === 'Assignments link resumed. Home Hub reads it within the hour.', await lastToast(page));
 
     // ---- Replace
     await page.click(`${FEED('assignments')} [data-act="school-replace"]`);
@@ -1111,52 +1207,70 @@ const emailOf = (req) => {
     await page.fill(input, `https://${LINK(`${SECRET}2`)}`);
     await page.click(`${FEED('assignments')} form[data-form="school"] button[type="submit"]`);
     await settle(page);
-    check('Replace: save_school_link with the new link; "Assignments link replaced. Home Hub reads it within the hour."', same(lastCall(db, 'save_school_link').body,
-      { p_kid: ID.jordan, p_feed: 'assignments', p_url: `https://${LINK(`${SECRET}2`)}` }) && (await lastToast(page)) === 'Assignments link replaced. Home Hub reads it within the hour.'
-      && (await tc(page, `${FEED('assignments')} .hw-feed-state`)) === 'Added · first read within the hour' && !(await page.content()).includes(SECRET), await lastToast(page));
+    check('Replace: set_school_feed with the new link; "Assignments link replaced. Home Hub reads it within the hour."; the same link row, its items kept',
+      same(lastCall(db, 'set_school_feed').body, { p_kid: ID.jordan, p_kind: 'assignments', p_url: `https://${LINK(`${SECRET}2`)}` })
+      && (await lastToast(page)) === 'Assignments link replaced. Home Hub reads it within the hour.' && db.school_feeds.length === 1 && db.school_items.length === 3
+      && (await tc(page, `${FEED('assignments')} .hw-feed-link`)) === 'academy.school.example …f3a2' && !(await page.content()).includes(SECRET), await lastToast(page));
     // Cancel closes the box.
     await page.click(`${FEED('schedule')} [data-act="school-add"]`);
     await page.fill(`${FEED('schedule')} input[name="url"]`, `https://${LINK('X')}`);
     await page.click(`${FEED('schedule')} [data-act="cancel-note"]`);
-    check('Cancel: the box goes, nothing sent', !(await page.$(`${FEED('schedule')} form`)) && calls(db, 'save_school_link').length === 3);
+    check('Cancel: the box goes, nothing sent', !(await page.$(`${FEED('schedule')} form`)) && calls(db, 'set_school_feed').length === 3);
     // Schedule: busy time.
     await page.click(`${FEED('schedule')} [data-act="school-add"]`);
     check('Add link on Schedule: "Paste the Schedule link"', (await tc(page, `${FEED('schedule')} form[data-form="school"] label span`)) === 'Paste the Schedule link');
     await page.fill(`${FEED('schedule')} input[name="url"]`, `https://${LINK('SCHEDULEZ')}`);
     await page.click(`${FEED('schedule')} form[data-form="school"] button[type="submit"]`);
     await settle(page);
-    check('Schedule saved: save_school_link with p_feed schedule; "Schedule link saved…"', lastCall(db, 'save_school_link').body.p_feed === 'schedule'
+    check('Schedule saved: set_school_feed with p_kind schedule; "Schedule link saved…"', lastCall(db, 'set_school_feed').body.p_kind === 'schedule'
       && (await lastToast(page)) === 'Schedule link saved. Home Hub reads it within the hour.' && (await tc(page, `${FEED('schedule')} .hw-feed-state`)) === 'Added · first read within the hour');
 
     // ---- Remove: asks first
     db.confirm = false;
     await page.click(`${FEED('assignments')} [data-act="school-remove"]`);
     await sleep(200);
-    check('Remove asks first: "Remove the Assignments link? …"; No → nothing sent', (db.dialogs || []).slice(-1)[0] === 'Remove the Assignments link? Home Hub stops reading it. What it already brought stays on Jordan\'s list.'
-      && !calls(db, 'remove_school_link').length, (db.dialogs || []).slice(-1)[0]);
+    check('Remove asks first: "Remove the Assignments link? …"; No → nothing sent', (db.dialogs || []).slice(-1)[0] === 'Remove the Assignments link? Home Hub stops reading it. Assignments already on Jordan\'s homework stay; the rest of what it brought goes.'
+      && calls(db, 'set_school_feed').length === 4, (db.dialogs || []).slice(-1)[0]);
     db.confirm = true;
     await page.click(`${FEED('assignments')} [data-act="school-remove"]`);
     await settle(page);
-    check('Remove: remove_school_link(kid, assignments); "Assignments link removed"; Not added again', same(lastCall(db, 'remove_school_link').body, { p_kid: ID.jordan, p_feed: 'assignments' })
+    check('Remove: set_school_feed(kid, assignments, null); "Assignments link removed"; Not added again, his assignments from school kept',
+      same(lastCall(db, 'set_school_feed').body, { p_kid: ID.jordan, p_kind: 'assignments', p_url: null })
       && (await lastToast(page)) === 'Assignments link removed' && (await tc(page, `${FEED('assignments')} .hw-feed-state`)) === 'Not added'
-      && db.schoolLinks.length === 1 && db.schoolLinks[0].feed === 'schedule', await lastToast(page));
+      && db.school_feeds.length === 1 && db.school_feeds[0].kind === 'schedule' && !!db.assignments.find((a) => a.id === made.id) && !(await page.$('[data-keep="new"]')), await lastToast(page));
     check('nothing on the page or in the console ever carried a link', !(await page.content()).includes(SECRET) && !(await page.content()).includes('SCHEDULEZ')
       && !said.some((x) => x.includes(SECRET) || x.includes('SCHEDULEZ')));
     await page.context().close();
   }
   {
-    // Sam: no row and no request, on schema 6.
+    // Check now when the hourly read holds the lease, and when every link was read a moment ago.
+    const d = schoolDb();
+    d.school_feeds.push(schoolFeedRow({ kid_id: ID.jordan, kind: 'games', host: 'academy.school.example', url_end: 'g4m3', last_try_at: at(TODAY, '15:09'),
+      last_ok_at: at(TODAY, '15:09'), last_count: 4 }));
+    ({ page, db } = await open({ label: 'school-now', db: d, rpc: RPC6 }));
+    await page.click('[data-row="school"] [data-act="school-now"]');
+    await settle(page);
+    check('Check now with each link read in the last minute: "Nothing to read: each link was read in the last minute."', (await lastToast(page)) === 'Nothing to read: each link was read in the last minute.', await lastToast(page));
+    db.schoolReply = { ok: false, stop: 'busy' };
+    await page.click('[data-row="school"] [data-act="school-now"]');
+    await settle(page);
+    check('... while the hourly read runs: "The hourly read is running right now. Try again in a minute."', (await lastToast(page)) === 'The hourly read is running right now. Try again in a minute.', await lastToast(page));
+    check('Games/Practices read: no date check (only the Assignments link has dates)', !(await page.$('[data-ref="school-check"]')) && (await tc(page, `${FEED('games')} .hw-feed-state`)) === 'Last read today 3:09pm · 4 items');
+    await page.context().close();
+  }
+  {
+    // Sam: no row and no request, on schema 6 (the database lets him read the status; the page shows School links to the parents, as the tutor links).
     ({ page, db } = await open({ label: 'school-sam', db: schoolDb(), rpc: RPC6, email: 'sam@example.com' }));
-    check('Sam (schema 6): no School links row and no school_status request', !(await page.$('[data-row="school"]')) && !calls(db, 'school_status').length
+    check('Sam (schema 6): no School links row and no school_feed_status request', !(await page.$('[data-row="school"]')) && !calls(db, 'school_feed_status').length
       && !!(await page.$('[data-sec="switches"]')));
     await page.context().close();
   }
   {
     // A failed status read: the row says so, the rest of the page draws.
     const f = schoolDb();
-    f.schoolFail = { school_status: { __status: 500, body: { code: 'XX000', message: 'Database restarting', details: null, hint: null } } };
+    f.schoolFail = { school_feed_status: { __status: 500, body: { code: 'XX000', message: 'Database restarting', details: null, hint: null } } };
     ({ page, db } = await open({ label: 'school-fail', db: f, rpc: RPC6, allowConsole: /status of 500/ }));
-    check('school_status fails: "School links couldn\'t be loaded." with Try again; no feeds; the rest draws', /School links couldn't be loaded\./.test(await tc(page, '[data-row="school"]'))
+    check('school_feed_status fails: "School links couldn\'t be loaded." with Try again; no links; the rest draws', /School links couldn't be loaded\./.test(await tc(page, '[data-row="school"]'))
       && !(await page.$('[data-row="school"] .hw-feed')) && !!(await page.$('[data-row="school"] [data-act="retry"]')) && !!(await page.$('.hw-ask')), await tc(page, '[data-row="school"]'));
     delete db.schoolFail;
     await page.click('[data-row="school"] [data-act="retry"]');
@@ -1165,18 +1279,20 @@ const emailOf = (req) => {
     await page.context().close();
   }
   {
-    // A phone: no sideways scroll, 44px targets in the row, the how-to open.
+    // A phone: no sideways scroll, 44px targets in the row, the how-to and the date check open.
     const p = schoolDb();
-    withSchool(p).schoolLinks.push({ kid_id: ID.jordan, feed: 'assignments', url: `https://${LINK(SECRET)}`, read_at: at(TODAY, '10:23'), items: 23, error: 'sign_in' });
+    const fa = schoolFeedRow({ kid_id: ID.jordan, kind: 'assignments', url_end: 'a1b2', last_ok_at: at(TODAY, '10:23'), last_count: 23, last_stop: 'sign_in' });
+    p.school_feeds.push(fa);
+    p.school_items.push(schoolItemRow({ feed_id: fa.id, title: 'A very long assignment title from the school site that runs on and on', subject: 'English', due_date: '2026-11-12' }));
     ({ page } = await open({ label: 'school-phone', db: p, rpc: RPC6, ctx: phone }));
     await page.click('[data-row="school"] details.hw-school-how summary');
+    await page.click('[data-ref="school-check"] [data-act="school-off"]');
     await page.click(`${FEED('schedule')} [data-act="school-add"]`);
     check('phone: School links with no sideways scroll', await noSideScroll(page));
     const small = await page.$$eval('[data-row="school"] button, [data-row="school"] summary, [data-row="school"] input',
       (els) => els.filter((e) => e.offsetParent).map((e) => { const r = e.getBoundingClientRect(); return [e.dataset.act || e.tagName, Math.round(r.width), Math.round(r.height)]; })
         .filter(([, wd, ht]) => wd < 44 || ht < 44));
     check('phone: every tap target in School links is at least 44px', !small.length, JSON.stringify(small));
-    check('phone: the link is never shown back', !(await page.content()).includes(SECRET));
     await page.locator('[data-row="school"]').screenshot({ path: SHOTS + 'homework-phone-school.png' });
     await page.context().close();
   }
