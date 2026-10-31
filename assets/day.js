@@ -159,6 +159,28 @@
       hw_school_not_yours: "That isn't on your list from school any more.", hw_school_already: 'That one is on your homework already.',
       hw_cash_btn: 'Get it now', hw_cash_sure: 'Yes, get it · −{n}', hw_cashed_toast: 'Got it: {title}. Tell a parent.', hw_instant: 'instant',
       hw_got: 'Got it', hw_k_milestone_done: 'Milestone done', hw_cash_none: 'No more instant rewards today: ask a parent.',
+      // 0007: his screen when a tutor link of his has the coach view on ({coach}: its label's first word).
+      hw_who_sees_coach: '{tutor} and the grown-ups in your family see your plan and your notes. The grown-ups and {coach} see your points and rewards, your focus sessions, your own calendar and your daily tasks.',
+      // 0007: the tutor link's Coach section (docs/v1.3-homework.md §20.6). {kid} is the kid's first name.
+      coach_title: 'Coach', coach_lead: "{kid}'s family lets you see his points, rewards, focus sessions, his own calendar and his daily tasks. Read-only.",
+      coach_points: 'Points', coach_balance: '{n} points', coach_points_off: 'Points are off for {kid}.',
+      coach_this_week: 'This week', coach_last_week: 'Last week',
+      coach_k_focus: 'Focus', coach_k_on_time: 'On time', coach_k_milestones: 'Milestones', coach_k_given: 'Given', coach_k_voided: 'Voided', coach_k_trades: 'Trades',
+      coach_lines: 'Last 30 days ({n})', coach_no_lines: 'No points in the last 30 days.',
+      coach_l_focus: 'Focus', coach_l_on_time: 'On time', coach_l_milestone_done: 'Milestone ticked', coach_l_milestone: 'Milestone checked',
+      coach_l_given: 'Given', coach_l_void: 'Correction', coach_l_trade: 'Trade',
+      coach_rewards: 'Rewards', coach_no_rewards: 'No rewards yet.', coach_instant: 'instant',
+      coach_asks: 'Asks and cash-ins (30 days)', coach_no_asks: 'None in the last 30 days.', coach_asked: 'asked {day}',
+      coach_s_waiting: 'waiting', coach_s_approved: 'approved {day}', coach_s_declined: 'not now {day}', coach_s_cancelled: 'cancelled', coach_s_cashed: 'cashed in',
+      coach_focus: 'Focus sessions (30 days)', coach_no_focus: 'No focus sessions in the last 30 days.', coach_chosen: '{n} min chosen', coach_seen: '{n} seen',
+      coach_r_done: 'Step done', coach_r_more: 'More to do', coach_r_stopped: 'Stopped', coach_r_time: 'Time ran out', coach_r_expired: 'Not ended',
+      coach_cal: 'His calendar', coach_cal_next: 'Next 14 days', coach_cal_last: 'Last 7 days', coach_cal_none: 'Nothing.', coach_all_day: 'All day',
+      coach_tasks: 'His daily tasks (late ones, today and the last 7 days)', coach_no_tasks: 'No tasks.',
+      coach_t_open_today: 'Not done yet', coach_t_open: 'Not done', coach_t_done: 'Done', coach_t_skipped: 'Skipped', coach_t_missed: 'Missed',
+      coach_t_late: 'Late since {day}',
+      coach_note_label: "A note for {kid}'s family", coach_note_hint: 'Only his parents see it, on their Homework page. For example: "suggest lowering the on-time bonus".',
+      coach_send: 'Send to the family', coach_sent: 'Sent to the family.', coach_note_empty: 'Write a note first.', coach_note_long: 'At most 500 characters.',
+      coach_note_limit: "That's a lot of notes for one day. Try again tomorrow.", coach_your_notes: 'Your notes to the family (30 days)',
     },
     es: {
       my_day: 'Mi día', hi: 'Hola, {name}', today: 'Hoy', tomorrow: 'Mañana', yesterday: 'Ayer', late: 'Atrasado',
@@ -241,6 +263,26 @@
       hw_school_not_yours: 'Eso ya no está en tu lista de la escuela.', hw_school_already: 'Esa ya está en tu tarea.',
       hw_cash_btn: 'Conseguir ya', hw_cash_sure: 'Sí, conseguirlo · −{n}', hw_cashed_toast: 'Conseguido: {title}. Avisa a tus padres.', hw_instant: 'al momento',
       hw_got: 'Conseguido', hw_k_milestone_done: 'Hito hecho', hw_cash_none: 'Hoy no quedan premios al momento: pídeselo a tus padres.',
+      hw_who_sees_coach: '{tutor} y los adultos de tu familia ven tu plan y tus notas. Los adultos y {coach} ven tus puntos y premios, tus sesiones de concentración, tu propio calendario y tus tareas diarias.',
+      coach_title: 'Coach', coach_lead: 'La familia de {kid} te deja ver sus puntos, premios, sesiones de concentración, su propio calendario y sus tareas diarias. Solo lectura.',
+      coach_points: 'Puntos', coach_balance: '{n} puntos', coach_points_off: 'Los puntos están desactivados para {kid}.',
+      coach_this_week: 'Esta semana', coach_last_week: 'La semana pasada',
+      coach_k_focus: 'Concentración', coach_k_on_time: 'A tiempo', coach_k_milestones: 'Hitos', coach_k_given: 'Regalados', coach_k_voided: 'Anulados', coach_k_trades: 'Canjes',
+      coach_lines: 'Últimos 30 días ({n})', coach_no_lines: 'Ningún punto en los últimos 30 días.',
+      coach_l_focus: 'Concentración', coach_l_on_time: 'A tiempo', coach_l_milestone_done: 'Hito marcado', coach_l_milestone: 'Hito revisado',
+      coach_l_given: 'Regalados', coach_l_void: 'Corrección', coach_l_trade: 'Canje',
+      coach_rewards: 'Premios', coach_no_rewards: 'Todavía no hay premios.', coach_instant: 'al momento',
+      coach_asks: 'Pedidos y canjes (30 días)', coach_no_asks: 'Ninguno en los últimos 30 días.', coach_asked: 'pedido {day}',
+      coach_s_waiting: 'esperando', coach_s_approved: 'aprobado {day}', coach_s_declined: 'ahora no {day}', coach_s_cancelled: 'cancelado', coach_s_cashed: 'canjeado',
+      coach_focus: 'Sesiones de concentración (30 días)', coach_no_focus: 'Ninguna sesión en los últimos 30 días.', coach_chosen: '{n} min elegidos', coach_seen: '{n} vistos',
+      coach_r_done: 'Paso hecho', coach_r_more: 'Queda más', coach_r_stopped: 'Parado', coach_r_time: 'Se acabó el tiempo', coach_r_expired: 'Sin terminar',
+      coach_cal: 'Su calendario', coach_cal_next: 'Próximos 14 días', coach_cal_last: 'Últimos 7 días', coach_cal_none: 'Nada.', coach_all_day: 'Todo el día',
+      coach_tasks: 'Sus tareas diarias (atrasadas, hoy y los últimos 7 días)', coach_no_tasks: 'Ninguna tarea.',
+      coach_t_open_today: 'Sin hacer todavía', coach_t_open: 'Sin hacer', coach_t_done: 'Hecha', coach_t_skipped: 'Saltada', coach_t_missed: 'No hecha',
+      coach_t_late: 'Atrasada desde {day}',
+      coach_note_label: 'Una nota para la familia de {kid}', coach_note_hint: 'Solo la ven sus padres, en su página de Tarea. Por ejemplo: "propongo bajar el extra por empezar a tiempo".',
+      coach_send: 'Enviar a la familia', coach_sent: 'Enviado a la familia.', coach_note_empty: 'Escribe una nota primero.', coach_note_long: 'Como mucho 500 caracteres.',
+      coach_note_limit: 'Son muchas notas para un día. Vuelve a intentarlo mañana.', coach_your_notes: 'Tus notas a la familia (30 días)',
     },
   };
   // Until the person is known (or when the link doesn't work), the device's language is a guess.
@@ -1887,7 +1929,7 @@
         <div class="hw-list">${due.map(dueRowHTML).join('')}</div></section>` : ''}
       ${schoolHTML(school)}
       ${paceBits.length ? `<p class="hw-pace">${esc(paceBits.join(' · '))}</p>` : ''}
-      <p class="hw-who">${esc(hw('who_sees'))}</p>
+      <p class="hw-who">${esc(hv.me && hv.me.coach ? hw('hw_who_sees_coach', { coach: hv.me.coach }) : hw('who_sees'))}</p>
       ${notify}${silent}
       ${footerHTML()}`;
     drawSheet();
@@ -2793,6 +2835,9 @@
   // THE TUTOR LINK (day.html?h=<token>, v1.3, docs/v1.3-homework.md §9.5): Jordan's homework and nothing else.
   // Nobody's day is loaded: plan.js's tutor view draws it, with an api of the four tutor functions only. The
   // words follow the link's language. Nothing is kept on the device.
+  // From 0007 (§20.6), when the link's answer says coach: true (a parent turned the coach view on for it), a
+  // Coach section under the list, read with coach_view_by_token, and a note for the family
+  // (coach_note_by_token). With it off, nothing more is asked.
   // ============================================
   function startTutor() {
     root.classList.add('day-tutor');
@@ -2804,7 +2849,12 @@
       auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
     });
     view = 'tutor';
-    // The link's language and the kid's first name, from each answer that carries them.
+    // plan.js's view draws into the first box; the Coach section is the second, day.js's own.
+    root.innerHTML = '<div class="tutor-main"><p class="loading">Loading…</p></div><div class="coach-main" hidden></div>';
+    const mainEl = root.querySelector('.tutor-main');
+    const coach = coachPart(root.querySelector('.coach-main'));
+    // The link's language and the kid's first name, from each answer that carries them; and whether its
+    // coach view is on (every answer with the list says so).
     const seen = (res) => {
       const d = res && res.data;
       if (d && typeof d === 'object' && d.kid) {
@@ -2812,6 +2862,7 @@
         document.documentElement.lang = lang;
         document.title = plan.t('tutor_title', { kid: d.kid }, lang);
       }
+      if (d && typeof d === 'object' && Array.isArray(d.assignments)) coach.on(d.coach === true);
       return res;
     };
     // The AI preview's "last sent" marks (PR B, §6.4): the only thing besides the language kept on the device for the link.
@@ -2825,11 +2876,11 @@
       const r = await sb.functions.invoke('hub-jobs', { body: Object.assign({ action: 'homework_ai', token: tutorToken }, body) });
       return { data: r.error ? null : r.data, error: r.error || null };
     };
-    const ctl = plan.tutor(root, {
+    const ctl = plan.tutor(mainEl, {
       lang,
       toast,
       sent,
-      onGone: () => { document.title = 'Home Hub'; },
+      onGone: () => { document.title = 'Home Hub'; coach.on(false); },
       go: (hash) => { location.hash = hash; },
       api: {
         ai: (body) => one(() => invokeAi(body)),
@@ -2840,10 +2891,165 @@
       },
     });
     document.documentElement.lang = lang;
-    ctl.show(location.hash);
-    window.addEventListener('hashchange', () => ctl.show(location.hash));
-    window.addEventListener('focus', () => ctl.refresh());
-    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') ctl.refresh(); });
+    const show = () => { coach.screen(location.hash); return ctl.show(location.hash).then(() => coach.sync()); };
+    const refresh = () => ctl.refresh().then(() => coach.sync(true));
+    show();
+    window.addEventListener('hashchange', show);
+    window.addEventListener('focus', refresh);
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') refresh(); });
+  }
+
+  // The Coach section (0007, docs/v1.3-homework.md §20.6), in its own box under plan.js's list: shown only on the
+  // list's screen, only while the link's last answer said coach: true. Read with coach_view_by_token after each read
+  // of the list (but not while a note is being typed); a null answer (turned off a moment ago) or no answer hides it.
+  // The note for the family goes with coach_note_by_token and the page's key, kept until an answer, so a resend after
+  // "Can't reach Home Hub" finds the note it made.
+  function coachPart(el) {
+    let on = false;           // the link's last answer said coach: true
+    let list = true;          // the list's screen is shown (not an assignment, not the add form)
+    let cv = null;            // the last coach view
+    let draft = '';           // the note being typed
+    let key = null;           // the note's key, until its answer
+    let keyFor = null;        // the words that key was made for: other words are another note, with a key of their own
+    let sending = false;
+    let error = '';
+    const kid = () => (cv && cv.kid) || '';
+    const w = (k, vars) => t(k, Object.assign({ kid: kid() }, vars));
+    const low = (x) => (/^(Yesterday|Today|Tomorrow|Ayer|Hoy|Mañana)$/.test(x) ? x.toLowerCase() : x);
+    const rel = (d) => fmt.rel(d, cv && cv.today);
+    const signed = (n) => (Number(n) > 0 ? `+${n}` : Number(n) < 0 ? `−${-Number(n)}` : '0');
+    function hide() { el.hidden = true; el.innerHTML = ''; }
+    function draw() {
+      if (!on || !list || !cv) { hide(); return; }
+      const v = cv;
+      const out = [];
+      out.push(`<h2 class="sec-head">${esc(w('coach_title'))}</h2><p class="coach-lead">${esc(w('coach_lead'))}</p>`);
+      // Points: the balance, the two weeks by kind, the last 30 days' lines.
+      if (v.points) {
+        const kinds = ['focus', 'on_time', 'milestones', 'given', 'voided', 'trades'];
+        const tw = v.points.this_week || {};
+        const lw = v.points.last_week || {};
+        const lines = Array.isArray(v.points.lines) ? v.points.lines : [];
+        out.push(`<div class="coach-part" data-part="points"><h3>${esc(w('coach_points'))}</h3>`
+          + `<p class="coach-balance">${esc(w('coach_balance', { n: v.points.balance }))}</p>`
+          + `<table class="coach-weeks"><thead><tr><th></th><th>${esc(w('coach_this_week'))}</th><th>${esc(w('coach_last_week'))}</th></tr></thead><tbody>`
+          + kinds.map((k) => `<tr><th scope="row">${esc(w(`coach_k_${k}`))}</th><td>${esc(signed(tw[k] || 0))}</td><td>${esc(signed(lw[k] || 0))}</td></tr>`).join('')
+          + '</tbody></table>'
+          + (lines.length ? `<details class="coach-fold"><summary>${esc(w('coach_lines', { n: lines.length }))}</summary><ul class="coach-list coach-lines">`
+            + lines.map((l) => `<li>${esc([rel(l.day), signed(l.delta), w(`coach_l_${l.kind}`), l.note].filter((x) => x != null && x !== '').join(' · '))}</li>`).join('')
+            + '</ul></details>' : `<p class="empty-line">${esc(w('coach_no_lines'))}</p>`)
+          + '</div>');
+      } else {
+        out.push(`<div class="coach-part" data-part="points"><h3>${esc(w('coach_points'))}</h3><p class="empty-line">${esc(w('coach_points_off'))}</p></div>`);
+      }
+      if (Array.isArray(v.rewards)) {
+        out.push(`<div class="coach-part" data-part="rewards"><h3>${esc(w('coach_rewards'))}</h3>`
+          + (v.rewards.length ? `<ul class="coach-list coach-rewards">${v.rewards.map((r) => `<li>${esc([r.title, r.cost, r.instant ? w('coach_instant') : ''].filter((x) => x != null && x !== '').join(' · '))}</li>`).join('')}</ul>`
+            : `<p class="empty-line">${esc(w('coach_no_rewards'))}</p>`)
+          + `<h3>${esc(w('coach_asks'))}</h3>`
+          + (Array.isArray(v.asks) && v.asks.length ? `<ul class="coach-list coach-asks">${v.asks.map((q) => {
+            const status = q.status === 'approved' || q.status === 'declined' ? w(`coach_s_${q.status}`, { day: low(rel(q.decided_on)) }) : w(`coach_s_${q.status}`);
+            return `<li>${esc([q.title, q.cost, w('coach_asked', { day: low(rel(q.asked_on)) }), status].join(' · '))}</li>`;
+          }).join('')}</ul>` : `<p class="empty-line">${esc(w('coach_no_asks'))}</p>`)
+          + '</div>');
+      }
+      // Focus sessions.
+      const focus = Array.isArray(v.focus) ? v.focus : [];
+      out.push(`<div class="coach-part" data-part="focus"><h3>${esc(w('coach_focus'))}</h3>`
+        + (focus.length ? `<ul class="coach-list coach-focus">${focus.map((f) => {
+          const bits = [rel(f.day), f.assignment, w('coach_chosen', { n: f.minutes }), w('coach_seen', { n: f.seen_minutes == null ? 0 : f.seen_minutes }), w(`coach_r_${f.result}`)]
+            .filter((x) => x != null && x !== '');
+          return `<li>${esc(bits.concat(f.note ? [`“${f.note}”`] : []).join(' · '))}</li>`;
+        }).join('')}</ul>` : `<p class="empty-line">${esc(w('coach_no_focus'))}</p>`)
+        + '</div>');
+      // His calendar: the next 14 days, then the last 7 (newest first).
+      const cal = Array.isArray(v.calendar) ? v.calendar : [];
+      const item = (i) => {
+        const when = i.end_day && i.end_day !== i.day ? `${rel(i.day)} – ${rel(i.end_day)}` : rel(i.day);
+        const time = i.all_day ? w('coach_all_day') : i.starts ? (i.ends ? `${fmt.time(i.starts)}–${fmt.time(i.ends)}` : fmt.time(i.starts)) : '';
+        return `<li>${esc([when, time, i.title].filter(Boolean).join(' · '))}</li>`;
+      };
+      const next = cal.filter((i) => i.day >= v.today || (i.end_day && i.end_day >= v.today));
+      const last = cal.filter((i) => !next.includes(i)).reverse();
+      out.push(`<div class="coach-part" data-part="calendar"><h3>${esc(w('coach_cal'))}</h3>`
+        + `<h4>${esc(w('coach_cal_next'))}</h4>${next.length ? `<ul class="coach-list coach-cal-next">${next.map(item).join('')}</ul>` : `<p class="empty-line">${esc(w('coach_cal_none'))}</p>`}`
+        + `<h4>${esc(w('coach_cal_last'))}</h4>${last.length ? `<ul class="coach-list coach-cal-last">${last.map(item).join('')}</ul>` : `<p class="empty-line">${esc(w('coach_cal_none'))}</p>`}`
+        + '</div>');
+      // His daily tasks: the late ones first ("Late since Thu Oct 22", as the database orders them), then the days.
+      const tasks = Array.isArray(v.tasks) ? v.tasks : [];
+      out.push(`<div class="coach-part" data-part="tasks"><h3>${esc(w('coach_tasks'))}</h3>`
+        + (tasks.length ? `<ul class="coach-list coach-tasks">${tasks.map((x) => {
+          if (x.status === 'late') return `<li class="coach-task is-late">${esc([w('coach_t_late', { day: rel(x.day) }), x.title].join(' · '))}</li>`;
+          const st = x.status === 'open' ? (x.day === v.today ? w('coach_t_open_today') : w('coach_t_open')) : w(`coach_t_${x.status}`);
+          return `<li class="coach-task is-${esc(x.status)}">${esc([rel(x.day), st, x.title].join(' · '))}</li>`;
+        }).join('')}</ul>` : `<p class="empty-line">${esc(w('coach_no_tasks'))}</p>`)
+        + '</div>');
+      // A note for the family, and the link's own notes.
+      const notes = Array.isArray(v.notes) ? v.notes : [];
+      out.push(`<form class="coach-note" novalidate autocomplete="off"><label class="field"><span>${esc(w('coach_note_label'))}</span>`
+        + `<textarea name="note" rows="3" maxlength="500">${esc(draft)}</textarea><small>${esc(w('coach_note_hint'))}</small></label>`
+        + `<p class="form-error"${error ? '' : ' hidden'}>${esc(error)}</p>`
+        + `<div class="form-actions"><button type="submit" class="btn btn-primary"${sending ? ' disabled' : ''}>${esc(w('coach_send'))}</button></div></form>`
+        + (notes.length ? `<h3>${esc(w('coach_your_notes'))}</h3><ul class="coach-list coach-notes">${notes.map((n) => `<li><span class="coach-note-day">${esc(rel(n.day))}</span> · `
+          + `<span class="coach-note-text">${esc(n.note)}</span></li>`).join('')}</ul>` : ''));
+      el.innerHTML = `<section class="plan-sec coach" data-sec="coach">${out.join('')}</section>`;
+      el.hidden = false;
+    }
+    function read() {
+      return one(() => sb.rpc('coach_view_by_token', { p_token: tutorToken })).then((r) => {
+        if (!on || !list) return;
+        if (r && !r.error && r.data && typeof r.data === 'object') { cv = r.data; draw(); return; }
+        if (r && !r.error) { cv = null; hide(); }   // null: off a moment ago; the next read of the list says so
+      }, () => {});
+    }
+    el.addEventListener('input', (e) => {
+      if (e.target.name === 'note') { draft = e.target.value; if (error) { error = ''; const p = el.querySelector('.form-error'); if (p) p.hidden = true; } }
+    });
+    el.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      if (sending) return;
+      const text = String(draft || '').trim();
+      if (!text) { error = w('coach_note_empty'); draw(); return; }
+      if (Array.from(draft).length > 500) { error = w('coach_note_long'); draw(); return; }
+      sending = true;
+      error = '';
+      draw();
+      // A key whose answer never came stays with its words: sent again as they are, the database finds the note it
+      // made (changed: false); changed since, they are a new note (the first one may have landed: it stays).
+      if (!key || keyFor !== draft) { key = plan.newId(); keyFor = draft; }
+      let r;
+      try { r = await one(() => sb.rpc('coach_note_by_token', { p_token: tutorToken, p_key: key, p_note: draft })); } catch (err) { r = { error: err }; }
+      sending = false;
+      if (r && !r.error && r.data && typeof r.data === 'object') {
+        key = null;
+        draft = '';
+        cv = r.data;
+        draw();
+        toast(w('coach_sent'));
+        return;
+      }
+      if (r && !r.error) { key = null; on = false; hide(); return; }   // null: turned off, or the link stopped
+      const msg = String((r.error && r.error.message) || '');
+      if (/Write a note first/.test(msg)) error = w('coach_note_empty');
+      else if (/too long/.test(msg)) error = w('coach_note_long');
+      else if (/a lot for one day/.test(msg)) error = w('coach_note_limit');
+      else error = friendly(r.error);
+      // A refusal is final for this note; no answer at all keeps the key, so trying again finds the note if it was made.
+      if (r.error && r.error.code) key = null;
+      draw();
+    });
+    return {
+      // The link's last answer: coach view on or off.
+      on(x) { on = !!x; if (!on) { cv = null; hide(); } },
+      // The screen the address asks for: the Coach section is the list's only.
+      screen(hash) { list = !/^#(a\/|new\/)/.test(String(hash || '')); if (!list) hide(); },
+      // After a read of the list: read the coach view (a refresh doesn't while a note is being typed or sent).
+      sync(quiet) {
+        if (!on || !list) { hide(); return Promise.resolve(); }
+        if (quiet && (draft || sending)) return Promise.resolve();
+        return read();
+      },
+    };
   }
   // A link that can't work (not 32 hex characters): the words, with no call at all.
   function tutorGone() {

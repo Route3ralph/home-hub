@@ -194,6 +194,16 @@
   .hw-ed { padding: 8px; }
 }
 
+/* 0007: a tutor link's coach view switch and the coach's notes (docs/v1.3-homework.md §20.5) */
+.hw-link-coach { display: grid; gap: 4px; margin-top: 8px; min-width: 0; }
+.hw-coach-notes { margin-top: 8px; padding: 10px 12px; border-radius: 12px; background: var(--surface-2); min-width: 0; }
+.hw-coach-head { margin: 0 0 4px; font-weight: 650; }
+.hw-coach-notes ul { margin: 0; padding: 0; list-style: none; }
+.hw-coach-notes li { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; padding: 6px 0; min-width: 0; }
+.hw-coach-notes li .btn { min-height: 44px; }
+.hw-coach-note { flex: 1 1 220px; min-width: 0; white-space: pre-line; overflow-wrap: anywhere; }
+.hw-coach-notes summary { display: flex; align-items: center; min-height: 44px; font-weight: 600; cursor: pointer; }
+
 /* The AI planner's row of the switches card (PR B, §9.2) */
 .hw-ai-state { margin: 4px 0 0; font-size: 14px; font-weight: 650; }
 .hw-ai-test { font-weight: 600; }

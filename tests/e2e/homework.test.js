@@ -24,6 +24,10 @@
 // Replace and Remove, the plain how-to-copy steps; the link checked before it is sent (webcal:// sent as https://),
 // a refusal said in the form; the link never shown back, kept in the page, stored or logged; "from school" on an
 // assignment; no row and no request on schema 5 or for Sam; a failed status read; a phone.
+// From 0007 (schema 7; docs/v1.3-homework.md §20.5), on each tutor link the coach view's switch (off by default, with
+// what it shows in plain words; set_tutor_coach) and the coach's notes for the parents (coach_notes, read only on 7 and
+// only by the parents; Done with coach_note_done, the done ones of the last 30 days folded); none of it on schema 6 or
+// for Sam; a phone.
 //
 // mock.js has the tables and the signed-in functions (withHomework, homeworkRpc) with the migration's
 // rules and shapes. The other v2 pages are small stubs. The household's clock is Thu Nov 5 2026,
@@ -34,7 +38,7 @@
 const { chromium } = require('playwright');
 const { createHash } = require('crypto');
 const { makeDb, install, signIn, SUPA, withHomework, homeworkRpc, foodRpc, hwKidRow, tutorLinkRow, assignmentRow, stepRow, sessionRow,
-  rewardRow, askRow, ledgerRow, withSchool, schoolRpc, schoolFeedRow, schoolItemRow, schoolUrlOf } = require('./mock');
+  rewardRow, askRow, ledgerRow, withSchool, schoolRpc, schoolFeedRow, schoolItemRow, schoolUrlOf, withCoach, coachRpc, coachNoteRow } = require('./mock');
 const { serve } = require('./server');
 
 let BASE = '';
@@ -1332,6 +1336,83 @@ const emailOf = (req) => {
         .filter(([, wd, ht]) => wd < 44 || ht < 44));
     check('phone: every tap target in School links is at least 44px', !small.length, JSON.stringify(small));
     await page.locator('[data-row="school"]').screenshot({ path: SHOTS + 'homework-phone-school.png' });
+    await page.context().close();
+  }
+
+  // =====================================================================
+  // 10. The coach view (schema 7, 0007; docs/v1.3-homework.md §20.5): each tutor link's switch, and the coach's notes
+  // =====================================================================
+  const RPC7 = Object.assign({}, RPC6, { hub_schema_version: () => 7 }, coachRpc);
+  const LINK1 = 'a1110000-0000-4000-8000-000000000001';
+  const N1 = 'c0ac0000-0000-4000-8000-000000000001';
+  const N2 = 'c0ac0000-0000-4000-8000-000000000002';
+  const N3 = 'c0ac0000-0000-4000-8000-000000000003';
+  const coachDb = () => {
+    const d = withCoach(withSchool(fullDb()));
+    d.coach_notes.push(
+      coachNoteRow({ id: N1, link_id: LINK1, note: 'Suggest lowering the on-time bonus.\nHe starts on time anyway.', created_at: at('2026-11-04', '18:30') }),
+      coachNoteRow({ id: N2, link_id: LINK1, note: 'Great week of starts.', created_at: at('2026-10-30', '18:00'), done_at: at('2026-10-31', '09:00'), done_by: 'alex@example.com' }),
+      coachNoteRow({ id: N3, link_id: LINK1, note: 'An old note.', created_at: at('2026-09-20', '18:00'), done_at: at('2026-09-21', '09:00'), done_by: 'alex@example.com' }),
+    );
+    return d;
+  };
+  const coachReads = (log) => log.filter((l) => /^GET \/rest\/v1\/coach_notes/.test(l));
+  {
+    // Schema 6: no switch, and coach_notes isn't asked for (it isn't there yet).
+    ({ page, db, log } = await open({ label: 'coach-6', db: withSchool(fullDb()), rpc: RPC6 }));
+    check('schema 6: no coach switch, no coach notes, and no coach_notes read', !(await page.$('[data-act="link-coach"]')) && !(await page.$('.hw-coach-notes'))
+      && !coachReads(log).length && !!(await page.$('.hw-link')), JSON.stringify(coachReads(log)));
+    await page.context().close();
+  }
+  {
+    ({ page, db, log } = await open({ label: 'coach', db: coachDb(), rpc: RPC7 }));
+    check('schema 7: coach_notes read once, for his links', coachReads(log).length === 1 && coachReads(log)[0].includes(LINK1), JSON.stringify(coachReads(log)));
+    check('the switch: "Coach view" on the link, off', (await tc(page, '.hw-link .hw-link-coach .hw-switch')) === 'Coach view'
+      && (await page.$eval('.hw-link [data-act="link-coach"]', (x) => x.checked === false)), await tc(page, '.hw-link .hw-link-coach'));
+    check('... with exactly what it shows, in plain words', (await tc(page, '.hw-link .hw-link-coach .hw-switch-line'))
+      === "Also shows Pat Jordan's points and rewards (this week's and last week's points, and the last 30 days), his focus sessions, his own calendar "
+      + '(the next 14 days and the last 7) and his daily tasks, read-only, and lets Pat leave you a note here. Private items and health tasks show as '
+      + '“Private item”. Never the rest of the family: no one '
+      + "else's events, tasks or names, no dinners, shopping list or contacts.", await tc(page, '.hw-link .hw-link-coach .hw-switch-line'));
+    check('the coach\'s notes under the link: the open one with Done, its lines kept', same(await texts(page, '.hw-coach-notes > ul > li .hw-coach-note'),
+      ['Yesterday 6:30pm · “Suggest lowering the on-time bonus. He starts on time anyway.”'])
+      && (await page.$$('.hw-coach-notes > ul > li [data-act="coach-done"]')).length === 1
+      && (await tc(page, '.hw-coach-notes > .hw-coach-head')) === 'Notes from Pat Lee, tutor (1)', `${await tc(page, '.hw-coach-notes')}`);
+    check('... the done one of the last 30 days folded under Earlier notes, the older one not at all', (await tc(page, '.hw-coach-notes details summary')) === 'Earlier notes (1)'
+      && same(await page.$$eval('.hw-coach-notes details li', (ls) => ls.map((l) => l.textContent.replace(/\s+/g, ' ').trim())), ['Fri 6:00pm · “Great week of starts.” · Done'])
+      && !(await page.content()).includes('An old note.'), await tc(page, '.hw-coach-notes details'));
+    await page.click('.hw-link [data-act="link-coach"]');
+    await settle(page);
+    check('turning it on: set_tutor_coach with the link and true; the switch on; a toast', same(lastCall(db, 'set_tutor_coach').body, { p_link: LINK1, p_coach: true })
+      && db.tutor_links[0].coach === true && (await page.$eval('.hw-link [data-act="link-coach"]', (x) => x.checked))
+      && (await lastToast(page)) === 'Coach view on for Pat Lee, tutor', `${JSON.stringify(lastCall(db, 'set_tutor_coach').body)} ${await lastToast(page)}`);
+    await page.click('.hw-coach-notes [data-act="coach-done"]');
+    await settle(page);
+    check('Done: coach_note_done with the note; it moves under Earlier notes', same(lastCall(db, 'coach_note_done').body, { p_note: N1 })
+      && !(await page.$('.hw-coach-notes > ul > li')) && (await tc(page, '.hw-coach-notes details summary')) === 'Earlier notes (2)', await tc(page, '.hw-coach-notes'));
+    await page.click('.hw-link [data-act="link-coach"]');
+    await settle(page);
+    check('turning it off: set_tutor_coach with false; "Coach view off for Pat Lee, tutor"', same(lastCall(db, 'set_tutor_coach').body, { p_link: LINK1, p_coach: false })
+      && db.tutor_links[0].coach === false && (await lastToast(page)) === 'Coach view off for Pat Lee, tutor', await lastToast(page));
+    await page.context().close();
+  }
+  {
+    // A phone: no sideways scroll, and the switch and Done are big enough to tap.
+    ({ page, db } = await open({ label: 'coach-phone', db: coachDb(), rpc: RPC7, ctx: phone }));
+    await page.click('.hw-coach-notes details summary');
+    check('phone: the coach switch and notes with no sideways scroll', await noSideScroll(page));
+    const small = await page.$$eval('.hw-link-coach .hw-switch, .hw-coach-notes button, .hw-coach-notes summary',
+      (els) => els.filter((e) => e.offsetParent).map((e) => { const r = e.getBoundingClientRect(); return [e.dataset.act || e.tagName, Math.round(r.width), Math.round(r.height)]; })
+        .filter(([, wd, ht]) => ht < 44));
+    check('phone: the switch, Done and the fold are at least 44px tall', !small.length, JSON.stringify(small));
+    await page.locator('.hw-link').screenshot({ path: SHOTS + 'homework-phone-coach.png' });
+    await page.context().close();
+  }
+  {
+    // Sam: no links panel and no coach_notes read (the notes are the parents').
+    ({ page, db, log } = await open({ label: 'coach-sam', db: coachDb(), rpc: RPC7, email: 'sam@example.com' }));
+    check('Sam (schema 7): no coach switch, no notes and no coach_notes read', !(await page.$('[data-act="link-coach"]')) && !(await page.$('.hw-coach-notes'))
+      && !coachReads(log).length && !!(await page.$('[data-sec="switches"]')), JSON.stringify(coachReads(log)));
     await page.context().close();
   }
 

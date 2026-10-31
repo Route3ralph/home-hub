@@ -33,8 +33,10 @@ select test.is((whoami() -> 'person' ->> 'id')::uuid, test.person('Alex'), 'whoa
 -- again: the v1.2 client shows Food, and asks for meals and the shopping list, only on 4. Migration
 -- 0005 (Homework) changes it on purpose once more: the v1.3 client shows Homework, and asks for
 -- anything of it (Today's lines, Jordan's card, the tutor link), only on 5. Migration 0006 (the school
--- feed) changes it on purpose again: the client shows the school links and New from school only on 6.
-select test.is(hub_schema_version(), 6, 'hub_schema_version is 6');
+-- feed) changes it on purpose again: the client shows the school links and New from school only on 6. Migration
+-- 0007 (the coach view) changes it on purpose once more: the Homework page shows the coach switch and the coach's
+-- notes, and asks for coach_notes, only on 7.
+select test.is(hub_schema_version(), 7, 'hub_schema_version is 7');
 :as_removed
 select test.is(whoami(), null, 'removed member: whoami is null even with a person row');
 :as_stranger
@@ -68,30 +70,32 @@ select test.is((select string_agg(c.relname, ', ' order by c.relname) from pg_cl
                'food_pairs, list_done, school_feed_urls, school_sync', '... (the private tables: food_pairs, list_done, school_feed_urls, school_sync)');
 select test.is((select string_agg(p.proname, ', ' order by p.proname) from pg_proc p
                 where p.pronamespace = 'public'::regnamespace and has_function_privilege('anon', p.oid, 'execute')),
-               'add_to_list_by_token, assignment_by_token, buy_item_by_token, complete_by_token, confirm_digest, focus_by_token, '
+               'add_to_list_by_token, assignment_by_token, buy_item_by_token, coach_note_by_token, coach_view_by_token, complete_by_token, '
+               'confirm_digest, focus_by_token, '
                'get_list_by_token, get_person_day, get_shared_project, homework_by_token, homework_prefs_by_token, plan_by_token, '
                'reward_by_token, school_item_by_token, step_by_token, stop_digest, tutor_assignment_by_token, tutor_plan_by_token, tutor_step_by_token, '
                'tutor_view_by_token, undo_by_token',
-               'anon can execute only get_shared_project and the twenty token functions (0004 adds the three for the list, 0005 '
-               'Jordan''s seven and the tutor link''s four, 0006 his New from school)');
+               'anon can execute only get_shared_project and the twenty-two token functions (0004 adds the three for the list, 0005 '
+               'Jordan''s seven and the tutor link''s four, 0006 his New from school, 0007 the coach view''s two)');
 select test.is(has_schema_privilege('anon', 'private', 'usage'), false, 'anon cannot use the private schema');
 select test.is((select string_agg(n.nspname || '.' || p.proname, ', ') from pg_proc p join pg_namespace n on n.oid = p.pronamespace
                 where n.nspname in ('public', 'private') and not coalesce(p.proconfig, '{}') @> '{"search_path=\"\""}'),
                null, 'every function sets search_path = ''''');
 select test.is((select string_agg(p.proname, ', ' order by p.proname) from pg_proc p
                 where p.pronamespace = 'public'::regnamespace and p.prosecdef),
-               'add_to_list, add_to_list_by_token, assignment_by_token, buy_item, buy_item_by_token, check_school_feed, complete_by_token, complete_task, '
+               'add_to_list, add_to_list_by_token, assignment_by_token, buy_item, buy_item_by_token, check_school_feed, coach_note_by_token, '
+               'coach_note_done, coach_view_by_token, complete_by_token, complete_task, '
                'confirm_digest, decide_reward, erase_homework, focus_by_token, get_list_by_token, get_person_day, get_shared_project, '
                'give_points, homework_ai_draft, homework_ai_finish, homework_ai_preview, homework_ai_start, homework_by_token, homework_prefs_by_token, '
                'homework_step, hook_family_only_signup, mark_signed_in, new_tutor_token, pause_school_feed, plan_by_token, remove_person, reward_by_token, '
                'rotate_day_token, save_homework_kid, save_homework_plan, save_person, save_tutor_link, school_begin, school_feed_status, '
-               'school_finish, school_item_action, school_item_by_token, school_store, set_school_feed, skip_task, step_by_token, '
+               'school_finish, school_item_action, school_item_by_token, school_store, set_school_feed, set_tutor_coach, skip_task, step_by_token, '
                'stop_digest, tutor_assignment_by_token, tutor_plan_by_token, tutor_step_by_token, tutor_view_by_token, undo_by_token, '
                'undo_task, void_points',
                'the only definer functions in public are the RPCs that check membership, admin, a token or the service key '
                '(0005: the parents'' homework actions, the eleven token functions and hub-jobs'' two AI functions; add_homework_time '
                'and homework_week run as the caller; 0006: the parents'' school links, the status card, his New from school and hub-jobs'' '
-               'three school functions)');
+               'three school functions; 0007: the coach view''s two token functions and the parents'' switch and Done)');
 select test.is((select string_agg(p.proname, ', ' order by p.proname) from pg_proc p
                 where p.pronamespace = 'private'::regnamespace and has_function_privilege('authenticated', p.oid, 'execute')
                   and p.proname in ('complete_task', 'undo_task', 'roll_task', 'person_by_token', 'my_day_item', 'digest_item', 'people_confirm_sync',
@@ -104,7 +108,9 @@ select test.is((select string_agg(p.proname, ', ' order by p.proname) from pg_pr
                                     -- 0006: every school helper, and 0005's renamed view and card bodies
                                     'school_host_suffix', 'school_url', 'safe_instant', 'school_rows', 'school_assignment', 'school_apply',
                                     'school_marks', 'school_new', 'school_failed', 'school_trim', 'school_feeds_due',
-                                    'homework_view_kid_v5', 'homework_view_tutor_v5', 'homework_card_v5')),
+                                    'homework_view_kid_v5', 'homework_view_tutor_v5', 'homework_card_v5',
+                                    -- 0007: the coach view, and its stamp triggers
+                                    'coach_view', 'task_log_in_charge', 'tasks_in_charge_since', 'events_people_since')),
                null, 'members cannot call the private helpers that act for someone else');
 -- What 0005 grants members in private: free_minutes (homework_week runs as the member), and clean_block
 -- and homework_word (the tidy triggers and add_homework_time run as the parent who saves).
@@ -663,7 +669,13 @@ insert into rpc values
   ('school_item_by_token', $$select school_item_by_token(repeat('0', 32), gen_random_uuid(), 'hide')$$,     'ok',     'ok',     'ok',     'ok',     'ok',     'denied'),
   ('school_begin',       'select school_begin()',                                                           'denied', 'denied', 'denied', 'denied', 'denied', 'ok'),
   ('school_store',       $$select school_store(gen_random_uuid(), gen_random_uuid(), '[]', null)$$,         'denied', 'denied', 'denied', 'denied', 'denied', 'ok'),
-  ('school_finish',      $$select school_finish(gen_random_uuid())$$,                                       'denied', 'denied', 'denied', 'denied', 'denied', 'ok');
+  ('school_finish',      $$select school_finish(gen_random_uuid())$$,                                       'denied', 'denied', 'denied', 'denied', 'denied', 'ok'),
+  -- Migration 0007: the coach view's two token functions (null for any token but a link with it on), and the
+  -- parents' switch and Done.
+  ('coach_view_by_token', $$select coach_view_by_token(repeat('0', 32))$$,                                  'ok',     'ok',     'ok',     'ok',     'ok',     'denied'),
+  ('coach_note_by_token', $$select coach_note_by_token(repeat('0', 32), gen_random_uuid(), 'Hi')$$,         'ok',     'ok',     'ok',     'ok',     'ok',     'denied'),
+  ('set_tutor_coach',    $$select set_tutor_coach((select id from tutor_links limit 1), true)$$,           'denied', 'denied', 'denied', 'denied', 'ok',     'denied'),
+  ('coach_note_done',    $$select coach_note_done(gen_random_uuid())$$,                                     'denied', 'denied', 'denied', 'denied', 'error: That note is gone.', 'denied');
 
 :as_anon
 select test.is(test.can(call), anon, 'anon → ' || fn) from rpc order by fn;

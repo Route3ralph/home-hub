@@ -19,14 +19,18 @@
 // preview with his request and answers added, the p_part 'ai' poll, Use this plan and Give Jordan this plan, Dismiss through
 // tutor_assignment_by_token's ai, "AI draft ready" under Plans to look at, Spanish words, no AI part while the switch or
 // the link's Can ask the AI is off, and only the tutor functions and hub-jobs called. Jordan's My day: a plan made with a
-// draft says "Plan by Pat, with AI help", and his link never calls hub-jobs.
+// draft says "Plan by Pat, with AI help", and his link never calls hub-jobs. With the coach view too (0007, schema 7): the
+// parents' row for Pat's link has Can ask the AI and Coach view, each saved on its own without changing the other; on
+// Pat's link the list has both the AI's "AI draft ready" and the Coach section, the assignment Send to Claude (the AI's
+// reads ask for no coach view), and the Coach section is back, read again, on the list.
 // Everything is made up: the household, the school's name (North Field School), the teacher, example.com, 555-01xx.
 // Run alone with: node tests/e2e/homework-ai.test.js
 const fs = require('fs');
 const { chromium } = require('playwright');
 const { createHash } = require('crypto');
 const { makeDb, install, signIn, SUPA, withHomework, homeworkRpc, foodRpc, hwKidRow, tutorLinkRow, assignmentRow, stepRow,
-  withHomeworkTokens, homeworkTokenRpc, personDayHomework, tkKidRow, tkLinkRow, tkAssignmentRow, tkStepRow } = require('./mock');
+  withHomeworkTokens, homeworkTokenRpc, personDayHomework, tkKidRow, tkLinkRow, tkAssignmentRow, tkStepRow,
+  withSchool, schoolRpc, withCoach, coachRpc } = require('./mock');
 const { serve } = require('./server');
 
 let BASE = '';
@@ -224,7 +228,7 @@ async function tokenRpcs(page, db) {
     page.on('console', (m) => { if (m.type() === 'error' && !(opts.allowConsole && opts.allowConsole.test(m.text()))) errors.push(`${opts.label} console: ${m.text()}`); });
     page.on('dialog', (d) => d.accept());
     const log = [];
-    await install(page, db, log, { rpc: RPC });
+    await install(page, db, log, { rpc: opts.rpc || RPC });
     await page.route(`${SUPA}/rest/v1/rpc/whoami`, (route) => {
       const req = route.request();
       if (req.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: CORS });
@@ -866,6 +870,64 @@ async function tokenRpcs(page, db) {
   await until(t.page, () => !!document.querySelector('.plan-ai-draft'), 6000);
   check('... "Sugerido por IA (Claude). Revísalo con Jordan."', /Sugerido por IA \(Claude\)\. Revísalo con Jordan\./.test(await text(t.page, '.plan-ai-label')), await text(t.page, '.plan-ai-label'));
   await t.context.close();
+
+  // =====================================================================
+  // 4b. With the coach view too (0007, schema 7): the AI planner and the coach view on one tutor link
+  // =====================================================================
+  {
+    // The parents' page: the link's two switches, each its own write.
+    const RPC7 = Object.assign({}, RPC, { hub_schema_version: () => 7 }, schoolRpc, coachRpc);
+    ({ page, db, context } = await open({ label: 'coach and AI', db: withCoach(withSchool(parentsDb({ on: true, tested: true }))), rpc: RPC7 }));
+    const boxes = () => page.$$eval(`li.hw-link[data-link="${LINK}"] input[type="checkbox"]`, (xs) => xs.map((x) => `${x.dataset.act}:${x.checked}`));
+    check('schema 7: Pat\'s link has Can ask the AI (on), then Coach view (off)', same(await boxes(), ['link-ai:true', 'link-coach:false']), JSON.stringify(await boxes()));
+    await page.click(`li.hw-link[data-link="${LINK}"] input[data-act="link-coach"]`);
+    await settle(page);
+    check('... Coach view on: set_tutor_coach only, and Can ask the AI stays on', calls(db, 'set_tutor_coach').length === 1 && !calls(db, 'save_tutor_link').length
+      && db.tutor_links[0].coach === true && db.tutor_links[0].can_ai === true && same(await boxes(), ['link-ai:true', 'link-coach:true']), JSON.stringify(await boxes()));
+    await page.click(`li.hw-link[data-link="${LINK}"] input[data-act="link-ai"]`);
+    await settle(page);
+    const sl = calls(db, 'save_tutor_link').slice(-1)[0];
+    check('... Can ask the AI off: save_tutor_link with p_can_ai false, and the coach view stays on', !!sl && sl.body.p_can_ai === false && calls(db, 'set_tutor_coach').length === 1
+      && db.tutor_links[0].coach === true && same(await boxes(), ['link-ai:false', 'link-coach:true']), JSON.stringify([sl && sl.body, await boxes()]));
+    await context.close();
+
+    // Pat's link with both on.
+    const cdb = withCoach(tutorDb());
+    cdb.tutor_links[0].coach = true;
+    t = await tutor({ label: 'pat coach', path: `/day.html?h=${PAT}`, db: cdb });
+    await until(t.page, () => !!document.querySelector('[data-sec="coach"] h2'), 4000);
+    const secs = await t.page.$$eval('.plan-sec', (ss) => ss.map((x) => x.dataset.sec));
+    check('Pat\'s link with the coach view and Can ask the AI on: "AI draft ready" under Plans to look at, and the Coach section last',
+      /Fractions practice\s*AI draft ready ›/.test(await text(t.page, '[data-sec="plans"]')) && (await text(t.page, '[data-sec="coach"] h2')) === 'Coach' && secs[secs.length - 1] === 'coach',
+      JSON.stringify(secs));
+    await t.page.evaluate((id) => { location.hash = `#a/${id}`; }, hid(10));
+    await until(t.page, () => !!document.querySelector('.plan-ai-preview'), 3000);
+    check('... the assignment: What Claude will see and Send to Claude (the Coach section is the list\'s only)', !!(await t.page.$('[data-act="ai-send"]')) && !(await t.page.$('[data-sec="coach"]')));
+    const cv0 = tcalls(t.db, 'coach_view_by_token').length;
+    await t.page.click('[data-act="ai-send"]');
+    await thinking(t.page);
+    await t.page.clock.runFor(5000);
+    await until(t.page, () => !!document.querySelector('.plan-ai-draft'), 6000);
+    const cs = aiCalls(t.db)[0];
+    check('... Send to Claude: hub-jobs with the link\'s token in the body and no sign-in, then the draft; the AI\'s reads ask for no coach view',
+      !!cs && cs.body.token === PAT && cs.email === null && tcalls(t.db, 'tutor_view_by_token').some((c) => c.body.p_part === 'ai')
+      && tcalls(t.db, 'coach_view_by_token').length === cv0, JSON.stringify([cs, cv0, tcalls(t.db, 'coach_view_by_token').length]));
+    await t.page.click('[data-act="ai-use"]');
+    await sleep(200);
+    await t.page.click('[data-act="give"]');
+    await until(t.page, () => !document.querySelector('.plan-editor[aria-busy="true"]'), 3000);
+    await sleep(400);
+    check('... Use this plan, then Give Jordan this plan: tutor_plan_by_token with p_give true', tcalls(t.db, 'tutor_plan_by_token').some((c) => c.body.p_give === true));
+    await t.page.evaluate(() => { location.hash = ''; });
+    await until(t.page, () => !!document.querySelector('[data-sec="coach"] h2'), 4000);
+    check('... back on the list: the Coach section again, read again', tcalls(t.db, 'coach_view_by_token').length > cv0 && (await text(t.page, '[data-sec="coach"] h2')) === 'Coach',
+      String(tcalls(t.db, 'coach_view_by_token').length));
+    check('... and only the tutor functions, the coach view\'s two and hub-jobs were called from the link',
+      t.db.calls.every((c) => /^(tutor_(view|assignment|plan|step)|coach_(view|note))_by_token$/.test(c.name))
+      && !t.requests.some((u) => /\/auth\/v1\/|\/rest\/v1\/(?!rpc\/(tutor|coach)_)|\/functions\/v1\/(?!hub-jobs)/.test(u)), [...new Set(t.db.calls.map((c) => c.name))].join(','));
+    await t.page.screenshot({ path: SHOTS + 'homework-ai-coach.png', fullPage: true });
+    await t.context.close();
+  }
 
   // =====================================================================
   // 5. Jordan's My day: "Plan by Pat, with AI help"; his link never calls hub-jobs

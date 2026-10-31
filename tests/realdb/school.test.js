@@ -16,7 +16,7 @@
 //   The school changes Two more reads: the planned one's date moved is marked, never moved; the lab report gone from
 //                      the site is marked, never deleted; both on the parents' page and Jordan's Due soon.
 // Run through tests/realdb/run.sh (its own copy of the v5 template database).
-const { setup, SCHOOL_CALLS } = require('./lib');
+const { setup, SCHOOL_CALLS, COACH_CALLS } = require('./lib');
 
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const MON = '2026-11-02';
@@ -75,6 +75,7 @@ const ESSAY = { uid: 'asg-1004', summary: 'English - 7: Essay outline', lines: [
     await jordan.context.close();
     const reqs = await h.requests();
     check('v5 db: no page asks for a school table or function', !reqs.some((r) => SCHOOL_CALLS.test(r.path)), reqs.filter((r) => SCHOOL_CALLS.test(r.path)).map((r) => r.path));
+    check('v5 db: nor for a coach table or function (0007)', !reqs.some((r) => COACH_CALLS.test(r.path)), reqs.filter((r) => COACH_CALLS.test(r.path)).map((r) => r.path));
     const f = await failures();
     check('v5 db: no API request failed', !f.length, f);
     const job = await h.hubJobsAs('alex@example.com', { action: 'school' });

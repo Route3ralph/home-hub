@@ -100,7 +100,7 @@ It is help with starting, timing and planning that suits any kid. Nothing in the
 **What Pat sees (the tutor link)**
 - A link with no sign-in that shows only Jordan's homework, in a fixed order, so a check-in takes under 15 minutes: **To check** (milestones he ticked: **Looks done**, with a word about the work, or **Not yet**, saying what's missing), **To talk about** (a milestone his steps can't reach any more), **Questions** (**Answer**), plans to look at, his assignments (Pat can add assignments and lessons, plan them with him from a starter plan, and **Give Jordan this plan**), his homework time for two weeks with his other commitments shown only as "Busy", and his finished blocks of the last 14 days.
 - With the [AI planner](#the-ai-planner-v13-optional) on, and **Can ask the AI** on for the link: **Send to Claude** on an assignment, for a draft Pat checks with Jordan.
-- Never: points, rewards, family names, the family's events, phone numbers, or whether he is working right now.
+- Never: points, rewards, family names, the family's events, phone numbers, or whether he is working right now. (With the [coach view](#the-coach-view-v13-migration-0007) on, Pat also sees his points, rewards, focus sessions, his own calendar and his daily tasks, and still nothing of anyone else.)
 - **Open it on your own phone or computer**, not Jordan's or a shared one. It ends after 180 days (the family can **Extend** it); if it is ever passed around, **New link** on the Homework page stops the old one at once.
 
 **What the parents do (the Homework page)**
@@ -187,11 +187,31 @@ With it on, Pat or a parent can tap **Send to Claude** on an assignment and get 
 
 **To stop it:** the **AI planner** switch (every request stops at once; the starter plans keep working); or delete the key in Anthropic's Console (it stops at once); or remove the secret. **Erase Jordan's homework** deletes his run records; Anthropic's copy goes on its own schedule (above).
 
+### The coach view (v1.3, migration 0007)
+
+Pat is Jordan's tutor and also his coach for starting, timing and planning. With the **coach view** on for Pat's link, the link also shows, read-only, in a **Coach** section under the homework:
+- his **points**: the balance, this week's and last week's by kind (focus, on time, milestones, given, voided, trades) and the last 30 days, without who gave or took them;
+- his **rewards** (cost, instant or not) and his asks and cash-ins asked or decided in the last 30 days;
+- his **focus sessions** of the last 30 days: the day, the assignment, the minutes he chose and the minutes the hub saw, how it ended, his note;
+- **his own calendar**, the next 14 days and the last 7: what he is in charge of, or is the only one on with nobody in charge (an event he is only along on is the family's); private ones as "Private item";
+- **his daily tasks**, today and the last 7 days, done or not, and before them the ones still late; private items and health tasks as "Private item".
+
+Only his own days: a chore or a weekly event handed to him from Sam shows his days from the hand-over on, never Sam's from before (the hub notes who was in charge from 0007 on, so nothing from before it shows).
+
+Never the rest of the family: no one else's events, tasks or names, no dinners, shopping list or contacts, and nothing live. Pat can also leave you a note ("suggest lowering the on-time bonus"), which shows under Pat's link on the Homework page with **Done**; that is all Pat can change. Jordan's screen then says what Pat sees too.
+
+**Turning it on** (nothing to deploy: no Edge Function and no `cron.sql` change):
+1. `tests/run.sh` ends with `0 failed`; merge. Nothing changes until step 2: the coach parts show only on schema 7.
+2. **About 2 minutes:** run [`supabase/migrations/0007_homework_coach.sql`](supabase/migrations/0007_homework_coach.sql) in the Supabase SQL editor. "isn't installed" means 0006 is missing; "already installed" means it's done; either way nothing was changed. Every link's coach view starts **off**.
+3. **About 1 minute:** Homework → **Switches** → **Tutor links** → Pat Lee, tutor → tick **Coach view** (off by default; turn it on for the tutor). Tell Pat (the Coach section shows the next time the link is opened) and Jordan.
+
+To stop it for one link, untick **Coach view**: it stops at once, and Pat's link is as before. **Off** and **New link** stop the whole link, as always. If the hub can't be reached: `update public.tutor_links set coach = false;` in the SQL editor.
+
 ### What goes where
 
 - **Never in an email, a text or on the wall:** the teacher's text, steps, questions, notes, points, rewards or asks. Only the homework-time event shows there, as any event does.
 - **Jordan's My day** never shows the teacher's text, and never a parent's name or email: notes are "Pat:" or "Your parents:".
-- **Pat's link** never shows points, rewards, asks, family names, event titles (only "Busy"), or anything live.
+- **Pat's link** never shows points, rewards, asks, family names, event titles (only "Busy"), or anything live, unless you turn on its coach view: then it also shows, read-only, his points, rewards and asks, his focus sessions, his own calendar's titles and his daily tasks (health tasks as "Private item"), and still never anyone else's, nor anything live.
 - **Anthropic (Claude)**, only while the AI planner is on and only when someone taps **Send to Claude**: what **What Claude will see** shows, nothing else (see [the AI planner](#the-ai-planner-v13-optional)).
 - **Everyone who signs in** reads the Homework page; only the parents change it.
 - **The school links** are never shown again once saved, not even to the parents: only "…a1b2". An assignment's description from the school is its teacher's text: for the grown-ups and Pat, never on Jordan's screen.
@@ -449,7 +469,7 @@ Never commit the token. The rules for changing the repo (tests, migrations, depl
 | `manifest.webmanifest`, `assets/icons/` | The Home Screen app: name, colours and icons |
 | `config.js` | Database connection settings |
 | `supabase/schema.sql` | The v1 tables, security rules and functions (the baseline) |
-| `supabase/migrations/` | Every database change since, in order: `0002_home_hub_v2.sql` is v2, `0003_google_calendar.sql` is v1.1 (Google Calendar), `0004_meals_and_shopping.sql` is v1.2 (Food), `0005_homework.sql` is v1.3 (Homework) |
+| `supabase/migrations/` | Every database change since, in order: `0002_home_hub_v2.sql` is v2, `0003_google_calendar.sql` is v1.1 (Google Calendar), `0004_meals_and_shopping.sql` is v1.2 (Food), `0005_homework.sql` is v1.3 (Homework), `0006_homework_school.sql` its school feed and `0007_homework_coach.sql` its coach view |
 | `supabase/preflight.sql` | Read-only checks to run before applying the v2 migration (0002 only) |
 | `supabase/cron.sql` | Schedules the morning email and the Google Calendar job (pg_cron) once hub-jobs is deployed |
 | `supabase/config.toml` | Supabase CLI settings: both Edge Functions deploy with JWT verification off |
