@@ -1615,6 +1615,26 @@ const HW_STUBS = () => {
     check('homework: homework off → no card, no homework request', !(await page.$('.hw-card')) && !hwCalls(db).length);
     await page.context().close();
   }
+  // + Homework due within 3 days (so 'add' does Quick too) while he has no homework time at all: his homework is kept,
+  // with no plan; the form closes and nothing says "Set a homework time first." to him.
+  {
+    const nt = hwDb();
+    delete nt.hwTimes[P.jordan];
+    ({ page, db } = await open({ label: 'hw-notime', path: `/day.html?t=${JORDAN}#homework`, db: nt, device: HW_DEVICE, init: HW_STUBS }));
+    await page.waitForSelector('[data-act="hw-add"]', { timeout: 5000 });
+    await page.click('[data-act="hw-add"]');
+    await page.fill('.hw-add-form input[name="title"]', 'Worksheet 6.1');
+    await page.fill('.hw-add-form input[name="due"]', '2026-11-03');
+    await page.click('.hw-add-form [type="submit"]');
+    await until(() => calls(db, 'assignment_by_token').length === 1);
+    const sent = calls(db, 'assignment_by_token')[0].body;
+    check('+ Homework with no homework time: his homework is kept, with no plan; the form closes, no error',
+      sent.p_minutes === 15 && await until(() => db.assignments.some((a) => a.id === sent.p_assignment && a.added_by === 'kid'))
+      && !db.homework_steps.some((s) => s.assignment_id === sent.p_assignment)
+      && await until(async () => !(await page.$('.hw-add-form'))) && !/homework time/i.test(await page.evaluate(() => document.body.innerText.match(/Set a homework time first/) ? 'homework time' : '')),
+      `${JSON.stringify(sent)} ${await page.evaluate(() => [...document.querySelectorAll('.toast')].map((t) => t.textContent).join(' | '))}`);
+    await page.context().close();
+  }
   // Without plan.js (it didn't load: a phone that kept an older day.html, or a failed fetch): the day still works, with no card.
   {
     ({ page, db } = await open({ label: 'hw-noplan', path: `/day.html?t=${JORDAN}`, db: hwDb(), noPlan: true, device: HW_DEVICE, init: HW_STUBS,

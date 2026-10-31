@@ -12,7 +12,8 @@
 --     household gains homework_ai, homework_ai_month and homework_never_send.
 --   • Pages: homework_week(); the parents' actions (save_homework_kid, add_homework_time,
 --     save_homework_plan, homework_step, decide_reward, give_points, void_points, save_tutor_link,
---     new_tutor_token, homework_ai_preview, erase_homework).
+--     new_tutor_token, homework_ai_preview, homework_ai_draft (the AI draft's Undo and Dismiss),
+--     erase_homework).
 --   • My day: Jordan's seven token functions (homework_by_token, step_by_token, plan_by_token,
 --     focus_by_token, reward_by_token, assignment_by_token, homework_prefs_by_token), and the
 --     tutor link's four (tutor_view_by_token, tutor_assignment_by_token, tutor_plan_by_token,
@@ -125,6 +126,7 @@ create table public.assignments (
              -- an optional "interesting angle" question for him; earns nothing and is never a step
   status     text not null default 'open' check (status in ('open', 'done', 'dropped')),
   done_at    timestamptz,                       -- set by the tidy trigger when status becomes 'done'
+  dropped_at timestamptz,                       -- set by the tidy trigger when status becomes 'dropped' (§13.3 counts from it)
   given_at   timestamptz,                       -- the plan is on his My day since
   given_by   text,                              -- by: an email, "<label> (tutor link)", or "<name> (My day)" for Quick
   plan_rev   int not null default 0,            -- +1 on every change to its steps (his ticks and moves too)
@@ -138,6 +140,7 @@ create table public.assignments (
   updated_at timestamptz not null default now(),
   updated_by text,
   check ((status = 'done') = (done_at is not null)),
+  check ((status = 'dropped') = (dropped_at is not null)),
   check ((given_at is null) = (given_by is null))
 );
 create index assignments_kid on public.assignments (kid_id, status, due_date);
@@ -363,7 +366,7 @@ $$;
 -- An assignment's title and class on one line, the teacher's text with its line breaks
 -- (private.clean_block), the stretch question on one line; '' becomes null (a title of spaces
 -- is then too short). done_at follows status: set when it becomes 'done', kept while it stays so,
--- null otherwise.
+-- null otherwise; dropped_at the same for 'dropped'.
 create function private.assignments_tidy()
 returns trigger
 language plpgsql
@@ -377,6 +380,9 @@ begin
   new.done_at := case when new.status <> 'done' then null
                       when tg_op = 'UPDATE' and old.status = 'done' then old.done_at
                       else private.now() end;
+  new.dropped_at := case when new.status <> 'dropped' then null
+                         when tg_op = 'UPDATE' and old.status = 'dropped' then old.dropped_at
+                         else private.now() end;
   return new;
 end;
 $$;
@@ -933,7 +939,8 @@ begin
       raise exception '"Done looks like" is % characters.', case when v_ai then '3 to 160' else 'at most 160' end
         using errcode = '22023';
     end if;
-    if jsonb_typeof(e -> 'minutes') <> 'number' or (e ->> 'minutes') !~ '^[0-9]{1,4}$' then
+    -- A missing key too (jsonb_typeof is null): a step never reaches the table without its minutes.
+    if jsonb_typeof(e -> 'minutes') is distinct from 'number' or (e ->> 'minutes') !~ '^[0-9]{1,4}$' then
       raise exception 'A step is 5 to 60 minutes.' using errcode = '22023';
     end if;
     v_min := (e ->> 'minutes')::int;
@@ -1250,7 +1257,8 @@ $$;
 --          recorded and pays nothing: the answer has paid and used_up).
 --   'not_yet' (tutor, family): a ticked milestone not checked, with a note saying what's missing:
 --          unticked, nothing taken.
---   'uncheck' (tutor, family): the one who checked it, within 15 minutes: the check and its points go.
+--   'uncheck' (tutor, family): the one who checked it, within 15 minutes: the check and its points go;
+--          refused (P0001 "Those points are already spent.") when that would take his balance below zero.
 --   'answer' (tutor, family): an answer to his question (at most 200); its writer can change it for 15
 --          minutes from the first answer (the old one kept in qa_log).
 --   'clear' (family): an answer (p_text 'answer') or a coach's note ('note'); null: the answer if there
@@ -1443,6 +1451,15 @@ begin
     if v_s.checked_at is not null then
       if v_s.checked_by is distinct from p_who or v_s.checked_at < v_now - interval '15 minutes' then
         raise exception 'Only the one who checked it can take it back, for 15 minutes.' using errcode = '42501';
+      end if;
+      -- Its points go with it, never below zero (as void_points): spent on a trade, the check stays.
+      -- The kid's row is locked last, as award locks it after the assignment and the step.
+      perform 1 from public.homework_kids k where k.kid_id = v_a.kid_id for update;
+      if (select b.balance from private.points_balance(v_a.kid_id) b)
+         - (select coalesce(sum(l.delta), 0) from public.points_ledger l
+            where (l.step_id = v_s.id and l.kind = 'milestone')
+               or (l.kind = 'void' and l.void_of in (select m.id from public.points_ledger m where m.step_id = v_s.id and m.kind = 'milestone'))) < 0 then
+        raise exception 'Those points are already spent.' using errcode = 'P0001';
       end if;
       delete from public.points_ledger l
       where l.kind = 'void' and l.void_of in (select m.id from public.points_ledger m where m.step_id = v_s.id and m.kind = 'milestone');
@@ -1791,6 +1808,33 @@ $$;
 -- Retention (§13.3) and the AI's lease (§6.3)
 -- ---------------------------------------------------------------------
 
+-- Undo or Dismiss on one assignment's AI draft (§6.10), for homework_ai_draft (a parent) and
+-- tutor_assignment_by_token's 'ai' (Pat's link), whose callers have checked who may: 'undo' puts
+-- ai_prev back as the draft (one level), with its own time; 'dismiss' clears ai_draft, ai_prev and
+-- ai_at, and ai_state and ai_stop unless a run is open (its finish writes the next draft). Answers
+-- whether anything changed (nothing to undo or dismiss: false).
+create function private.ai_draft_act(p_assignment uuid, p_action text)
+returns boolean
+language plpgsql
+set search_path = ''
+as $$
+declare
+  v_n int;
+begin
+  update public.assignments a
+  set ai_draft = case when p_action = 'undo' then a.ai_prev end,
+      ai_prev  = null,
+      ai_at    = case when p_action = 'undo' then coalesce(least(a.ai_at, (a.ai_prev ->> 'at')::timestamptz), a.ai_at) end,
+      ai_state = case when p_action = 'undo' or a.ai_state = 'running' then a.ai_state end,
+      ai_stop  = case when p_action = 'undo' or a.ai_state = 'running' then a.ai_stop end
+  where a.id = p_assignment
+    and case when p_action = 'undo' then a.ai_prev is not null
+             else a.ai_draft is not null or a.ai_prev is not null or a.ai_state in ('ready', 'failed') end;
+  get diagnostics v_n = row_count;
+  return v_n > 0;
+end;
+$$;
+
 -- Every AI run still running past its lease becomes failed with stop 'timeout', and its
 -- assignment's ai_state 'failed' (ai_stop 'timeout') when no other run is open on it.
 create function private.ai_sweep()
@@ -1819,10 +1863,11 @@ $$;
 -- The retention rules, done at writes (as list_done trims itself), for one kid:
 --   the teacher's text emptied 30 days after the due date; AI drafts nobody used cleared 30 days
 --   after they were written; AI runs deleted after 90 days (the household's, test runs too); done
---   assignments deleted 180 days after they were done, and dropped ones 180 days after their due
---   date (the table keeps no drop time), with their steps; focus blocks that started more than 180
---   days ago deleted; reward asks decided more than 180 days ago deleted. Ledger rows stay, their
---   links set null, so the balance never changes. Then private.ai_sweep().
+--   assignments deleted 180 days after they were done, and dropped ones 180 days after they were
+--   dropped (done_at, dropped_at: never the due date, which Pat's link can change), with their
+--   steps; focus blocks that started more than 180 days ago deleted; reward asks decided more than
+--   180 days ago deleted. Ledger rows stay, their links set null, so the balance never changes.
+--   Then private.ai_sweep().
 create function private.homework_trim(p_kid uuid)
 returns void
 language plpgsql
@@ -1843,7 +1888,7 @@ begin
   delete from public.assignments a
   where a.kid_id = p_kid
     and ((a.status = 'done' and a.done_at < v_now - interval '180 days')
-         or (a.status = 'dropped' and a.due_date < v_today - 180));
+         or (a.status = 'dropped' and a.dropped_at < v_now - interval '180 days'));
   delete from public.focus_sessions f where f.kid_id = p_kid and f.started_at < v_now - interval '180 days';
   delete from public.reward_asks r where r.kid_id = p_kid and r.status <> 'waiting' and r.decided_at < v_now - interval '180 days';
   perform private.ai_sweep();
@@ -2405,12 +2450,20 @@ $$;
 -- What the AI may see (§6.4). PR B's homework.ts sends input.message as it is.
 -- ---------------------------------------------------------------------
 
--- Text made fit to send, best effort (the preview is the backstop): uuid-shaped strings become
--- [id]; links, email addresses and phone-number shapes [link], [email], [phone]; a title and one or
--- two capitalized words ("Ms. Rivera") [name]; every active person's first and full name (and the
--- kid's, p_kid), each tutor link's label, the part before its first comma ("Pat Lee") and each
--- word of that part ("Pat", "Lee"), and the parents' never-send words, as whole words in any case,
--- [name]; then every < and > becomes ‹ and ›, so no text can close its own field.
+-- Text made fit to send, best effort (the preview is the backstop). First the invisible characters
+-- go (a soft hyphen from a PDF or a web page, and those clean_text takes out), so "Tay" + U+00AD + "lor"
+-- is "Taylor". Then uuid-shaped strings become [id]; links (with https:// or www., or without: a dotted
+-- host with a path, or one ending in a common top-level domain in lower case), email addresses and
+-- phone-number shapes [link], [email], [phone]; a title and one or two capitalized words
+-- ("Ms. Rivera") [name]. Then, as whole words in any case, [name]: every person's first and full
+-- name (active or not: the names the hub knows; p_kid is one of them), each tutor link's label, the
+-- part before its first comma ("Pat Lee") and each word of that part ("Pat", "Lee"), except words
+-- that name a class, a role, a title or nothing ("Math tutor": "math" and "tutor" aren't names),
+-- and the parents' never-send words; a phrase's spaces match any run of spaces and line breaks
+-- ("North Field" on one line, "School" on the next). Then every other word of a person's name that
+-- doesn't start with a lower-case letter ("Roe" of "Riley de la Roe", not "de" or "la"), as
+-- written: a surname that is also a word ("Page") stays in "read page 12". Last, every < and >
+-- becomes ‹ and ›, so no text can close its own field.
 create function private.scrub(p_text text, p_kid uuid)
 returns text
 language plpgsql
@@ -2418,36 +2471,68 @@ stable
 set search_path = ''
 as $$
 declare
-  v       text := p_text;
+  c_hidden constant text := '[\u00ad\u034f\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]';
+  v       text;
   v_words text[];
+  v_caps  text[];
 begin
-  if v is null then
+  if p_text is null then
     return null;
   end if;
+  v := regexp_replace(p_text, c_hidden, '', 'g');
   v := regexp_replace(v, '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}', '[id]', 'g');
   v := regexp_replace(v, '(https?://|www\.)[^[:space:]<>"]*[^[:space:]<>".,;:!?)''"]', '[link]', 'gi');
   v := regexp_replace(v, '[[:alnum:]._%+-]+@[[:alnum:].-]+\.[[:alpha:]]{2,}', '[email]', 'g');
+  -- A link without https:// or www. (after the emails, so an address stays [email]): a dotted host with a
+  -- path ("school.example.org/reading", "go.example/3xYz"), or a dotted host ending in a common top-level
+  -- domain, in lower case ("portal.school.example.org", never "end.Us" or "St.Louis").
+  v := regexp_replace(v, '(?<![[:alnum:]@._%+/-])[[:alnum:]]([[:alnum:]-]*[[:alnum:]])?(\.[[:alnum:]]([[:alnum:]-]*[[:alnum:]])?)*'
+                         || '\.[[:alpha:]]{2,}(:[0-9]+)?/([^[:space:]<>"]*[^[:space:]<>".,;:!?)''"])?', '[link]', 'g');
+  v := regexp_replace(v, '(?<![[:alnum:]@._%+/-])[[:alnum:]]([[:alnum:]-]*[[:alnum:]])?(\.[[:alnum:]]([[:alnum:]-]*[[:alnum:]])?)*'
+                         || '\.(com|org|net|edu|gov|us|io|ly|co|info|app)(?![[:alnum:]@_-])', '[link]', 'g');
   v := regexp_replace(v, '(?<![[:alnum:]])(\+?1[ .-]?)?(\([0-9]{3}\)[ .-]?|[0-9]{3}[ .-])?[0-9]{3}[ .-][0-9]{4}(?![[:alnum:]])', '[phone]', 'g');
   v := regexp_replace(v, '(?<![[:alnum:]_])(Mrs|Mr|Miss|Ms|Mx|Dr|Profe|Prof|Coach|Srta|Sra|Sr)\.?[[:space:]]+[[:upper:]][[:alpha:]''-]*([[:space:]]+[[:upper:]][[:alpha:]''-]*)?',
                      '[name]', 'g');
   select array_agg(b.w order by char_length(b.w) desc, b.w) into v_words
-  from (select distinct btrim(a.w) as w
-        from (select p.name as w from public.people p where p.active or p.id = p_kid
+  from (select distinct btrim(regexp_replace(a.w, c_hidden, '', 'g')) as w
+        from (select p.name as w from public.people p
               union all
-              select split_part(p.name, ' ', 1) from public.people p where p.active or p.id = p_kid
+              select split_part(btrim(p.name), ' ', 1) from public.people p
               union all
-              select l.label from public.tutor_links l
-              union all
-              select split_part(l.label, ',', 1) from public.tutor_links l
-              union all
-              select x.w from public.tutor_links l cross join lateral regexp_split_to_table(btrim(split_part(l.label, ',', 1)), '[[:space:]]+') x (w)
+              select t.w
+              from (select l.label as w from public.tutor_links l
+                    union all
+                    select split_part(l.label, ',', 1) from public.tutor_links l
+                    union all
+                    select x.w from public.tutor_links l
+                      cross join lateral regexp_split_to_table(btrim(split_part(l.label, ',', 1)), '[[:space:]]+') x (w)) t
+              -- a label's words that name a class, a role, a title or nothing are not names
+              where lower(btrim(t.w, ' .,:;!?()-')) <> all (array[
+                'tutor', 'tutors', 'tutoring', 'teacher', 'coach', 'helper', 'help', 'homework', 'class', 'classes', 'lesson', 'lessons',
+                'math', 'maths', 'algebra', 'geometry', 'calculus', 'reading', 'writing', 'english', 'spanish', 'french', 'science',
+                'biology', 'chemistry', 'physics', 'history', 'music', 'piano', 'the', 'and', 'for', 'with', 'our',
+                'mr', 'mrs', 'ms', 'miss', 'mx', 'dr', 'prof', 'profe', 'sr', 'sra', 'srta',
+                'tutora', 'profesor', 'profesora', 'maestro', 'maestra', 'clase', 'clases', 'tarea', 'tareas', 'mates', 'matemáticas',
+                'lectura', 'escritura', 'inglés', 'español', 'ciencias', 'historia', 'de', 'del', 'la', 'el', 'los', 'las', 'con', 'para'])
               union all
               select x.w from public.household h cross join lateral unnest(h.homework_never_send) x (w)) a) b
   where char_length(b.w) >= 2;
   if v_words is not null then
     v := regexp_replace(v, '(?<![[:alnum:]_])('
-                           || array_to_string(array(select regexp_replace(w, '([][(){}.*+?^$|\\])', '\\\1', 'g') from unnest(v_words) w), '|')
+                           || array_to_string(array(select regexp_replace(regexp_replace(w, '([][(){}.*+?^$|\\])', '\\\1', 'g'),
+                                                                          '[[:space:]]+', '[[:space:]]+', 'g')
+                                                    from unnest(v_words) w), '|')
                            || ')(?![[:alnum:]_])', '[name]', 'gi');
+  end if;
+  select array_agg(b.w order by char_length(b.w) desc, b.w) into v_caps
+  from (select distinct btrim(regexp_replace(x.w, c_hidden, '', 'g')) as w
+        from public.people p cross join lateral regexp_split_to_table(btrim(p.name), '[[:space:]]+') with ordinality x (w, n)
+        where x.n > 1 and x.w !~ '^[[:lower:]]') b
+  where char_length(b.w) >= 2;
+  if v_caps is not null then
+    v := regexp_replace(v, '(?<![[:alnum:]_])('
+                           || array_to_string(array(select regexp_replace(w, '([][(){}.*+?^$|\\])', '\\\1', 'g') from unnest(v_caps) w), '|')
+                           || ')(?![[:alnum:]_])', '[name]', 'g');
   end if;
   return translate(v, '<>', '‹›');
 end;
@@ -2892,7 +2977,8 @@ end;
 $$;
 
 -- A tutor link made (p_link null) or changed: its label (1 to 60), language, end date (today to
--- today + 400; null: today + 180), whether it may ask the AI, and on or off. At most 3 per kid.
+-- today + 400, or on a change its own end date unchanged, even past; null: today + 180), whether it
+-- may ask the AI, and on or off. At most 3 per kid.
 -- Returns its id.
 create function public.save_tutor_link(p_link uuid, p_kid uuid, p_label text, p_language text, p_expires_on date,
                                        p_can_ai boolean, p_active boolean)
@@ -2916,7 +3002,11 @@ begin
   if coalesce(p_language, 'en') not in ('en', 'es') then
     raise exception 'Choose English or Spanish.' using errcode = '22023';
   end if;
-  if v_ends not between v_today and v_today + 400 then
+  -- A change may keep the link's own end date, even one that has passed: Off, On or a new name on a
+  -- link that has ended (the page always sends the date it has). It stays ended; only a new date
+  -- (Extend) brings it back.
+  if v_ends not between v_today and v_today + 400
+     and not exists (select 1 from public.tutor_links l where l.id = p_link and l.expires_on = v_ends) then
     raise exception 'A link ends from today to 400 days from now.' using errcode = '22023';
   end if;
   if p_link is null then
@@ -2986,6 +3076,36 @@ begin
     raise exception 'That assignment is gone.' using errcode = '22023';
   end if;
   return private.ai_input(p_assignment, p_kind, p_request, p_answers, 'parent') ->> 'message';
+end;
+$$;
+
+-- Undo and Dismiss on an assignment's AI draft (§6.10), from a parent: 'undo' puts ai_prev back as the
+-- draft (one level: ai_prev is then empty), with its own time; 'dismiss' clears ai_draft, ai_prev and
+-- ai_at, and ai_state and ai_stop unless a run is open. Nothing to undo or dismiss changes nothing.
+-- Pat's link does the same with tutor_assignment_by_token's 'ai' field. Answers {assignment_id, changed}.
+create function public.homework_ai_draft(p_assignment uuid, p_action text)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_kid uuid;
+  v_ch  boolean;
+begin
+  if not private.is_admin() then
+    raise exception 'Only a parent can change homework.' using errcode = '42501';
+  end if;
+  if p_action is null or p_action not in ('undo', 'dismiss') then
+    raise exception 'Choose undo or dismiss.' using errcode = '22023';
+  end if;
+  select a.kid_id into v_kid from public.assignments a where a.id = p_assignment;
+  if v_kid is null then
+    raise exception 'That assignment is gone.' using errcode = '22023';
+  end if;
+  v_ch := private.ai_draft_act(p_assignment, p_action);
+  perform private.homework_trim(v_kid);
+  return jsonb_build_object('assignment_id', p_assignment, 'changed', v_ch);
 end;
 $$;
 
@@ -3086,6 +3206,10 @@ begin
   end if;
   perform private.homework_trim(me.id);
   return (r - '_changed') || private.homework_view_kid(me.id, me.language);
+exception
+  -- A constraint's DETAIL is the whole row (a parent's email in it): never to a link (§3.4).
+  when integrity_constraint_violation then
+    raise exception 'That can''t be saved.' using errcode = '22023';
 end;
 $$;
 
@@ -3114,6 +3238,10 @@ begin
   perform private.count_homework(me.id, 'writes', 150);
   perform private.homework_trim(me.id);
   return (r - '_changed') || private.homework_view_kid(me.id, me.language);
+exception
+  -- A constraint's DETAIL is the whole row (a parent's email in it): never to a link (§3.4).
+  when integrity_constraint_violation then
+    raise exception 'That can''t be saved.' using errcode = '22023';
 end;
 $$;
 
@@ -3147,6 +3275,10 @@ begin
   end if;
   perform private.homework_trim(me.id);
   return (r - '_changed') || private.homework_view_kid(me.id, me.language);
+exception
+  -- A constraint's DETAIL is the whole row (a parent's email in it): never to a link (§3.4).
+  when integrity_constraint_violation then
+    raise exception 'That can''t be saved.' using errcode = '22023';
 end;
 $$;
 
@@ -3256,12 +3388,17 @@ begin
   end if;
   perform private.homework_trim(me.id);
   return private.homework_view_kid(me.id, me.language);
+exception
+  -- A constraint's DETAIL is the whole row (a parent's email in it): never to a link (§3.4).
+  when integrity_constraint_violation then
+    raise exception 'That can''t be saved.' using errcode = '22023';
 end;
 $$;
 
 -- His own homework (§4.1): 'add' (p_assignment the id his phone made; title 1 to 120, class at most
 -- 40, a due date from today to today + 60; no teacher's text; added_by 'kid'; at most 15 open ones
--- he added; with p_minutes it also does 'quick'), 'quick' (on an open assignment of his with no plan,
+-- he added; with p_minutes it also does 'quick', unless he has no homework time at all: then the add
+-- alone, with no plan), 'quick' (on an open assignment of his with no plan,
 -- due within 3 days: one plain step of p_minutes (5 to 60), titled as the assignment, placed by §5.4
 -- and given at once; due 4 or more days out, or planned already: 42501 "Plan this one with Pat."),
 -- 'drop' (only one he added, with no done step).
@@ -3334,15 +3471,18 @@ begin
                       else private.homework_word('homework', me.language) || ': ' || v_a.title end;
       v_place := private.place_steps(me.id, v_a.id, v_a.due_date,
                                      jsonb_build_array(jsonb_build_object('kind', 'step', 'minutes', p_minutes)));
-      if v_place ? 'no_time' then
+      if v_place ? 'no_time' and p_action = 'quick' then
         raise exception 'Set a homework time first.' using errcode = '22023';
+      elsif not (v_place ? 'no_time') then
+        insert into public.homework_steps (assignment_id, pos, kind, title, minutes, day, source, updated_at, updated_by)
+        values (v_a.id, 1, 'step', v_title, p_minutes, (v_place -> 'steps' -> 0 ->> 'day')::date, 'typed', private.now(), v_who);
+        update public.assignments a
+        set given_at = private.now(), given_by = v_who, plan_rev = a.plan_rev + 1, updated_by = v_who
+        where a.id = v_a.id;
+        v_ch := true;
       end if;
-      insert into public.homework_steps (assignment_id, pos, kind, title, minutes, day, source, updated_at, updated_by)
-      values (v_a.id, 1, 'step', v_title, p_minutes, (v_place -> 'steps' -> 0 ->> 'day')::date, 'typed', private.now(), v_who);
-      update public.assignments a
-      set given_at = private.now(), given_by = v_who, plan_rev = a.plan_rev + 1, updated_by = v_who
-      where a.id = v_a.id;
-      v_ch := true;
+      -- 'add' with no homework time at all (§5.4): his homework is kept, with no plan (the view says
+      -- no_time); Quick works once a parent sets a homework time.
     end if;
   elsif p_action = 'drop' then
     if v_a.added_by <> 'kid' or exists (select 1 from public.homework_steps s where s.assignment_id = v_a.id and s.done_at is not null) then
@@ -3359,6 +3499,10 @@ begin
   end if;
   perform private.homework_trim(me.id);
   return jsonb_build_object('assignment_id', v_a.id) || private.homework_view_kid(me.id, me.language);
+exception
+  -- A constraint's DETAIL is the whole row (a parent's email in it): never to a link (§3.4).
+  when integrity_constraint_violation then
+    raise exception 'That can''t be saved.' using errcode = '22023';
 end;
 $$;
 
@@ -3396,6 +3540,10 @@ begin
   end if;
   perform private.homework_trim(me.id);
   return private.homework_view_kid(me.id, me.language);
+exception
+  -- A constraint's DETAIL is the whole row (a parent's email in it): never to a link (§3.4).
+  when integrity_constraint_violation then
+    raise exception 'That can''t be saved.' using errcode = '22023';
 end;
 $$;
 
@@ -3428,9 +3576,11 @@ $$;
 -- An assignment or lesson for the link's kid, added or changed. p_fields always has the id: one not
 -- yet used adds it (added_by 'tutor'; a title and a due date needed), one of the kid's changes the
 -- fields sent (kind, title, subject, due_date, details, stretch, status 'open', 'done' or 'dropped';
--- never a delete); any other: 42501 "That assignment isn't on this link.". Anything over its limit
+-- never a delete), and 'ai' 'undo' or 'dismiss' does that to its AI draft (§6.10, as
+-- homework_ai_draft); any other: 42501 "That assignment isn't on this link.". Anything over its limit
 -- (the teacher's text 4,000 characters): 22023 "That's too long." before any work. A moved due date
--- places again, at once, the steps not done that now fall after the last work day (moved: how many).
+-- places again, at once, the steps not done that now fall after the last work day, and a turn-in no
+-- longer on the due date (moved: how many).
 create function public.tutor_assignment_by_token(p_token text, p_fields jsonb)
 returns jsonb
 language plpgsql
@@ -3446,6 +3596,7 @@ declare
   v_due   date;
   v_place jsonb;
   v_moved int := 0;
+  v_ai    boolean := false;
   v_today date := public.today_local();
   v_last  date;
 begin
@@ -3466,6 +3617,14 @@ begin
      or (p_fields ? 'status' and coalesce(p_fields ->> 'status', '') not in ('open', 'done', 'dropped')) then
     raise exception 'That isn''t a kind or status an assignment has.' using errcode = '22023';
   end if;
+  if p_fields ? 'ai' and coalesce(p_fields ->> 'ai', '') not in ('undo', 'dismiss') then
+    raise exception 'Choose undo or dismiss.' using errcode = '22023';
+  end if;
+  -- A title that cleans to nothing (spaces, zero-width characters, null), on a change too: refused here,
+  -- never by the table's check, whose DETAIL is the whole row (created_by's email in it).
+  if p_fields ? 'title' and nullif(private.clean_text(p_fields ->> 'title', 120), '') is null then
+    raise exception 'An assignment needs a title and a due date.' using errcode = '22023';
+  end if;
   if p_fields ? 'due_date' then
     v_due := private.safe_date(p_fields ->> 'due_date');
     if v_due is null then
@@ -3478,6 +3637,9 @@ begin
     raise exception 'That assignment isn''t on this link.' using errcode = '42501';
   end if;
   if v_a.id is null then
+    if p_fields ? 'ai' then
+      raise exception 'That assignment isn''t on this link.' using errcode = '42501';   -- no draft to undo or dismiss
+    end if;
     if nullif(private.clean_text(p_fields ->> 'title', 120), '') is null or v_due is null then
       raise exception 'An assignment needs a title and a due date.' using errcode = '22023';
     end if;
@@ -3505,14 +3667,17 @@ begin
                             case when p_fields ? 'stretch' then nullif(private.clean_text(p_fields ->> 'stretch', 160), '') else a.stretch end,
                             case when p_fields ? 'status' then p_fields ->> 'status' else a.status end)
     returning * into v_n;
-    -- A moved due date: the steps not done that now fall after the last work day are placed again.
+    -- A moved due date: the steps not done that now fall after the last work day, and a turn-in not done
+    -- that is no longer on the due date, are placed again (the turn-in goes on the new due date).
     if v_n.id is not null and v_n.due_date is distinct from v_a.due_date and v_n.status = 'open' then
       v_last := case when v_n.kind = 'lesson' then greatest(v_n.due_date, v_today)
                      when v_n.due_date - v_today >= 7 then v_n.due_date - 2
                      when v_n.due_date > v_today then v_n.due_date - 1
                      else v_today end;
       if exists (select 1 from public.homework_steps s
-                 where s.assignment_id = v_id and s.done_at is null and s.kind <> 'turn_in' and s.day > v_last) then
+                 where s.assignment_id = v_id and s.done_at is null
+                   and case when s.kind = 'turn_in' then s.day is distinct from greatest(v_n.due_date, v_today)
+                            else s.day > v_last end) then
         v_place := private.place_steps(l.kid_id, v_id, v_n.due_date,
                      (select jsonb_agg(jsonb_build_object('id', s.id, 'kind', s.kind, 'minutes', s.minutes, 'done', s.done_at is not null,
                                                           'fixed', s.done_at is not null or (s.kind <> 'turn_in' and s.day <= v_last),
@@ -3534,11 +3699,19 @@ begin
       end if;
     end if;
   end if;
-  if v_a.id is null or v_n.id is not null then
+  -- Undo or Dismiss on its AI draft (§6.10).
+  if v_a.id is not null and p_fields ? 'ai' then
+    v_ai := private.ai_draft_act(v_id, p_fields ->> 'ai');
+  end if;
+  if v_a.id is null or v_n.id is not null or v_ai then
     perform private.count_homework(l.id, 'writes', 200);
   end if;
   perform private.homework_trim(l.kid_id);
   return jsonb_build_object('assignment_id', v_id, 'moved', v_moved) || private.homework_view_tutor(l.id, v_id, 'all');
+exception
+  -- A constraint's DETAIL is the whole row (a parent's email in it): never to a link (§3.4).
+  when integrity_constraint_violation then
+    raise exception 'That can''t be saved.' using errcode = '22023';
 end;
 $$;
 
@@ -3567,6 +3740,10 @@ begin
   perform private.count_homework(l.id, 'writes', 200);
   perform private.homework_trim(l.kid_id);
   return (r - '_changed') || private.homework_view_tutor(l.id, p_assignment, 'all');
+exception
+  -- A constraint's DETAIL is the whole row (a parent's email in it): never to a link (§3.4).
+  when integrity_constraint_violation then
+    raise exception 'That can''t be saved.' using errcode = '22023';
 end;
 $$;
 
@@ -3604,6 +3781,10 @@ begin
   -- A check's paid is points, which the link never sees; used_up stays ("This week's milestone points
   -- are used up.").
   return (r - '_changed' - 'paid') || private.homework_view_tutor(l.id, v_aid, 'all');
+exception
+  -- A constraint's DETAIL is the whole row (a parent's email in it): never to a link (§3.4).
+  when integrity_constraint_violation then
+    raise exception 'That can''t be saved.' using errcode = '22023';
 end;
 $$;
 
@@ -3963,6 +4144,7 @@ revoke execute on function public.save_tutor_link(uuid, uuid, text, text, date, 
 revoke execute on function public.new_tutor_token(uuid)                                                from public, anon, service_role;
 revoke execute on function public.homework_ai_preview(uuid, text, text, text[])                        from public, anon, service_role;
 revoke execute on function public.erase_homework(uuid, text)                                           from public, anon, service_role;
+revoke execute on function public.homework_ai_draft(uuid, text)                                        from public, anon, service_role;
 grant  execute on function public.save_homework_kid(uuid, boolean)                                     to authenticated;
 grant  execute on function public.add_homework_time(uuid, int[], time, time)                           to authenticated;
 grant  execute on function public.save_homework_plan(uuid, jsonb, int, boolean)                        to authenticated;
@@ -3974,6 +4156,7 @@ grant  execute on function public.save_tutor_link(uuid, uuid, text, text, date, 
 grant  execute on function public.new_tutor_token(uuid)                                                to authenticated;
 grant  execute on function public.homework_ai_preview(uuid, text, text, text[])                        to authenticated;
 grant  execute on function public.erase_homework(uuid, text)                                           to authenticated;
+grant  execute on function public.homework_ai_draft(uuid, text)                                        to authenticated;
 
 -- My day, Jordan: his token is the key.
 revoke execute on function public.homework_by_token(text)                                              from public, service_role;
@@ -4032,6 +4215,7 @@ revoke execute on function private.points_balance(uuid)                         
 revoke execute on function private.homework_pace(uuid)                                                 from public, anon, authenticated;
 revoke execute on function private.focus_act(uuid, text, uuid, int, uuid, uuid, text, text, text)      from public, anon, authenticated;
 revoke execute on function private.ai_sweep()                                                          from public, anon, authenticated;
+revoke execute on function private.ai_draft_act(uuid, text)                                            from public, anon, authenticated;
 revoke execute on function private.homework_trim(uuid)                                                 from public, anon, authenticated;
 revoke execute on function private.homework_view_kid(uuid, text)                                       from public, anon, authenticated;
 revoke execute on function private.homework_card(uuid, text)                                           from public, anon, authenticated;

@@ -338,6 +338,7 @@ const emptyLists = (b) => !!b && typeof b === 'object' && !Array.isArray(b)
       save_tutor_link: { p_link: I.link, p_kid: jordan.id, p_label: 'Pat Lee, tutor', p_language: 'en', p_expires_on: '2027-04-25', p_can_ai: true, p_active: false },
       new_tutor_token: { p_link: I.link },
       homework_ai_preview: { p_assignment: I.asg, p_kind: 'plan', p_request: null, p_answers: null },
+      homework_ai_draft: { p_assignment: I.asg, p_action: 'dismiss' },
       erase_homework: { p_kid: jordan.id, p_confirm: 'ERASE' },
     };
     const JOBS = {

@@ -68,6 +68,18 @@ exception when others then
   return sqlstate || ' ' || sqlerrm;
 end;
 $$;
+-- The same, with the error's DETAIL after a "|": a constraint's DETAIL is the whole row, which a link must never get.
+create function pg_temp.detail(p_sql text) returns text language plpgsql as $$
+declare
+  d text;
+begin
+  execute p_sql;
+  return 'ok';
+exception when others then
+  get stacked diagnostics d = pg_exception_detail;
+  return sqlstate || ' ' || sqlerrm || ' | ' || coalesce(d, '');
+end;
+$$;
 -- The element of a jsonb array whose title is p_title.
 create function pg_temp.el(j jsonb, p_title text) returns jsonb language sql immutable as $$
   select x from jsonb_array_elements(j) x where x ->> 'title' = p_title limit 1
@@ -292,6 +304,7 @@ insert into plan_try values
   ('4 minutes', '[{"title": "Read the sheet", "minutes": 4}]', 'A step is 5 to 60 minutes.'),
   ('61 minutes', '[{"title": "Read the sheet", "minutes": 61}]', 'A step is 5 to 60 minutes.'),
   ('minutes that aren''t a number', '[{"title": "Read the sheet", "minutes": "20"}]', 'A step is 5 to 60 minutes.'),
+  ('a step without minutes', '[{"title": "Read the sheet"}]', 'A step is 5 to 60 minutes.'),
   ('a 2-character title', '[{"title": "Go", "minutes": 10}]', 'A step''s title is 3 to 80 characters.'),
   ('an 81-character title', jsonb_build_array(jsonb_build_object('title', repeat('x', 81), 'minutes', 10)), 'A step''s title is 3 to 80 characters.'),
   ('a 161-character "done looks like"', jsonb_build_array(jsonb_build_object('title', 'Read the sheet', 'done_looks_like', repeat('x', 161), 'minutes', 10)),
@@ -370,6 +383,11 @@ returns jsonb language sql stable security definer as $$
 $$;
 create function pg_temp.rev(p_title text) returns int language sql stable security definer as $$
   select plan_rev from public.assignments where title = p_title
+$$;
+-- A plan as its page would send it (pg_temp.steps_of), with one step's minutes left out.
+create function pg_temp.without_minutes(p_title text, p_step text) returns jsonb language sql stable security definer as $$
+  select jsonb_agg(case when x ->> 'title' = p_step then x - 'minutes' else x end order by n)
+  from jsonb_array_elements(pg_temp.steps_of(p_title)) with ordinality t (x, n)
 $$;
 :as_anon
 select test.throws($$select plan_by_token(test.token('Robin'), pg_temp.aid('Map quiz'), '[]', 0)$$, 'Plan this one with Pat.',
@@ -472,6 +490,27 @@ select test.throws($$select save_tutor_link(null, test.person('Taylor'), 'Pat Le
                    'A link ends from today to 400 days from now.', 'a link can''t end more than 400 days out');
 select test.throws($$select save_tutor_link(null, test.person('Taylor'), 'Pat Lee, tutor', 'en', public.today_local() - 1, true, true)$$,
                    'A link ends from today to 400 days from now.', '... nor before today');
+-- A link that has ended can still be turned off, on and renamed: a change that keeps its own end date, even a past one
+-- (the page always sends the date it has). It stays ended: only a new end date (Extend) brings it back.
+begin;
+:as_owner
+update tutor_links set expires_on = public.today_local() - 1 where id = :'pat_link';
+:as_admin
+select test.is(pg_temp.run(format($$select save_tutor_link(%L, test.person('Taylor'), 'Pat Lee, old tutor', 'es', public.today_local() - 1, true, false)$$,
+                                  :'pat_link')),
+               'ok', 'a link that has ended: Off and a new name, with its own end date');
+select test.is((select label || ' | ' || language || ' | ' || (expires_on = public.today_local() - 1) || ' | ' || active from tutor_links where id = :'pat_link'),
+               'Pat Lee, old tutor | es | true | false', '... saved, and it still ends where it did');
+select test.is(pg_temp.run(format($$select save_tutor_link(%L, test.person('Taylor'), 'Pat Lee, old tutor', 'es', public.today_local() - 1, true, true)$$,
+                                  :'pat_link')),
+               'ok', '... and On again');
+:as_anon
+select test.is(tutor_view_by_token(pg_temp.ltoken('Pat Lee, old tutor')), null, '... which leaves it ended for the tutor');
+:as_admin
+select test.throws(format($$select save_tutor_link(%L, test.person('Taylor'), 'Pat Lee, tutor', 'en', public.today_local() - 2, true, true)$$, :'pat_link'),
+                   'A link ends from today to 400 days from now.', '... but a change can''t move it to another past day');
+rollback;
+:as_admin
 select test.throws($$select save_tutor_link(null, test.person('Taylor'), '', 'en', null, true, true)$$, 'A link''s name is 1 to 60 characters.',
                    'a link needs a name');
 select test.throws($$select save_tutor_link(null, test.person('Taylor'), 'Pat Lee, tutor', 'fr', null, true, true)$$, 'Choose English or Spanish.',
@@ -663,6 +702,21 @@ select test.is((select coalesce(answer, '-') || ' | ' || jsonb_array_length(qa_l
                 from pg_temp.st('Draft the poster text')),
                '- | 3 | - (-); Yes, a short title at the top. (tutor); Yes: a short title at the top. (tutor)',
                '... but can clear it: the replaced and the cleared answers stay in qa_log, with who');
+-- A step sent without its minutes is refused by plan_check, never by the table's not-null (whose DETAIL is the
+-- step's whole row: a parent's email in answer_by and qa_log), from Pat's link and from hers.
+begin;
+select homework_step(pg_temp.sid('Draft the poster text'), 'answer', 'No title needed.');
+:as_anon
+select test.is(pg_temp.detail(format('select tutor_plan_by_token(pg_temp.pat(), %L, %L, %s)', pg_temp.aid('Science project: river poster'),
+                                     pg_temp.without_minutes('Science project: river poster', 'Draft the poster text'),
+                                     pg_temp.rev('Science project: river poster'))),
+               '22023 A step is 5 to 60 minutes. | ', 'Pat''s link sends a step without its minutes: refused, and no row in the error');
+select test.is(pg_temp.detail(format('select plan_by_token(test.token(%L), %L, %L, %s)', 'Taylor', pg_temp.aid('Science project: river poster'),
+                                     pg_temp.without_minutes('Science project: river poster', 'Draft the poster text'),
+                                     pg_temp.rev('Science project: river poster'))),
+               '22023 A step is 5 to 60 minutes. | ', '... and so does her own plan');
+rollback;
+:as_admin
 
 -- Checks, Not yet and their notes, on her milestone (Wed's outline).
 :as_anon
@@ -694,6 +748,23 @@ select tutor_step_by_token(pg_temp.pat(), pg_temp.sid('Outline the poster'), 'ch
 select test.is(pg_temp.pts('Taylor', 'milestone'), 20, 'a resent check pays nothing more');
 select test.throws($$select step_by_token(test.token('Taylor'), pg_temp.sid('Outline the poster'), 'undo')$$,
                    'Only your own tick can be undone, for 15 minutes.', 'she can''t undo a checked milestone');
+-- Its points spent on a trade, the check can't be taken back: her balance never goes below zero (as void_points, §8.4).
+begin;
+:as_owner
+insert into rewards (kid_id, title, cost) values (test.person('Taylor'), 'Ice cream', 15) returning id as ice_cream \gset
+:as_anon
+select reward_by_token(test.token('Taylor'), 'ask', :'ice_cream', null, 'c0000000-0000-4000-8000-0000000000f1');
+:as_admin
+select decide_reward('c0000000-0000-4000-8000-0000000000f1', true);
+:as_anon
+select pg_temp.bal('Taylor') as bal_traded \gset
+select test.throws($$select tutor_step_by_token(pg_temp.pat(), pg_temp.sid('Outline the poster'), 'uncheck')$$,
+                   'Those points are already spent.', 'uncheck after its points were traded is refused (her balance would go below zero)');
+select test.is((select (checked_at is not null) || ' ' || pg_temp.pts('Taylor', 'milestone') || ' ' || (pg_temp.bal('Taylor') = :bal_traded)
+                       || ' ' || (pg_temp.bal('Taylor') >= 0) from pg_temp.st('Outline the poster')),
+               'true 20 true true', '... the check and its 20 points stay, and her balance is as it was');
+rollback;
+:as_anon
 set hub.now = '2026-11-03 16:10 America/New_York';
 select tutor_step_by_token(pg_temp.pat(), pg_temp.sid('Outline the poster'), 'uncheck');
 select test.is((select (checked_at is null) || ' ' || pg_temp.pts('Taylor', 'milestone') from pg_temp.st('Outline the poster')), 'true 0',
@@ -1442,6 +1513,39 @@ select test.throws($$select tutor_assignment_by_token(pg_temp.pat(), '{"title": 
                    'the page always sends an id');
 select test.throws($$select tutor_assignment_by_token(pg_temp.pat(), jsonb_build_object('id', gen_random_uuid(), 'title', 'No date'))$$,
                    'An assignment needs a title and a due date.', 'a new one needs a title and a due date');
+-- A title changed to nothing is refused by the function, never by the table's check (its DETAIL is the whole row,
+-- created_by's email in it).
+select test.is(pg_temp.detail(format('select tutor_assignment_by_token(pg_temp.pat(), %L)',
+                                     jsonb_build_object('id', 'a0000000-0000-4000-8000-000000000001', 'title', v.t))),
+               '22023 An assignment needs a title and a due date. | ', 'a title changed to ' || v.why || ' is refused, with no row in the error')
+from (values ('spaces', '   '), ('zero-width characters', U&'\200B\200B'), ('null', null)) v (why, t);
+-- And any constraint a link's write breaks answers a fixed message, never the row (a backstop: these constraints
+-- are made up for the test, one value each).
+begin;
+:as_owner
+alter table assignments add constraint t_sneaky check (title <> 'Sneaky title');
+alter table homework_steps add constraint t_sneaky check (title <> 'Sneaky step' and question is distinct from 'Sneaky question'
+                                                          and answer is distinct from 'Sneaky answer');
+alter table homework_kids add constraint t_sneaky check (cue is distinct from 'Sneaky cue');
+alter table rewards add constraint t_sneaky check (title <> 'Sneaky reward');
+alter table focus_sessions add constraint t_sneaky check (minutes <> 15);
+delete from rewards where suggested and cost is null;
+:as_anon
+select step_by_token(test.token('Taylor'), pg_temp.sid('Check it against the instructions'), 'ask', 'Which instructions?');
+select test.is(pg_temp.detail(c.call), '22023 That can''t be saved. | ', 'a constraint broken through a link: a fixed message, no row (' || c.what || ')')
+from (values
+  ('tutor_assignment_by_token', $$select tutor_assignment_by_token(pg_temp.pat(), '{"id": "a0000000-0000-4000-8000-000000000001", "title": "Sneaky title"}')$$),
+  ('tutor_plan_by_token', $$select tutor_plan_by_token(pg_temp.pat(), pg_temp.aid('Science project: river poster'),
+                             pg_temp.steps_of('Science project: river poster', 'Draft the poster text', '{"title": "Sneaky step"}'), pg_temp.rev('Science project: river poster'))$$),
+  ('tutor_step_by_token', $$select tutor_step_by_token(pg_temp.pat(), pg_temp.sid('Check it against the instructions'), 'answer', 'Sneaky answer')$$),
+  ('assignment_by_token', $$select assignment_by_token(test.token('Taylor'), 'add', gen_random_uuid(), 'Sneaky title', null, '2026-11-20')$$),
+  ('plan_by_token', $$select plan_by_token(test.token('Taylor'), pg_temp.aid('Science project: river poster'),
+                       pg_temp.steps_of('Science project: river poster', 'Draft the poster text', '{"title": "Sneaky step"}'), pg_temp.rev('Science project: river poster'))$$),
+  ('step_by_token', $$select step_by_token(test.token('Taylor'), pg_temp.sid('Draft the poster text'), 'ask', 'Sneaky question')$$),
+  ('homework_prefs_by_token', $$select homework_prefs_by_token(test.token('Taylor'), 'Sneaky cue', null, null)$$),
+  ('reward_by_token', $$select reward_by_token(test.token('Taylor'), 'suggest', null, 'Sneaky reward', gen_random_uuid())$$),
+  ('focus_by_token', $$select focus_by_token(test.token('Taylor'), 'start', gen_random_uuid(), 15, pg_temp.sid('Draft the poster text'))$$)) c (what, call);
+rollback;
 select tutor_assignment_by_token(pg_temp.pat(), '{"id": "a0000000-0000-4000-8000-000000000001", "stretch": "Which part of the river would you most like to show?"}');
 select test.is((pg_temp.asg('Science project: river poster')).stretch, 'Which part of the river would you most like to show?', 'the tutor sets the stretch question');
 select pg_temp.used(pg_temp.lid('Pat Lee, tutor')) as link_used \gset
@@ -1456,6 +1560,27 @@ select test.is(:'moved' || ' | ' || pg_temp.plan('Science project: river poster'
                'Check it against the instructions 11-08 20 check | Hand in the poster 11-10 5 turn_in',
                'a due date moved to Tue Nov 10: the step after the new last work day (Sun Nov 8, two days before) is placed again, the turn-in '
                'goes on the new due date, and the answer says how many moved');
+rollback;
+-- The turn-in follows the due date even when no other step falls after the new last work day: moved later, it
+-- isn't in Tonight a week early (ticking it would close the assignment); moved earlier, it isn't left after the due
+-- date, where every save of her plan would be refused.
+begin;
+select (tutor_assignment_by_token(pg_temp.pat(), '{"id": "a0000000-0000-4000-8000-000000000001", "due_date": "2026-11-20"}') ->> 'moved') as moved \gset
+select test.is(:'moved' || ' | ' || pg_temp.plan('Science project: river poster'),
+               '1 | Copy the requirements into your notes 11-03 10 start | Find 2 sources and save their links 11-10 20 step | Outline the poster 11-04 20 milestone | '
+               'Write the first sentence 11-08 10 step | Write one sentence 11-08 10 step | Draft the poster text 11-08 20 step | '
+               'Check it against the instructions 11-08 20 check | Hand in the poster 11-20 5 turn_in',
+               'a due date moved later (Fri Nov 13 to Fri Nov 20) with no other step behind: only the turn-in moves, to the new due date');
+rollback;
+begin;
+select (tutor_assignment_by_token(pg_temp.pat(), '{"id": "a0000000-0000-4000-8000-000000000001", "due_date": "2026-11-12"}') ->> 'moved') as moved \gset
+select test.is(:'moved' || ' | ' || to_char((pg_temp.st('Hand in the poster')).day, 'MM-DD') || ' | ' || to_char((pg_temp.st('Find 2 sources and save their links')).day, 'MM-DD'),
+               '1 | 11-12 | 11-10',
+               'a due date moved a day earlier (Thu Nov 12), every other step by the new last work day: the turn-in goes on the new due date, the rest stay');
+select test.is(pg_temp.run(format($$select plan_by_token(test.token('Taylor'), %L, %L, %s)$$, pg_temp.aid('Science project: river poster'),
+                                  pg_temp.steps_of('Science project: river poster', 'Draft the poster text', '{"title": "Draft the poster words"}'),
+                                  pg_temp.rev('Science project: river poster'))), 'ok',
+               '... so she can still rename a plain step of her plan (no turn-in after the due date)');
 rollback;
 begin;
 :as_owner
@@ -1556,6 +1681,76 @@ select test.is(:'preview',
                'links, emails, phone numbers and ids taken out; no tag can be closed from inside a field; free minutes only, never busy titles');
 select test.is(:'preview' ~* 'pat|lee\M|taylor|morgan|alex|rivera|\mroe\M|\mdoe\M|example|555|piano|practice|dentist|[0-9a-f]{8}-[0-9a-f]{4}',
                false, '... none of it is in the message');
+-- A never-send phrase or a full name the sheet wrapped onto the next line, or with a soft hyphen in it (a PDF, a web
+-- page), is still taken out; so is a never-send word pasted with a soft hyphen.
+begin;
+update household set homework_never_send = array['Example Academy', 'Example', 'Doe', 'North Field School', 'West' || U&'\00AD' || 'brook'];
+:as_owner
+insert into assignments (id, kid_id, title, due_date, details) values
+  ('a0000000-0000-4000-8000-000000000022', test.person('Taylor'), 'Map of the river', '2026-11-13',
+   E'Bring it to the office of North Field\nSchool. Ask Mrs. Ri' || U&'\00AD' || E'vera.\nNor' || U&'\00AD' || 'th Field School again, '
+   || E'with Pat\nLee and the Westbrook team.');
+:as_admin
+select test.is(substring(homework_ai_preview('a0000000-0000-4000-8000-000000000022') from E'<assignment_text>\n(.*)\n</assignment_text>'),
+               E'Bring it to the office of [name]. Ask [name].\n[name] again, with [name] and the [name] team.',
+               'a never-send phrase or a label split by a line break or a soft hyphen, a titled name with a soft hyphen, and a never-send word '
+               'pasted with one: all taken out');
+rollback;
+:as_admin
+-- A link without https:// or www.: a dotted host with a path, or one ending in a common top-level domain (in lower case).
+begin;
+:as_owner
+insert into assignments (id, kid_id, title, due_date, details) values
+  ('a0000000-0000-4000-8000-000000000022', test.person('Taylor'), 'Reading log', '2026-11-13',
+   'Read from school.example.org/reading, go.example/3xYz, classes.school.example/course/42. or the portal school.example.org. '
+   || 'Mail teacher@example.com or sam.us@example.com. Then 3.5 pages, e.g. ch.3 and/or ch.4/5, by 4 p.m.; turn in essay.docx. '
+   || 'The end.Us in St.Louis, 2.1/2.2.');
+:as_admin
+select test.is(substring(homework_ai_preview('a0000000-0000-4000-8000-000000000022') from '<assignment_text>\n(.*)\n</assignment_text>'),
+               'Read from [link], [link], [link]. or the portal [link]. Mail [email] or [email]. Then 3.5 pages, e.g. ch.3 and/or ch.4/5, by 4 p.m.; '
+               'turn in essay.docx. The end.Us in St.Louis, 2.1/2.2.',
+               'a link without https:// or www. (a host with a path, or a common top-level domain) is [link]; emails stay [email]; '
+               '3.5, e.g., ch.3, and/or, p.m., a file name, "end.Us", "St.Louis" and 2.1/2.2 stay');
+rollback;
+:as_admin
+-- A tutor link's label that names a class or a role ("Math tutor", "Pat - math tutor"): its words that are a class, a
+-- role, a title or a filler word are not names, so the assignment isn't garbled; the name, and the whole label, still go.
+begin;
+:as_owner
+insert into assignments (id, kid_id, title, subject, due_date, details) values
+  ('a0000000-0000-4000-8000-000000000022', test.person('Taylor'), 'Math: fractions', 'Math', '2026-11-13',
+   'Math homework: do the math problems, then show Pat and your tutor.');
+update tutor_links set label = 'Pat - math tutor' where label = 'Pat Lee, tutor';
+:as_admin
+select homework_ai_preview('a0000000-0000-4000-8000-000000000022') as math_preview \gset
+select test.is(substring(:'math_preview' from '<subject>.*</subject>') || ' ' || substring(:'math_preview' from '<assignment_title>.*</assignment_title>')
+               || ' ' || substring(:'math_preview' from '<assignment_text>\n(.*)\n</assignment_text>'),
+               '<subject>Math</subject> <assignment_title>Math: fractions</assignment_title> '
+               || 'Math homework: do the math problems, then show [name] and your tutor.',
+               'a label "Pat - math tutor": "Pat" is taken out; the class and "tutor" are sent');
+:as_owner
+update tutor_links set label = 'Math tutor' where label = 'Pat - math tutor';
+insert into tutor_links (kid_id, label, language, expires_on) values (test.person('Robin'), 'Spanish tutor', 'es', '2027-05-01');
+select test.is(private.scrub('Math homework for the Spanish class: ask the tutor.', test.person('Taylor')),
+               'Math homework for the Spanish class: ask the tutor.',
+               '... and labels "Math tutor" and "Spanish tutor" (another kid''s) take out no class and no "tutor"');
+select test.is(private.scrub('Show the Math tutor your work.', test.person('Taylor')), 'Show the [name] your work.',
+               '... while the whole label is still taken out');
+rollback;
+:as_admin
+-- Every word of a person's name that starts with a capital ("Roe" of "Riley de la Roe", as written: "de" and "la"
+-- are words of the class's Spanish), and a person who is no longer active, are names the hub knows.
+begin;
+:as_owner
+insert into people (name, role, sort_order) values ('Riley de la Roe', 'kid', 6), ('Avery Moe', 'helper', 7);
+update people set active = false where name = 'Avery Moe';
+select test.is(private.scrub(E'Work with Roe and Riley.\nRiley\nRoe reads de la clase. Ask Avery Moe, or Moe. Read the roe list.',
+                             test.person('Taylor')),
+               E'Work with [name] and [name].\n[name]\n[name] reads de la clase. Ask [name], or [name]. Read the roe list.',
+               'a surname on its own, a full name split across lines, and a former helper: [name]; a name''s lowercase words, '
+               'and a surname written in lower case, are kept');
+rollback;
+:as_admin
 :as_owner
 insert into homework_steps (assignment_id, pos, kind, title, done_looks_like, minutes, day, source) values
   ('a0000000-0000-4000-8000-000000000021', 1, 'start', 'Copy Pat''s questions', 'the questions in your notes', 10, '2026-11-04', 'typed'),
@@ -1802,6 +1997,43 @@ select test.is((select (ai_prev = :'draft1'::jsonb) || ' ' || (ai_draft ->> 'mod
 select test.is(tutor_view_by_token(pg_temp.pat(), 'a0000000-0000-4000-8000-000000000021') -> 'assignment' -> 'ai' ->> 'state', 'ready',
                'the link sees the draft');
 select test.is(homework_by_token(test.token('Taylor'))::text ~ 'shorter plan|unclear|claude', false, 'her My day never carries a draft');
+-- Undo and Dismiss on the AI draft (§6.10), so they stick (a reload doesn't bring a dismissed draft back, for the
+-- parents or Pat): a parent's homework_ai_draft, and the 'ai' field of Pat's tutor_assignment_by_token. Undo puts
+-- ai_prev back (one level); Dismiss clears the draft, the one before it, its time and its state.
+begin;
+:as_adult
+select test.throws($$select homework_ai_draft('a0000000-0000-4000-8000-000000000021', 'dismiss')$$, 'Only a parent can change homework.',
+                   'Sam can''t dismiss a draft');
+:as_admin
+select test.throws($$select homework_ai_draft('a0000000-0000-4000-8000-000000000021', 'erase')$$, 'Choose undo or dismiss.', 'an unknown action is refused');
+select test.throws($$select homework_ai_draft(gen_random_uuid(), 'undo')$$, 'That assignment is gone.', '... and an unknown assignment');
+select test.is(homework_ai_draft('a0000000-0000-4000-8000-000000000021', 'undo'),
+               '{"assignment_id": "a0000000-0000-4000-8000-000000000021", "changed": true}'::jsonb, 'a parent''s Undo');
+select test.is((select (ai_draft = :'draft1'::jsonb) || ' ' || (ai_prev is null) || ' ' || ai_state || ' ' || (ai_at = (:'draft1'::jsonb ->> 'at')::timestamptz)
+                from assignments where id = 'a0000000-0000-4000-8000-000000000021'),
+               'true true ready true', '... the draft before is back, with its own time (one level: nothing more to undo), still ready');
+select test.is(homework_ai_draft('a0000000-0000-4000-8000-000000000021', 'undo') ->> 'changed', 'false', 'a second Undo changes nothing');
+:as_anon
+select pg_temp.used(pg_temp.lid('Pat Lee, tutor')) as link_used \gset
+select test.is(tutor_assignment_by_token(pg_temp.pat(), '{"id": "a0000000-0000-4000-8000-000000000021", "ai": "undo"}') -> 'assignment' -> 'ai' -> 'draft',
+               :'draft1'::jsonb, 'Pat''s Undo with nothing to undo: his view, the draft as it is');
+select test.is(pg_temp.used(pg_temp.lid('Pat Lee, tutor')), :link_used, '... not counted');
+select test.throws(format($$select tutor_assignment_by_token(pg_temp.pat(), %L)$$, jsonb_build_object('id', pg_temp.aid('Book report'), 'ai', 'dismiss')),
+                   'That assignment isn''t on this link.', 'Pat''s link: another kid''s draft is refused');
+select test.throws($$select tutor_assignment_by_token(pg_temp.pat(), '{"id": "a0000000-0000-4000-8000-000000000099", "ai": "dismiss"}')$$,
+                   'That assignment isn''t on this link.', '... and so is an id not yet used (nothing is added)');
+select test.throws($$select tutor_assignment_by_token(pg_temp.pat(), '{"id": "a0000000-0000-4000-8000-000000000021", "ai": "erase"}')$$,
+                   'Choose undo or dismiss.', '... and an unknown action');
+select test.is(tutor_assignment_by_token(pg_temp.pat(), '{"id": "a0000000-0000-4000-8000-000000000021", "ai": "dismiss"}') -> 'assignment' -> 'ai',
+               'null'::jsonb, 'Pat''s Dismiss: his view has no draft');
+select test.is(pg_temp.used(pg_temp.lid('Pat Lee, tutor')), :link_used + 1, '... counted as one write');
+:as_owner
+select test.is((select coalesce(ai_draft::text, '-') || ' ' || coalesce(ai_prev::text, '-') || ' ' || coalesce(ai_at::text, '-') || ' ' || coalesce(ai_state, '-')
+                       || ' ' || coalesce(ai_stop, '-') from assignments where id = 'a0000000-0000-4000-8000-000000000021'),
+               '- - - - -', '... and it sticks: the draft, the one before, its time and its state cleared');
+:as_admin
+select test.is(homework_ai_draft('a0000000-0000-4000-8000-000000000021', 'dismiss') ->> 'changed', 'false', 'nothing left to dismiss: nothing changes');
+rollback;
 :as_owner
 set hub.now = '2026-11-03 16:34 America/New_York';
 
@@ -1849,6 +2081,45 @@ select test.is((select string_agg(title || ' ' || coalesce(details, '-') || ' ' 
                'Due 29 days ago The teacher''s newer text false ready | Due 31 days ago - true -',
                'the teacher''s text is emptied 30 days after the due date, and an unused AI draft 30 days after it was written (31, not 29)');
 select test.is((select count(*) from ai_runs where started_at::date in ('2026-08-04', '2026-08-06')), 1::bigint, 'AI run records go after 90 days (91, not 89)');
+rollback;
+
+-- Dropped assignments go 180 days after they were dropped (dropped_at), never counted from their due date:
+-- Pat's link can change a due date, and one sent with a drop must not make the row old at once (§3.3:
+-- the link drops, never deletes; §13.1 item 11: nothing Pat wrote to her is lost).
+begin;
+:as_owner
+set hub.now = '2026-05-06 12:00 America/New_York';
+insert into assignments (kid_id, title, due_date, status) values (test.person('Taylor'), 'Dropped 181 days ago', '2026-05-20', 'dropped');
+set hub.now = '2026-05-08 12:00 America/New_York';
+insert into assignments (kid_id, title, due_date, status) values (test.person('Taylor'), 'Dropped 179 days ago', '2026-04-01', 'dropped');
+set hub.now = '2026-11-03 16:34 America/New_York';
+select test.is((select string_agg(title || ' ' || to_char(dropped_at at time zone 'America/New_York', 'MM-DD'), ', ' order by title)
+                from assignments where title like 'Dropped 1%'),
+               'Dropped 179 days ago 05-08, Dropped 181 days ago 05-06', 'dropped_at is when it was dropped (the tidy trigger, as done_at)');
+insert into assignments (id, kid_id, title, due_date) values
+  ('a0000000-0000-4000-8000-000000000031', test.person('Taylor'), 'A parent''s worksheet', '2026-11-12');
+insert into homework_steps (assignment_id, pos, title, minutes, day, done_at, done_by) values
+  ('a0000000-0000-4000-8000-000000000031', 1, 'Do the first page', 20, '2026-11-03', '2026-11-03 20:00+00', 'Taylor (My day)');
+insert into homework_steps (assignment_id, pos, title, minutes, day, question, question_at, answer, answer_by, answer_at) values
+  ('a0000000-0000-4000-8000-000000000031', 2, 'Do the second page', 20, '2026-11-05', 'Which page?', '2026-11-03 20:05+00',
+   'Page 12', 'Pat Lee, tutor (tutor link)', '2026-11-03 20:10+00');
+:as_anon
+select tutor_assignment_by_token(pg_temp.pat(), '{"id": "a0000000-0000-4000-8000-000000000031", "status": "dropped", "due_date": "2000-01-01"}')
+         is not null as dropped \gset
+:as_owner
+select test.is((select a.status || ' ' || a.due_date || ' ' || (select count(*) from homework_steps s where s.assignment_id = a.id)
+                       || ' ' || (select count(*) from homework_steps s where s.assignment_id = a.id and s.answer = 'Page 12')
+                from assignments a where a.id = 'a0000000-0000-4000-8000-000000000031'),
+               'dropped 2000-01-01 2 1',
+               'Pat drops a parent''s assignment and moves its due date back to 2000: it stays, with its done step and Pat''s answer (the link never deletes)');
+select test.is((select string_agg(title, ', ' order by title) from assignments where title like 'Dropped 1%'), 'Dropped 179 days ago',
+               'dropped assignments go 180 days after they were dropped (181, not 179), whatever their due date');
+:as_admin
+update assignments set status = 'open' where id = 'a0000000-0000-4000-8000-000000000031';
+select test.is((select status || ' ' || coalesce(dropped_at::text, '-') from assignments where id = 'a0000000-0000-4000-8000-000000000031'),
+               'open -', '... opened again by a parent: no drop time');
+select test.is(test.try($$update assignments set dropped_at = now() where id = 'a0000000-0000-4000-8000-000000000031'$$), 'denied',
+               '... and a parent can''t set dropped_at directly');
 rollback;
 
 begin;
@@ -1927,8 +2198,19 @@ select test.throws($$select save_homework_plan(pg_temp.aid('Map quiz'), '[{"titl
 select test.is(pg_temp.run($$select save_homework_plan(pg_temp.aid('Map quiz'), '[{"title": "Learn the map", "minutes": 20, "day": "2026-11-04"}]', 0)$$), 'ok',
                '... a plan whose steps all have days still saves');
 :as_anon
-select test.throws($$select assignment_by_token(test.token('Robin'), 'add', gen_random_uuid(), 'Spelling', null, '2026-11-04', 10)$$,
-                   'Set a homework time first.', '... and so does Quick');
+-- + Homework with minutes (due within 3 days, so 'add' does Quick too): his homework is kept, with no plan, rather
+-- than the whole add refused with a message for a parent (writing it down is the habit, §4.1); Quick itself still
+-- says so, and works once a parent sets a homework time.
+select test.is(pg_temp.run($$select assignment_by_token(test.token('Robin'), 'add', 'a0000000-0000-4000-8000-0000000000a1', 'Spelling list', 'English', '2026-11-04', 10)$$),
+               'ok', '+ Homework with minutes and no homework time: his add is kept');
+select test.is((select a.added_by || ' ' || a.status || ' ' || (a.given_at is null) || ' ' || coalesce(pg_temp.plan('Spelling list'), 'no plan')
+                from pg_temp.asg('Spelling list') a), 'kid open true no plan', '... open, not given, with no step');
+select pg_temp.used(test.person('Robin')) as robin_used \gset
+select test.is(pg_temp.el(assignment_by_token(test.token('Robin'), 'add', 'a0000000-0000-4000-8000-0000000000a1', 'Spelling list', 'English', '2026-11-04', 10)
+                          -> 'assignments', 'Spelling list') ->> 'no_time', 'true', '... sent again: his view, the assignment with no_time');
+select test.is(pg_temp.used(test.person('Robin')), :robin_used, '... and the resend isn''t counted');
+select test.throws(format($$select assignment_by_token(test.token('Robin'), 'quick', %L, null, null, null, 10)$$, pg_temp.aid('Spelling list')),
+                   'Set a homework time first.', '... and Quick on it says "Set a homework time first." (so does Quick)');
 rollback;
 
 -- An AI draft for an assignment due in 400 days is placed inside the 8-week horizon, and stored.

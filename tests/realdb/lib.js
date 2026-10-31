@@ -378,12 +378,12 @@ async function setup(name, opts = {}) {
   return { base, browser, server, sent, google, runDigest, runCalendar, hubJobsAs, api, sql, migrate, clockNow, setClock, requests, mark, failed, sessionFor, open, settle, go, tc, texts, lastToast, titles, until, shot, check, flow, finish, errors };
 }
 
-// Homework (migration 0005, docs/v1.3-homework.md §3): its eleven tables and twenty-five public
+// Homework (migration 0005, docs/v1.3-homework.md §3): its eleven tables and twenty-six public
 // functions, as request paths. A site on a database before 0005 asks for none of them.
 const HOMEWORK_TABLES = ['homework_kids', 'homework_times', 'tutor_links', 'assignments', 'homework_steps', 'focus_sessions', 'rewards', 'reward_asks',
   'points_ledger', 'homework_use', 'ai_runs'];
 const HOMEWORK_FNS = ['homework_week', 'save_homework_kid', 'add_homework_time', 'save_homework_plan', 'homework_step', 'decide_reward', 'give_points', 'void_points',
-  'save_tutor_link', 'new_tutor_token', 'homework_ai_preview', 'erase_homework',
+  'save_tutor_link', 'new_tutor_token', 'homework_ai_preview', 'homework_ai_draft', 'erase_homework',
   'homework_by_token', 'step_by_token', 'plan_by_token', 'focus_by_token', 'reward_by_token', 'assignment_by_token', 'homework_prefs_by_token',
   'tutor_view_by_token', 'tutor_assignment_by_token', 'tutor_plan_by_token', 'tutor_step_by_token', 'homework_ai_start', 'homework_ai_finish'];
 const HOMEWORK_CALLS = new RegExp(`^/rest/v1/(${HOMEWORK_TABLES.join('|')}|rpc/(${HOMEWORK_FNS.join('|')}))$`);
