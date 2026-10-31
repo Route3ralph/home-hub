@@ -8,6 +8,8 @@
 -- After the review (on Robin's links, at the end): the description trimmed on the item and in applied by
 -- the hourly run, paused or not; a run that dies partway; two classes' items without a UID, and the
 -- moved-item step's limits; Remove and Add again; Resume and homework back on not stale.
+-- From migration 0008 (last, on Riley's link, a third kid): the first-import check when nothing is due yet (the
+-- ones to come first, then the latest past ones, each with past), as the clock moves on.
 -- The household is fixtures.sql's: Alex (admin), Sam (adult), Taylor (the kid with homework),
 -- Morgan (the helper), plus Robin, a second kid. Everything is made up: the school's host is
 -- academy.school.example (the allowed suffix is replaced below), the classes and titles too.
@@ -51,6 +53,10 @@ create function pg_temp.el(j jsonb, p_title text) returns jsonb language sql imm
 $$;
 create function pg_temp.titles(j jsonb) returns text language sql immutable as $$
   select string_agg(x ->> 'title', ' | ' order by n) from jsonb_array_elements(j) with ordinality t (x, n)
+$$;
+-- "title past" for each item of a check, in its order.
+create function pg_temp.tp(j jsonb) returns text language sql immutable as $$
+  select string_agg((x ->> 'title') || ' ' || coalesce(x ->> 'past', '-'), ' | ' order by n) from jsonb_array_elements(j) with ordinality t (x, n)
 $$;
 create function pg_temp.pat() returns text language sql stable security definer as $$
   select token from public.tutor_links where label = 'Pat Lee, tutor'
@@ -277,7 +283,9 @@ select test.is(pg_temp.keys(:'st0'::jsonb), 'check,feeds,gone,hidden,kid_id,last
 select test.is(pg_temp.titles(:'st0'::jsonb -> 'check'),
                'Read chapters 5 and 6 | Lab report: water filters | Vocabulary quiz | Poem | Essay: a person who changed a town',
                '... the first-import check shows the next five items, by due date');
-select test.is(pg_temp.keys(:'st0'::jsonb -> 'check' -> 0), 'due_date,first_day,id,last_day,subject,title', '... each with its dates');
+select test.is(pg_temp.keys(:'st0'::jsonb -> 'check' -> 0), 'due_date,first_day,id,last_day,past,subject,title', '... each with its dates (and, from 0008, past)');
+select test.is((select string_agg(x ->> 'past', ',') from jsonb_array_elements(:'st0'::jsonb -> 'check') x), 'false,false,false,false,false',
+               '... none of them past (five or more to come: as 0006 had it, past false on each)');
 select test.is(:'st0'::jsonb -> 'new', '[]'::jsonb, '... and nothing is new for her yet');
 select test.is(pg_temp.keys(:'st0'::jsonb -> 'feeds' -> 0),
                'checked,date_rule,date_shift,fails,host,id,kind,last_count,last_ok_at,last_repeats,last_stop,last_try_at,next_at,paused,stale,url_end',
@@ -945,8 +953,11 @@ select test.is(pg_temp.read('Robin', 'assignments', '[
   {"title": "Vocabulary quiz", "subject": "Spanish", "first_day": "2027-01-04", "last_day": "2027-01-04"}
 ]') ->> 'added', '3', 'the first read adds only what wasn''t made an assignment (the lab report keeps its row)');
 :as_admin
-select test.is(pg_temp.titles(school_feed_status(test.person('Robin')) -> 'check'), 'Reading log | Vocabulary quiz | Lab report | Read chapter 5',
-               'added again, the link asks the first-import check again');
+-- Four to come, so from 0008 the latest past item still on the link fills the fifth place: December's quiz, made
+-- homework before Remove (0006 showed only the four).
+select test.is(pg_temp.tp(school_feed_status(test.person('Robin')) -> 'check'),
+               'Vocabulary quiz true | Reading log false | Vocabulary quiz false | Lab report false | Read chapter 5 false',
+               'added again, the link asks the first-import check again (four to come, and the latest past one)');
 select test.is(pg_temp.titles(check_school_feed(:'robin_again'::uuid, 'end', 0) -> 'new'), 'Reading log | Vocabulary quiz | Read chapter 5',
                '... and once answered, the lab report (made an assignment before Remove) isn''t new');
 :as_anon
@@ -982,3 +993,145 @@ select save_homework_kid(test.person('Robin'), true);
 select test.is((select string_agg((x ->> 'stale') || ' ' || ((x ->> 'next_at')::timestamptz = private.now()), ',' order by x ->> 'kind')
                 from jsonb_array_elements(school_feed_status(test.person('Robin')) -> 'feeds') x),
                'false true,false true', 'homework back on: its links are due now, not stale');
+
+-- ---------------------------------------------------------------------
+-- The first-import check when nothing is due yet (migration 0008, docs/v1.3-homework.md §11.2 step 7)
+-- Read over a school break, an Assignments link may hold only past items (the reader keeps those due from 14
+-- days back). The check still shows five, so a parent can answer it: the ones to come first, earliest
+-- first; fewer than five, the latest past ones fill it, latest first; the chosen ones in date order, each
+-- with past. One link (Riley's), one list of items, and the clock moving on.
+-- ---------------------------------------------------------------------
+:as_owner
+set hub.now = '2027-01-02 10:00 America/New_York';   -- a Saturday in the winter break
+insert into people (name, role, sort_order) values ('Riley', 'kid', 6);
+-- Riley's assignments as the school lists them; p_skip leaves one out (the school took it off its site).
+create function pg_temp.riley(p_skip text default null) returns jsonb language sql immutable as $$
+  select jsonb_agg(x order by n) from jsonb_array_elements('[
+    {"uid": "k-101", "title": "Winter reading log", "subject": "English", "first_day": "2026-12-14", "last_day": "2026-12-28"},
+    {"uid": "k-102", "title": "Map of Europe", "subject": "Geography", "first_day": "2026-12-30", "last_day": "2026-12-30"},
+    {"uid": "k-103", "title": "Lab safety quiz", "subject": "Biology", "first_day": "2027-01-04", "last_day": "2027-01-04"},
+    {"uid": "k-104", "title": "Fractions worksheet", "subject": "Math", "first_day": "2027-01-05", "last_day": "2027-01-05"},
+    {"uid": "k-105", "title": "Poem recital", "subject": "English", "first_day": "2027-01-06", "last_day": "2027-01-06"},
+    {"uid": "k-106", "title": "Vocabulary list", "subject": "Spanish", "first_day": "2027-01-06", "last_day": "2027-01-06"},
+    {"uid": "k-107", "title": "Book report", "subject": "English", "first_day": "2027-01-07", "last_day": "2027-01-07"},
+    {"uid": "k-108", "title": "Science poster", "subject": "Biology", "first_day": "2027-01-08", "last_day": "2027-01-08"},
+    {"uid": "k-109", "title": "Unit test review", "subject": "Math", "first_day": "2027-01-11", "last_day": "2027-01-11"}
+  ]'::jsonb) with ordinality t (x, n)
+  where p_skip is null or x ->> 'title' <> p_skip
+$$;
+:as_admin
+select save_homework_kid(test.person('Riley'), true);
+select set_school_feed(test.person('Riley'), 'assignments', 'webcal://academy.school.example/podium/feed/iCal.aspx?z=K1k2K3k4K5k6K7k8') ->> 'id' as riley_feed \gset
+:as_service
+select test.is(pg_temp.read('Riley', 'assignments', pg_temp.riley()) ->> 'kept', '9', 'Riley''s first read: nine assignments, two of them past');
+:as_admin
+select test.is(pg_temp.tp(school_feed_status(test.person('Riley')) -> 'check'),
+               'Lab safety quiz false | Fractions worksheet false | Poem recital false | Vocabulary list false | Book report false',
+               'seven to come: the check is the five earliest of them, none past, as 0006 had it (the two past ones not on it)');
+-- A parent makes the unit test review homework now, before the check (school_item_action add).
+select school_item_action(pg_temp.iid('Unit test review'), 'add') ->> 'assignment_id' as riley_asg \gset
+
+:as_owner
+set hub.now = '2027-01-08 10:00 America/New_York';   -- Friday: two to come, one of them due today
+:as_admin
+select test.is(pg_temp.tp(school_feed_status(test.person('Riley')) -> 'check'),
+               'Poem recital true | Vocabulary list true | Book report true | Science poster false | Unit test review false',
+               'two to come (one due today, not past): those two and the three latest past ones, in date order');
+
+:as_owner
+set hub.now = '2027-01-12 10:00 America/New_York';   -- Tuesday: nothing to come
+:as_admin
+select school_feed_status(test.person('Riley')) as rs \gset
+select test.is(pg_temp.tp(:'rs'::jsonb -> 'check'),
+               'Poem recital true | Vocabulary list true | Book report true | Science poster true | Unit test review true',
+               'nothing to come: the check is the five latest, each past, in date order (the one made homework too, as before 0008)');
+select test.is(pg_temp.keys(:'rs'::jsonb -> 'check' -> 0), 'due_date,first_day,id,last_day,past,subject,title', '... each with its dates and past');
+select test.is(pg_temp.el(:'rs'::jsonb -> 'check', 'Book report') - 'id',
+               '{"title": "Book report", "subject": "English", "first_day": "2027-01-07", "last_day": "2027-01-07", "due_date": "2027-01-07", "past": true}'::jsonb,
+               '... as the school wrote it (the end date the default rule)');
+-- The school takes the poster off its site: absent from two reads, it is gone, and leaves the check.
+:as_service
+select test.is(pg_temp.read('Riley', 'assignments', pg_temp.riley('Science poster')) ->> 'missing', '1', 'Science poster is missing from a read ...');
+select test.is(pg_temp.read('Riley', 'assignments', pg_temp.riley('Science poster')) ->> 'gone', '1', '... and from the next: no longer on the school site');
+:as_admin
+select school_feed_status(test.person('Riley')) as rs \gset
+select test.is(pg_temp.tp(:'rs'::jsonb -> 'check'),
+               'Fractions worksheet true | Poem recital true | Vocabulary list true | Book report true | Unit test review true',
+               'an item gone from the school site is never on the check: the next latest takes its place');
+select test.is((select (x ->> 'last_count') || ' ' || (x ->> 'checked') || ' ' || (x ->> 'last_ok_at' is not null)
+                from jsonb_array_elements(:'rs'::jsonb -> 'feeds') x where x ->> 'kind' = 'assignments'), '7 false true',
+               '... the link read (7 items, all past), not checked yet');
+:as_adult
+select test.is(pg_temp.tp(school_feed_status(test.person('Riley')) -> 'check'),
+               'Fractions worksheet true | Poem recital true | Vocabulary list true | Book report true | Unit test review true', 'Sam reads the same check');
+:as_stranger
+select test.is(school_feed_status(test.person('Riley')), null, 'a stranger gets null');
+:as_anon
+select test.is(test.try(format('select school_feed_status(%L)', test.person('Riley'))), 'denied', 'anon can''t call it');
+select test.is(homework_by_token(test.token('Riley')) ? 'from_school', false, 'until a parent answers it, nothing from the link reaches Riley');
+:as_admin
+select check_school_feed(:'riley_feed'::uuid, 'end', 0) as rk \gset
+select test.is((:'rk'::jsonb -> 'check')::text || ' ' || (select x ->> 'checked' from jsonb_array_elements(:'rk'::jsonb -> 'feeds') x where x ->> 'kind' = 'assignments'),
+               '[] true', 'Looks right on a check of past items: the link is checked, and a checked link has no check');
+:as_anon
+select test.is(homework_by_token(test.token('Riley')) ? 'from_school', true, '... and the link reaches Riley');
+:as_admin
+select test.is(set_school_feed(test.person('Riley'), 'assignments', null), null, 'Remove Riley''s Assignments link');
+:as_owner
+select test.is((select f.checked || ' ' || (f.removed_at is not null) || ' ' || string_agg(i.title, ',')
+                from school_feeds f join school_items i on i.feed_id = f.id and i.gone_at is null where f.id = :'riley_feed' group by f.id),
+               'false true Unit test review', '... its row stays for the item made homework: removed, not checked, the item there and past');
+:as_admin
+select test.is(school_feed_status(test.person('Riley')) -> 'check', '[]'::jsonb, '... and a removed link has no check');
+
+-- ---------------------------------------------------------------------
+-- Added again after Remove: a new link, not read yet (migration 0008, docs/v1.3-homework.md §12 item 2)
+-- Remove keeps the row for what was made homework, with the old link's last read on it (0006). Adding the link again
+-- takes that row; from 0008 it starts as a new link, not read yet: the old read's time, count and repeating events go,
+-- so the page doesn't describe the old link's last read ("all 7 of its assignments are already past") as the new one's.
+-- Replace on a live link keeps its last read. The clock is still Tue Jan 12, 10:00am, the time of the last read.
+-- ---------------------------------------------------------------------
+create function pg_temp.readstate(j jsonb) returns text language sql immutable as $$
+  select concat_ws(' ', x ->> 'checked', coalesce(x ->> 'last_try_at', '-'), coalesce(x ->> 'last_ok_at', '-'), coalesce(x ->> 'last_count', '-'),
+                   coalesce(x ->> 'last_repeats', '-'), coalesce(x ->> 'last_stop', '-'), x ->> 'fails')
+  from jsonb_array_elements(j -> 'feeds') x where x ->> 'kind' = 'assignments'
+$$;
+:as_owner
+select test.is((select (last_ok_at is not null) || ' ' || last_count from school_feeds where id = :'riley_feed'), 'true 7',
+               'removed, the row still has the old link''s last read (as 0006 leaves it)');
+:as_admin
+select set_school_feed(test.person('Riley'), 'assignments', 'webcal://academy.school.example/podium/feed/iCal.aspx?z=L1l2L3l4L5l6L7l8') ->> 'id' as riley_again \gset
+select school_feed_status(test.person('Riley')) as rs \gset
+select test.is(:'riley_again', :'riley_feed', 'Add Riley''s link again: the same row');
+select test.is(pg_temp.readstate(:'rs'::jsonb), 'false - - - - - 0',
+               '... as a new link, not read yet: not checked, and none of the old link''s last read (its time, count or repeating events)');
+select test.is(pg_temp.tp(:'rs'::jsonb -> 'check'), 'Unit test review true', '... its check: the item made homework before Remove, still on the school site');
+:as_service
+select test.is((select count(*) from jsonb_array_elements(school_begin(true) -> 'feeds') x where x ->> 'feed_id' = :'riley_feed'), 1::bigint,
+               '... and Check now reads it at once, a minute after the old link''s last read or not');
+select school_finish(pg_temp.lease());
+-- The school takes the unit test review off its site: absent from two reads of the new link, it is gone.
+select test.is(pg_temp.read('Riley', 'assignments', pg_temp.riley('Unit test review')) ->> 'missing', '1', 'the new link''s first read: the unit test review missing once ...');
+select test.is(pg_temp.read('Riley', 'assignments', pg_temp.riley('Unit test review')) ->> 'gone', '1', '... and from the next: gone');
+:as_admin
+select school_feed_status(test.person('Riley')) as rs \gset
+select test.is(split_part(pg_temp.readstate(:'rs'::jsonb), ' ', 1) || ' ' || ((select x ->> 'last_ok_at' from jsonb_array_elements(:'rs'::jsonb -> 'feeds') x
+                                                                               where x ->> 'kind' = 'assignments')::timestamptz = private.now())
+               || ' ' || split_part(pg_temp.readstate(:'rs'::jsonb), ' ', 4), 'false true 7', '... the new link read now, with 7 items');
+-- Replace on the live link: the same row, its items and its last read kept.
+select set_school_feed(test.person('Riley'), 'assignments', 'webcal://academy.school.example/podium/feed/iCal.aspx?z=M1m2M3m4M5m6M7m8');
+select test.is(pg_temp.readstate(school_feed_status(test.person('Riley'))), pg_temp.readstate(:'rs'::jsonb),
+               'Replace on a live link keeps its last read (only a removed link added again starts as not read)');
+-- Remove, with the only item made homework now gone from the school site; then Add again: nothing for the check.
+select test.is(set_school_feed(test.person('Riley'), 'assignments', null), null, 'Remove it again');
+:as_owner
+select test.is((select count(*) || ' ' || bool_and(i.gone_at is not null and i.made_at is not null) || ' ' || (f.last_ok_at is not null) || ' ' || f.last_count
+                from school_feeds f join school_items i on i.feed_id = f.id where f.id = :'riley_feed' group by f.id),
+               '1 true true 7', '... the row stays for the one item made homework, gone from the school site, with the last read on it');
+:as_admin
+select set_school_feed(test.person('Riley'), 'assignments', 'webcal://academy.school.example/podium/feed/iCal.aspx?z=N1n2N3n4N5n6N7n8');
+select school_feed_status(test.person('Riley')) as rs \gset
+select test.is((:'rs'::jsonb -> 'check')::text || ' ' || pg_temp.readstate(:'rs'::jsonb), '[] false - - - - - 0',
+               'added again with every item kept gone: the check empty, and the link not read yet (so the page says "Once the Assignments link is read…")');
+:as_stranger
+select test.is(school_feed_status(test.person('Riley')), null, 'a stranger still gets null');
