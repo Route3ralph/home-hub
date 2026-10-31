@@ -22,7 +22,7 @@
 
   const HomeHub = window.HomeHub;
   const { core } = HomeHub;
-  const { q, toast, friendly, firstName, telHref, smsHref, whatsappHref, openAdd } = core;
+  const { q, toast, friendly, firstName, telHref, smsHref, whatsappHref, canShare, shareText, openAdd } = core;
   const { esc, plural } = core.G;
   const { v2 } = core;
   const { call, fmt, dates, ui } = v2;
@@ -512,6 +512,7 @@
     }).join('')}</ul>`;
   }
 
+  // WhatsApp, Share (where the browser has it; it carries the same message) and Text.
   function sendHTML(texts) {
     return `<ul class="today-send">${texts.map(({ person, text, error }) => {
       const name = firstName(person.name);
@@ -523,6 +524,7 @@
         <div class="today-send-who">${ui.personDot(person)}<b>Send ${esc(name)} their day</b></div>
         <div class="today-send-btns">
           <a class="btn" data-via="whatsapp" href="${esc(whatsappHref(person.phone, text))}" target="_blank" rel="noopener" aria-label="Send ${esc(name)} their day by WhatsApp">WhatsApp</a>
+          ${canShare() ? `<button type="button" class="btn" data-share="${esc(text)}" aria-label="Share ${esc(possessive(name))} day with another app">Share</button>` : ''}
           <a class="btn" data-via="sms" href="${esc(smsHref(person.phone, text))}" aria-label="Send ${esc(name)} their day by text">Text</a>
         </div>
         <details class="today-preview"><summary>See the message</summary><pre>${esc(text)}</pre></details>
@@ -767,6 +769,8 @@
       if (chip) { view = chip.dataset.view || chip.dataset.person; draw(st); return; }
       const pick = e.target.closest('.today-who .pchip');
       if (pick) { st.pick = pick.dataset.person; draw(st); return; }
+      const share = e.target.closest('[data-share]');
+      if (share) { shareText(share.dataset.share); return; }
       const act = e.target.closest('[data-act]');
       if (!act) return;
       if (act.dataset.act === 'add-event') openAdd('event');

@@ -9,6 +9,7 @@
 //   • day.html carries the same ?v= as index.html (CLAUDE.md says so); CLAUDE.md names the scripts
 //     index.html and day.html load, in order, and day.html's stylesheets; and every way into day.html
 //     (the ?x= day.js reads) is described in CLAUDE.md and docs/v2-design.md §4;
+//   • the README says Share shows wherever the browser has Web Share (hub.js canShare), not phones only;
 //   • docs/v2-design.md names every table, column, function and anon-callable function the
 //     migrations add, and every signature it, docs/v1.1-google-calendar.md, docs/v1.2-kitchen.md or
 //     docs/v1.3-homework.md writes out has the migration's parameter names;
@@ -213,6 +214,17 @@ check('CLAUDE.md says day.html carries the same ?v= as index.html', /day\.html[^
   check(`CLAUDE.md "Client code" and docs/v2-design.md §4 describe every way into day.html (${params.map((k) => `?${k}=`).join(', ')})`,
     params.length >= 2 && !undescribed.length, `missing ${undescribed.map((k) => `day.html?${k}=`).join(', ')}`);
 }
+
+// ---------------------------------------------------------------------
+// Share (Web Share) shows wherever the browser has navigator.share, not only on phones
+// ---------------------------------------------------------------------
+// hub.js canShare() asks the browser only. Safari on a Mac and Chrome and Edge on Windows have Web Share
+// too, so the README's line on Share mustn't promise phones only.
+const canShareSrc = (/const canShare = \(\) => ([^;\n]+);/.exec(read('assets/hub.js')) || [])[1];
+const shareLine = (/^- \*\*Share\*\*.*$/m.exec(read('README.md')) || [''])[0];
+check('README: Share shows wherever the browser has a share menu (hub.js canShare), some desktops too, not phones only',
+  canShareSrc === 'typeof navigator.share === \'function\'' && !!shareLine && !/phones? only|only on (a |your )?phones?/i.test(shareLine) && /desktop/i.test(shareLine),
+  [canShareSrc, shareLine]);
 
 // ---------------------------------------------------------------------
 // docs/v2-design.md and the migrations

@@ -163,6 +163,7 @@ To hide the page altogether, follow the design's §16.3.
 A **Message** button appears on a project's Team cards and in a schedule task's details (and on the Contractors page before v2). It drafts a note with that contractor's upcoming dates and, if sharing is on, a link to their part of the live schedule. Edit the draft, then choose how to send it:
 
 - **Text** or **WhatsApp** opens the app on your phone with the message ready to send.
+- **Share** opens your device's share menu with the same message, for WhatsApp Business or any other app. It appears wherever the browser has a share menu (phones, and some desktop browsers such as Safari on a Mac), beside every WhatsApp button that sends a ready message.
 - **Open in my email** does the same with your email app.
 - **Send email now** sends it from the hub through Resend, with your address set for replies.
 

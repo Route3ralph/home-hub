@@ -2,8 +2,8 @@
 // "Unconfirmed", phone, morning email, "Can sign in" from members), old #/family links, the add / edit
 // form (roles with explanations, colour, language, morning email on/off · time · today/tomorrow ·
 // everyone's day for parents, can sign in for parents and adults only), save_person then refresh,
-// remove_person, your own row's limits, the My day link (Copy, WhatsApp, Text, New link), members
-// see it read-only, errors, phones (390px) and dark mode.
+// remove_person, your own row's limits, the My day link (Copy, WhatsApp, Share where the browser has
+// Web Share, Text, New link), members see it read-only, errors, phones (390px) and dark mode.
 //
 // The database functions are fakes that follow supabase/migrations/0002_home_hub_v2.sql and return
 // what it returns: save_person → the people row (keys left out keep their value; id, day_token and
@@ -15,7 +15,7 @@
 // Run alone with: node tests/e2e/people.test.js
 const { chromium } = require('playwright');
 const { createHash } = require('crypto');
-const { makeDb, install, signIn } = require('./mock');
+const { makeDb, install, signIn, stubShare } = require('./mock');
 const { serve } = require('./server');
 
 let BASE = '';
@@ -225,6 +225,8 @@ const stubModule = (name, s) => `;(function () {
     for (const [name, s] of Object.entries(STUBS)) {
       await page.route(`**/assets/modules/${name}.js*`, (route) => route.fulfill({ contentType: 'application/javascript', body: opts.v1 ? '// not under test' : stubModule(name, s) }));
     }
+    // Web Share: this Chromium has none; opts.share gives the page stubShare's fake.
+    if (opts.share) await stubShare(page);
     await page.goto(BASE + (opts.path || '/#/people'));
     await page.waitForTimeout(opts.wait || 700);
     return { page, db, log, context };
@@ -286,6 +288,7 @@ const stubModule = (name, s) => `;(function () {
   // ---- My day link
   const dayLinks = async (id) => page.$$eval(`${card(id)} .ppl-day a, ${card(id)} .ppl-day button`, (as) => as.map((a) => [a.dataset.via || Object.keys(a.dataset)[0], a.getAttribute('href'), a.getAttribute('target')]));
   check('My day: Copy, WhatsApp, Text and New link (admin) for someone with a phone', same((await dayLinks(ID.jordan)).map((l) => l[0]), ['copy', 'whatsapp', 'sms', 'rotate']), JSON.stringify(await dayLinks(ID.jordan)));
+  check('My day: no Share without Web Share (navigator.share, which many desktop browsers lack)', !(await page.$('.ppl-day [data-share]')));
   const wa = decodeURIComponent((await page.getAttribute(`${card(ID.jordan)} [data-via="whatsapp"]`, 'href')).replace('https://wa.me/12015550103?text=', ''));
   check('My day: WhatsApp (core helper) to their number with the link and the Home Screen tip', (await page.getAttribute(`${card(ID.jordan)} [data-via="whatsapp"]`, 'href')).startsWith('https://wa.me/12015550103?text=')
     && wa === `Hi Jordan, here's your Home Hub day. Tap to see what's on today and tomorrow:\n${linkOf(tokenOf(ID.jordan))}\n\nAdd it to your Home Screen to keep it one tap away.`, wa);
@@ -584,6 +587,52 @@ const stubModule = (name, s) => `;(function () {
   await page.click(`${card(ID.jordan)} [data-copy]`);
   await page.waitForTimeout(300);
   check('Copy without a clipboard: a prompt with the link', same(db.confirms.slice(-1)[0], ['prompt', 'Copy Jordan\'s My day link:', linkOf(tokenOf(ID.jordan))]), JSON.stringify(db.confirms.slice(-1)[0]));
+  await page.context().close();
+
+  // =====================================================================
+  // 5b. Share, on a phone with Web Share: beside WhatsApp, with the same message
+  // =====================================================================
+  ({ page, db } = await open({ label: 'share', share: true, ctx: phone }));
+  const shares = () => page.evaluate(() => window.__shares);
+  const waText = async (id) => decodeURIComponent((await page.getAttribute(`${card(id)} [data-via="whatsapp"]`, 'href')).split('?text=')[1]);
+  check('Share: beside WhatsApp for someone with a phone; none for someone without one (no WhatsApp either)',
+    same((await dayLinks(ID.jordan)).map((l) => l[0]), ['copy', 'whatsapp', 'share', 'sms', 'rotate']) && same((await dayLinks(ID.sam)).map((l) => l[0]), ['copy', 'rotate']),
+    JSON.stringify([await dayLinks(ID.jordan), await dayLinks(ID.sam)]));
+  check('Share: a button labelled like its neighbours', (await tc(page, `${card(ID.jordan)} [data-share]`)) === 'Share'
+    && (await page.getAttribute(`${card(ID.jordan)} [data-share]`, 'type')) === 'button'
+    && (await page.getAttribute(`${card(ID.jordan)} [data-share]`, 'aria-label')) === 'Share Jordan\'s My day link with another app');
+  await page.click(`${card(ID.jordan)} [data-share]`);
+  await page.waitForTimeout(300);
+  let got = await shares();
+  check('Share: the share sheet gets exactly the WhatsApp message (the link and the Home Screen tip), from the tap', got.length === 1
+    && same(got[0].data, { text: await waText(ID.jordan) }) && got[0].data.text.includes(linkOf(tokenOf(ID.jordan))) && got[0].event === 'click', JSON.stringify(got));
+  await page.click(`${card(ID.taylor)} [data-share]`);
+  await page.waitForTimeout(300);
+  got = await shares();
+  check('Share: in Spanish for Taylor, the same as her WhatsApp', got.length === 2 && got[1].data.text === await waText(ID.taylor) && got[1].data.text.startsWith('Hola Taylor'), JSON.stringify(got[1]));
+  check('Share: a share that went through shows no toast', (await texts(page, '.toasts .toast')).length === 0, JSON.stringify(await texts(page, '.toasts .toast')));
+  // A double tap while the share sheet comes up: Web Share turns down a second share while one is open
+  // (InvalidStateError), and that is no reason to say the share failed.
+  await page.evaluate(() => { window.__shareHold = true; });
+  await page.dblclick(`${card(ID.jordan)} [data-share]`);
+  await page.waitForTimeout(300);
+  check('Share: a double tap opens one share sheet and shows no toast', (await shares()).length === 3 && (await texts(page, '.toasts .toast')).length === 0,
+    JSON.stringify([(await shares()).length, await texts(page, '.toasts .toast')]));
+  await page.evaluate(() => { window.__shareHold = false; window.__shareFinish(); });
+  await page.waitForTimeout(300);
+  check('Share: ...nor when that share goes through', (await texts(page, '.toasts .toast')).length === 0, JSON.stringify(await texts(page, '.toasts .toast')));
+  await page.evaluate(() => { window.__shareAnswer = 'AbortError'; });
+  await page.click(`${card(ID.jordan)} [data-share]`);
+  await page.waitForTimeout(300);
+  check('Share: closing the share sheet (AbortError) shows nothing', (await shares()).length === 4 && (await texts(page, '.toasts .toast')).length === 0, JSON.stringify(await texts(page, '.toasts .toast')));
+  await page.evaluate(() => { window.__shareAnswer = 'NotAllowedError'; });
+  await page.click(`${card(ID.jordan)} [data-share]`);
+  await page.waitForTimeout(300);
+  check('Share: another error says so in a red toast', (await shares()).length === 5 && (await lastToast(page)) === 'Couldn\'t open the share menu. Try again, or use WhatsApp or Text.'
+    && (await page.$$('.toasts .toast-error')).length === 1, await lastToast(page));
+  const shareBox = await page.$eval(`${card(ID.jordan)} [data-share]`, (b) => { const r = b.getBoundingClientRect(); return [Math.round(r.width), Math.round(r.height)]; });
+  check('Share: a 44px target, and the cards still fit the phone', shareBox[0] >= 44 && shareBox[1] >= 44 && await noSideScroll(page), JSON.stringify(shareBox));
+  await page.screenshot({ path: SHOTS + 'people-share-phone.png', fullPage: true });
   await page.context().close();
 
   // =====================================================================

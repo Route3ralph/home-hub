@@ -15,7 +15,8 @@
 // seen; an Undo of a tick that found Sam's purchase, or a tap on the ticked row (and for a member with no
 // person: Alex's purchase isn't his, one with no bought_by is); an add answered after leaving Food isn't sent again,
 // even from a Food page opened before the answer, tapped and killed); the saved list when the reads fail, dropped for someone else; the parents' two
-// switches (read-only for members); Send Taylor the list; the Add sheet's Shopping; the dinner read
+// switches (read-only for members); Send Taylor the list (Share beside WhatsApp where the browser has
+// Web Share); the Add sheet's Shopping; the dinner read
 // failing on its own; phones and desktops, light and dark.
 //
 // mock.js has the tables and functions (withFood, foodRpc) with the migration's rules and shapes. The
@@ -26,7 +27,7 @@
 // Run alone with: node tests/e2e/food.test.js
 const { chromium } = require('playwright');
 const { createHash } = require('crypto');
-const { makeDb, install, signIn, SUPA, withFood, mealRow, shopItem, foodRpc, calendarRow } = require('./mock');
+const { makeDb, install, signIn, SUPA, withFood, mealRow, shopItem, foodRpc, calendarRow, stubShare } = require('./mock');
 const { serve } = require('./server');
 
 let BASE = '';
@@ -179,6 +180,8 @@ const emailOf = (req) => {
     const log = [];
     await install(page, db, log, { rpc: RPC });
     if (opts.before) await opts.before(page);
+    // Web Share: this Chromium has none; opts.share gives the page stubShare's fake.
+    if (opts.share) await stubShare(page);
     // whoami() in v2 adds the caller's person.
     await page.route(`${SUPA}/rest/v1/rpc/whoami`, (route) => {
       const req = route.request();
@@ -1228,6 +1231,8 @@ const emailOf = (req) => {
     && sendA[0][1].startsWith('https://wa.me/12015550104?text=') && decodeURIComponent(sendA[0][1].split('text=')[1]).includes(link)
     && /^Hola Taylor/.test(decodeURIComponent(sendA[0][1].split('text=')[1])) && sendA[0][2].startsWith('sms:+12015550104?&body=') && decodeURIComponent(sendA[0][2].split('body=')[1]).includes(link),
   JSON.stringify(sendA));
+  check('Send Taylor the list: no Share without Web Share (navigator.share, which many desktop browsers lack)', !(await page.$('[data-ref="send"] [data-share]'))
+    && same(await page.$$eval('.food-send-btns > *', (es) => es.map((e) => e.textContent)), ['WhatsApp', 'Text']));
   await page.click('.food-seg-btn[data-value="see"]');
   await sleep(400);
   let hw = writes(db, 'household', 'PATCH').slice(-1)[0] || {};
@@ -1253,6 +1258,32 @@ const emailOf = (req) => {
   ({ page } = await open({ label: 'switches-sam', db, email: 'sam@example.com' }));
   check('members see the switches read-only', same((await segs()).map((s) => s[2]), [true, true, true]) && (await page.$eval('[data-act="wall"]', (i) => i.disabled))
     && (await text(page, '.food-set-note')) === 'Only parents can change these.');
+  await page.context().close();
+
+  // Send Taylor the list with Share, on a phone with Web Share: beside WhatsApp, the same message.
+  ({ page } = await open({ label: 'share', db: stockList(foodDb()), share: true, ctx: phone }));
+  const shares = () => page.evaluate(() => window.__shares);
+  const sendBtns = await page.$$eval('.food-send-btns > *', (es) => es.map((e) => [e.textContent, e.tagName, e.getAttribute('aria-label')]));
+  check('Share: WhatsApp, Share, Text; Share labelled like its neighbours', same(sendBtns, [['WhatsApp', 'A', 'Send Taylor the list by WhatsApp'],
+    ['Share', 'BUTTON', 'Share the list for Taylor with another app'], ['Text', 'A', 'Send Taylor the list by text']]), JSON.stringify(sendBtns));
+  await page.click('[data-ref="send"] [data-share]');
+  await sleep(300);
+  let got = await shares();
+  const waList = decodeURIComponent((await page.getAttribute('[data-ref="send"] [data-via="whatsapp"]', 'href')).split('?text=')[1]);
+  check('Share: the share sheet gets exactly the WhatsApp message (her link to #list, in Spanish), from the tap', got.length === 1 && same(got[0].data, { text: waList })
+    && got[0].data.text.includes(link) && /^Hola Taylor/.test(got[0].data.text) && got[0].event === 'click', JSON.stringify(got));
+  check('Share: no toast when it went through', (await toasts(page)).length === 0, JSON.stringify(await toasts(page)));
+  await page.evaluate(() => { window.__shareAnswer = 'AbortError'; });
+  await page.click('[data-ref="send"] [data-share]');
+  await sleep(300);
+  check('Share: closing the share sheet (AbortError) shows nothing', (await shares()).length === 2 && (await toasts(page)).length === 0, JSON.stringify(await toasts(page)));
+  await page.evaluate(() => { window.__shareAnswer = 'NotAllowedError'; });
+  await page.click('[data-ref="send"] [data-share]');
+  await sleep(300);
+  check('Share: another error says so in a red toast', (await shares()).length === 3 && (await lastToast(page)) === 'Couldn\'t open the share menu. Try again, or use WhatsApp or Text.'
+    && (await page.$$('.toasts .toast-error')).length === 1, await lastToast(page));
+  const shareBox = await page.$eval('[data-ref="send"] [data-share]', (b) => { const r = b.getBoundingClientRect(); return [Math.round(r.width), Math.round(r.height)]; });
+  check('Share: a 44px target; no sideways scroll', shareBox[0] >= 44 && shareBox[1] >= 44 && await noSideScroll(page), JSON.stringify(shareBox));
   await page.context().close();
 
   // =====================================================================
