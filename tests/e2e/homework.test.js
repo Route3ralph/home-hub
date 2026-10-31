@@ -560,12 +560,13 @@ const emailOf = (req) => {
   const rinst = writes(db, 'rewards', 'POST').slice(-1)[0] || {};
   check('+ Reward, instant: one insert with instant on, and the list marks it', same(rinst.body, { kid_id: ID.jordan, title: 'Ten minutes of music', cost: 12, active: true, instant: true, sort_order: 7 })
     && (await texts(page, '.hw-rewards li .hw-rw-line')).includes('Ten minutes of music · 12 · instant'), JSON.stringify([rinst.body, await texts(page, '.hw-rewards li .hw-rw-line')]));
-  // He cashed it in on his My day (decided by him at once): Recent says so, beside a milestone's first half.
+  // He cashed it in on his My day (decided by him at once): Recent says so, beside a milestone's first half. (Their
+  // times are after the seeded 3:05pm block and apart from each other: rows at one time are ordered by their random ids.)
   const cashedAsk = 'a5c00000-0000-4000-8000-0000000000c1';
-  db.reward_asks.push(askRow({ id: cashedAsk, kid_id: ID.jordan, title: 'Ten minutes of music', cost: 12, status: 'cashed', asked_at: at(TODAY, '15:05'),
-    decided_at: at(TODAY, '15:05'), decided_by: 'Jordan (My day)' }));
-  db.points_ledger.push(ledgerRow({ kid_id: ID.jordan, at: at(TODAY, '15:04'), day: TODAY, kind: 'milestone_done', delta: 20, note: 'Timeline draft', who: 'Jordan (My day)' }),
-    ledgerRow({ kid_id: ID.jordan, at: at(TODAY, '15:05'), day: TODAY, kind: 'trade', delta: -12, ask_id: cashedAsk, note: 'Ten minutes of music', who: 'Jordan (My day)' }));
+  db.reward_asks.push(askRow({ id: cashedAsk, kid_id: ID.jordan, title: 'Ten minutes of music', cost: 12, status: 'cashed', asked_at: at(TODAY, '15:07'),
+    decided_at: at(TODAY, '15:07'), decided_by: 'Jordan (My day)' }));
+  db.points_ledger.push(ledgerRow({ kid_id: ID.jordan, at: at(TODAY, '15:06'), day: TODAY, kind: 'milestone_done', delta: 20, note: 'Timeline draft', who: 'Jordan (My day)' }),
+    ledgerRow({ kid_id: ID.jordan, at: at(TODAY, '15:07'), day: TODAY, kind: 'trade', delta: -12, ask_id: cashedAsk, note: 'Ten minutes of music', who: 'Jordan (My day)' }));
   await page.evaluate(() => window.dispatchEvent(new Event('focus')));
   await settle(page);
   check('Recent: "−12 Ten minutes of music (instant, cashed in by Jordan)" and "+20 Ticked: Timeline draft" (half a milestone, at his tick)',

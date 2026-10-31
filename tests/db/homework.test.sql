@@ -764,6 +764,21 @@ rollback;
 
 -- Checks, Not yet and their notes, on her milestone (Wed's outline). A milestone (40) pays half when she
 -- ticks it ('milestone_done', +20 at once) and the rest when the tutor or a parent checks it ('milestone').
+-- First a mis-tap: Pat checks it before she ticked it (both halves, and the check ticks it), and takes the check
+-- back at once. Everything the check did goes: both halves and its tick, so her own tick later pays its half.
+begin;
+:as_anon
+select tutor_step_by_token(pg_temp.pat(), pg_temp.sid('Outline the poster'), 'check') ->> 'used_up' as unticked_used_up \gset
+select test.is(:'unticked_used_up' || ' ' || pg_temp.ms('Taylor') || ' ' || (select done_by from pg_temp.st('Outline the poster')),
+               'false 40 Pat Lee, tutor (tutor link)', 'a check of a milestone she hadn''t ticked ticks it and pays both halves (40)');
+set hub.now = '2026-11-03 16:03 America/New_York';
+select tutor_step_by_token(pg_temp.pat(), pg_temp.sid('Outline the poster'), 'uncheck');
+select test.is((select (checked_at is null) || ' ' || (done_at is null) || ' ' || coalesce(done_by, '-') || ' ' || pg_temp.ms('Taylor')
+                from pg_temp.st('Outline the poster')),
+               'true true - 0', '... Pat takes the check back: unchecked and unticked, and both halves go (it paid them)');
+select step_by_token(test.token('Taylor'), pg_temp.sid('Outline the poster'), 'done') ->> 'paid' as later_paid \gset
+select test.is(:'later_paid' || ' ' || pg_temp.ms('Taylor'), '20 20', '... so her own tick later pays its half');
+rollback;
 :as_anon
 select (step_by_token(test.token('Taylor'), pg_temp.sid('Outline the poster'), 'done') -> 'paid') as tick_paid \gset
 select test.is(:'tick_paid'::int || ' ' || pg_temp.pts('Taylor', 'milestone_done') || ' ' || pg_temp.pts('Taylor', 'milestone'), '20 20 0',
@@ -795,6 +810,57 @@ select test.is((select (done_at is null) || ' ' || pg_temp.pts('Taylor', 'milest
 select test.is((step_by_token(test.token('Taylor'), pg_temp.sid('Outline the poster'), 'done') -> 'paid')::int || ' ' || pg_temp.pts('Taylor', 'milestone_done'),
                '0 20', '... and her tick again pays nothing more (each half is paid once)');
 rollback;
+-- A check of it while it is unticked pays the check's half, and says "used up" only when the week's cap took
+-- something: her tick's half, kept, isn't the check's to pay.
+begin;
+:as_admin
+select homework_step(pg_temp.sid('Outline the poster'), 'undo');
+set hub.now = '2026-11-03 16:04 America/New_York';
+select (homework_step(pg_temp.sid('Outline the poster'), 'check') - 'step_id')::text as undone_check \gset
+select test.is(:'undone_check' || ' ' || pg_temp.ms('Taylor'), '{"paid": 20, "used_up": false} 40',
+               'a parent''s check after a parent''s Undo of her tick: +20 (the check''s half), not "used up" (her tick''s half was kept)');
+rollback;
+-- Her own Undo takes back only what that tick paid: after a parent's Undo kept her first half, a tick again
+-- (paying nothing) and her own Undo of it keep the half, and are never refused.
+begin;
+:as_admin
+select homework_step(pg_temp.sid('Outline the poster'), 'undo');
+:as_anon
+set hub.now = '2026-11-03 16:04 America/New_York';
+select step_by_token(test.token('Taylor'), pg_temp.sid('Outline the poster'), 'done');
+select step_by_token(test.token('Taylor'), pg_temp.sid('Outline the poster'), 'undo');
+select test.is((select (done_at is null) || ' ' || pg_temp.pts('Taylor', 'milestone_done') from pg_temp.st('Outline the poster')), 'true 20',
+               'a parent''s Undo, her tick again, and her own Undo of that tick: unticked, the first half (paid by her first tick) stays');
+rollback;
+-- A parent voids her tick's half (a correction, with a reason she sees). Her own Undo within 15 minutes then
+-- keeps the half and its void (they cancel), and a tick again pays nothing: the balance stays as the void left it.
+begin;
+select pg_temp.bal('Taylor') as bal_ticked \gset
+:as_admin
+select void_points((select id from points_ledger where kind = 'milestone_done' and step_id = pg_temp.sid('Outline the poster')), 'You did not do the outline');
+:as_anon
+select step_by_token(test.token('Taylor'), pg_temp.sid('Outline the poster'), 'undo');
+select test.is((select (done_at is null) || ' ' || pg_temp.pts('Taylor', 'milestone_done') || ' ' || pg_temp.pts('Taylor', 'void') || ' '
+                       || (pg_temp.bal('Taylor') - :bal_ticked) from pg_temp.st('Outline the poster')),
+               'true 20 -20 -20', 'her own Undo of a tick whose half a parent voided: unticked; the half and the void both stay');
+select step_by_token(test.token('Taylor'), pg_temp.sid('Outline the poster'), 'done') ->> 'paid' as voided_retick \gset
+:as_owner
+select test.is(:'voided_retick' || ' ' || pg_temp.pts('Taylor', 'milestone_done') || ' ' || (pg_temp.bal('Taylor') - :bal_ticked) || ' | '
+               || (select v.note from points_ledger v join points_ledger m on m.id = v.void_of
+                   where v.kind = 'void' and m.kind = 'milestone_done' and m.step_id = pg_temp.sid('Outline the poster')),
+               '0 20 -20 | You did not do the outline', '... and her tick again pays nothing: the parent''s correction and its reason stay');
+rollback;
+-- A Yes after her own Undo took the half: the points it held are no longer hers (decide_reward reads the balance again).
+begin;
+:as_owner
+insert into rewards (kid_id, title, cost) values (test.person('Taylor'), 'Ice pop', pg_temp.bal('Taylor')) returning id as ice_pop \gset
+:as_anon
+select reward_by_token(test.token('Taylor'), 'ask', :'ice_pop', null, 'c0000000-0000-4000-8000-0000000000f2');
+select step_by_token(test.token('Taylor'), pg_temp.sid('Outline the poster'), 'undo');
+:as_admin
+select test.throws($$select decide_reward('c0000000-0000-4000-8000-0000000000f2', true)$$, 'Not enough points yet.',
+                   'a Yes after her own Undo took the 20 back: refused (her balance never goes below zero)');
+rollback;
 select test.throws($$select tutor_step_by_token(pg_temp.pat(), pg_temp.sid('Outline the poster'), 'not_yet')$$, 'Say what''s missing.',
                    'Not yet needs a note');
 select test.throws($$select tutor_step_by_token(pg_temp.pat(), pg_temp.sid('Copy the requirements into your notes'), 'check')$$, 'Only a milestone is checked.',
@@ -804,6 +870,34 @@ select test.is((select (done_at is null) || ' ' || (not_yet_at is not null) || '
                'true true tutor', 'Not yet unticks the milestone, with the tutor''s note');
 select test.is(pg_temp.pts('Taylor', 'milestone') || ' ' || pg_temp.pts('Taylor', 'milestone_done'), '0 20',
                '... pays nothing, and never takes her first half back');
+-- Pat checks it straight after Not yet (no new tick): the check's half, not "used up"; taken back, it is as it was.
+begin;
+set hub.now = '2026-11-03 16:03 America/New_York';
+select test.is(tutor_step_by_token(pg_temp.pat(), pg_temp.sid('Outline the poster'), 'check') ->> 'used_up', 'false',
+               'a check after Not yet with no new tick: not "used up" (her first half was paid by her tick)');
+select test.is(pg_temp.ms('Taylor'), 40, '... +20, the check''s half');
+set hub.now = '2026-11-03 16:06 America/New_York';
+select tutor_step_by_token(pg_temp.pat(), pg_temp.sid('Outline the poster'), 'uncheck');
+select test.is((select (checked_at is null) || ' ' || (done_at is null) || ' ' || pg_temp.ms('Taylor') from pg_temp.st('Outline the poster')), 'true true 20',
+               '... taken back: unchecked and unticked again (the check ticked it), and her first half stays');
+rollback;
+-- Not yet, then she ticks it again (paying nothing) and undoes that tick herself: the first half Not yet kept
+-- stays; spent or not, her Undo of a tick that paid nothing takes nothing and is never refused.
+begin;
+set hub.now = '2026-11-03 16:05 America/New_York';
+select test.is((step_by_token(test.token('Taylor'), pg_temp.sid('Outline the poster'), 'done') -> 'paid')::int, 0, 'after Not yet, her tick again pays nothing');
+select step_by_token(test.token('Taylor'), pg_temp.sid('Outline the poster'), 'undo');
+select test.is((select (done_at is null) || ' ' || pg_temp.pts('Taylor', 'milestone_done') from pg_temp.st('Outline the poster')), 'true 20',
+               '... her own Undo of that tick: unticked, and the first half Not yet promised to keep stays');
+:as_owner
+insert into points_ledger (kid_id, at, day, kind, delta, note, who)
+values (test.person('Taylor'), private.now(), '2026-11-03', 'trade', -pg_temp.bal('Taylor'), 'Spent it all', 'alex@example.com');
+:as_anon
+select step_by_token(test.token('Taylor'), pg_temp.sid('Outline the poster'), 'done');
+select pg_temp.run($$select step_by_token(test.token('Taylor'), pg_temp.sid('Outline the poster'), 'undo')$$) as spent_undo \gset
+select test.is(:'spent_undo' || ' ' || pg_temp.bal('Taylor'), 'ok 0',
+               '... with her points spent, her Undo of a tick that paid nothing isn''t refused, and takes nothing');
+rollback;
 select pg_temp.el(pg_temp.el(homework_by_token(test.token('Taylor')) -> 'assignments', 'Science project: river poster') -> 'steps', 'Outline the poster') as ms \gset
 select test.is(jsonb_build_object('not_yet', :'ms'::jsonb -> 'not_yet', 'coach', :'ms'::jsonb -> 'coach', 'done', :'ms'::jsonb -> 'done'),
                '{"not_yet": true, "coach": {"by": "tutor", "text": "Add a source for the second point."}, "done": false}'::jsonb,
@@ -822,6 +916,22 @@ select tutor_step_by_token(pg_temp.pat(), pg_temp.sid('Outline the poster'), 'ch
 select test.is(pg_temp.pts('Taylor', 'milestone'), 20, 'a resent check pays nothing more');
 select test.throws($$select step_by_token(test.token('Taylor'), pg_temp.sid('Outline the poster'), 'undo')$$,
                    'Only your own tick can be undone, for 15 minutes.', 'she can''t undo a checked milestone');
+-- A parent voids the check's half; Pat then takes the check back. Nobody's take-back deletes a parent's Void:
+-- the half and its void stay (they cancel), so a check again pays nothing, and isn't "used up".
+begin;
+select pg_temp.bal('Taylor') as bal_checked \gset
+:as_admin
+select void_points((select id from points_ledger where kind = 'milestone' and step_id = pg_temp.sid('Outline the poster')), 'Checked by mistake');
+:as_anon
+set hub.now = '2026-11-03 16:05 America/New_York';
+select tutor_step_by_token(pg_temp.pat(), pg_temp.sid('Outline the poster'), 'uncheck');
+select test.is((select (checked_at is null) || ' ' || pg_temp.pts('Taylor', 'milestone') || ' ' || pg_temp.pts('Taylor', 'void') || ' '
+                       || (pg_temp.bal('Taylor') - :bal_checked) from pg_temp.st('Outline the poster')),
+               'true 20 -20 -20', 'uncheck of a check whose half a parent voided: unchecked; the half and the void both stay');
+select tutor_step_by_token(pg_temp.pat(), pg_temp.sid('Outline the poster'), 'check') ->> 'used_up' as voided_recheck \gset
+select test.is(:'voided_recheck' || ' ' || (pg_temp.bal('Taylor') - :bal_checked), 'false -20',
+               '... a check again pays nothing (the void stands) and isn''t "used up"');
+rollback;
 -- Its points spent on a trade, the check can't be taken back: her balance never goes below zero (as void_points, §8.4).
 begin;
 :as_owner
@@ -969,6 +1079,10 @@ select test.is((:'t35'::jsonb -> 'earned') || jsonb_build_object('result', :'t35
                '{"focus": 20, "on_time": 0, "capped": false, "result": "time"}'::jsonb,
                'time''s up: the block ends as ''time'' and pays at once (+20)');
 select test.is(homework_by_token(test.token('Taylor')) -> 'session', 'null'::jsonb, '... and is no longer open');
+-- Until he answers, his view carries it as answer_due (the End's own block and earned), so a reload asks again.
+select test.is(homework_by_token(test.token('Taylor')) -> 'answer_due', jsonb_build_object('block', :'t35'::jsonb -> 'block', 'earned', :'t35'::jsonb -> 'earned'),
+               '... his view''s answer_due: the block as the End answered it, his answer still to come (a reload asks again)');
+select test.is(get_person_day(test.token('Taylor')) -> 'homework' -> 'answer_due', 'true'::jsonb, '... and the card on his My day says so');
 select pg_temp.used(test.person('Taylor')) as before_answer \gset
 set hub.now = '2026-11-04 12:21 America/New_York';
 select pg_temp.stop(35, 'done', 'Taylor', 'found 2 sources') as a35 \gset
@@ -977,6 +1091,8 @@ select test.is(pg_temp.block(35) || ' | ' || (select note from pg_temp.fs(35)) |
                'done 20 20 false | found 2 sources | 20 | true',
                '... his answer after it: Step done ticks the step and keeps his note; the points stay as paid');
 select test.is(pg_temp.used(test.person('Taylor')), :before_answer + 1, '... the answer is counted as a write');
+select test.is(jsonb_build_object('view', homework_by_token(test.token('Taylor')) -> 'answer_due', 'card', get_person_day(test.token('Taylor')) -> 'homework' ? 'answer_due'),
+               '{"view": null, "card": false}'::jsonb, '... answered: nothing due, on his view or the card');
 select test.is(pg_temp.stop(35, 'more') -> 'block', :'a35'::jsonb -> 'block', 'a block already answered answers as it is');
 rollback;
 begin;
@@ -987,10 +1103,19 @@ select test.is(pg_temp.stop(36, 'time') -> 'earned' -> 'focus', '12'::jsonb, 'a 
 set hub.now = '2026-11-04 12:13 America/New_York';
 select pg_temp.stop(36, 'stopped');
 select test.is(pg_temp.block(36), 'stopped 12 12 false', '... and Stop after it keeps them');
+set hub.now = '2026-11-04 12:30 America/New_York';
+select pg_temp.start(38);
+set hub.now = '2026-11-04 12:50:01 America/New_York';
+select pg_temp.stop(38, 'time');
+set hub.now = '2026-11-04 12:51 America/New_York';
+select pg_temp.start(39);
+select test.is(homework_by_token(test.token('Taylor')) -> 'answer_due', 'null'::jsonb, 'a block paid when its ring ran out isn''t asked about once he starts another');
+select pg_temp.stop(39, 'stopped');
 set hub.now = '2026-11-05 12:30 America/New_York';
 select pg_temp.start(37);
 set hub.now = '2026-11-06 12:31 America/New_York';
 select test.is(pg_temp.stop(37, 'time') -> 'block' ->> 'points', '0', 'a ''time'' more than 24 hours after its start pays nothing');
+select test.is(homework_by_token(test.token('Taylor')) -> 'answer_due', 'null'::jsonb, '... and isn''t asked about (started more than 24 hours ago)');
 rollback;
 
 -- One open block at a time; another kid's block id is refused as an unknown one.
@@ -1212,6 +1337,11 @@ select test.is((select jsonb_build_object('has_paid', r ? 'paid', 'used_up', r -
                 from tutor_step_by_token(pg_temp.pat(), pg_temp.sid('Percent set 1'), 'check') r),
                '{"has_paid": false, "used_up": false}'::jsonb, 'a check from the link: never its points');
 select test.is(pg_temp.ms('Taylor'), 240, 'the cap starts again on Monday: +40');
+select test.is((pg_temp.asg('Percent drill')).status, 'done', '... the check ticked its only step: the lesson is done');
+set hub.now = '2026-11-23 16:05 America/New_York';
+select tutor_step_by_token(pg_temp.pat(), pg_temp.sid('Percent set 1'), 'uncheck');
+select test.is((select a.status || ' ' || (s.done_at is null) || ' ' || pg_temp.ms('Taylor') from pg_temp.asg('Percent drill') a, pg_temp.st('Percent set 1') s),
+               'open true 200', '... Pat takes that check back: unticked, the lesson open again, and its 40 gone');
 rollback;
 :as_owner
 set hub.now = '2026-11-03 16:30 America/New_York';
@@ -1255,6 +1385,21 @@ select test.is(homework_by_token(test.token('Taylor')) -> 'goal',
                jsonb_build_object('next', jsonb_build_object('id', pg_temp.rid('A new book'), 'title', 'A new book', 'cost', 150, 'need', 88),
                                   'now', jsonb_build_object('id', pg_temp.rid('Extra game time'), 'title', 'Extra game time', 'cost', 15, 'instant', false)),
                '... the bar counts her free points (122 less 60 held): 88 to A new book, and Extra game time now');
+-- A reward she asked for is never the one the bar says she is saving for: its points are held already.
+begin;
+:as_admin
+insert into rewards (kid_id, title, cost, sort_order) values (test.person('Taylor'), 'Kite', 40, 6);
+:as_anon
+select reward_by_token(test.token('Taylor'), 'ask', pg_temp.rid('Kite'), null, 'c0000000-0000-4000-8000-0000000000f3');
+select test.is(homework_by_token(test.token('Taylor')) -> 'goal' -> 'next',
+               jsonb_build_object('id', pg_temp.rid('A new book'), 'title', 'A new book', 'cost', 150, 'need', 128),
+               'she asks for a Kite (40) her free points then fall short of (22 left): the bar''s next is A new book (128 to go), never the Kite');
+select test.is(get_person_day(test.token('Taylor')) -> 'homework' -> 'goal' -> 'next' ->> 'title', 'A new book', '... on her card too');
+:as_admin
+update rewards set active = false where title = 'A new book';
+:as_anon
+select test.is(homework_by_token(test.token('Taylor')) -> 'goal' -> 'next', 'null'::jsonb, '... and with nothing else above her free points, no next');
+rollback;
 select pg_temp.used(test.person('Taylor')) as before_resend \gset
 select reward_by_token(test.token('Taylor'), 'ask', pg_temp.rid('Choose Friday''s dinner'), null, 'c0000000-0000-4000-8000-000000000001');
 select reward_by_token(test.token('Taylor'), 'ask', pg_temp.rid('Choose Friday''s dinner'), null, 'c0000000-0000-4000-8000-000000000009');
@@ -1385,7 +1530,7 @@ select test.is(homework_by_token(test.token('Taylor')) -> 'goal' -> 'now',
                '... the bar names it (the dearest she can get now; at the same cost, the instant one first)');
 select pg_temp.bal('Taylor') as bal_cash \gset
 select pg_temp.used(test.person('Taylor')) as used_cash \gset
-select reward_by_token(test.token('Taylor'), 'cash', pg_temp.rid('Game time now'), null, 'c1000000-0000-4000-8000-000000000001') as cashed \gset
+select reward_by_token(test.token('Taylor'), 'cash', pg_temp.rid('Game time now'), null, 'c1000000-0000-4000-8000-000000000001', 15) as cashed \gset
 select test.is((select status || ' ' || cost || ' ' || decided_by || ' ' || (decided_at = asked_at) from pg_temp.ask('Game time now')),
                'cashed 15 Taylor (My day) true', 'cash: the ask is decided at once, by her (no parent waits on it)');
 select test.is(pg_temp.bal('Taylor'), :bal_cash - 15, '... its points taken at once (a trade of −15)');
@@ -1396,19 +1541,33 @@ select test.is((select ask_id::text || ' ' || note from points_ledger where kind
 select test.is(:'cashed'::jsonb -> 'points' -> 'cash_left', '1'::jsonb, '... 1 left today (the answer carries her view)');
 select test.is((select x ->> 'status' from jsonb_array_elements(:'cashed'::jsonb -> 'asks') x where x ->> 'title' = 'Game time now'), 'cashed',
                '... and her screen lists it with her decided asks');
-select reward_by_token(test.token('Taylor'), 'cash', pg_temp.rid('Game time now'), null, 'c1000000-0000-4000-8000-000000000001');
+select reward_by_token(test.token('Taylor'), 'cash', pg_temp.rid('Game time now'), null, 'c1000000-0000-4000-8000-000000000001', 15);
 select test.is(pg_temp.n_asks('Game time now') || ' ' || pg_temp.bal('Taylor') || ' ' || pg_temp.used(test.person('Taylor')),
                '1 ' || (:bal_cash - 15) || ' ' || (:used_cash + 1), 'a resent cash (same key) changes nothing and isn''t counted again');
-select test.throws($$select reward_by_token(test.token('Taylor'), 'cash', pg_temp.rid('Big instant'), null, gen_random_uuid())$$, 'Not enough points yet.',
-                   'cash needs her free points to cover it');
-select test.throws($$select reward_by_token(test.token('Taylor'), 'cash', pg_temp.rid('Extra game time'), null, gen_random_uuid())$$, 'Ask a parent for that one.',
-                   'a reward that isn''t instant is asked for, never cashed');
-select test.throws($$select reward_by_token(test.token('Robin'), 'cash', pg_temp.rid('Game time now'), null, gen_random_uuid())$$, 'That reward isn''t on your list.',
-                   'another kid''s reward can''t be cashed');
-select test.throws($$select reward_by_token(test.token('Robin'), 'cash', pg_temp.rid('Game time now'), null, 'c1000000-0000-4000-8000-000000000001')$$,
-                   'That reward isn''t on your list.', '... nor her cash-in''s key used');
-select reward_by_token(test.token('Taylor'), 'cash', pg_temp.rid('Game time now'), null, 'c1000000-0000-4000-8000-000000000002');
+-- A cash-in names the price his button showed (p_cost): no parent sees it first, so a price changed since (or
+-- none sent) is refused, and nothing is taken.
+:as_admin
+update rewards set cost = 30 where title = 'Game time now';
+:as_anon
+select pg_temp.bal('Taylor') as bal_priced \gset
+select test.throws($$select reward_by_token(test.token('Taylor'), 'cash', pg_temp.rid('Game time now'), null, gen_random_uuid(), 15)$$,
+                   'That reward''s price changed.', 'a cash-in at the price his screen showed (15) after a parent changed it to 30: refused');
 select test.throws($$select reward_by_token(test.token('Taylor'), 'cash', pg_temp.rid('Game time now'), null, gen_random_uuid())$$,
+                   'That reward''s price changed.', '... and one that names no price');
+select test.is(pg_temp.bal('Taylor') || ' ' || pg_temp.n_asks('Game time now'), :bal_priced || ' 1', '... nothing taken, no new cash-in');
+:as_admin
+update rewards set cost = 15 where title = 'Game time now';
+:as_anon
+select test.throws($$select reward_by_token(test.token('Taylor'), 'cash', pg_temp.rid('Big instant'), null, gen_random_uuid(), 1000)$$, 'Not enough points yet.',
+                   'cash needs her free points to cover it');
+select test.throws($$select reward_by_token(test.token('Taylor'), 'cash', pg_temp.rid('Extra game time'), null, gen_random_uuid(), 15)$$, 'Ask a parent for that one.',
+                   'a reward that isn''t instant is asked for, never cashed');
+select test.throws($$select reward_by_token(test.token('Robin'), 'cash', pg_temp.rid('Game time now'), null, gen_random_uuid(), 15)$$, 'That reward isn''t on your list.',
+                   'another kid''s reward can''t be cashed');
+select test.throws($$select reward_by_token(test.token('Robin'), 'cash', pg_temp.rid('Game time now'), null, 'c1000000-0000-4000-8000-000000000001', 15)$$,
+                   'That reward isn''t on your list.', '... nor her cash-in''s key used');
+select reward_by_token(test.token('Taylor'), 'cash', pg_temp.rid('Game time now'), null, 'c1000000-0000-4000-8000-000000000002', 15);
+select test.throws($$select reward_by_token(test.token('Taylor'), 'cash', pg_temp.rid('Game time now'), null, gen_random_uuid(), 15)$$,
                    'That''s all the instant rewards for today. Ask a parent for this one.', 'at most 2 instant rewards a day (the parents'' limit)');
 select test.is((select jsonb_build_object('can_cash', x -> 'can_cash', 'can_ask', x -> 'can_ask')
                 from jsonb_array_elements(homework_by_token(test.token('Taylor')) -> 'rewards') x where x ->> 'title' = 'Game time now'),
@@ -1422,7 +1581,7 @@ select test.is(homework_by_token(test.token('Taylor')) -> 'points' -> 'cash_left
 :as_admin
 update homework_kids set instant_day = 0 where kid_id = test.person('Taylor');
 :as_anon
-select test.throws($$select reward_by_token(test.token('Taylor'), 'cash', pg_temp.rid('Game time now'), null, gen_random_uuid())$$,
+select test.throws($$select reward_by_token(test.token('Taylor'), 'cash', pg_temp.rid('Game time now'), null, gen_random_uuid(), 15)$$,
                    'That''s all the instant rewards for today. Ask a parent for this one.', 'the parents'' limit set to 0: no instant rewards');
 rollback;
 
@@ -1573,7 +1732,7 @@ rollback;
 :as_anon
 select homework_by_token(test.token('Taylor')) as kv \gset
 select test.is(pg_temp.keys(:'kv'::jsonb),
-               'as_of,asks,assignments,earlier,goal,language,load,me,now,on_time,pace,points,recent,rewards,server_now,session,today,tonight,week,window',
+               'answer_due,as_of,asks,assignments,earlier,goal,language,load,me,now,on_time,pace,points,recent,rewards,server_now,session,today,tonight,week,window',
                'her view: exactly the keys of §3.4');
 select test.is(pg_temp.keys(:'kv'::jsonb -> 'me'), 'cue,first_name,if_stuck,length,lengths,points_on,tutor', '... me');
 select test.is((:'kv'::jsonb -> 'me') - 'cue' - 'if_stuck', '{"first_name": "Taylor", "tutor": "Pat", "length": 25, "lengths": [10, 15, 20, 25], "points_on": true}'::jsonb,
@@ -2503,3 +2662,56 @@ select test.is((select max(to_date(substr(l, 5, 10), 'YYYY-MM-DD')) from regexp_
                'free_time covers at most 28 days');
 :as_owner
 update assignments set due_date = '2026-11-13' where title = 'Book report';
+
+-- ---------------------------------------------------------------------
+-- Two sessions at once: a parent's Yes waits for any other writer of her balance (they all take her
+-- homework_kids row's lock first) and reads the balance after it, so a Void (or her Undo) committed meanwhile
+-- is counted, and her balance never goes below zero.
+-- ---------------------------------------------------------------------
+:as_owner
+set hub.now = '2026-11-20 16:00 America/New_York';
+insert into points_ledger (id, kid_id, at, day, kind, delta, note, who)
+values ('e5000000-0000-4000-8000-000000000001', test.person('Taylor'), private.now(), '2026-11-20', 'given', 20, 'Helped at the race', 'alex@example.com');
+-- A reward that costs exactly her free points, asked for: the Yes is fine until the 20 are voided.
+insert into rewards (id, kid_id, title, cost)
+select 'e5000000-0000-4000-8000-000000000002', test.person('Taylor'), 'Race day treat', b.balance - b.held from private.points_balance(test.person('Taylor')) b;
+:as_anon
+select reward_by_token(test.token('Taylor'), 'ask', 'e5000000-0000-4000-8000-000000000002', null, 'e5000000-0000-4000-8000-000000000003') is not null;
+:as_owner
+select test.dblink_connect('race', format('dbname=%s host=%s port=%s user=postgres', current_database(),
+                                          split_part(current_setting('unix_socket_directories'), ',', 1), current_setting('port')));
+select test.dblink_exec('race', $$set statement_timeout = 10000$$);
+select test.dblink_exec('race', $$set hub.now = '2026-11-20 16:00 America/New_York'$$);
+select test.dblink_exec('race', $q$create function pg_temp.yes(p uuid) returns text language plpgsql as $f$
+begin
+  return public.decide_reward(p, true) ->> 'balance';
+exception when others then
+  return sqlerrm;
+end $f$$q$);
+select test.dblink_exec('race', $$set request.jwt.claims = '{"role": "authenticated", "email": "alex@example.com"}'$$);
+select test.dblink_exec('race', $$set role authenticated$$);
+-- Waits (at most 5 seconds) until the other session's statement is waiting on a row lock.
+create function pg_temp.wait_for_lock(p_like text) returns boolean language plpgsql as $$
+begin
+  for i in 1 .. 100 loop
+    if exists (select 1 from pg_stat_activity a where a.wait_event_type = 'Lock' and a.query like p_like) then
+      return true;
+    end if;
+    perform pg_sleep(0.05);
+  end loop;
+  return false;
+end;
+$$;
+begin;
+:as_admin
+select void_points('e5000000-0000-4000-8000-000000000001', 'Not at the race after all') ->> 'balance' is not null;
+:as_owner
+select test.dblink_send_query('race', $$select pg_temp.yes('e5000000-0000-4000-8000-000000000003')$$);
+select test.is(pg_temp.wait_for_lock('%pg_temp.yes%'), true, 'while a Void holds her row, a parent''s Yes from another session waits for it');
+commit;
+select (select x from test.dblink_get_result('race') as t (x text)) as race_yes \gset
+select count(*) from test.dblink_get_result('race') as t (x text);
+select test.dblink_disconnect('race');
+select test.is(:'race_yes', 'Not enough points yet.', '... and, the Void committed, reads her balance after it: refused, "Not enough points yet."');
+select test.is((select status from reward_asks where id = 'e5000000-0000-4000-8000-000000000003') || ' ' || (pg_temp.bal('Taylor') >= 0), 'waiting true',
+               '... the ask still waits, and her balance never went below zero');

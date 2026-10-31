@@ -2517,7 +2517,8 @@ const HW_AUDIO_DROP = `(${HW_STUBS})(); (${HW_CLOCKED})(); (${HW_WAKE_DROP})();`
     await page.click('[data-act="hw-cash-yes"]');
     await until(() => calls(db, 'reward_by_token').length === 1 && !!calls(db, 'reward_by_token')[0].done);
     const cash = calls(db, 'reward_by_token')[0].body;
-    check('Yes: reward_by_token cash, with the reward and the phone\'s key', same(Object.assign({}, cash, { p_key: 'k' }), { p_token: JORDAN, p_action: 'cash', p_reward: H.game, p_key: 'k' })
+    check('Yes: reward_by_token cash, with the reward, the price his button showed and the phone\'s key',
+      same(Object.assign({}, cash, { p_key: 'k' }), { p_token: JORDAN, p_action: 'cash', p_reward: H.game, p_key: 'k', p_cost: 15 })
       && UUID.test(cash.p_key), JSON.stringify(cash));
     check('cashed on the spot: "Got it: … Tell a parent.", ★ 103, "Got it" with his decided asks, and a trade of −15 the parents see',
       (await hwToast(page)) === 'Got it: 15 minutes of extra game time. Tell a parent.' && await until(async () => (await hwText(page, '.hw-balance-big')) === '★ 103')
@@ -2570,17 +2571,247 @@ const HW_AUDIO_DROP = `(${HW_STUBS})(); (${HW_CLOCKED})(); (${HW_WAKE_DROP})();`
     check('its ring runs out on the day view: his view read once, and the block paid at once (end, time)', calls(db, 'homework_by_token').length === 1
       && same(calls(db, 'focus_by_token')[0].body, { p_token: JORDAN, p_action: 'end', p_session: hid(98), p_result: 'time' })
       && db.points_ledger.filter((l) => l.session_id === hid(98)).reduce((n, l) => n + l.delta, 0) === 30, JSON.stringify(db.calls.map((c) => [c.name, c.body.p_action])));
-    check('... the card asks how it went, with the new balance', await until(async () => (await hwText(page, '.hw-card a.hw-card-focus')) === 'Your block is over. How did it go? ›'
-      && (await hwText(page, '.hw-card-points')) === '★ 148'), await hwText(page, '.hw-card'));
+    check('... the card asks how it went, and celebrates there: "+30", counting up to the new balance',
+      await until(async () => (await hwText(page, '.hw-card a.hw-card-focus')) === 'Your block is over. How did it go? ›' && (await hwText(page, '.hw-card .hw-plus')) === '+30')
+      && await until(async () => { await page.clock.runFor(100); return (await hwText(page, '.hw-card-points')) === '★ 148'; }), await hwText(page, '.hw-card'));
     await page.click('.hw-card a.hw-card-focus');
     await page.waitForSelector('.hw-end [data-act="hw-end"]');
-    check('... and #focus: "+20 · 20 minutes · +10 on time", "+30", How did it go?', (await hwText(page, '.hw-points-line')) === '+20 · 20 minutes · +10 on time'
-      && (await hwText(page, '.hw-end .hw-plus')) === '+30' && (await hwText(page, '.hw-end h2')) === 'Time. How did it go?', await hwText(page, '.hw-end'));
+    check('... and #focus: "+20 · 20 minutes · +10 on time", How did it go? (the "+30" was the card\'s, not played again)',
+      (await hwText(page, '.hw-points-line')) === '+20 · 20 minutes · +10 on time'
+      && !(await page.$('.hw-end .hw-plus')) && (await hwText(page, '.hw-end h2')) === 'Time. How did it go?', await hwText(page, '.hw-end'));
     await page.click('.hw-end [data-act="hw-end"][data-result="done"]');
     await until(() => calls(db, 'focus_by_token').length === 2 && !!calls(db, 'focus_by_token')[1].done);
     check('... Step done: his answer, a second end; the step ticked, the points as paid',
       same(calls(db, 'focus_by_token')[1].body, { p_token: JORDAN, p_action: 'end', p_session: hid(98), p_result: 'done' }) && !!db.homework_steps.find((x) => x.id === H.m1).done_at
       && db.points_ledger.filter((l) => l.session_id === hid(98)).length === 2 && await until(async () => (await hwText(page, '.hw-end h2')) === 'Block finished.'), await hwText(page, '.hw-end'));
+    await page.context().close();
+  }
+
+  // =====================================================================
+  // 19c. Review fixes to 19b: the confirm tap never under the first one (a double tap spends nothing), a cash-in's
+  //      key kept until it is answered, a refusal read again, the price his button showed, the bar never on a reward
+  //      he asked for; the celebration's +N is what the End paid, played where he is (the card too) and never later;
+  //      a reload between the paid End and his answer still asks how it went; the bar on the end screen and the break
+  // =====================================================================
+  const instantDb = () => { const d = hwDb(); d.rewards.find((r) => r.id === H.game).instant = true; return d; };
+  const rewardRows = (pg) => pg.$$eval('.hw-reward', (rs) => rs.map((r) => r.textContent.replace(/\s+/g, ' ').trim()));
+  const centre = (pg, sel) => pg.$eval(sel, (e) => { const r = e.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; });
+  {
+    ({ page, db } = await open({ label: 'hw-cash-dbl', path: `/day.html?t=${JORDAN}#points`, db: instantDb(), device: HW_DEVICE, init: HW_STUBS, ctx: phone() }));
+    await page.waitForSelector('.hw-balance-big');
+    const at = await centre(page, `.hw-reward[data-reward="${H.game}"] [data-act="hw-cash"]`);
+    await page.mouse.dblclick(at.x, at.y);
+    await page.waitForTimeout(600);
+    check('a double tap on "Get it now" only opens its "Yes, get it · −15": nothing is sent (the Yes waits a moment before it takes a tap)',
+      !calls(db, 'reward_by_token').length && (await hwText(page, '[data-act="hw-cash-yes"]')) === 'Yes, get it · −15' && (await hwText(page, '.hw-balance-big')) === '★ 118',
+      `calls=${calls(db, 'reward_by_token').length} ${await hwText(page, '.hw-balance-big')}`);
+    await page.click('[data-act="hw-cash-no"]');
+    const again = await centre(page, `.hw-reward[data-reward="${H.game}"] [data-act="hw-cash"]`);
+    await page.touchscreen.tap(again.x, again.y);
+    await page.touchscreen.tap(again.x, again.y);
+    await page.waitForTimeout(600);
+    check('... and so do two quick taps on a touch screen', !calls(db, 'reward_by_token').length && db.reward_asks.every((q) => q.status !== 'cashed'),
+      `calls=${calls(db, 'reward_by_token').length}`);
+    await page.click('[data-act="hw-cash-yes"]');
+    check('... a deliberate Yes then cashes it', await until(() => calls(db, 'reward_by_token').length === 1 && !!calls(db, 'reward_by_token')[0].done)
+      && await until(async () => (await hwText(page, '.hw-balance-big')) === '★ 103'));
+    await page.context().close();
+  }
+  {
+    // A refusal (a parent set today's instant rewards to 0 after #points was drawn): his view is read again.
+    ({ page, db } = await open({ label: 'hw-cash-refused', path: `/day.html?t=${JORDAN}#points`, db: instantDb(), device: HW_DEVICE, init: HW_STUBS, ctx: phone(),
+      allowConsole: /status of 4\d\d/ }));
+    await page.waitForSelector('.hw-balance-big');
+    db.homework_kids.find((k) => k.kid_id === P.jordan).instant_day = 0;
+    const reads = calls(db, 'homework_by_token').length;
+    await page.click(`.hw-reward[data-reward="${H.game}"] [data-act="hw-cash"]`);
+    await page.click('[data-act="hw-cash-yes"]');
+    check('a refused cash-in says why ("That\'s all the instant rewards for today…")', (await hwToast(page)) === "That's all the instant rewards for today. Ask a parent for this one.");
+    check('... and his view is read again: no "Get it now" left, "No more instant rewards today", the reward can be asked for',
+      await until(async () => calls(db, 'homework_by_token').length === reads + 1 && (await rewardRows(page))[0] === '15 minutes of extra game time · 15 · instant Ask')
+      && (await hwText(page, '.hw-cash-none')) === 'No more instant rewards today: ask a parent.', JSON.stringify(await rewardRows(page)));
+    await page.context().close();
+  }
+  {
+    // The price his button showed: a parent changes it meanwhile; the cash-in is refused and the new price drawn.
+    ({ page, db } = await open({ label: 'hw-cash-price', path: `/day.html?t=${JORDAN}#points`, db: instantDb(), device: HW_DEVICE, init: HW_STUBS, ctx: phone(),
+      allowConsole: /status of 4\d\d/ }));
+    await page.waitForSelector('.hw-balance-big');
+    await page.click(`.hw-reward[data-reward="${H.game}"] [data-act="hw-cash"]`);
+    db.rewards.find((r) => r.id === H.game).cost = 30;
+    await page.click('[data-act="hw-cash-yes"]');
+    check('a price changed since his screen showed it: refused ("That reward\'s price changed."), nothing taken',
+      (await hwToast(page)) === "That reward's price changed. Look again before you get it." && calls(db, 'reward_by_token')[0].body.p_cost === 15
+      && !db.reward_asks.some((q) => q.status === 'cashed' && q.reward_id === H.game && q.cost === 30), await text(page, '.toasts'));
+    check('... and the new price drawn', await until(async () => (await rewardRows(page))[0] === '15 minutes of extra game time · 30 · instant Get it now'),
+      JSON.stringify(await rewardRows(page)));
+    await page.context().close();
+  }
+  {
+    // A cash-in whose answer is lost, and the read after it too: Cancel and Get it now again keep its key, so the
+    // tap again finds the cash-in it made.
+    ({ page, db } = await open({ label: 'hw-cash-lost', path: `/day.html?t=${JORDAN}#points`, db: instantDb(), device: HW_DEVICE, init: HW_STUBS, ctx: phone(),
+      allowConsole: /ERR_INTERNET_DISCONNECTED|Failed to load/ }));
+    await page.waitForSelector('.hw-balance-big');
+    db.loseAnswer = { reward_by_token: 1, homework_by_token: 1 };
+    await page.click(`.hw-reward[data-reward="${H.game}"] [data-act="hw-cash"]`);
+    await page.click('[data-act="hw-cash-yes"]');
+    await until(() => calls(db, 'reward_by_token').length === 1 && !!calls(db, 'reward_by_token')[0].done && db.loseAnswer.homework_by_token === 0);
+    await page.waitForTimeout(300);
+    await page.click('[data-act="hw-cash-no"]');
+    await page.evaluate(() => { location.hash = '#homework'; });
+    await page.waitForSelector('.hw-tonight');
+    await page.evaluate(() => { location.hash = '#points'; });
+    await page.waitForSelector(`.hw-reward[data-reward="${H.game}"] [data-act="hw-cash"]`);
+    await page.click(`.hw-reward[data-reward="${H.game}"] [data-act="hw-cash"]`);
+    await page.click('[data-act="hw-cash-yes"]');
+    await until(() => calls(db, 'reward_by_token').length === 2 && !!calls(db, 'reward_by_token')[1].done);
+    const keys = calls(db, 'reward_by_token').map((c) => c.body.p_key);
+    check('a lost answer, Cancel, another view, Get it now and Yes again: the same key, one cash-in, one trade of −15',
+      keys[0] === keys[1] && db.reward_asks.filter((q) => q.status === 'cashed').length === 1 && db.points_ledger.filter((l) => l.kind === 'trade' && l.delta === -15).length === 1
+      && (await hwToast(page)) === 'Got it: 15 minutes of extra game time. Tell a parent.', `keys same=${keys[0] === keys[1]} cashed=${db.reward_asks.filter((q) => q.status === 'cashed').length}`);
+    await page.context().close();
+  }
+  {
+    // A cash-in whose answer is lost: the read after it shows it landed ("Got it"), and no Yes is left to tap twice.
+    const d = instantDb();
+    d.loseAnswer = { reward_by_token: 1 };
+    ({ page, db } = await open({ label: 'hw-cash-landed', path: `/day.html?t=${JORDAN}#points`, db: d, device: HW_DEVICE, init: HW_STUBS, ctx: phone(),
+      allowConsole: /ERR_INTERNET_DISCONNECTED|Failed to load/ }));
+    await page.waitForSelector('.hw-balance-big');
+    await page.click(`.hw-reward[data-reward="${H.game}"] [data-act="hw-cash"]`);
+    await page.click('[data-act="hw-cash-yes"]');
+    check('a lost answer: his view is read again and shows the cash-in landed ("Got it", ★ 103), with no Yes left',
+      await until(async () => (await hwText(page, '.hw-balance-big')) === '★ 103' && /15 minutes of extra game time · 15 · Got it/.test(await hwText(page, '.hw-decided')))
+      && !(await page.$('[data-act="hw-cash-yes"]')) && /Got it: 15 minutes of extra game time\. Tell a parent\./.test(await text(page, '.toasts'))
+      && db.reward_asks.filter((q) => q.status === 'cashed').length === 1, `${await hwText(page, '.hw-balance-big')} | ${await text(page, '.toasts')}`);
+    await page.context().close();
+  }
+  {
+    // The bar never names a reward he asked for: its points are held, waiting for a parent's Yes.
+    const d = hwDb();
+    d.rewards.find((r) => r.id === H.game).active = false;
+    d.rewards.find((r) => r.id === H.dinner).cost = 100;
+    ({ page, db } = await open({ label: 'hw-goal-asked', path: `/day.html?t=${JORDAN}#points`, db: d, device: HW_DEVICE, init: HW_STUBS, ctx: phone() }));
+    await page.waitForSelector('.hw-balance-big');
+    await page.click(`.hw-reward[data-reward="${H.dinner}"] [data-act="hw-ask-reward"]`);
+    await until(() => calls(db, 'reward_by_token').length === 1 && !!calls(db, 'reward_by_token')[0].done);
+    check('after he asks for the dinner (100 of his 118), the bar is toward A new book (132 to go), never the dinner',
+      await until(async () => (await hwText(page, '.hw-head .plan-goal-text')) === '132 points to A new book'), await hwText(page, '.hw-head .plan-goal'));
+    await page.goto(`${BASE}/day.html?t=${JORDAN}`);
+    await page.waitForSelector('.hw-card');
+    check('... on the card too', (await hwText(page, '.hw-card .plan-goal-text')) === '132 points to A new book', await hwText(page, '.hw-card .plan-goal'));
+    await page.context().close();
+  }
+  const running = (d) => d.focus_sessions.push(sessionRow({ id: hid(98), kid_id: P.jordan, assignment_id: H.math, step_id: H.m1, minutes: 20,
+    started_at: hwStamp(d.hwNow - 19 * 60000), ends_at: hwStamp(d.hwNow + 60000), on_time: true }));
+  {
+    // Paid on the day view: the card celebrates there and then, and a later #homework has no stale "+N".
+    const d = hwDb();
+    running(d);
+    ({ page, db } = await open({ label: 'hw-cheer-day', path: `/day.html?t=${JORDAN}`, db: d, device: HW_DEVICE, init: HW_STUBS }));
+    await page.click('.hw-card a.hw-card-focus');
+    await page.waitForSelector('.hw-ring');
+    await page.click('.hw-focus h1');   // his first tap on #focus after a reload makes the AudioContext
+    await page.goBack();
+    await page.waitForSelector('.hw-card');
+    await hwPause(page);
+    await hwTick(page, db, 62 * 1000);
+    await until(() => calls(db, 'focus_by_token').length === 1 && !!calls(db, 'focus_by_token')[0].done);
+    check('paid while he is on the day: the card shows "+30" and counts up from ★ 118 to ★ 148, with the short sound',
+      await until(async () => (await hwText(page, '.hw-card .hw-plus')) === '+30') && (await hwRec(page)).cheer.length > 0
+      && await until(async () => { await page.clock.runFor(100); return (await hwText(page, '.hw-card-points')) === '★ 148'; }), await hwText(page, '.hw-card'));
+    const sounds = (await hwRec(page)).cheer.length;
+    await hwTick(page, db, 10 * 60 * 1000);
+    await page.click('.hw-card .hw-open');
+    await page.waitForSelector('.hw-tonight');
+    check('... and ten minutes later #homework has no "+30" and no sound: ★ 148 as it is', !(await page.$('.hw-head .hw-plus'))
+      && (await hwText(page, '.hw-head .hw-points')) === '★ 148' && (await hwRec(page)).cheer.length === sounds, await hwText(page, '.hw-head'));
+    await page.context().close();
+  }
+  {
+    // The "+N" is what the End paid, whatever else moved his balance during the block.
+    const d = hwDb();
+    running(d);
+    ({ page, db } = await open({ label: 'hw-cheer-given', path: `/day.html?t=${JORDAN}#focus`, db: d, device: HW_DEVICE, init: HW_STUBS }));
+    await page.waitForSelector('.hw-ring');
+    db.points_ledger.push(ledgerRow({ kid_id: P.jordan, at: hwStamp(db.hwNow), day: HWT, kind: 'given', delta: 50, note: 'Helped with dinner', who: 'alex@example.com' }));
+    await hwPause(page);
+    await hwTick(page, db, 62 * 1000);
+    await until(() => calls(db, 'focus_by_token').length === 1 && !!calls(db, 'focus_by_token')[0].done);
+    check('a parent gave 50 during the block: the end screen\'s "+30" is what the block paid (not +80)',
+      await until(async () => (await hwText(page, '.hw-end .hw-plus')) === '+30'), `${await hwText(page, '.hw-end .hw-plus')} | ${await hwText(page, '.hw-points-line')}`);
+    await page.context().close();
+  }
+  {
+    const d = hwDb();
+    running(d);
+    d.reward_asks.push({ id: hid(77), kid_id: P.jordan, reward_id: H.dinner, title: "Choose Friday's dinner", cost: 60, status: 'waiting',
+      asked_at: '2026-11-02T21:00:00.000000+00:00', decided_at: null, decided_by: null, note: null });
+    ({ page, db } = await open({ label: 'hw-cheer-trade', path: `/day.html?t=${JORDAN}#focus`, db: d, device: HW_DEVICE, init: HW_STUBS }));
+    await page.waitForSelector('.hw-ring');
+    await page.click('.hw-focus h1');   // his first tap on #focus after a reload makes the AudioContext
+    Object.assign(db.reward_asks.find((x) => x.id === hid(77)), { status: 'approved', decided_at: hwStamp(db.hwNow), decided_by: 'alex@example.com' });
+    db.points_ledger.push(ledgerRow({ kid_id: P.jordan, at: hwStamp(db.hwNow), day: HWT, kind: 'trade', delta: -60, ask_id: hid(77), note: "Choose Friday's dinner", who: 'alex@example.com' }));
+    await hwPause(page);
+    await hwTick(page, db, 62 * 1000);
+    await until(() => calls(db, 'focus_by_token').length === 1 && !!calls(db, 'focus_by_token')[0].done);
+    check('a parent said Yes to his ask (−60) during the block: the block\'s "+30" is still celebrated, up to ★ 88',
+      await until(async () => (await hwText(page, '.hw-end .hw-plus')) === '+30') && (await hwRec(page)).cheer.length > 0
+      && await until(async () => { await page.clock.runFor(100); return (await hwText(page, '.hw-end-balance')) === '★ 88'; }), `${await hwText(page, '.hw-end')}`);
+    await page.context().close();
+  }
+  {
+    // A reload between the paid End and his answer: #focus asks again (the view's answer_due), and so do #homework
+    // and the card; his answer ticks the step.
+    const d = hwDb();
+    running(d);
+    ({ page, db } = await open({ label: 'hw-answer-due', path: `/day.html?t=${JORDAN}#focus`, db: d, device: HW_DEVICE, init: HW_STUBS }));
+    await page.waitForSelector('.hw-ring');
+    await hwPause(page);
+    await hwTick(page, db, 62 * 1000);
+    await until(() => calls(db, 'focus_by_token').length === 1 && !!calls(db, 'focus_by_token')[0].done);
+    await page.waitForSelector('.hw-end [data-act="hw-end"]');
+    await page.clock.resume();
+    await page.reload();
+    await page.waitForFunction(() => !document.querySelector('.loading'));
+    check('a reload after the ring ran out (paid): #focus still asks "Time. How did it go?", with what it paid',
+      await until(async () => (await hwText(page, '.hw-end h2')) === 'Time. How did it go?') && (await hwText(page, '.hw-points-line')) === '+20 · 20 minutes · +10 on time'
+      && !(await page.$('.hw-end .hw-plus')), `${await page.evaluate(() => location.hash)} | ${await hwText(page, 'main')}`.slice(0, 240));
+    await page.evaluate(() => { location.hash = '#homework'; });
+    check('... #homework asks too', await until(async () => (await hwText(page, '.hw-block')) === 'Your block is over. How did it go? ›'), await hwText(page, '.hw-block'));
+    await page.goto(`${BASE}/day.html?t=${JORDAN}`);
+    await page.waitForSelector('.hw-card');
+    check('... and so does the card on My day after a reload', (await hwText(page, '.hw-card a.hw-card-focus')) === 'Your block is over. How did it go? ›', await hwText(page, '.hw-card'));
+    await page.click('.hw-card a.hw-card-focus');
+    await page.waitForSelector('.hw-end [data-act="hw-end"][data-result="done"]');
+    await page.click('.hw-end [data-act="hw-end"][data-result="done"]');
+    check('... Step done from there: his answer, the step ticked, the points as paid',
+      await until(() => calls(db, 'focus_by_token').length === 2 && !!calls(db, 'focus_by_token')[1].done)
+      && same(calls(db, 'focus_by_token')[1].body, { p_token: JORDAN, p_action: 'end', p_session: hid(98), p_result: 'done' }) && !!db.homework_steps.find((x) => x.id === H.m1).done_at
+      && db.points_ledger.filter((l) => l.session_id === hid(98)).reduce((n, l) => n + l.delta, 0) === 30
+      && await until(async () => (await hwText(page, '.hw-end h2')) === 'Block finished.'), await hwText(page, '.hw-end'));
+    await page.context().close();
+  }
+  {
+    // The next-reward bar stays on the timer screen: the end screen, after his answer, and the break.
+    const d = hwDb();
+    running(d);
+    ({ page, db } = await open({ label: 'hw-goal-end', path: `/day.html?t=${JORDAN}#focus`, db: d, device: HW_DEVICE, init: HW_STUBS }));
+    await page.waitForSelector('.hw-ring');
+    await hwPause(page);
+    await hwTick(page, db, 62 * 1000);
+    await until(() => calls(db, 'focus_by_token').length === 1 && !!calls(db, 'focus_by_token')[0].done);
+    await page.waitForSelector('.hw-end .hw-points-line');
+    const atEnd = await hwText(page, '.hw-focus .plan-goal');
+    await page.click('.hw-end [data-act="hw-end"][data-result="more"]');
+    await until(async () => (await hwText(page, '.hw-end h2')) === 'Block finished.');
+    const finished = await hwText(page, '.hw-focus .plan-goal');
+    await page.click('[data-act="hw-break"]');
+    const brk = await hwText(page, '.hw-focus .plan-goal');
+    const want = "You can get Choose Friday's dinner now!2 points to A new book";
+    check('the next-reward bar on the timer screen when the block ends, after his answer and on the break ("2 points to A new book")',
+      atEnd === want && finished === want && brk === want, JSON.stringify({ atEnd, finished, brk }));
     await page.context().close();
   }
 

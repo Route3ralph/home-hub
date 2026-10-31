@@ -619,7 +619,7 @@
     stopViews('day');
     view = 'day';
     const count = listCount();
-    const json = JSON.stringify([state, count]);
+    const json = JSON.stringify([state, count, !!cheer]);
     if (!force && json === drawn && root.querySelector('.day-sec')) return;
     drawn = json;
     dayTitle();
@@ -663,6 +663,9 @@
       ${footerHTML()}`;
     root.querySelectorAll('.irow[data-i]').forEach((r) => { r.dataset.key = keys[Number(r.dataset.i)]; });
     dayFollow();
+    // A block paid while he is on the day: the card's balance celebrates (and with no card, the celebration goes).
+    playCheer();
+    cheer = null;
 
     if (focusKey) {
       const again = [...root.querySelectorAll('.irow')].find((r) => r.dataset.key === focusKey);
@@ -1238,7 +1241,9 @@
   let autoTimer = null;     // sends End 'time' when the ring runs out, whatever is on screen
   let dayTimer = null;      // the day view (no view read yet): reads his view when the card's block runs out
   let cashOpen = null;      // the instant reward whose "Yes, get it" is showing
-  let cashKey = null;       // its cash-in's id, kept until an answer (a resend finds the row)
+  let cashArmed = false;    // its Yes takes a tap only a moment after it was drawn (never the second tap of a double tap)
+  let cashArmTimer = null;
+  const cashKeys = {};      // reward id → its cash-in's id, kept until an answer, or a read showing it landed (a tap again finds the row)
   const perfNow = () => (window.performance && performance.now ? performance.now() : Date.now());
 
   function readLength() {
@@ -1267,7 +1272,7 @@
   const hwRel = (iso) => plan.fmt.rel(iso, hv ? hv.today : state && state.today, lang);
   // The database's homework messages in his words (plan.js), before anything else: "Only your own tick…" is
   // the shopping list's too, where it has its own words.
-  const HW_MESSAGES = /That step isn't on your plan|Only your own tick|That's a checkpoint|Finish the block you started first|That block isn't yours|That's a lot for one day|No homework day before it's due has room|was changed since you opened it|Not enough points yet|Points are off|Choose 10, 15, 20 or 25|Plan this one with|Set a homework time first|That plan isn't on your list|is done or dropped|That's too long|That plan is too long|^At most 20 steps\.?$|Three asks are waiting already|Five suggestions are waiting already|Fifteen of your own are open already|That can't be saved|Those points are already spent|Ask a parent for that one|That's all the instant rewards for today/i;
+  const HW_MESSAGES = /That step isn't on your plan|Only your own tick|That's a checkpoint|Finish the block you started first|That block isn't yours|That's a lot for one day|No homework day before it's due has room|was changed since you opened it|Not enough points yet|Points are off|Choose 10, 15, 20 or 25|Plan this one with|Set a homework time first|That plan isn't on your list|is done or dropped|That's too long|That plan is too long|^At most 20 steps\.?$|Three asks are waiting already|Five suggestions are waiting already|Fifteen of your own are open already|That can't be saved|Those points are already spent|Ask a parent for that one|That's all the instant rewards for today|That reward's price changed/i;
   function hwFriendly(err) {
     const msg = String((err && (err.message || err.error_description)) || err || '');
     if (plan && HW_MESSAGES.test(msg)) return plan.friendly(err, lang, hwTutor());
@@ -1282,6 +1287,16 @@
     hvAt = perfNow();
     lang = data.language === 'es' ? 'es' : 'en';
     document.documentElement.lang = lang;
+    // A block paid when its ring ran out, his answer still to come, after a reload (or a page the phone dropped):
+    // its end screen again, from the view's answer_due (the End's own block and earned).
+    const due = data.answer_due;
+    if (!data.session && due && due.block && !fx.result && !fx.end) fx = { id: due.block.id, step: due.block.step_id, result: { block: due.block, earned: due.earned } };
+    // A cash-in whose answer was lost shows on a read: it landed, and its key is done (no Yes left to tap twice).
+    Object.keys(cashKeys).forEach((rid) => {
+      if (!(data.asks || []).some((q) => q.id === cashKeys[rid])) return;
+      delete cashKeys[rid];
+      if (cashOpen === rid) cashOpen = null;
+    });
     wakeFollow();
     autoFollow();
     return true;
@@ -1357,7 +1372,9 @@
     p_result: o.result, p_note: o.note,
   }), quiet);
   const planCall = (assignment, steps, rev) => hwWrite(() => sb.rpc('plan_by_token', { p_token: token, p_assignment: assignment, p_steps: steps, p_rev: rev }));
-  const rewardCall = (action, o) => hwWrite(() => sb.rpc('reward_by_token', { p_token: token, p_action: action, p_reward: o.reward, p_text: o.text, p_key: o.key }));
+  const rewardCall = (action, o) => hwWrite(() => sb.rpc('reward_by_token', {
+    p_token: token, p_action: action, p_reward: o.reward, p_text: o.text, p_key: o.key, p_cost: o.cost,
+  }));
   const asgCall = (action, o) => hwWrite(() => sb.rpc('assignment_by_token', {
     p_token: token, p_action: action, p_assignment: o.assignment, p_title: o.title, p_subject: o.subject, p_due_date: o.due, p_minutes: o.minutes,
   }));
@@ -1415,9 +1432,10 @@
     if (c.window) head.push(plan.fmt.time(c.window.starts, lang));
     if (c.steps) head.push(c.steps === 1 ? hw('hw_one_step') : hw('hw_n_steps', { n: c.steps }), plan.fmt.duration(c.minutes));
     if (c.earlier) head.push(hw('hw_n_earlier', { n: c.earlier }));
-    const pts = c.points != null ? `<a class="hw-card-points" href="#points">${esc(balanceLine(c.points))}</a>` : '';
+    // The balance as balanceHTML draws it: a block paid while he is on the day celebrates here (playCheer).
+    const pts = c.points != null ? balanceHTML('hw-card-points', c.points, '#points') : '';
     let acts;
-    if (c.session || timeAnswer()) {
+    if (c.session || c.answer_due || timeAnswer()) {
       const left = c.session ? Math.ceil(((Number(c.session.ends_in_s) || 0) * 1000 - (perfNow() - dayAt)) / 60000) : 0;
       acts = `<a class="btn btn-primary hw-card-focus" href="#focus">${esc(left > 0 ? `${plan.t('focus_left', { n: left }, lang)} ›` : hw('hw_block_done'))}</a>`;
     } else {
@@ -1842,11 +1860,12 @@
       void: 'hw_k_void', trade: 'hw_k_trade' };
     const signed = (n) => (n < 0 ? `−${-n}` : `+${n}`);
     // An instant reward he can cash: "Get it now", then "Yes, get it · −15" (one more tap, so a slip can't spend
-    // his points); past today's instant rewards, it can still be asked for.
+    // his points; drawn where "Get it now" was, it takes a tap only a moment later, so the second tap of a double
+    // tap lands on nothing); past today's instant rewards, it can still be asked for.
     const rewardAct = (r) => {
       if (r.instant && r.can_cash) {
         return cashOpen === r.id
-          ? `<button type="button" class="btn btn-sm btn-primary" data-act="hw-cash-yes" data-reward="${esc(r.id)}">${esc(hw('hw_cash_sure', { n: r.cost }))}</button>
+          ? `<button type="button" class="btn btn-sm btn-primary" data-act="hw-cash-yes" data-reward="${esc(r.id)}"${cashArmed ? '' : ' disabled'}>${esc(hw('hw_cash_sure', { n: r.cost }))}</button>
             <button type="button" class="btn btn-sm" data-act="hw-cash-no">${esc(hw('hw_cancel'))}</button>`
           : `<button type="button" class="btn btn-sm btn-primary" data-act="hw-cash" data-reward="${esc(r.id)}">${esc(hw('hw_cash_btn'))}</button>`;
       }
@@ -1927,10 +1946,12 @@
     fx.est = est;
     const live = est != null ? `<p class="hw-live" aria-live="off"><span class="hw-live-bal">${esc(balanceLine(hv.points.balance + est))}</span>
         <span class="hw-sofar">${esc(plan.t('so_far', { n: est }, lang))}</span></p>` : '';
-    const goal = running && hv.points ? plan.goalBar(hv.goal, { lang, extra: est || 0 }) : '';
+    // The next-reward bar, always on the timer screen: while the ring runs (moving with the count), at the end, after
+    // his answer and on the break (the points as paid).
+    const goal = hv.points ? plan.goalBar(hv.goal, { lang, extra: running ? est || 0 : 0 }) : '';
     root.innerHTML = `<header class="day-head hw-head"><a class="list-back" href="#homework">${esc(hw('hw_back_home'))}</a></header>
       <section class="hw-focus" aria-labelledby="hw-focus-h">
-        ${fx.breakTm ? breakHTML() : `<p class="hw-focus-sub">${esc(sub)}</p>
+        ${fx.breakTm ? `${breakHTML()}${goal}` : `<p class="hw-focus-sub">${esc(sub)}</p>
         <h1 class="hw-focus-title" id="hw-focus-h">${esc(title)}</h1>
         ${step && step.done_looks_like && !ended ? `<p class="hw-focus-dll">${esc(plan.t('dll_line', { text: step.done_looks_like }, lang))}</p>` : ''}
         <p class="hw-focus-cue"${showCue ? '' : ' hidden'}>${esc(me.cue ? `“${me.cue}”` : '')}</p>
@@ -2056,7 +2077,6 @@
     const note = input ? plan.clean(input.value, 120) : '';
     fx.end = { session: s.id, step: s.step_id, result, note: note || undefined };
     fx.step = s.step_id;
-    fx.bal = hv.points ? hv.points.balance : null;
     cancelChime();
     releaseWake();
     sendEnd();
@@ -2084,7 +2104,6 @@
     if (fx.id !== s.id) fx = { id: s.id };
     fx.end = { session: s.id, step: s.step_id, result: 'time' };
     fx.step = s.step_id;
-    fx.bal = hv.points ? hv.points.balance : null;
     releaseWake();
     lateChimeOff();
     sendEnd();
@@ -2100,8 +2119,7 @@
     root.querySelectorAll('.hw-end-acts button').forEach((b) => { b.disabled = true; });
     if (e && e.result === 'time') { fx.answer = { result, note: note || undefined }; return; }
     if (timeAnswer()) {
-      fx.end = { session: r.block.id, step: r.block.step_id, result, note: note || undefined };
-      fx.bal = hv.points ? hv.points.balance : null;
+      fx.end = { session: r.block.id, step: r.block.step_id, result, note: note || undefined, answer: true };
       sendEnd();
       return;
     }
@@ -2118,15 +2136,16 @@
       fx.end = null;
       fx.unsent = false;
       fx.result = { block: r.data.block, earned: r.data.earned };
-      // The celebration: the balance it went up from, ticked up on the view that draws it.
+      // The celebration: what this End paid (its earned; his answer after a 'time' End pays nothing more), ticked
+      // up to the balance on the view he is on, whatever else moved the balance during the block.
       const after = hv && hv.points ? hv.points.balance : null;
-      if (fx.bal != null && after != null && after > fx.bal) cheer = { from: fx.bal, to: after };
-      fx.bal = undefined;
+      const earned = r.data.earned || {};
+      const paid = e.answer ? 0 : (Number(earned.focus) || 0) + (Number(earned.on_time) || 0);
+      if (paid > 0 && after != null) cheer = { from: after - paid, to: after };
       if (fx.answer && timeAnswer()) {
         const a = fx.answer;
         fx.answer = null;
-        fx.end = { session: fx.result.block.id, step: fx.result.block.step_id, result: a.result, note: a.note };
-        fx.bal = after;
+        fx.end = { session: fx.result.block.id, step: fx.result.block.step_id, result: a.result, note: a.note, answer: true };
         sendEnd();
       }
       fx.answer = null;
@@ -2140,16 +2159,19 @@
     toast(hwFriendly(r.error), { error: true });
     hwRead();
   }
-  // Drawn where he is: the end screen, #homework (its "How did it go?" line), #points, or the day (read again).
+  // Drawn where he is: the end screen, #homework (its "How did it go?" line), #points, or the day (read again; the
+  // card celebrates). Anywhere else (his plan) nothing shows his balance: no celebration, then or later.
   function afterEnd() {
     if (view === 'focus') renderFocus();
     else if (view === 'homework') renderHomework(true);
     else if (view === 'points') renderPoints(true);
     else if (view === 'day') refresh();
+    else cheer = null;
   }
   // The small celebration (the owner's "immediate gratification"): the ★ counter ticks up to the new total, a
   // visible "+N", and a short sound through the AudioContext his Start tap made (the silent switch mutes it).
-  // Played once, on the first view that draws the balance; at once with reduced motion.
+  // Played once, on the view he is on when the points come (the day's card too); at once with reduced motion. A
+  // view drawn without it lets it go, so it never plays later, out of context.
   function playCheer() {
     const c = cheer;
     const el = c && root.querySelector('[data-cheer]');
@@ -2341,13 +2363,12 @@
     const s = stepById(id);
     if (!s || s.done) return;
     menuOpen = null;
-    const before = hv && hv.points ? hv.points.balance : null;
     const r = await stepCall(id, 'done');
     if (!r.data) { renderHomework(true); return; }
     const after = stepById(id);
-    // A milestone pays half at once: "+20 now · +20 more when Pat checks it", and the counter ticks up.
+    // A milestone pays half at once: "+20 now · +20 more when Pat checks it", and the counter ticks up by what it paid.
     const paid = Number(r.data.paid) || 0;
-    if (paid > 0 && before != null && hv.points && hv.points.balance > before) cheer = { from: before, to: hv.points.balance };
+    if (paid > 0 && hv.points) cheer = { from: hv.points.balance - paid, to: hv.points.balance };
     const msg = after && after.kind === 'milestone' && paid > 0 && after.waiting ? hw('milestone_now', { n: paid, m: after.waiting })
       : after && after.kind === 'milestone' && after.waiting ? hw('waiting_check', { n: after.waiting }) : t('ticked', { title: s.title });
     toast(msg, { ms: UNDO_MS, action: { label: t('undo'), onClick: () => undoStep(id) } });
@@ -2420,21 +2441,44 @@
   }
 
   // ---------- #points: Ask, Cash (an instant reward, on the spot), Cancel, Suggest ----------
+  // "Get it now": its "Yes, get it" where it was, taking a tap a moment later.
+  function openCash(id) {
+    cashOpen = id;
+    cashArmed = false;
+    clearTimeout(cashArmTimer);
+    cashArmTimer = setTimeout(() => {
+      cashArmed = true;
+      const yes = root.querySelector('[data-act="hw-cash-yes"]');
+      if (yes && view === 'points') yes.disabled = false;
+    }, 400);
+    renderPoints(true);
+  }
+  // Yes: the cash-in, with the price his button showed (a price changed since is refused). Its key is the reward's
+  // until an answer comes, or a read shows it landed: a tap again after a lost answer, after Cancel or another view,
+  // finds the cash-in it made (never two). A refusal, or no answer, reads his view again, so the buttons say what
+  // the server says (and a cash-in that did land shows as got).
   async function cashReward(id) {
     const rw = ((hv && hv.rewards) || []).find((x) => x.id === id);
-    if (!cashKey) cashKey = plan.newId();
+    if (!rw) return;
+    const key = cashKeys[id] || (cashKeys[id] = plan.newId());
     root.querySelectorAll(`.hw-reward[data-reward="${id}"] button`).forEach((b) => { b.disabled = true; });
-    const r = await rewardCall('cash', { reward: id, key: cashKey });
-    // A lost answer keeps the key, so a tap again finds the cash-in it made (never two).
-    if (r.data || r.kind === 'refused') { cashKey = null; cashOpen = null; }
-    if (r.data && rw) toast(hw('hw_cashed_toast', { title: rw.title }));
+    const r = await rewardCall('cash', { reward: id, key, cost: rw.cost });
+    if (r.data || r.kind === 'refused') {
+      if (cashKeys[id] === key) delete cashKeys[id];
+      if (cashOpen === id) cashOpen = null;
+    }
+    if (r.data) { toast(hw('hw_cashed_toast', { title: rw.title })); renderPoints(true); return; }
     renderPoints(true);
+    if (r.gone) return;
+    await hwRead();
+    if (r.kind !== 'refused' && cashKeys[id] !== key) toast(hw('hw_cashed_toast', { title: rw.title }));   // the read found it landed
   }
   async function askReward(id) {
     const r = await rewardCall('ask', { reward: id, key: plan.newId() });
     const rw = ((hv && hv.rewards) || []).find((x) => x.id === id);
     if (r.data && rw) toast(hw('hw_asked_toast', { title: rw.title }));
     renderPoints(true);
+    if (r.kind === 'refused') hwRead();   // what can be asked for now, from the server
   }
   async function cancelAsk(id) {
     await rewardCall('cancel', { key: id });
@@ -2474,6 +2518,7 @@
     return a ? { assignment: a } : { gone: true };
   }
   function renderPlan(id) {
+    cheer = null;   // no balance here: a celebration never waits for a later view
     if (!hv) { hwFrame('plan'); return; }
     if (ed && edFor === id && root.querySelector('.hw-plan .plan-editor')) return;
     if (ed) { ed.stop(); ed = null; }
@@ -2524,7 +2569,7 @@
     // Leaving #focus: a finished block's screen goes (an End still waiting stays, to be sent again, and so does a
     // block paid when its ring ran out, until he says how it went).
     if (next !== 'focus' && !fx.end && !timeAnswer()) fx = hv && hv.session ? Object.assign(fx, { breakTm: null, result: null }) : {};
-    if (next !== 'points') { cashOpen = null; cashKey = null; }
+    if (next !== 'points') cashOpen = null;   // its key stays until an answer (cashKeys)
     if (ed && next !== 'plan') { ed.stop(); ed = null; edFor = null; }
     if (sheet && next !== view) sheet = null;
     menuOpen = null;
@@ -2617,8 +2662,8 @@
       case 'hw-sheet-close': closeSheet(); break;
       case 'hw-sheet-send': { const i = root.querySelector('.hw-sheet input[name="text"]'); sheetSend(i ? i.value : ''); break; }
       case 'hw-ask-reward': askReward(el.dataset.reward); break;
-      case 'hw-cash': cashOpen = el.dataset.reward; cashKey = null; renderPoints(true); break;
-      case 'hw-cash-no': cashOpen = null; cashKey = null; renderPoints(true); break;
+      case 'hw-cash': openCash(el.dataset.reward); break;
+      case 'hw-cash-no': cashOpen = null; renderPoints(true); break;
       case 'hw-cash-yes': cashReward(el.dataset.reward); break;
       case 'hw-cancel-ask': cancelAsk(el.dataset.ask); break;
       default: return false;

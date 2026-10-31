@@ -287,6 +287,12 @@ const PAT_WHO = 'Pat Lee, tutor (tutor link)';
       await until(async () => (await tc(page, '.hw-end .hw-points-line')) === '+20 · 20 minutes · +10 on time' && (await tc(page, '.hw-end-balance')) === '★ 30', 5000)
       && (await tc(page, '.hw-end .hw-plus')) === '+30' && !!(await page.$('.hw-end [data-act="hw-end"][data-result="done"]')), await tc(page, '.hw-end'));
     await shot(page, 'homework-paid');
+    // A reload before his answer (or a phone that dropped the page): the block is no longer open, and his view's
+    // answer_due brings the question back, with what it paid.
+    await page.reload();
+    check('end: a reload before he answers still asks "Time. How did it go?", with the server\'s points (his view\'s answer_due), and no second "+30"',
+      await until(async () => (await tc(page, '.hw-end h2')) === 'Time. How did it go?' && (await tc(page, '.hw-end .hw-points-line')) === '+20 · 20 minutes · +10 on time', 5000)
+      && !(await page.$('.hw-end .hw-plus')) && ((await view()) || {}).answer_due.block.id === b1.id, await tc(page, '#app'));
     await page.click('.hw-end [data-act="hw-end"][data-result="done"]');
     await until(async () => (await one(`select result from focus_sessions where id = '${b1.id}'`)).result === 'done', 5000);
     await page.waitForSelector('.hw-end-next [data-act="hw-next"]', { timeout: 5000 });

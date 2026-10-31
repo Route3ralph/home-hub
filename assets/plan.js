@@ -284,6 +284,7 @@
       own_full: 'Fifteen of your own are open already.',
       points_spent: 'Those points are already spent.', cant_save: "That can't be saved.",
       ask_parent: 'Ask a parent for that one.', instant_done: "That's all the instant rewards for today. Ask a parent for this one.",
+      price_changed: "That reward's price changed. Look again before you get it.",
     },
     es: {
       homework: 'Tarea', now: 'Ahora', tonight: 'Esta tarde', due_soon: 'Para pronto', start_n: 'Empezar · {n} min',
@@ -380,6 +381,7 @@
       own_full: 'Ya tienes quince tareas tuyas abiertas.',
       points_spent: 'Esos puntos ya se gastaron.', cant_save: 'Eso no se puede guardar.',
       ask_parent: 'Ese pídeselo a tus padres.', instant_done: 'Ya usaste los premios al momento de hoy. Este pídeselo a tus padres.',
+      price_changed: 'El precio de ese premio cambió. Míralo otra vez antes de conseguirlo.',
     },
   };
 
@@ -497,6 +499,8 @@
     // Instant rewards: one that needs a parent's yes, and the day's limit on cashing them.
     [/Ask a parent for that one/i, 'ask_parent'],
     [/That's all the instant rewards for today/i, 'instant_done'],
+    // An instant reward re-priced after his screen showed it: the cash-in names the price it showed (p_cost).
+    [/That reward's price changed/i, 'price_changed'],
   ];
   const messageOf = (err) => String((err && (err.message || err.error_description)) || err || '');
   function friendly(err, lang, tutor) {

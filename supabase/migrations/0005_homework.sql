@@ -240,9 +240,9 @@ create table public.reward_asks (
 create unique index reward_asks_waiting on public.reward_asks (kid_id, reward_id) where status = 'waiting';
 create index reward_asks_kid on public.reward_asks (kid_id, asked_at desc);
 
--- Every point earned, given, voided and traded. Rows are never changed; the only deletes are a
--- milestone check taken back within 15 minutes (a mis-tap), and the half a milestone paid at his
--- tick when he unticks it himself.
+-- Every point earned, given, voided and traded. Rows are never changed; the only deletes are what a
+-- milestone check paid when it is taken back within 15 minutes (a mis-tap), and the half a milestone
+-- paid at his tick when he unticks it himself; never a void.
 create table public.points_ledger (
   id         uuid primary key default gen_random_uuid(),   -- given points: the parent's page's key
   kid_id     uuid not null references public.homework_kids (kid_id) on delete cascade,
@@ -1294,6 +1294,9 @@ declare
   v_pts   int;
   v_half  int;
   v_want  int;
+  v_l     public.points_ledger;
+  v_tick  boolean := false;   -- an uncheck: the check itself ticked the milestone
+  v_back  int;
   v_log   jsonb;
   v_add   jsonb := '[]';   -- entries for qa_log
   v_ch    boolean := false;
@@ -1341,18 +1344,21 @@ begin
           using errcode = '42501';
       end if;
       if v_s.kind = 'milestone' and v_s.done_by = p_who then
-        -- His own Undo (or a parent's of the parent's own tick): the first half goes with the tick, never
-        -- below zero. Anyone else's Undo takes nothing, as Not yet. The kid's row is locked last.
+        -- His own Undo (or a parent's of the parent's own tick): the half this tick paid goes with it (its
+        -- entry is the tick's own, written at done_at), never below zero. A half an earlier tick paid (kept by
+        -- Not yet or a parent's Undo) stays, and so does a half a parent voided, with its void (they cancel):
+        -- nobody's take-back deletes a Void. Either way a tick again pays nothing more. Anyone else's Undo
+        -- takes nothing, as Not yet. The kid's row is locked last.
         perform 1 from public.homework_kids k where k.kid_id = v_a.kid_id for update;
-        if (select b.balance from private.points_balance(v_a.kid_id) b)
-           - (select coalesce(sum(l.delta), 0) from public.points_ledger l
-              where (l.step_id = v_s.id and l.kind = 'milestone_done')
-                 or (l.kind = 'void' and l.void_of in (select m.id from public.points_ledger m where m.step_id = v_s.id and m.kind = 'milestone_done'))) < 0 then
-          raise exception 'Those points are already spent.' using errcode = 'P0001';
+        select l.* into v_l from public.points_ledger l
+        where l.step_id = v_s.id and l.kind = 'milestone_done' and l.at >= v_s.done_at
+          and not exists (select 1 from public.points_ledger x where x.kind = 'void' and x.void_of = l.id);
+        if v_l.id is not null then
+          if (select b.balance from private.points_balance(v_a.kid_id) b) - v_l.delta < 0 then
+            raise exception 'Those points are already spent.' using errcode = 'P0001';
+          end if;
+          delete from public.points_ledger l where l.id = v_l.id;
         end if;
-        delete from public.points_ledger l
-        where l.kind = 'void' and l.void_of in (select m.id from public.points_ledger m where m.step_id = v_s.id and m.kind = 'milestone_done');
-        delete from public.points_ledger l where l.step_id = v_s.id and l.kind = 'milestone_done';
       end if;
       update public.homework_steps set done_at = null, done_by = null where id = v_s.id;
       v_ch := true;
@@ -1450,12 +1456,17 @@ begin
           not_yet_at = null, coach_note = v_text, coach_note_by = case when v_text is not null then v_coach end,
           coach_note_at = case when v_text is not null then v_now end
       where id = v_s.id;
-      -- Not ticked yet (the work was seen): its first half too; then the rest, at the check.
+      -- Not ticked yet (the work was seen): its first half too, unless a tick paid it already (Not yet and
+      -- a parent's Undo keep it); then the rest, at the check. used_up: the week's cap took some of what this
+      -- check had to pay (its half, unless paid already, and that first half).
+      v_want := case when exists (select 1 from public.points_ledger l where l.step_id = v_s.id and l.kind = 'milestone') then 0
+                     else v_k.pts_milestone - (v_k.pts_milestone + 1) / 2 end
+                + case when v_s.done_at is null
+                            and not exists (select 1 from public.points_ledger l where l.step_id = v_s.id and l.kind = 'milestone_done')
+                       then (v_k.pts_milestone + 1) / 2 else 0 end;
       v_half := 0;
-      v_want := v_k.pts_milestone - (v_k.pts_milestone + 1) / 2;
       if v_s.done_at is null then
         v_half := private.award(v_a.kid_id, 'milestone_done', (v_k.pts_milestone + 1) / 2, v_today, null, v_s.id, null, null, v_s.title, p_who);
-        v_want := v_k.pts_milestone;
       end if;
       v_pts := v_half + private.award(v_a.kid_id, 'milestone', v_k.pts_milestone - (v_k.pts_milestone + 1) / 2, v_today, null, v_s.id, null, null,
                                       v_s.title, p_who);
@@ -1491,19 +1502,29 @@ begin
       if v_s.checked_by is distinct from p_who or v_s.checked_at < v_now - interval '15 minutes' then
         raise exception 'Only the one who checked it can take it back, for 15 minutes.' using errcode = '42501';
       end if;
-      -- Its points go with it, never below zero (as void_points): spent on a trade, the check stays.
-      -- The kid's row is locked last, as award locks it after the assignment and the step.
+      -- What the check did goes with it, never below zero (as void_points): its half and, when the check
+      -- itself ticked the milestone (nobody had: done_at and done_by are the check's), the tick and the first
+      -- half that check paid (its entry is the check's own, written at checked_at; one an earlier tick paid,
+      -- kept by Not yet, stays). A half a parent voided stays, with its void (they cancel): nobody's take-back
+      -- deletes a Void. Spent on a trade, the check stays. The kid's row is locked last, as award locks it
+      -- after the assignment and the step.
+      v_tick := v_s.done_at = v_s.checked_at and v_s.done_by is not distinct from v_s.checked_by;
       perform 1 from public.homework_kids k where k.kid_id = v_a.kid_id for update;
-      if (select b.balance from private.points_balance(v_a.kid_id) b)
-         - (select coalesce(sum(l.delta), 0) from public.points_ledger l
-            where (l.step_id = v_s.id and l.kind = 'milestone')
-               or (l.kind = 'void' and l.void_of in (select m.id from public.points_ledger m where m.step_id = v_s.id and m.kind = 'milestone'))) < 0 then
+      v_back := coalesce((select sum(l.delta) from public.points_ledger l
+                          where l.step_id = v_s.id
+                            and (l.kind = 'milestone' or (v_tick and l.kind = 'milestone_done' and l.at >= v_s.checked_at))
+                            and not exists (select 1 from public.points_ledger x where x.kind = 'void' and x.void_of = l.id)), 0);
+      if (select b.balance from private.points_balance(v_a.kid_id) b) - v_back < 0 then
         raise exception 'Those points are already spent.' using errcode = 'P0001';
       end if;
       delete from public.points_ledger l
-      where l.kind = 'void' and l.void_of in (select m.id from public.points_ledger m where m.step_id = v_s.id and m.kind = 'milestone');
-      delete from public.points_ledger l where l.step_id = v_s.id and l.kind = 'milestone';
-      update public.homework_steps set checked_at = null, checked_by = null where id = v_s.id;
+      where l.step_id = v_s.id
+        and (l.kind = 'milestone' or (v_tick and l.kind = 'milestone_done' and l.at >= v_s.checked_at))
+        and not exists (select 1 from public.points_ledger x where x.kind = 'void' and x.void_of = l.id);
+      update public.homework_steps
+      set checked_at = null, checked_by = null,
+          done_at = case when v_tick then null else done_at end, done_by = case when v_tick then null else done_by end
+      where id = v_s.id;
       v_ch := true;
     end if;
 
@@ -1566,7 +1587,7 @@ begin
                            and (v_s.kind = 'turn_in'
                                 or not exists (select 1 from public.homework_steps x where x.assignment_id = a.id and x.done_at is null))
                       then 'done'
-                      when p_action in ('undo', 'not_yet') and a.status = 'done' then 'open'
+                      when (p_action in ('undo', 'not_yet') or (p_action = 'uncheck' and v_tick)) and a.status = 'done' then 'open'
                       else a.status end,
         updated_by = p_who
     where a.id = v_a.id;
@@ -2077,11 +2098,14 @@ begin
            order by r.sort_order, r.cost, r.title, r.id), '[]') into v_rw
     from public.rewards r where r.kid_id = p_kid and r.active and r.cost is not null;
     if jsonb_array_length(v_rw) > 0 then
+      -- next: the cheapest his free points don't cover, never one he asked for (its points are held already).
       v_goal := jsonb_build_object(
         'next', (select jsonb_build_object('id', x -> 'id', 'title', x -> 'title', 'cost', x -> 'cost',
                                            'need', (x ->> 'cost')::int - (v_bal - v_held))
                  from jsonb_array_elements(v_rw) with ordinality t (x, n)
                  where (x ->> 'cost')::int > v_bal - v_held
+                   and not exists (select 1 from public.reward_asks q
+                                   where q.kid_id = p_kid and q.reward_id = (x ->> 'id')::uuid and q.status = 'waiting')
                  order by (x ->> 'cost')::int, n limit 1),
         'now', (select jsonb_build_object('id', x -> 'id', 'title', x -> 'title', 'cost', x -> 'cost', 'instant', x -> 'can_cash')
                 from jsonb_array_elements(v_rw) with ordinality t (x, n)
@@ -2197,6 +2221,22 @@ begin
                 left join public.homework_steps s on s.id = f.step_id
                 left join public.assignments a on a.id = f.assignment_id
                 where f.kid_id = p_kid and f.ended_at is null),
+    -- His latest block, when the ring ran out on it (paid, result 'time') within the last 24 hours and he hasn't
+    -- said how it went: as focus_by_token's End answered it, so a reload (or a phone that dropped the page)
+    -- asks him again.
+    'answer_due', (select jsonb_build_object(
+                     'block', jsonb_build_object('id', f.id, 'step_id', f.step_id, 'assignment_id', f.assignment_id, 'minutes', f.minutes,
+                                                 'with', f.with_whom, 'started_at', f.started_at, 'ends_at', f.ends_at, 'ended_at', f.ended_at,
+                                                 'result', f.result, 'seen_minutes', f.seen_minutes, 'on_time', f.on_time, 'points', f.points),
+                     'earned', jsonb_build_object(
+                       'focus', coalesce((select sum(l.delta) from public.points_ledger l where l.session_id = f.id and l.kind = 'focus'), 0),
+                       'on_time', coalesce((select sum(l.delta) from public.points_ledger l where l.session_id = f.id and l.kind = 'on_time'), 0),
+                       'capped', v_k.points_on
+                                 and coalesce((select sum(l.delta) from public.points_ledger l
+                                               where l.kid_id = p_kid and l.kind in ('focus', 'on_time')
+                                                 and l.day = (f.started_at at time zone v_tz)::date), 0) >= v_k.pts_day_cap))
+                   from (select * from public.focus_sessions x where x.kid_id = p_kid order by x.started_at desc, x.id limit 1) f
+                   where f.result = 'time' and f.started_at > v_now - interval '24 hours'),
     'now', case when v_nowst is not null then v_nowst - '_open' end,
     'tonight', (select coalesce(jsonb_agg(x - '_open' order by n), '[]') from jsonb_array_elements(v_tonight) with ordinality t (x, n)),
     'load', jsonb_build_object(
@@ -2243,10 +2283,11 @@ end;
 $$;
 
 -- The card on his My day (get_person_day's homework key): {next: {id, title, assignment, minutes} |
--- null, length, steps, minutes, earlier?, window?, session?: {ends_in_s}, points?, goal?}. next is his
--- view's now; steps and minutes count today's open steps; earlier is left out when there are none
--- or no homework time today, window when there is none today, session when no block is open,
--- points when points are off, goal (his view's next-reward bar) when it is null. Never raises:
+-- null, length, steps, minutes, earlier?, window?, session?: {ends_in_s}, answer_due?: true, points?,
+-- goal?}. next is his view's now; steps and minutes count today's open steps; earlier is left out when
+-- there are none or no homework time today, window when there is none today, session when no block is
+-- open, answer_due when his view has none (a block paid when its ring ran out, his answer still to
+-- come), points when points are off, goal (his view's next-reward bar) when it is null. Never raises:
 -- anything wrong leaves the card out.
 create function private.homework_card(p_kid uuid, p_lang text)
 returns jsonb
@@ -2276,6 +2317,7 @@ begin
                  then jsonb_build_object('session', jsonb_build_object(
                         'ends_in_s', greatest(0, ceil(extract(epoch from (v -> 'session' ->> 'ends_at')::timestamptz - private.now())))::int))
                  else '{}' end
+         || case when jsonb_typeof(v -> 'answer_due') = 'object' then jsonb_build_object('answer_due', true) else '{}' end
          || case when jsonb_typeof(v -> 'points') = 'object' then jsonb_build_object('points', v -> 'points' -> 'balance') else '{}' end
          || case when jsonb_typeof(v -> 'goal') = 'object' then jsonb_build_object('goal', v -> 'goal') else '{}' end;
 exception when others then
@@ -2970,6 +3012,10 @@ begin
   if p_approve is null then
     raise exception 'Choose Yes or Not now.' using errcode = '22023';
   end if;
+  -- His homework_kids row first, then the ask (as reward_by_token): every writer of his balance (Yes, a
+  -- cash-in, his Undo, an uncheck, a Void) takes that lock before it reads the balance, so two can't both
+  -- spend the same points.
+  perform 1 from public.homework_kids k where k.kid_id = (select q.kid_id from public.reward_asks q where q.id = p_ask) for update;
   select * into v_q from public.reward_asks q where q.id = p_ask for update;
   if v_q.id is null then
     raise exception 'That ask is gone.' using errcode = '22023';
@@ -3389,11 +3435,13 @@ $$;
 -- the points are held), 'cash' (p_reward, an active priced instant reward of his; p_key the row's id;
 -- his free points must cover it, and he may cash at most homework_kids.instant_day a household day:
 -- the ask is written decided at once, 'cashed', by him, and its points are taken at once, a 'trade'
--- the parents see; a reward that isn't instant: 42501 "Ask a parent for that one."), 'cancel' (his
+-- the parents see; a reward that isn't instant: 42501 "Ask a parent for that one."; p_cost is the price
+-- his button showed, and nobody sees a cash-in first, so another price, or none: 22023 "That reward's
+-- price changed."), 'cancel' (his
 -- own waiting ask: p_key its id, or p_reward), 'suggest' (p_text, 1 to 60; p_key the new reward's id;
 -- it arrives unpriced and off; at most 5 waiting). While points are off: 42501 "Points are off.".
 create function public.reward_by_token(p_token text, p_action text, p_reward uuid default null, p_text text default null,
-                                       p_key uuid default null)
+                                       p_key uuid default null, p_cost int default null)
 returns jsonb
 language plpgsql
 security definer
@@ -3468,6 +3516,9 @@ begin
       end if;
       if not v_r.instant then
         raise exception 'Ask a parent for that one.' using errcode = '42501';
+      end if;
+      if p_cost is distinct from v_r.cost then
+        raise exception 'That reward''s price changed.' using errcode = '22023';
       end if;
       if (select count(*) from public.reward_asks q
           where q.kid_id = me.id and q.status = 'cashed'
@@ -4299,14 +4350,14 @@ revoke execute on function public.homework_by_token(text)                       
 revoke execute on function public.step_by_token(text, uuid, text, text, date, uuid)                    from public, service_role;
 revoke execute on function public.plan_by_token(text, uuid, jsonb, int)                                from public, service_role;
 revoke execute on function public.focus_by_token(text, text, uuid, int, uuid, uuid, text, text, text)  from public, service_role;
-revoke execute on function public.reward_by_token(text, text, uuid, text, uuid)                        from public, service_role;
+revoke execute on function public.reward_by_token(text, text, uuid, text, uuid, int)                   from public, service_role;
 revoke execute on function public.assignment_by_token(text, text, uuid, text, text, date, int)         from public, service_role;
 revoke execute on function public.homework_prefs_by_token(text, text, text, int)                       from public, service_role;
 grant  execute on function public.homework_by_token(text)                                              to anon, authenticated;
 grant  execute on function public.step_by_token(text, uuid, text, text, date, uuid)                    to anon, authenticated;
 grant  execute on function public.plan_by_token(text, uuid, jsonb, int)                                to anon, authenticated;
 grant  execute on function public.focus_by_token(text, text, uuid, int, uuid, uuid, text, text, text)  to anon, authenticated;
-grant  execute on function public.reward_by_token(text, text, uuid, text, uuid)                        to anon, authenticated;
+grant  execute on function public.reward_by_token(text, text, uuid, text, uuid, int)                   to anon, authenticated;
 grant  execute on function public.assignment_by_token(text, text, uuid, text, text, date, int)         to anon, authenticated;
 grant  execute on function public.homework_prefs_by_token(text, text, text, int)                       to anon, authenticated;
 
