@@ -2170,9 +2170,17 @@ rollback;
 begin;
 :as_owner
 set hub.now = '2026-05-06 12:00 America/New_York';
-insert into assignments (kid_id, title, due_date, status) values (test.person('Taylor'), 'Dropped 181 days ago', '2026-05-20', 'dropped');
+-- Both still have the teacher's text, so the trim that deletes the older one first empties it (an update in the same write).
+insert into assignments (kid_id, title, due_date, status, details) values (test.person('Taylor'), 'Dropped 181 days ago', '2026-05-20', 'dropped', 'The teacher''s text');
 set hub.now = '2026-05-08 12:00 America/New_York';
-insert into assignments (kid_id, title, due_date, status) values (test.person('Taylor'), 'Dropped 179 days ago', '2026-04-01', 'dropped');
+insert into assignments (kid_id, title, due_date, status, details) values (test.person('Taylor'), 'Dropped 179 days ago', '2026-04-01', 'dropped', 'The teacher''s text');
+-- Later writes to a dropped row keep its drop time (as done_at), or every edit would start the 180 days again.
+set hub.now = '2026-09-01 12:00 America/New_York';
+:as_admin
+update assignments set subject = 'Reading' where title = 'Dropped 179 days ago';
+:as_owner
+select test.is((select subject || ' ' || to_char(dropped_at at time zone 'America/New_York', 'MM-DD') from assignments where title = 'Dropped 179 days ago'),
+               'Reading 05-08', 'a parent''s edit to a dropped assignment keeps its dropped_at (the tidy trigger, as done_at)');
 set hub.now = '2026-11-03 16:34 America/New_York';
 select test.is((select string_agg(title || ' ' || to_char(dropped_at at time zone 'America/New_York', 'MM-DD'), ', ' order by title)
                 from assignments where title like 'Dropped 1%'),
@@ -2195,6 +2203,8 @@ select test.is((select a.status || ' ' || a.due_date || ' ' || (select count(*) 
                'Pat drops a parent''s assignment and moves its due date back to 2000: it stays, with its done step and Pat''s answer (the link never deletes)');
 select test.is((select string_agg(title, ', ' order by title) from assignments where title like 'Dropped 1%'), 'Dropped 179 days ago',
                'dropped assignments go 180 days after they were dropped (181, not 179), whatever their due date');
+select test.is((select coalesce(details, '-') || ' ' || to_char(dropped_at at time zone 'America/New_York', 'MM-DD') from assignments where title = 'Dropped 179 days ago'),
+               '- 05-08', '... and the trim''s own update (the teacher''s text emptied, in the same write) doesn''t start the 180 days again');
 :as_admin
 update assignments set status = 'open' where id = 'a0000000-0000-4000-8000-000000000031';
 select test.is((select status || ' ' || coalesce(dropped_at::text, '-') from assignments where id = 'a0000000-0000-4000-8000-000000000031'),

@@ -1059,6 +1059,23 @@ const emailOf = (req) => {
     (await lastToast(page)) === 'Already answered Not now: Pick the movie' && !db.points_ledger.some((l) => l.kind === 'trade') && (await hwLines(page)).length === 1,
     JSON.stringify([await lastToast(page), await hwLines(page)]));
   await page.context().close();
+  // The other parent said Yes a moment ago: Not now here keeps her Yes (no second trade, no decline), and
+  // says so. He cancelled it while this page still showed it: either button says so and writes nothing.
+  for (const [label, status, act, by, want] of [
+    ['hw-stale-yes', 'approved', 'hw-not-now', 'morgan@example.com', 'Already approved: Pick the movie'],
+    ['hw-cancelled-yes', 'cancelled', 'hw-yes', null, 'Jordan cancelled that ask: Pick the movie'],
+    ['hw-cancelled-no', 'cancelled', 'hw-not-now', null, 'Jordan cancelled that ask: Pick the movie'],
+  ]) {
+    ({ page, db } = await open({ label, rpc: hRpc, db: hwDb() }));
+    Object.assign(db.reward_asks[0], { status, decided_at: '2026-10-25T15:00:00.000000+00:00', decided_by: by });
+    const rows = db.points_ledger.length;
+    await page.click(`.today-hw [data-act="${act}"]`);
+    await page.waitForTimeout(500);
+    check(`${act === 'hw-yes' ? 'Yes' : 'Not now'} on an ask already ${status}: "${want}", nothing written, the line goes`,
+      (await lastToast(page)) === want && db.points_ledger.length === rows && db.reward_asks[0].status === status && (await hwLines(page)).length === 1,
+      JSON.stringify([await lastToast(page), db.points_ledger.length - rows, db.reward_asks[0].status, await hwLines(page)]));
+    await page.context().close();
+  }
   // A ledger past the API's 1,000 rows (he never loses a row: about two school years of homework): 1,200
   // older +1s before this week's. The balance and this week's sources count every row.
   const long = hwDb();

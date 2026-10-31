@@ -17,7 +17,7 @@
 // rows read page by page; Not now's word at most 120; a Yes on an ask answered elsewhere says so; a
 // moved due date placed again from the plan as it is now (Jordan's changes kept, a change during the
 // save refused once and read again, a step ticked early sent without a day); a focus read never wipes
-// what is being typed in the rewards, link and points-values forms.
+// what is being typed in the rewards, link and points-values forms, nor the homework time's day chips.
 //
 // mock.js has the tables and the signed-in functions (withHomework, homeworkRpc) with the migration's
 // rules and shapes. The other v2 pages are small stubs. The household's clock is Thu Nov 5 2026,
@@ -300,6 +300,20 @@ const emailOf = (req) => {
     from: f.elements.from.value, to: f.elements.to.value })).catch(() => null);
   check('then his homework time, prefilled Mon–Thu 4:30–5:15', !!timeForm && same(timeForm.days.map((d) => d[1] === 'true'), [true, true, true, true, false, false, false])
     && same(timeForm.days.map((d) => d[0]), ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']) && timeForm.from === '16:30' && timeForm.to === '17:15', JSON.stringify(timeForm));
+  // A window focus (back from checking the school's timetable) after only the day chips were tapped: no
+  // read, the chips stay as tapped (a chip tap is no input event, so it marks the form as being typed in).
+  const chipReads = log.length;
+  await page.click('.hw-setup form[data-form="time"] [data-wd="1"]');
+  await page.click('.hw-setup form[data-form="time"] [data-wd="5"]');
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await sleep(400);
+  const chipsNow = await page.$$eval('.hw-setup form[data-form="time"] [data-wd]', (bs) => bs.map((b) => b.getAttribute('aria-pressed') === 'true')).catch(() => []);
+  check('a window focus after the day chips are tapped: no read, the chips stay (Tue–Fri)', same(chipsNow, [false, true, true, true, true, false, false])
+    && !log.slice(chipReads).some((l) => /^GET \/rest\/v1\/homework_kids/.test(l)), JSON.stringify([chipsNow, log.slice(chipReads)]));
+  for (let d = 1; d <= 7; d++) {   // back to Mon–Thu, from whatever the chips show
+    const sel = `.hw-setup form[data-form="time"] [data-wd="${d}"]`;
+    if (((await page.getAttribute(sel, 'aria-pressed')) === 'true') !== (d <= 4)) await page.click(sel);
+  }
   await page.click('.hw-setup form[data-form="time"] [data-wd="4"]');
   await page.click('.hw-setup form[data-form="time"] [data-wd="4"]');
   await page.click('.hw-setup form[data-form="time"] button[type="submit"]');
@@ -386,6 +400,25 @@ const emailOf = (req) => {
   Object.assign(db.reward_asks[0], { status: 'waiting', decided_at: null, decided_by: null });
   await page.evaluate(() => window.dispatchEvent(new Event('focus')));
   await until(page, () => !!document.querySelector('.hw-ask'));
+  // Morgan said Yes on her phone; Not now here keeps her Yes (no decline, no second trade), and says so.
+  // He cancelled it while this page still showed it: Yes or Not now says so and writes nothing.
+  for (const [status, act, by, want] of [
+    ['approved', 'not-now', 'morgan@example.com', 'Already approved: Pick the movie'],
+    ['cancelled', 'yes', null, 'Jordan cancelled that ask: Pick the movie'],
+    ['cancelled', 'not-now', null, 'Jordan cancelled that ask: Pick the movie'],
+  ]) {
+    Object.assign(db.reward_asks[0], { status, decided_at: at(TODAY, '15:09'), decided_by: by });
+    const rows = db.points_ledger.length;
+    await page.click(`.hw-ask [data-act="${act}"]`);
+    if (act === 'not-now') await page.click('.hw-ask form.hw-note button[type="submit"]');
+    await settle(page);
+    check(`${act === 'yes' ? 'Yes' : 'Not now'} on an ask already ${status} elsewhere: "${want}", nothing written, the ask goes`,
+      (await lastToast(page)) === want && db.points_ledger.length === rows && db.reward_asks[0].status === status && !(await page.$('.hw-ask')),
+      JSON.stringify([await toasts(page), db.points_ledger.length - rows, db.reward_asks[0].status]));
+    Object.assign(db.reward_asks[0], { status: 'waiting', decided_at: null, decided_by: null });
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await until(page, () => !!document.querySelector('.hw-ask'));
+  }
   await page.click('.hw-ask [data-act="yes"]');
   await settle(page);
   check('Yes: decide_reward(ask, true); the trade comes off his balance', same(lastCall(db, 'decide_reward').body, { p_ask: 'a5c00000-0000-4000-8000-000000000001', p_approve: true })
