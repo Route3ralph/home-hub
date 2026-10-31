@@ -6,7 +6,7 @@
 // functions), nor v1.3's homework (migration 0005); Settings' Google card says it is waiting for the database update; hub-jobs answers the calendar
 // job, Sync now and Test with 503 no_schema without calling Google, and sends the morning email as before.
 // Run through tests/realdb/run.sh (its own copy of the v2 template database).
-const { setup, HOMEWORK_CALLS, SCHOOL_CALLS } = require('./lib');
+const { setup, HOMEWORK_CALLS, SCHOOL_CALLS, COACH_CALLS } = require('./lib');
 
 const CALENDAR_CALLS = /\/rpc\/(google_items|calendar_\w+)$|\/rest\/v1\/(calendars|calendar_links|google_events|calendar_sync)$/;
 const FOOD_CALLS = /\/rpc\/(shopping_list|add_to_list|buy_item|get_list_by_token|add_to_list_by_token|buy_item_by_token)$|\/rest\/v1\/(meals|shopping_items|my_day_use)$/;
@@ -36,7 +36,7 @@ const FOOD_CALLS = /\/rpc\/(shopping_list|add_to_list|buy_item|get_list_by_token
     const food = reqs.filter((r) => FOOD_CALLS.test(r.path));
     check('v2 db: no meals, shopping_items or shopping list request either (no Food tab on schema 2)', !food.length
       && !(await page.$('.tabs a[data-tab="food"], .bottombar a[data-tab="food"]')), food.map((r) => r.path));
-    const hw = reqs.filter((r) => (HOMEWORK_CALLS.test(r.path) || SCHOOL_CALLS.test(r.path)));
+    const hw = reqs.filter((r) => (HOMEWORK_CALLS.test(r.path) || SCHOOL_CALLS.test(r.path) || COACH_CALLS.test(r.path)));
     check('v2 db: no homework table or function request either (no Homework tab on schema 2)', !hw.length
       && !(await page.$('.tabs a[data-tab="homework"], .bottombar a[data-tab="homework"]')), hw.map((r) => r.path));
     check('v2 db: the pages read the agenda as before', reqs.some((r) => r.path === '/rest/v1/rpc/agenda'), reqs.map((r) => r.path));

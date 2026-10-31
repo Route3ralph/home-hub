@@ -60,7 +60,7 @@ const crypto = require('crypto');
 const { chromium } = require('playwright');
 const { makeDb, install, signIn, SUPA, withFood, foodRpc, personDayFood, shopItem, mealRow, withHomeworkTokens, homeworkTokenRpc: homeworkRpc,
   personDayHomework, tkKidRow: hwKidRow, tkLinkRow: tutorLinkRow, tkAssignmentRow: assignmentRow, tkStepRow: stepRow, tkSessionRow: sessionRow,
-  tkRewardRow: rewardRow, tkLedgerRow: ledgerRow, withSchool, schoolFeedRow, schoolItemRow } = require('./mock');
+  tkRewardRow: rewardRow, tkLedgerRow: ledgerRow, withSchool, schoolFeedRow, schoolItemRow, withCoach } = require('./mock');
 const { serve, ROOT } = require('./server');
 
 let BASE = '';
@@ -2967,6 +2967,16 @@ const HW_AUDIO_DROP = `(${HW_STUBS})(); (${HW_CLOCKED})(); (${HW_WAKE_DROP})();`
       && (await hwText(page, '.hw-who')) === 'The grown-ups in your family see your plan, your notes and your points.');
     await page.click(`.hw-tonight .hw-step[data-step="${H.s1}"] [data-act="hw-more"]`);
     check('no tutor link: "Ask for help"', (await hwTexts(page, `.hw-step[data-step="${H.s1}"] .hw-menu button`)).includes('Ask for help'));
+    await page.context().close();
+  }
+  {
+    // 0007: his tutor link's coach view is on: his screen says Pat sees his points too (his view's me.coach).
+    const d = withCoach(hwDb());
+    d.tutor_links[0].coach = true;
+    ({ page, db } = await open({ label: 'hw-coach', path: `/day.html?t=${JORDAN}#homework`, db: d, device: HW_DEVICE, init: HW_STUBS }));
+    await page.waitForSelector('.hw-now-card');
+    check('the coach view on for Pat\'s link: the who-sees line says Pat sees his points too',
+      (await hwText(page, '.hw-who')) === 'Pat and the grown-ups in your family see your plan and your notes. The grown-ups and Pat see your points.', await hwText(page, '.hw-who'));
     await page.context().close();
   }
   {

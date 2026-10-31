@@ -215,6 +215,15 @@
     } catch (err) { return { status: null, failed: true }; }
   }
 
+  // 0007 (§20.5): the coach's notes on his tutor links, for the parents on schema 7: { notes, failed }. Never throws.
+  async function readCoachNotes(links) {
+    if (!(core.schemaVersion >= 7) || !isAdmin() || !links.length) return { notes: [], failed: false };
+    try {
+      return { notes: (await q(sb().from('coach_notes').select('*').in('link_id', links.map((l) => l.id)).order('created_at', { ascending: false }).order('id'))) || [],
+        failed: false };
+    } catch (err) { return { notes: [], failed: true }; }
+  }
+
   async function load(st) {
     const today = dates.today();
     // An assignment's address opens it whoever's it is: its kid becomes the one on screen.
@@ -235,10 +244,10 @@
     const kid = chosen;
     const fresh = { today, kids: known, kid, row: known.find((k) => k.kid_id === kid) || null, times: (times || []).filter((t) => t.kid_id === kid),
       links: (links || []).filter((l) => l.kid_id === kid), events: [], assignments: [], steps: [], sessions: [], ledger: [], rewards: [], asks: [],
-      week: [], weekFailed: false, school: null, schoolFailed: false };
+      week: [], weekFailed: false, school: null, schoolFailed: false, coachNotes: [], coachFailed: false };
     if (kid) {
       const ids = fresh.times.map((t) => t.event_id);
-      const [events, assignments, sessions, ledger, rewards, asks, week, school] = await Promise.all([
+      const [events, assignments, sessions, ledger, rewards, asks, week, school, coach] = await Promise.all([
         ids.length ? q(sb().from('events').select('id,title,start_date,start_time,end_time,repeat,repeat_weekdays,repeat_until').in('id', ids)) : Promise.resolve([]),
         q(sb().from('assignments').select(A_COLS).eq('kid_id', kid).order('due_date')),
         q(sb().from('focus_sessions').select('*').eq('kid_id', kid).order('started_at', { ascending: false })),
@@ -248,11 +257,13 @@
         q(sb().from('reward_asks').select('*').eq('kid_id', kid).order('asked_at', { ascending: false })),
         readWeek(kid, today),
         readSchool(kid),
+        readCoachNotes(fresh.links),
       ]);
       const aIds = (assignments || []).map((a) => a.id);
       const steps = aIds.length ? await q(sb().from('homework_steps').select('*').in('assignment_id', aIds).order('pos')) : [];
       Object.assign(fresh, { events: events || [], assignments: assignments || [], steps: steps || [], sessions: sessions || [], ledger: ledger || [],
-        rewards: rewards || [], asks: asks || [], week: week.rows, weekFailed: week.failed, school: school.status, schoolFailed: school.failed });
+        rewards: rewards || [], asks: asks || [], week: week.rows, weekFailed: week.failed, school: school.status, schoolFailed: school.failed,
+        coachNotes: coach.notes, coachFailed: coach.failed });
     }
     Object.assign(st, fresh, { loaded: true, failed: false });
   }
@@ -597,7 +608,29 @@
         <button type="button" class="btn btn-sm" data-act="new-token" data-link="${esc(l.id)}">New link</button>
         ${l.active ? btn('link-off', 'Off', ` data-link="${esc(l.id)}"`) : btn('link-on', 'On', ` data-link="${esc(l.id)}"`)}
         <button type="button" class="btn btn-sm" data-act="extend" data-link="${esc(l.id)}">Extend 180 days</button>
-      </div>${st.form && st.form.key === `link:${l.id}` ? linkFormHTML(l) : ''}</li>`;
+      </div>${core.schemaVersion >= 7 ? coachHTML(st, l) : ''}${st.form && st.form.key === `link:${l.id}` ? linkFormHTML(l) : ''}</li>`;
+  }
+  // 0007 (docs/v1.3-homework.md §20.5): the link's coach view (off by default; set_tutor_coach), with exactly what it
+  // shows, and the notes the coach left for the parents: the ones not done, each with Done, and the done ones of the
+  // last 30 days folded. Parents only (the links are theirs).
+  function coachHTML(st, l) {
+    const tutor = String(l.label).split(/[\s,]+/)[0];
+    const kid = kidName(st);
+    const notes = st.coachNotes.filter((n) => n.link_id === l.id);
+    const open = notes.filter((n) => !n.done_at);
+    const done = notes.filter((n) => n.done_at && householdDate(n.created_at) >= dates.addDays(st.today, -30));
+    const line = (n) => `${cap(when(st, n.created_at))} · “${n.note}”`;
+    const keep = `coach:${l.id}`;
+    return `<div class="hw-link-coach"><label class="hw-switch"><input type="checkbox" data-act="link-coach" data-link="${esc(l.id)}"${l.coach ? ' checked' : ''}><span>Coach view</span></label>
+        <small class="hw-switch-line">${esc(`Also shows ${tutor} ${kid}'s points and rewards (this week's and last week's points, and the last 30 days), his focus sessions, `
+          + `his own calendar (the next 14 days and the last 7) and his daily tasks, read-only, and lets ${tutor} leave you a note here. Never the rest of the family: `
+          + "no one else's events, tasks or names, no dinners, shopping list or contacts.")}</small></div>`
+      + (st.coachFailed ? `<p class="hw-switch-line">${esc(`${tutor}'s notes couldn't be loaded.`)}</p>` : '')
+      + (open.length || done.length ? `<div class="hw-coach-notes"><p class="hw-coach-head">${esc(`Notes from ${l.label} (${open.length})`)}</p>`
+        + (open.length ? `<ul>${open.map((n) => `<li><span class="hw-coach-note">${esc(line(n))}</span>${btn('coach-done', 'Done', ` data-note="${esc(n.id)}"`)}</li>`).join('')}</ul>` : '')
+        + (done.length ? `<details data-keep="${esc(keep)}"${st.schoolOpen[keep] ? ' open' : ''}><summary>${esc(`Earlier notes (${done.length})`)}</summary>`
+          + `<ul>${done.map((n) => `<li><span class="hw-coach-note">${esc(line(n))}</span> · Done</li>`).join('')}</ul></details>` : '')
+        + '</div>' : '');
   }
   function linkFormHTML(l) {
     const x = l || { label: '', language: 'en' };
@@ -1533,6 +1566,7 @@
         break;
       }
       case 'link-off': case 'link-on': { const l = st.links.find((x) => x.id === d.link); if (l) saveLink(st, l, { active: d.act === 'link-on' }); break; }
+      case 'coach-done': write(st, () => run(sb().rpc('coach_note_done', { p_note: d.note })), () => toast('Marked done')); break;
       case 'extend': {
         const l = st.links.find((x) => x.id === d.link);
         if (!l) break;
@@ -1602,6 +1636,12 @@
       if (x.name === 'kid' && x.tagName === 'SELECT') { chosen = x.value; st.form = null; reload(st); return; }
       if (x.dataset.act === 'kid-on') { write(st, () => run(sb().rpc('save_homework_kid', { p_kid: st.kid, p_active: x.checked })), () => toast(x.checked ? `Homework is on for ${kidName(st)}` : `Homework is off for ${kidName(st)}`)); return; }
       if (x.dataset.act === 'points-on') { write(st, () => saveKid(st, { points_on: x.checked }), () => toast(x.checked ? 'Points are on' : 'Points are off')); return; }
+      if (x.dataset.act === 'link-coach') {
+        const l = st.links.find((y) => y.id === x.dataset.link);
+        const on = x.checked;
+        if (l) write(st, () => run(sb().rpc('set_tutor_coach', { p_link: l.id, p_coach: on })), () => toast(`Coach view ${on ? 'on' : 'off'} for ${l.label}`));
+        return;
+      }
       if (x.closest('form[data-form]')) st.typing = true;
       if (x.closest('form.hw-afields')) st.fieldsDirty = true;
     }, { signal: ctx.signal });

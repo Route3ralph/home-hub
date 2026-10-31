@@ -17,8 +17,9 @@
 --     tasks of today and the last 7 days, done or not); and coach_note_by_token (a note for the parents).
 --     Twenty-two token functions for anon in all.
 --   • Replaced, with the same signatures: private.homework_view_tutor (0006's wrapper, which adds
---     coach: true for a link with the coach view on; its body is otherwise 0006's, and 0005's
---     homework_view_tutor_v5 isn't touched) and hub_schema_version() (7).
+--     coach: true for a link with the coach view on), private.homework_view_kid (0006's wrapper, which adds
+--     me.coach, the coach link's first word, so his screen says who sees his points), each otherwise
+--     0006's body (0005's _v5 bodies aren't touched), and hub_schema_version() (7).
 --
 -- Rules
 --   • One transaction. It refuses to run without 0006, twice, or on a database that isn't as 0006 left it.
@@ -53,6 +54,9 @@ begin
      or exists (select 1 from pg_attribute a where a.attrelid = 'public.tutor_links'::regclass and a.attname = 'coach' and not a.attisdropped)
      or to_regprocedure('private.homework_view_tutor(uuid, uuid, text)') is null
      or to_regprocedure('private.homework_view_tutor_v5(uuid, uuid, text)') is null
+     or to_regprocedure('private.homework_view_kid(uuid, text)') is null
+     or to_regprocedure('private.homework_view_kid_v5(uuid, text)') is null
+     or to_regprocedure('private.school_new(uuid)') is null
      or to_regprocedure('private.school_marks(uuid)') is null
      or to_regprocedure('private.tutor_link_by_token(text)') is null
      or to_regprocedure('private.count_homework(uuid, text, int)') is null
@@ -116,7 +120,7 @@ grant select on public.coach_notes to authenticated;
 --      else, a place, notes, a directory entry or a day's note),
 --    tasks: [{day, title, status}] (today − 7 to today: his tasks as his My day has them (agenda()), status
 --      'open', 'done' or 'skipped', and the days the daily job logged 'missed'; a private one is "Private item"),
---    notes: [{id, note, at}] (this link's own notes to the parents of the last 30 days, newest first)}
+--    notes: [{id, note, day}] (this link's own notes to the parents of the last 30 days, newest first; day: the household's)}
 -- Never a name but the kid's first name, an email, a phone number, a person's id, another person's item,
 -- the shopping list, dinners, the directory, other kids. STABLE; the definer token functions call it.
 create function private.coach_view(p_link uuid)
@@ -240,7 +244,7 @@ begin
                 and (f.started_at at time zone v_tz)::date between v_today - 29 and v_today),
     'calendar', v_items,
     'tasks', v_tasks,
-    'notes', (select coalesce(jsonb_agg(jsonb_build_object('id', n.id, 'note', n.note, 'at', n.created_at)
+    'notes', (select coalesce(jsonb_agg(jsonb_build_object('id', n.id, 'note', n.note, 'day', (n.created_at at time zone v_tz)::date)
                                         order by n.created_at desc, n.id desc), '[]')
               from public.coach_notes n where n.link_id = v_l.id and n.created_at >= v_now - interval '30 days'));
 end;
@@ -373,8 +377,50 @@ end;
 $$;
 
 -- ---------------------------------------------------------------------
--- Replaced: the tutor's view (0006's wrapper; same signature, so it keeps its grants)
+-- Replaced: his view and the tutor's view (0006's wrappers; same signatures, so they keep their grants)
 -- ---------------------------------------------------------------------
+-- His view: 0005's (homework_view_kid_v5), with the school's marks and his New from school (as 0006); and, when a
+-- tutor link of his has the coach view on (active, not past its end date), me.coach: the first word of that link's
+-- label (the first such link), so his screen can say that link sees his points too (§20.6). Left out with none, so
+-- with the coach view off everywhere it is exactly 0006's.
+create or replace function private.homework_view_kid(p_kid uuid, p_lang text)
+returns jsonb
+language plpgsql
+stable
+set search_path = ''
+as $$
+declare
+  v jsonb := private.homework_view_kid_v5(p_kid, p_lang);
+  m jsonb;
+  n jsonb;
+  c text;
+begin
+  if v is null then
+    return null;
+  end if;
+  m := private.school_marks(p_kid);
+  if m <> '{}' and jsonb_typeof(v -> 'assignments') = 'array' then
+    v := jsonb_set(v, '{assignments}',
+                   (select coalesce(jsonb_agg(case when m ? (x ->> 'id') then x || jsonb_build_object('school', m -> (x ->> 'id')) else x end
+                                              order by t.n), '[]')
+                    from jsonb_array_elements(v -> 'assignments') with ordinality t (x, n)));
+  end if;
+  n := private.school_new(p_kid);
+  if n is not null then
+    v := v || jsonb_build_object('from_school', n);
+  end if;
+  -- 0007: a tutor link of his with the coach view on.
+  c := (select nullif(split_part(btrim(split_part(l.label, ',', 1)), ' ', 1), '')
+        from public.tutor_links l
+        where l.kid_id = p_kid and l.active and l.coach and l.expires_on >= public.today_local()
+        order by l.created_at, l.id limit 1);
+  if c is not null and jsonb_typeof(v -> 'me') = 'object' then
+    v := jsonb_set(v, '{me,coach}', to_jsonb(c));
+  end if;
+  return v;
+end;
+$$;
+
 -- The tutor's view: 0005's (homework_view_tutor_v5), with the school's marks on each assignment made
 -- from school, in the list and with p_assignment (as 0006); and, for a link with the coach view on,
 -- coach: true (the page then reads coach_view_by_token). p_part 'ai' answers as 0005's.
@@ -426,7 +472,8 @@ $$;
 -- ---------------------------------------------------------------------
 -- Function permissions
 -- New functions, public and private: revoke from public and anon (and whoever else mustn't call them),
--- then grant to who calls them. The replaced ones (homework_view_tutor, hub_schema_version) keep theirs.
+-- then grant to who calls them. The replaced ones (homework_view_kid, homework_view_tutor, hub_schema_version)
+-- keep theirs.
 -- ---------------------------------------------------------------------
 
 -- The tutor link: its token is the key.

@@ -217,6 +217,8 @@ select test.is(pg_temp.keys(tutor_view_by_token(pg_temp.token('Pat Lee, tutor'))
 select test.ok(not (tutor_view_by_token(pg_temp.token('Pat Lee, tutor'), 'a0000000-0000-4000-8000-000000000001') ? 'coach'),
                'coach off: ... with an assignment too');
 select test.is(coach_view_by_token(pg_temp.token('Pat Lee, tutor')), null, 'coach off: coach_view_by_token answers null');
+select test.is(pg_temp.keys(homework_by_token(test.token('Taylor')) -> 'me'), 'cue,first_name,if_stuck,length,lengths,points_on,tutor',
+               'coach off: his own view''s me is as on 6 (no coach)');
 select test.is(coach_note_by_token(pg_temp.token('Pat Lee, tutor'), 'f0000000-0000-4000-8000-000000000001', 'Hello'), null,
                'coach off: coach_note_by_token answers null ...');
 :as_owner
@@ -253,6 +255,10 @@ select test.is(pg_temp.keys(tutor_view_by_token(pg_temp.token('Pat Lee, tutor'),
                '... the AI poll answers as before (no coach key)');
 select test.ok(not (tutor_view_by_token(pg_temp.token('Casey, tutor')) ? 'coach'), '... Casey''s link (coach off) has no coach key');
 select test.is(coach_view_by_token(pg_temp.token('Casey, tutor')), null, '... and Casey''s link reads no coach view');
+select test.is(homework_by_token(test.token('Taylor')) -> 'me' ->> 'coach', 'Pat',
+               'his own view names the coach (the first word of the link''s label), so his screen can say who sees his points');
+select test.is(pg_temp.keys((homework_by_token(test.token('Taylor')) -> 'me') - 'coach'), 'cue,first_name,if_stuck,length,lengths,points_on,tutor',
+               '... and nothing else is new in his me');
 
 create temp table cv as select coach_view_by_token(pg_temp.token('Pat Lee, tutor')) as v;
 select test.is(pg_temp.keys((select v from cv)), 'as_of,asks,calendar,focus,kid,language,notes,points,rewards,tasks,today',
@@ -373,6 +379,8 @@ select test.is((select (v ->> 'note_id') || ' ' || (v ->> 'changed') from n1), '
 select test.is((select pg_temp.rows(v -> 'notes', '{id,note}') from n1),
                E'f0000000-0000-4000-8000-000000000001 Suggest lowering the on-time bonus.\n\nHe starts on time anyway.',
                '... and the coach view, with the note in it (cleaned, its lines kept)');
+select test.is((select pg_temp.keys(v -> 'notes' -> 0) || ' ' || (v -> 'notes' -> 0 ->> 'day') from n1), 'day,id,note 2026-11-04',
+               '... each note with its id, its text and the household''s day it was written');
 :as_owner
 select test.is((select note || ' | ' || written_by || ' | ' || (created_at = private.now()) || ' | ' || (done_at is null) from coach_notes),
                E'Suggest lowering the on-time bonus.\n\nHe starts on time anyway. | Pat Lee, tutor (tutor link) | true | true',
@@ -492,6 +500,8 @@ select set_tutor_coach(pg_temp.lid('Pat Lee, tutor'), false);
 :as_anon
 select test.ok(not (tutor_view_by_token(pg_temp.token('Pat Lee, tutor')) ? 'coach') and coach_view_by_token(pg_temp.token('Pat Lee, tutor')) is null,
                'turned off again: no coach key and no coach view');
+select test.ok((homework_by_token(test.token('Taylor')) -> 'me' ->> 'coach') = 'Casey',
+               '... and his view names only a link whose coach view is still on (Casey''s)');
 -- Pat's token opens nothing of My day, and a My day token opens no coach view.
 select test.is(get_person_day(pg_temp.token('Pat Lee, tutor')), null, 'Pat''s token opens no My day');
 select test.is(coach_view_by_token(test.token('Taylor')), null, 'his My day token opens no coach view');

@@ -1347,6 +1347,7 @@ const homeworkRpc = {
       if (db.tutor_links.filter((l) => l.kid_id === b.p_kid).length >= 3) throw new Raise('22023', 'At most 3 tutor links.');
       const l = tutorLinkRow({ kid_id: b.p_kid, label, language: b.p_language || 'en', expires_on: ends, can_ai: b.p_can_ai == null ? true : b.p_can_ai,
         active: b.p_active == null ? true : b.p_active, created_at: t, created_by: email, updated_at: t, updated_by: email });
+      if (db.coach_notes) l.coach = false;   // 0007's column
       db.tutor_links.push(l);
       return l.id;
     }
@@ -1379,12 +1380,49 @@ const homeworkRpc = {
     db.homework_steps = db.homework_steps.filter((s) => !mine.has(s.assignment_id));
     ['assignments', 'focus_sessions', 'points_ledger', 'rewards', 'reward_asks', 'tutor_links', 'ai_runs', 'homework_times', 'homework_kids']
       .forEach((t) => { db[t] = db[t].filter((x) => (x.kid_id) !== kid); });
+    if (db.coach_notes) db.coach_notes = db.coach_notes.filter((n) => !links.has(n.link_id));   // 0007: coach_notes.link_id → tutor_links on delete cascade
     if (db.school_feeds) {   // 0006: school_feeds.kid_id → homework_kids on delete cascade, and its items with it
       const gone = new Set(db.school_feeds.filter((f) => f.kid_id === kid).map((f) => f.id));
       db.school_feeds = db.school_feeds.filter((f) => !gone.has(f.id));
       db.school_items = db.school_items.filter((i) => !gone.has(i.feed_id));
     }
     return counts;
+  }),
+};
+
+// ---- Schema 7 (0007_homework_coach.sql, docs/v1.3-homework.md §20): the coach view. withCoach(db) is for a schema-7
+// database (after withHomework, or withHomeworkTokens on the link's side): every tutor link gets its coach column
+// (false unless set), and coach_notes (coachNoteRow makes rows), which only the parents read and nobody writes
+// directly. coachRpc fakes the parents' set_tutor_coach(p_link, p_coach) and coach_note_done(p_note) with the
+// migration's rules and messages; the link's coach_view_by_token and coach_note_by_token are homeworkTokenRpc's.
+function withCoach(db) {
+  db.coach_notes = db.coach_notes || [];
+  (db.tutor_links || []).forEach((l) => { if (l.coach === undefined) l.coach = false; });
+  db.coachCal = db.coachCal || {};
+  db.coachTasks = db.coachTasks || {};
+  return db;
+}
+const coachNoteRow = (o) => Object.assign({ id: uuid(), link_id: null, note: '', written_by: 'Pat Lee, tutor (tutor link)', created_at: now(), done_at: null, done_by: null }, o);
+const coachCall = (name, args, run) => {
+  const call = hwCall(name, args, [], run);
+  return (db, b, email) => (db.coach_notes ? call(db, b, email)
+    : { __status: 404, body: { code: 'PGRST202', message: `Could not find the function public.${name}(${Object.keys(b || {}).sort().join(', ')}) in the schema cache`, details: null, hint: null } });
+};
+const coachRpc = {
+  set_tutor_coach: coachCall('set_tutor_coach', ['p_link', 'p_coach'], (db, b, email) => {
+    parentOnly(db, email);
+    if (b.p_coach == null) throw new Raise('22023', 'Choose on or off.');
+    const l = db.tutor_links.find((x) => x.id === b.p_link);
+    if (!l) throw new Raise('22023', 'That link is gone.');
+    if (l.coach !== !!b.p_coach) Object.assign(l, { coach: !!b.p_coach, updated_at: foodStamp(db), updated_by: email });
+    return null;
+  }),
+  coach_note_done: coachCall('coach_note_done', ['p_note'], (db, b, email) => {
+    parentOnly(db, email);
+    const n = db.coach_notes.find((x) => x.id === b.p_note);
+    if (!n) throw new Raise('22023', 'That note is gone.');
+    if (!n.done_at) Object.assign(n, { done_at: foodStamp(db), done_by: email });
+    return null;
   }),
 };
 
@@ -1943,7 +1981,11 @@ async function install(page, db, log, opts = {}) {
       || homeworkTables(db, table, method, body, member, db[table].filter(match))
       // 0006: members read school_feeds and school_items; only the functions write them (no grant).
       || (['school_feeds', 'school_items'].includes(table) && method !== 'GET'
-        ? { status: 403, body: { code: '42501', message: `permission denied for table ${table}`, details: null, hint: null } } : null);
+        ? { status: 403, body: { code: '42501', message: `permission denied for table ${table}`, details: null, hint: null } } : null)
+      // 0007: the parents read coach_notes (members get no rows); only the functions write it (no grant).
+      || (table === 'coach_notes'
+        ? (method === 'GET' ? { rows: member.role === 'admin' ? db[table].filter(match) : [] }
+          : { status: 403, body: { code: '42501', message: `permission denied for table ${table}`, details: null, hint: null } }) : null);
     if (cal && cal.body) return reply(cal.status, cal.body);
     if (cal && method === 'DELETE') return route.fulfill({ status: 204, headers: CORS });
     if (cal && method !== 'GET') return out(cal.rows, cal.status);
@@ -2034,7 +2076,7 @@ async function signIn(context, email) {
 const TK_TABLES = ['homework_kids', 'homework_times', 'tutor_links', 'assignments', 'homework_steps', 'focus_sessions', 'rewards',
   'reward_asks', 'points_ledger', 'homework_use', 'ai_runs'];
 const TK_WRITES = ['homework_kids', 'tutor_links', 'assignments', 'homework_steps', 'focus_sessions', 'rewards', 'reward_asks',
-  'points_ledger', 'homework_use'];
+  'points_ledger', 'homework_use', 'coach_notes'];
 function withHomeworkTokens(db, opts) {
   const o = opts || {};
   TK_TABLES.forEach((t) => { if (!db[t]) db[t] = []; });
@@ -2245,7 +2287,19 @@ const tkCashedToday = (db, kid) => db.reward_asks.filter((q) => q.kid_id === kid
 
 // ---- Jordan's view (private.homework_view_kid) and the card (private.homework_card)
 const tkStepsOf = (db, aid) => db.homework_steps.filter((s) => s.assignment_id === aid).sort((x, y) => (x.pos - y.pos) || (x.id < y.id ? -1 : 1));
+// 0007: his view's me.coach, the first word of the label of his first tutor link (active, not ended) with the coach
+// view on, so his screen can say that link sees his points too; left out with none (as on 6).
 function tkViewKid(db, kid) {
+  const v = tkViewKid6(db, kid);
+  if (v && v.me && db.coach_notes) {
+    const l = (db.tutor_links || []).filter((x) => x.kid_id === kid && x.active && x.coach && x.expires_on >= tkToday(db))
+      .sort((x, y) => (x.created_at < y.created_at ? -1 : 1))[0];
+    const w = l ? String(l.label).split(',')[0].trim().split(' ')[0] : '';
+    if (w) v.me.coach = w;
+  }
+  return v;
+}
+function tkViewKid6(db, kid) {
   const k = tkKidOf(db, kid);
   const me = (db.people || []).find((p) => p.id === kid);
   if (!k || !me) return null;
@@ -2838,7 +2892,9 @@ function tkViewTutor(db, link, aid, part) {
     }
     out.assignment = detail;
   }
-  return tkWithSchool(db, kid, out);
+  const v = tkWithSchool(db, kid, out);
+  if (db.coach_notes && link.coach) v.coach = true;   // 0007: the coach view is on for this link
+  return v;
 }
 
 // ---- The functions: PostgREST finds one by the names sent (every one known, every one without a default sent).
@@ -2862,6 +2918,61 @@ function tkCall(name, args, defaults, run) {
   };
 }
 const tkTooLong = () => new Raise('22023', "That's too long.");
+
+// ---- Schema 7 (0007_homework_coach.sql, docs/v1.3-homework.md §20): the coach view (private.coach_view) of a link
+// with tutor_links.coach on. Points, rewards, asks and focus come from the tables; his calendar and his daily tasks
+// are the test's (db.coachCal[kid], db.coachTasks[kid]: the rows agenda() and google_for() would give, already "his
+// own", each { day, end_day, all_day, starts, ends, title, private } and { day, title, private, status }), as db.hwBusy
+// stands in for person_items. Private ones read "Private item" in the link's language.
+const COACH_PRIVATE = { en: 'Private item', es: 'Asunto privado' };
+function tkCoachView(db, l) {
+  if (!l || !l.coach) return null;
+  const kid = l.kid_id;
+  const k = tkKidOf(db, kid);
+  const me = (db.people || []).find((p) => p.id === kid);
+  const today = tkToday(db);
+  const mon = tkMonday(today);
+  const led = db.points_ledger.filter((x) => x.kid_id === kid);
+  const week = (from, to) => {
+    const rows = led.filter((x) => x.day >= from && x.day <= to);
+    const sum = (kinds) => rows.filter((x) => kinds.includes(x.kind)).reduce((n, x) => n + x.delta, 0);
+    return { focus: sum(['focus']), on_time: sum(['on_time']), milestones: sum(['milestone_done', 'milestone']), given: sum(['given']), voided: sum(['void']), trades: sum(['trade']) };
+  };
+  const desc = (key) => (x, y) => (tkMs(x[key]) > tkMs(y[key]) ? -1 : tkMs(x[key]) < tkMs(y[key]) ? 1 : x.id < y.id ? -1 : 1);
+  const word = COACH_PRIVATE[l.language] || COACH_PRIVATE.en;
+  const pts = k && k.points_on;
+  return {
+    language: l.language, as_of: tkAsOf(db), today, kid: String(me ? me.name : '').split(' ')[0],
+    points: pts ? {
+      balance: led.reduce((n, x) => n + x.delta, 0), this_week: week(mon, tkAdd(mon, 6)), last_week: week(tkAdd(mon, -7), tkAdd(mon, -1)),
+      lines: led.filter((x) => x.day >= tkAdd(today, -29) && x.day <= today).sort(desc('at')).map((x) => ({ day: x.day, kind: x.kind, delta: x.delta, note: x.note })),
+    } : null,
+    rewards: pts ? db.rewards.filter((r) => r.kid_id === kid && r.active).sort((x, y) => x.sort_order - y.sort_order || (x.cost || 0) - (y.cost || 0))
+      .map((r) => ({ title: r.title, cost: r.cost, instant: !!r.instant })) : null,
+    asks: pts ? db.reward_asks.filter((q) => q.kid_id === kid && (q.status === 'waiting' || db.hwNow - tkMs(q.asked_at) <= 30 * 86400000)).sort(desc('asked_at'))
+      .map((q) => ({ title: q.title, cost: q.cost, status: q.status, asked_on: tkDayOf(db, q.asked_at), decided_on: q.decided_at ? tkDayOf(db, q.decided_at) : null })) : null,
+    focus: db.focus_sessions.filter((f) => f.kid_id === kid && f.ended_at && tkDayOf(db, f.started_at) >= tkAdd(today, -29) && tkDayOf(db, f.started_at) <= today)
+      .sort(desc('started_at')).map((f) => {
+        const s = f.step_id ? db.homework_steps.find((x) => x.id === f.step_id) : null;
+        const a = db.assignments.find((x) => x.id === (f.assignment_id || (s && s.assignment_id)) && x.kid_id === kid);
+        return { day: tkDayOf(db, f.started_at), assignment: a ? a.title : null, minutes: f.minutes, seen_minutes: f.seen_minutes, result: f.result, note: f.note };
+      }),
+    calendar: ((db.coachCal || {})[kid] || []).filter((i) => i.day >= tkAdd(today, -7) && i.day <= tkAdd(today, 13))
+      .map((i) => ({ day: i.day, end_day: i.end_day || i.day, all_day: !!i.all_day, starts: i.all_day ? null : i.starts || null, ends: i.all_day ? null : i.ends || null,
+        title: i.private ? word : i.title })),
+    tasks: ((db.coachTasks || {})[kid] || []).filter((t) => t.day >= tkAdd(today, -7) && t.day <= today)
+      .map((t) => ({ day: t.day, title: t.private ? word : t.title, status: t.status })),
+    notes: (db.coach_notes || []).filter((n) => n.link_id === l.id && db.hwNow - tkMs(n.created_at) <= 30 * 86400000)
+      .sort((x, y) => (tkMs(x.created_at) > tkMs(y.created_at) ? -1 : tkMs(x.created_at) < tkMs(y.created_at) ? 1 : x.id > y.id ? -1 : 1))
+      .map((n) => ({ id: n.id, note: n.note, day: tkDayOf(db, n.created_at) })),
+  };
+}
+// Before 0007 the coach's functions aren't there (PostgREST's PGRST202), whatever is sent.
+const tkCoachCall = (name, args, defaults, run) => {
+  const call = tkCall(name, args, defaults, run);
+  return (db, b) => (db.coach_notes ? call(db, b)
+    : { __status: 404, body: { code: 'PGRST202', message: `Could not find the function public.${name}(${Object.keys(b || {}).sort().join(', ')}) in the schema cache`, details: null, hint: null } });
+};
 const tkKidWho = (db, me) => `${tkShortName(db, me)} (My day)`;
 const tkSchoolItem = tkCall('school_item_by_token', ['p_token', 'p_item', 'p_action'], ['p_minutes'], (db, b) => {
   const me = tkKidByToken(db, b.p_token);
@@ -3112,6 +3223,29 @@ const homeworkTokenRpc = {
     delete r.paid;
     return Object.assign(r, tkViewTutor(db, l, a.id, 'all'));
   }),
+  // 0007 (§20.4): the coach view, read-only, and a note for the parents; null unless the link works and its coach view is on.
+  coach_view_by_token: tkCoachCall('coach_view_by_token', ['p_token'], [], (db, b) => {
+    const l = tkLinkByToken(db, b.p_token);
+    return l && l.coach ? tkCoachView(db, l) : null;
+  }),
+  coach_note_by_token: tkCoachCall('coach_note_by_token', ['p_token', 'p_key', 'p_note'], [], (db, b) => {
+    const l = tkLinkByToken(db, b.p_token);
+    if (!l || !l.coach) return null;
+    if (tkLen(b.p_note) > 500) throw tkTooLong();
+    if (!b.p_key) throw new Raise('22023', 'A note needs its id.');
+    const old = db.coach_notes.find((n) => n.id === b.p_key);
+    if (old) {
+      if (old.link_id !== l.id) throw new Raise('42501', "That note isn't on this link.");
+      return Object.assign({ note_id: old.id, changed: false }, tkCoachView(db, l));
+    }
+    const note = String(b.p_note == null ? '' : b.p_note).split(/\r\n?|\n/).map((x) => cleanText(x, 500)).join('\n').replace(/\n{3,}/g, '\n\n').replace(/^\n+|\n+$/g, '');
+    if (!note) throw new Raise('22023', 'Write a note first.');
+    tkCount(db, l.id, 'writes', 200);
+    const today = tkToday(db);
+    if (db.coach_notes.filter((n) => n.link_id === l.id && tkDayOf(db, n.created_at) === today).length >= 5) throw new Raise('P0001', "That's a lot for one day.");
+    db.coach_notes.push({ id: b.p_key, link_id: l.id, note, written_by: `${l.label} (tutor link)`, created_at: tkStamp(db.hwNow), done_at: null, done_by: null });
+    return Object.assign({ note_id: b.p_key, changed: true }, tkCoachView(db, l));
+  }),
 };
 
 // Web Share for the Share buttons. Chromium on Linux has no navigator.share, so a page has none unless
@@ -3144,4 +3278,4 @@ module.exports = { makeDb, install, signIn, expectedConsoleError, SUPA, withCale
   withFood, mealRow, shopItem, foodRpc, personDayFood, foodStamp,
   withHomework, homeworkRpc, homePlan, hwKidRow, tutorLinkRow, assignmentRow, stepRow, sessionRow, rewardRow, askRow, ledgerRow,
   withHomeworkTokens, homeworkTokenRpc, personDayHomework, tkKidRow, tkLinkRow, tkAssignmentRow, tkStepRow, tkSessionRow, tkRewardRow, tkLedgerRow, stubShare,
-  withSchool, schoolRpc, schoolFeedRow, schoolItemRow, schoolUrlOf };
+  withSchool, schoolRpc, schoolFeedRow, schoolItemRow, schoolUrlOf, withCoach, coachRpc, coachNoteRow };

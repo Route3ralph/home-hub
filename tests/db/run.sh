@@ -488,8 +488,8 @@ SQL
   # 5f. Migration 0007 replaces the wrapper of Pat's view (private.homework_view_tutor) to add one key, coach:
   #     true, for a link with the coach view on. 0007 leaves it off on every link, so 5e above holds with 0007
   #     applied; and on hub_05_later, turning it on for Pat's link adds exactly that key to his list and his
-  #     assignment's answer, and nothing else changes: not the AI poll, not her My day or her homework view,
-  #     not anyone's My day.
+  #     assignment's answer, and her homework view's me gains coach: "Pat" (0007 replaces its wrapper too, so her
+  #     screen can say who sees her points); nothing else changes: not the AI poll, not anyone's My day.
   got=$(quiet -d hub_05_later -A -t <<'SQL' 2>&1
 set hub.now = '2026-11-03 16:40 America/New_York';
 create temp table before as
@@ -505,14 +505,14 @@ select concat_ws(' ',
   public.tutor_view_by_token('ab000000000000000000000000000cd1') = b.l || '{"coach": true}',
   public.tutor_view_by_token('ab000000000000000000000000000cd1', 'a0000000-0000-4000-8000-000000000005') = b.a || '{"coach": true}',
   public.tutor_view_by_token('ab000000000000000000000000000cd1', 'a0000000-0000-4000-8000-000000000005', 'ai') = b.ai,
-  public.homework_by_token((select p.day_token from public.people p where p.name = 'Taylor')) = b.h,
+  public.homework_by_token((select p.day_token from public.people p where p.name = 'Taylor')) = jsonb_set(b.h, '{me,coach}', '"Pat"'),
   (select jsonb_agg(public.get_person_day(p.day_token) order by p.name) from public.people p) = b.d,
   public.coach_view_by_token('ab000000000000000000000000000cd1') ->> 'kid')
 from before b;
 SQL
 )
   if [[ $got == "t t t t t t Taylor" ]]; then
-    report "PASS  same output: the coach view on for Pat's link adds only coach: true to his view, and changes nothing else"
+    report "PASS  same output: the coach view on for Pat's link adds only coach: true to his view and the coach's name to hers, and changes nothing else"
   else report "FAIL  same output: the coach view on for Pat's link adds only coach: true to his view  (${got:0:300})"; fi
 fi
 

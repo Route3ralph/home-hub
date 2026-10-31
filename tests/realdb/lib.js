@@ -421,4 +421,10 @@ const SCHOOL_FNS = ['school_feed_status', 'set_school_feed', 'check_school_feed'
   'school_begin', 'school_store', 'school_finish'];
 const SCHOOL_CALLS = new RegExp(`^/rest/v1/(${SCHOOL_TABLES.join('|')}|rpc/(${SCHOOL_FNS.join('|')}))$`);
 
-module.exports = { setup, HOMEWORK_TABLES, HOMEWORK_FNS, HOMEWORK_CALLS, SCHOOL_TABLES, SCHOOL_FNS, SCHOOL_CALLS };
+// The coach view (migration 0007, docs/v1.3-homework.md §20): its table and four public functions, as request paths. A
+// site on a database before 0007 asks for none of them, nor does a tutor link whose coach view is off.
+const COACH_TABLES = ['coach_notes'];
+const COACH_FNS = ['set_tutor_coach', 'coach_note_done', 'coach_view_by_token', 'coach_note_by_token'];
+const COACH_CALLS = new RegExp(`^/rest/v1/(${COACH_TABLES.join('|')}|rpc/(${COACH_FNS.join('|')}))$`);
+
+module.exports = { setup, HOMEWORK_TABLES, HOMEWORK_FNS, HOMEWORK_CALLS, SCHOOL_TABLES, SCHOOL_FNS, SCHOOL_CALLS, COACH_TABLES, COACH_FNS, COACH_CALLS };

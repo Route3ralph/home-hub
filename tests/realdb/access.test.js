@@ -1,6 +1,6 @@
 // What the API gives someone signed out (anon) and someone signed in who isn't on the family list,
 // through the PostgREST stand-in on the real database: every public table and every public function.
-// Signed out, only get_shared_project and the twenty token functions (TOKEN_FNS) may answer; a
+// Signed out, only get_shared_project and the twenty-two token functions (TOKEN_FNS) may answer; a
 // stranger gets nothing from any table, and from the functions only the harmless HARMLESS ones (and
 // empty lists). The Google Calendar tables and functions (migration 0003), the dinners and the
 // shopping list (migration 0004), and homework (migration 0005) are checked again with rows in their
@@ -11,12 +11,13 @@
 const { setup, HOMEWORK_TABLES, HOMEWORK_FNS } = require('./lib');
 
 // The only public functions anon may run: v1's get_shared_project, 0002's five My day functions,
-// 0004's three for the helper's list, 0005's seven for Jordan's homework and four for the tutor link, and 0006's
-// one for his New from school.
+// 0004's three for the helper's list, 0005's seven for Jordan's homework and four for the tutor link, 0006's
+// one for his New from school, and 0007's two for the tutor link's coach view.
 const TOKEN_FNS = ['get_person_day', 'complete_by_token', 'undo_by_token', 'confirm_digest', 'stop_digest', 'get_shared_project',
   'get_list_by_token', 'add_to_list_by_token', 'buy_item_by_token',
   'homework_by_token', 'step_by_token', 'plan_by_token', 'focus_by_token', 'reward_by_token', 'assignment_by_token', 'homework_prefs_by_token',
-  'tutor_view_by_token', 'tutor_assignment_by_token', 'tutor_plan_by_token', 'tutor_step_by_token', 'school_item_by_token'];
+  'tutor_view_by_token', 'tutor_assignment_by_token', 'tutor_plan_by_token', 'tutor_step_by_token', 'school_item_by_token',
+  'coach_view_by_token', 'coach_note_by_token'];
 // What any signed-in account may learn, by design: its own email, the household's date, clock and
 // time zone, and the schema version (sign-up is limited to the family list by the auth hook).
 const HARMLESS = ['current_email', 'clock', 'today_local', 'hub_schema_version'];
@@ -488,6 +489,132 @@ const emptyLists = (b) => !!b && typeof b === 'object' && !Array.isArray(b)
     const after = await snapshot();
     const changed = Object.keys(before).filter((k) => JSON.stringify(before[k]) !== JSON.stringify(after[k]));
     check('homework: nothing was changed (every homework table, the task log, the list and the people)', !changed.length, changed.map((k) => [k, before[k], after[k]]));
+  });
+
+  // The coach view (migration 0007), on the homework flow's household (Pat's link, Jordan's points, reward, ask and block),
+  // with other people's things around his: Sam's dinner out that he is along on, Morgan's piano lesson he goes to,
+  // Taylor's own task, Sam's dinner and a line on the shopping list. With the coach view off, the link reads nothing
+  // new. Sam can't turn it on; Alex can. Then, signed out with Pat's token: coach_view_by_token gives exactly its keys,
+  // Jordan's first name and his own things only (his homework time, his own class, his own task), no one else's name,
+  // surname, email, id, token, event, task, dinner or list line; a note goes to the parents, whom only they read and mark
+  // done; and the link reads nothing else (every table signed out gives no rows, every other anonymous function answers
+  // Pat's token with nothing, Jordan's My day token opens no coach function). Turned off again, the link is as before.
+  await flow('coach view', async () => {
+    const id = async (who) => (await sql(`select id, day_token from people where name like '${who}%'`))[0];
+    const [sam, jordan, taylor] = [await id('Sam'), await id('Jordan'), await id('Taylor')];
+    const PAT = 'abcdef0123456789abcdef0123456789';
+    const LINK = 'e0000000-0000-4000-8000-000000000052';
+    const KEY = 'e0000000-0000-4000-8000-000000000071';
+    const admin = (await h.sessionFor('alex@example.com')).access_token;
+    const member = (await h.sessionFor('sam@example.com')).access_token;
+    const ask = (p, auth, body, method = 'POST') => h.api(p, body === undefined ? { headers: auth ? { authorization: `Bearer ${auth}` } : {} }
+      : { method, headers: Object.assign({ 'content-type': 'application/json', prefer: 'return=representation' }, auth ? { authorization: `Bearer ${auth}` } : {}), body: JSON.stringify(body) });
+    const fn = (f, auth, args) => ask(`/rest/v1/rpc/${f}`, auth, args);
+    const people = await sql('select id, name, email from people');
+    const leaks = (text, allow = []) => {
+      const found = [];
+      for (const p of people) {
+        for (const part of p.name.split(' ')) if (!allow.includes(part) && new RegExp(`\\b${part}\\b`).test(text)) found.push(part);
+        if (text.includes(p.id)) found.push(`id of ${p.name}`);
+        if (p.email && text.includes(p.email)) found.push(p.email);
+      }
+      if (/@/.test(text)) found.push('an @');
+      for (const t of [PAT, jordan.day_token, taylor.day_token]) if (text.includes(t)) found.push('a token');
+      return [...new Set(found)];
+    };
+    await sql(`
+      insert into events (title, start_date, start_time, end_time, responsible_id, participant_ids)
+        values ('Chess club', public.today_local() + 1, '15:00', '16:00', '${jordan.id}', '{}'),
+               ('Dinner out', public.today_local() + 2, '18:30', '20:00', '${sam.id}', '{${jordan.id},${taylor.id}}');
+      insert into tasks (title, responsible_id, due_date) values ('Pack the bag', '${jordan.id}', public.today_local()),
+                                                                 ('Mow the lawn', '${taylor.id}', public.today_local());
+      insert into meals (day, kind, title, cook_id) values (public.today_local(), 'cook', 'Pancakes for dinner', '${sam.id}')
+        on conflict do nothing;
+      insert into shopping_items (name, added_by) values ('Oat milk', '${sam.id}');`);
+
+    // Off (as 0007 leaves every link): nothing new.
+    const offList = await fn('tutor_view_by_token', null, { p_token: PAT, p_assignment: null, p_part: 'all' });
+    const off = [await fn('coach_view_by_token', null, { p_token: PAT }), await fn('coach_note_by_token', null, { p_token: PAT, p_key: KEY, p_note: 'Hello' })];
+    check('coach view off: Pat\'s view has no coach key, the two coach functions answer null, and no note is kept',
+      offList.status === 200 && !!offList.body && !('coach' in offList.body) && off.every((r) => r.status === 200 && r.body === null)
+      && (await sql('select count(*) as n from coach_notes'))[0].n === '0', off.map((r) => [r.status, r.body]));
+
+    // Only a parent turns it on.
+    const samOn = await fn('set_tutor_coach', member, { p_link: LINK, p_coach: true });
+    const anonOn = await fn('set_tutor_coach', null, { p_link: LINK, p_coach: true });
+    const alexOn = await fn('set_tutor_coach', admin, { p_link: LINK, p_coach: true });
+    check('the switch: Sam is refused (403), signed out refused (401), Alex turns it on', samOn.status === 403 && anonOn.status === 401 && alexOn.status < 300
+      && (await sql(`select coach from tutor_links where id = '${LINK}'`))[0].coach === 't', [samOn.status, anonOn.status, alexOn.status]);
+
+    // On: the coach view, signed out with Pat's token.
+    const cv = await fn('coach_view_by_token', null, { p_token: PAT });
+    const ct = JSON.stringify(cv.body);
+    check('coach view on: exactly its keys, for Jordan (his first name)', cv.status === 200 && !!cv.body
+      && JSON.stringify(Object.keys(cv.body).sort()) === JSON.stringify(['as_of', 'asks', 'calendar', 'focus', 'kid', 'language', 'notes', 'points', 'rewards', 'tasks', 'today'])
+      && cv.body.kid === 'Jordan', ct.slice(0, 300));
+    check('... his points (118: the given ones), his reward, his waiting ask, his finished block',
+      cv.body.points.balance === 118 && cv.body.rewards.length === 1 && cv.body.rewards[0].title === "Choose Friday's dinner"
+      && cv.body.asks.length === 1 && cv.body.asks[0].status === 'waiting' && cv.body.focus.length === 1 && cv.body.focus[0].assignment === 'Science project: river poster',
+      ct.slice(0, 400));
+    const titles = cv.body.calendar.map((i) => i.title);
+    check('... his own calendar: his homework time and his chess club; not the dinner out he is along on, nor Morgan\'s piano lesson',
+      titles.includes('Homework') && titles.includes('Chess club') && !titles.includes('Dinner out') && !titles.some((t) => /Piano/.test(t)), titles);
+    check('... his daily tasks: his own, not Taylor\'s', cv.body.tasks.some((x) => x.title === 'Pack the bag' && x.status === 'open') && !cv.body.tasks.some((x) => x.title === 'Mow the lawn'),
+      cv.body.tasks);
+    check('... and nothing of anyone else: no other name or surname, no email, no person\'s id, no token, no dinner, no list line, no phone number',
+      !leaks(ct, ['Jordan']).length && !/Pancakes|Oat milk|Tacos|Milk|Eggs|Birthday cake|Pregnancy|Mow the lawn|Dinner out|Piano|555-/.test(ct), [leaks(ct, ['Jordan']), ct.match(/Pancakes|Oat milk|Tacos|Milk|Eggs|Birthday cake|Pregnancy|Mow the lawn|Dinner out|Piano|555-/g)]);
+    const onList = await fn('tutor_view_by_token', null, { p_token: PAT, p_assignment: null, p_part: 'all' });
+    check('... and Pat\'s view says coach: true, with nothing else new', onList.body.coach === true
+      && JSON.stringify(Object.keys(onList.body).filter((k) => k !== 'coach').sort()) === JSON.stringify(Object.keys(offList.body).sort()), Object.keys(onList.body));
+
+    // A note for the parents.
+    const note = await fn('coach_note_by_token', null, { p_token: PAT, p_key: KEY, p_note: 'Suggest lowering the on-time bonus.' });
+    check('a note: coach_note_by_token keeps it, written by the link', note.status === 200 && note.body && note.body.changed === true
+      && JSON.stringify((await sql('select note, written_by from coach_notes'))) === JSON.stringify([{ note: 'Suggest lowering the on-time bonus.', written_by: 'Pat Lee, tutor (tutor link)' }]),
+      [note.status, note.body && note.body.note_id]);
+    const reads = [(await ask('/rest/v1/coach_notes?select=*', admin)), (await ask('/rest/v1/coach_notes?select=*', member)), (await ask('/rest/v1/coach_notes?select=*', null))];
+    check('only the parents read it: Alex 1 row, Sam none, signed out refused (401)', reads[0].status === 200 && reads[0].body.length === 1
+      && reads[1].status === 200 && reads[1].body.length === 0 && reads[2].status === 401, reads.map((r) => [r.status, Array.isArray(r.body) ? r.body.length : r.body]));
+    const writes = [(await ask('/rest/v1/coach_notes', admin, { id: 'e0000000-0000-4000-8000-000000000072', link_id: LINK, note: 'x', written_by: 'x', created_at: '2026-10-27T13:00:00Z' })).status,
+      (await ask(`/rest/v1/coach_notes?id=eq.${KEY}`, admin, { note: 'changed' }, 'PATCH')).status,
+      (await ask(`/rest/v1/tutor_links?id=eq.${LINK}`, admin, { coach: false }, 'PATCH')).status];
+    check('... and nobody writes it, or the switch, directly (403)', writes.every((st) => st === 403), writes);
+    const samDone = await fn('coach_note_done', member, { p_note: KEY });
+    const alexDone = await fn('coach_note_done', admin, { p_note: KEY });
+    check('Done: Sam refused (403), Alex marks it done', samDone.status === 403 && alexDone.status < 300
+      && (await sql(`select done_by from coach_notes where id = '${KEY}'`))[0].done_by === 'alex@example.com', [samDone.status, alexDone.status]);
+
+    // The link reads nothing else, with the coach view on.
+    const tables = (await sql("select c.relname from pg_class c join pg_namespace n on n.oid = c.relnamespace where n.nspname = 'public' and c.relkind in ('r', 'v', 'p') order by 1")).map((r) => r.relname);
+    const rowsOut = [];
+    for (const t of tables) { const r = await ask(`/rest/v1/${t}?select=*`, null); if (r.status === 200 && Array.isArray(r.body) && r.body.length) rowsOut.push(`${t}: ${r.body.length}`); }
+    check('signed out (the link\'s page has no sign-in): no table gives any rows, coach_notes included', !rowsOut.length && tables.includes('coach_notes'), rowsOut);
+    const I = { fresh: 'e0000000-0000-4000-8000-000000000073', asg: 'e0000000-0000-4000-8000-000000000053', s2: 'e0000000-0000-4000-8000-000000000055',
+      reward: 'e0000000-0000-4000-8000-000000000058' };
+    const elsewhere = {
+      get_person_day: { p_token: PAT }, complete_by_token: { p_token: PAT, p_task_id: I.fresh, p_occurrence: '2026-10-27' }, undo_by_token: { p_token: PAT, p_log_id: I.fresh },
+      confirm_digest: { p_confirm: PAT }, stop_digest: { p_token: PAT }, get_shared_project: { share: PAT },
+      get_list_by_token: { p_token: PAT }, add_to_list_by_token: { p_token: PAT, p_name: 'Bread' }, buy_item_by_token: { p_token: PAT, p_item: I.fresh, p_bought: true, p_seen: '2026-10-27T13:00:00Z' },
+      homework_by_token: { p_token: PAT }, step_by_token: { p_token: PAT, p_step: I.s2, p_action: 'done' }, plan_by_token: { p_token: PAT, p_assignment: I.asg, p_steps: null, p_rev: 1 },
+      focus_by_token: { p_token: PAT, p_action: 'start', p_session: I.fresh, p_minutes: 20, p_step: I.s2, p_with: 'alone' },
+      reward_by_token: { p_token: PAT, p_action: 'ask', p_reward: I.reward, p_key: I.fresh },
+      assignment_by_token: { p_token: PAT, p_action: 'add', p_assignment: I.fresh, p_title: 'Worksheet 5.1', p_subject: 'Math', p_due_date: '2026-10-28', p_minutes: 15 },
+      homework_prefs_by_token: { p_token: PAT, p_cue: 'Snack first.', p_if_stuck: null, p_minutes: 25 },
+      school_item_by_token: { p_token: PAT, p_item: I.fresh, p_action: 'hide' },
+    };
+    const nothing = ([, st, b]) => (st === 200 && (b === null || b === false)) || st === 204 || (st >= 400 && st < 500 && !!b && !!b.code);
+    const patElse = [];
+    for (const [f, args] of Object.entries(elsewhere)) { const r = await fn(f, null, args); patElse.push([f, r.status, r.body]); }
+    check('... and every other anonymous function answers Pat\'s token with nothing (null, false or a refusal)', patElse.every(nothing), patElse.filter((x) => !nothing(x)));
+    const kidCoach = [await fn('coach_view_by_token', null, { p_token: jordan.day_token }),
+      await fn('coach_note_by_token', null, { p_token: jordan.day_token, p_key: 'e0000000-0000-4000-8000-000000000074', p_note: 'From his link' })];
+    check('Jordan\'s My day token opens no coach function (null), and keeps no note', kidCoach.every((r) => r.status === 200 && r.body === null)
+      && (await sql('select count(*) as n from coach_notes'))[0].n === '1', kidCoach.map((r) => [r.status, r.body]));
+
+    // Off again: as before.
+    await fn('set_tutor_coach', admin, { p_link: LINK, p_coach: false });
+    const offAgain = [await fn('coach_view_by_token', null, { p_token: PAT }), await fn('tutor_view_by_token', null, { p_token: PAT, p_assignment: null, p_part: 'all' })];
+    check('turned off again: no coach view, and Pat\'s view has no coach key', offAgain[0].status === 200 && offAgain[0].body === null && !('coach' in offAgain[1].body));
   });
 
   // The stand-in's logical filters (PostgREST's or=, and=, nested and(…)/or(…), not.or=, a quoted in.(…)), which

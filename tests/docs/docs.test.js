@@ -338,8 +338,9 @@ check(`docs/v2-design.md "Anonymous token functions" lists every function anon c
 // Each function anon can call is a decision (a secret is its only key): adding one means adding it here,
 // to the design and to tests/db/access.test.sql. 0002: My day and the confirmation email; 0004 (v1.2):
 // the helper's shopping list; 0005 (v1.3): a kid's homework on My day (seven) and the tutor link (four);
-// 0006 (v1.3's school feed): his New from school (one).
-const ANON = ['add_to_list_by_token', 'assignment_by_token', 'buy_item_by_token', 'complete_by_token', 'confirm_digest', 'focus_by_token',
+// 0006 (v1.3's school feed): his New from school (one); 0007 (the coach view): the coach's view and note (two).
+const ANON = ['add_to_list_by_token', 'assignment_by_token', 'buy_item_by_token', 'coach_note_by_token', 'coach_view_by_token',
+  'complete_by_token', 'confirm_digest', 'focus_by_token',
   'get_list_by_token', 'get_person_day', 'homework_by_token', 'homework_prefs_by_token', 'plan_by_token', 'reward_by_token',
   'school_item_by_token', 'step_by_token', 'stop_digest', 'tutor_assignment_by_token', 'tutor_plan_by_token', 'tutor_step_by_token',
   'tutor_view_by_token', 'undo_by_token'];
@@ -349,9 +350,18 @@ const missingClaude = ANON.filter((n) => !clientSec.includes(`\`${n}\``));
 check(`CLAUDE.md "Client code" names every token function day.html may call (${ANON.length})`, !missingClaude.length, `missing ${missingClaude.join(', ')}`);
 const NUMBER = { five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12, thirteen: 13, fourteen: 14,
   fifteen: 15, sixteen: 16, seventeen: 17, eighteen: 18, nineteen: 19, twenty: 20 };
-const counted = (/These (\w+) are the only new functions anon can call/.exec(tokenSec) || [])[1];
+// A count written out, hyphenated ones too: "nineteen" → 19, "twenty-two" → 22.
+const spelled = (w) => {
+  const ONES = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9 };
+  const TENS = { twenty: 20, thirty: 30, forty: 40, fifty: 50 };
+  const s = String(w).toLowerCase();
+  if (ONES[s] || NUMBER[s]) return ONES[s] || NUMBER[s];
+  const [t, o] = s.split('-');
+  return TENS[t] && (o === undefined || ONES[o]) ? TENS[t] + (o ? ONES[o] : 0) : NaN;
+};
+const counted = (/These ([\w-]+) are the only new functions anon can call/.exec(tokenSec) || [])[1];
 check(`docs/v2-design.md "Anonymous token functions" counts them right ("These ${counted} are the only new functions anon can call": ${anon.size})`,
-  NUMBER[String(counted).toLowerCase()] === anon.size, tokenSec.slice(0, 300));
+  spelled(counted) === anon.size, tokenSec.slice(0, 300));
 
 // docs/v1.2-kitchen.md §2 counts the functions 0004 adds ("six new public and … new private functions"):
 // those under a name no earlier file has (a wrapper, made again under its old name once the old body is
@@ -393,8 +403,8 @@ check(`docs/v2-design.md "Anonymous token functions" counts them right ("These $
     + `${made.length}; ${householdCols}; ${count('public')} and ${count('private')})`,
   num(said[1]) === made.length && num(said[3]) === householdCols && num(said[4]) === count('public') && num(said[5]) === count('private'), row.slice(0, 300));
   check('docs/v1.3-homework.md §2.1 names the tables 0005 makes', made.length > 0 && named.join() === made.join(), `says ${named.join(', ')}; makes ${made.join(', ')}`);
-  // §3.6: "anon can call **nineteen** token functions".
-  const anonSaid = (/anon can call \*\*(\w+)\*\* token functions/.exec(read('docs/v1.3-homework.md')) || [])[1];
+  // §3.6: "anon can call **twenty-two** token functions".
+  const anonSaid = (/anon can call \*\*([\w-]+)\*\* token functions/.exec(read('docs/v1.3-homework.md')) || [])[1];
   check(`docs/v1.3-homework.md §3.6 counts the token functions anon can call ("${anonSaid}": ${anon.size})`, num(anonSaid) === anon.size, anonSaid);
 }
 

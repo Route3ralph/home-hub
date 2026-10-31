@@ -329,3 +329,25 @@
 /* Instant rewards: cashed on the spot on #points */
 .hw-reward.is-instant .hw-reward-t { font-weight: 650; }
 .hw-cash-none { margin: 6px 0 0; color: var(--text-3); font-size: 14px; }
+
+/* 0007: the tutor link's Coach section, under the list (docs/v1.3-homework.md §20.6) */
+.coach-main { min-width: 0; }
+.coach-lead { margin: 0 0 6px; padding: 10px 12px; border-radius: 10px; background: var(--accent-soft); color: var(--text); font-size: 15px; }
+.coach-part { margin-top: 14px; min-width: 0; }
+.coach-part h3 { margin: 14px 0 6px; font-size: 15px; }
+.coach-part h4 { margin: 10px 0 4px; font-size: 13px; font-weight: 600; color: var(--text-3); }
+.coach-balance { margin: 0 0 8px; font-size: 20px; font-weight: 700; }
+.coach-weeks { width: 100%; max-width: 420px; border-collapse: collapse; font-variant-numeric: tabular-nums; font-size: 14px; }
+.coach-weeks th, .coach-weeks td { padding: 6px 8px; border-bottom: 1px solid var(--line); text-align: right; }
+.coach-weeks th[scope="row"], .coach-weeks thead th:first-child { text-align: left; font-weight: 600; }
+.coach-weeks thead th { color: var(--text-2); font-weight: 600; }
+.coach-list { margin: 0; padding: 0; list-style: none; }
+.coach-list li { padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 14px; overflow-wrap: anywhere; }
+.coach-list li:last-child { border-bottom: 0; }
+.coach-task.is-done { color: var(--text-2); }
+.coach-task.is-missed { color: var(--warn); }
+.coach-fold summary { display: flex; align-items: center; min-height: 44px; font-weight: 600; cursor: pointer; }
+.coach-note { margin-top: 18px; }
+.coach-note textarea { width: 100%; min-height: 88px; }
+.coach-note .form-actions .btn { min-height: 44px; }
+.coach-note-text { white-space: pre-line; }

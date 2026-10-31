@@ -12,13 +12,19 @@
 // view; the screens for a link that no longer works (unknown, off, ended, malformed: no call) and for a
 // database without 0005 ("This link doesn't work yet."); Pat's token opens no My day; from 0006, an assignment made from
 // school marked so, with the school's marks (moved, gone), and nothing of his New from school; Spanish; 390px wide;
-// nothing kept on the device.
+// nothing kept on the device. From 0007 (docs/v1.3-homework.md §20.6), the Coach section, only for a link whose coach
+// view a parent turned on: read with coach_view_by_token (and nothing else new), after the fixed sections, on the
+// list only; his points by kind this week and last, the last 30 days' lines, his rewards and asks, his focus
+// sessions, his own calendar (next 14 days, last 7) and his daily tasks, private ones as "Private item", nothing of
+// the family; a note for the family (coach_note_by_token with the page's key, checked first, kept while typing
+// through a refresh, the button off while it is sent); gone at once when the parents turn it off; points off;
+// before 0007 nothing is asked; Spanish; 390px.
 // The browser runs in Pacific/Kiritimati with its clock a day ahead of the household's, as in day.test.js.
 // Run alone with: node tests/e2e/tutor.test.js
 const fs = require('fs');
 const { chromium } = require('playwright');
 const { makeDb, install, withHomeworkTokens, homeworkTokenRpc: homeworkRpc, tkKidRow: hwKidRow, tkLinkRow: tutorLinkRow, tkAssignmentRow: assignmentRow,
-  tkStepRow: stepRow, tkSessionRow: sessionRow, tkRewardRow: rewardRow, tkLedgerRow: ledgerRow, withSchool, schoolFeedRow, schoolItemRow } = require('./mock');
+  tkStepRow: stepRow, tkSessionRow: sessionRow, tkRewardRow: rewardRow, tkLedgerRow: ledgerRow, withSchool, schoolFeedRow, schoolItemRow, withCoach } = require('./mock');
 const { serve } = require('./server');
 
 let BASE = '';
@@ -326,6 +332,147 @@ async function tokenRpcs(page, db) {
   check('Spanish link at 390px: no sideways scroll', await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth));
   await page.screenshot({ path: SHOTS + 'tutor-es-phone.png', fullPage: true });
   await page.context().close();
+
+
+  // =====================================================================
+  // 3. The coach view (schema 7, 0007; docs/v1.3-homework.md §20.6): a Coach section for a link a parent turned it on for
+  // =====================================================================
+  const COACH_FNS = /^(tutor_view_by_token|tutor_assignment_by_token|tutor_plan_by_token|tutor_step_by_token|coach_view_by_token|coach_note_by_token)$/;
+  function coachDb(o) {
+    const d = withCoach(tutorDb(o));
+    d.tutor_links[0].coach = true;
+    // His own calendar and his daily tasks, as agenda() and google_for() give them (that no one else's reach them is
+    // the database's: tests/db/coach.test.sql).
+    d.coachCal[P.jordan] = [
+      { day: '2026-10-29', all_day: false, starts: '16:00', ends: '17:00', title: 'Soccer practice' },
+      { day: '2026-11-03', all_day: false, starts: '17:00', ends: '17:45', title: 'Piano lesson' },
+      { day: '2026-11-09', all_day: false, starts: '10:00', ends: '11:00', title: 'Doctor visit', private: true },
+      { day: '2026-11-13', end_day: '2026-11-14', all_day: true, title: 'Science fair' },
+    ];
+    d.coachTasks[P.jordan] = [
+      { day: TODAY, title: 'Feed the cat', status: 'open' },
+      { day: '2026-11-01', title: 'Make bed', status: 'done' },
+      { day: '2026-10-31', title: 'Make bed', status: 'missed' },
+      { day: '2026-10-31', title: 'Diary', private: true, status: 'done' },
+    ];
+    d.points_ledger.push(
+      ledgerRow({ kid_id: P.jordan, at: at('2026-11-02T21:21:00'), day: TODAY, kind: 'focus', delta: 20, note: 'Find 2 sources', who: 'Jordan (My day)' }),
+      ledgerRow({ kid_id: P.jordan, at: at('2026-11-02T21:20:00'), day: TODAY, kind: 'on_time', delta: 10, note: 'Find 2 sources', who: 'Jordan (My day)' }),
+      ledgerRow({ kid_id: P.jordan, at: at('2026-10-28T21:00:00'), day: '2026-10-28', kind: 'trade', delta: -60, note: 'Pick the movie', who: 'alex@example.com' }),
+    );
+    d.rewards.push(rewardRow({ kid_id: P.jordan, title: 'Extra game time', cost: 15, instant: true, sort_order: -1 }));
+    return d;
+  }
+  const coachText = (page) => text(page, '[data-sec="coach"]');
+  // A table's rows, each its cells' text joined by spaces.
+  const cells = (page, sel) => page.$$eval(sel, (rs) => rs.map((r) => [...r.children].map((c) => c.textContent.trim()).join(' ')));
+  {
+    ({ page, db } = await open({ label: 'coach', path: `/day.html?h=${PAT}`, db: coachDb({ running: true }) }));
+    await page.waitForSelector('[data-sec="coach"]');
+    check('coach on: the list, then coach_view_by_token({ p_token }) once; nothing else new', same(db.calls.map((c) => c.name), ['tutor_view_by_token', 'coach_view_by_token'])
+      && same(calls(db, 'coach_view_by_token')[0].body, { p_token: PAT }), JSON.stringify(db.calls.map((c) => [c.name, c.body])));
+    check('coach on: a Coach section after the fixed ones', same(await page.$$eval('.plan-sec', (ss) => ss.map((x) => x.dataset.sec)),
+      ['check', 'talk', 'questions', 'plans', 'assignments', 'week', 'record', 'coach']), JSON.stringify(await page.$$eval('.plan-sec', (ss) => ss.map((x) => x.dataset.sec))));
+    check('Coach: its heading and what it is, in plain words', (await text(page, '[data-sec="coach"] h2')) === 'Coach'
+      && (await text(page, '.coach-lead')) === "Jordan's family lets you see his points, rewards, focus sessions, his own calendar and his daily tasks. Read-only.",
+      await text(page, '.coach-lead'));
+    check('Coach: his balance, and this week\'s and last week\'s points by kind',
+      (await text(page, '.coach-balance')) === '88 points'
+      && same(await cells(page, '.coach-weeks tbody tr'), ['Focus +20 0', 'On time +10 0', 'Milestones 0 0', 'Given 0 +118', 'Voided 0 0', 'Trades 0 −60'])
+      && same(await texts(page, '.coach-weeks thead th'), ['', 'This week', 'Last week']), JSON.stringify(await cells(page, '.coach-weeks tr')));
+    check('Coach: the last 30 days\' lines, newest first, with no one\'s name', same(await texts(page, '.coach-lines li'),
+      ['Today · +20 · Focus · Find 2 sources', 'Today · +10 · On time · Find 2 sources', 'Wed Oct 28 · −60 · Trade · Pick the movie', 'Mon Oct 26 · +118 · Given · Great session']),
+      JSON.stringify(await texts(page, '.coach-lines li')));
+    check('Coach: his rewards (cost, instant) and his asks and cash-ins', same(await texts(page, '.coach-rewards li'), ['Extra game time · 15 · instant', "Choose Friday's dinner · 60"])
+      && same(await texts(page, '.coach-asks li'), ["Choose Friday's dinner · 60 · asked today · waiting"]), `${JSON.stringify(await texts(page, '.coach-rewards li'))} ${JSON.stringify(await texts(page, '.coach-asks li'))}`);
+    check('Coach: his focus sessions (day, assignment, minutes chosen and seen, result, his note); never the block running now, nor with whom',
+      same(await texts(page, '.coach-focus li'), ['Yesterday · Science project: river poster · 25 min chosen · 25 seen · More to do',
+        'Fri Oct 30 · Science project: river poster · 20 min chosen · 20 seen · Step done · “found 2 sources”'])
+      && !/Worksheet 4\.2|alone|with you|parent/i.test(await text(page, '.coach-focus')), JSON.stringify(await texts(page, '.coach-focus li')));
+    check('Coach: his own calendar, the next 14 days and the last 7; a private one as "Private item"',
+      same(await texts(page, '.coach-cal-next li'), ['Tomorrow · 5:00pm–5:45pm · Piano lesson', 'Mon Nov 9 · 10:00am–11:00am · Private item', 'Fri Nov 13 – Sat Nov 14 · All day · Science fair'])
+      && same(await texts(page, '.coach-cal-last li'), ['Thu Oct 29 · 4:00pm–5:00pm · Soccer practice']), `${JSON.stringify(await texts(page, '.coach-cal-next li'))} ${JSON.stringify(await texts(page, '.coach-cal-last li'))}`);
+    check('Coach: his daily tasks of today and the last 7 days, done or not', same(await texts(page, '.coach-tasks li'),
+      ['Today · Not done yet · Feed the cat', 'Yesterday · Done · Make bed', 'Sat Oct 31 · Missed · Make bed', 'Sat Oct 31 · Done · Private item']), JSON.stringify(await texts(page, '.coach-tasks li')));
+    const cbody = await page.evaluate(() => document.body.innerText);
+    check('coach on: still nothing of the family: no other person\'s name, surname, email, private title', !/Alex|Morgan|Sam\b|Taylor|Example|@|Doctor visit|Diary/.test(cbody),
+      (cbody.match(/Alex|Morgan|Sam\b|Taylor|Example|@|Doctor visit|Diary/g) || []).join(','));
+    // A note for the family: checked first, then sent with the page's key.
+    await page.click('.coach-note [type="submit"]');
+    check('a note with nothing in it: "Write a note first." and no call', (await text(page, '.coach-note .form-error')) === 'Write a note first.' && !calls(db, 'coach_note_by_token').length);
+    await page.fill('.coach-note textarea[name="note"]', 'Suggest lowering the on-time bonus.\nHe starts on time anyway.');
+    // A refresh while a note is being typed keeps it.
+    const cv = calls(db, 'coach_view_by_token').length;
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await until(() => calls(db, 'tutor_view_by_token').length >= 2);
+    await page.waitForTimeout(200);
+    check('a refresh while a note is typed: the list is read, the Coach section isn\'t drawn again, the note is kept',
+      calls(db, 'coach_view_by_token').length === cv && (await page.inputValue('.coach-note textarea[name="note"]')) === 'Suggest lowering the on-time bonus.\nHe starts on time anyway.');
+    db.hold = true;
+    await page.route((url) => url.pathname.endsWith('/rpc/coach_note_by_token'), async (route) => { while (db.hold) await new Promise((r) => setTimeout(r, 30)); return route.fallback(); });
+    await page.click('.coach-note [type="submit"]');
+    await page.waitForTimeout(150);
+    check('Send: the button is off while the note is on its way', await page.$eval('.coach-note [type="submit"]', (b) => b.disabled));
+    db.hold = false;
+    await until(() => calls(db, 'coach_note_by_token').length === 1);
+    const sent = calls(db, 'coach_note_by_token')[0].body;
+    check('Send: coach_note_by_token with the page\'s key and the note', sent.p_token === PAT && UUID.test(sent.p_key) && sent.p_note === 'Suggest lowering the on-time bonus.\nHe starts on time anyway.',
+      JSON.stringify(sent));
+    check('… "Sent to the family." and the note under Your notes; the box emptied', await until(async () => /Sent to the family\./.test(await text(page, '.toasts')))
+      && await until(async () => same(await texts(page, '.coach-notes li'), ['Today · Suggest lowering the on-time bonus. He starts on time anyway.']))
+      && (await page.inputValue('.coach-note textarea[name="note"]')) === '' && db.coach_notes.length === 1, JSON.stringify(await texts(page, '.coach-notes li')));
+    // An assignment's screen has no Coach section and asks for none; back on the list it is read again.
+    const before = calls(db, 'coach_view_by_token').length;
+    await page.click(`.plan-arow-link[href="#a/${I.sci}"]`);
+    await page.waitForSelector('.plan-tutor-a');
+    await page.waitForTimeout(200);
+    check('an assignment\'s screen: no Coach section, no coach read', !(await page.$('[data-sec="coach"]:not([hidden])')) && !(await page.isVisible('[data-sec="coach"]').catch(() => false))
+      && calls(db, 'coach_view_by_token').length === before);
+    await page.click('.plan-tutor-a .back');
+    check('back on the list: the Coach section again, read afresh', await until(async () => page.isVisible('[data-sec="coach"]')) && calls(db, 'coach_view_by_token').length === before + 1);
+    // The parents turn it off: on the next read the section goes, and nothing more is asked.
+    db.tutor_links[0].coach = false;
+    await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+    check('the parents turn it off: on the next read the Coach section goes', await until(async () => !(await page.isVisible('[data-sec="coach"]').catch(() => false))));
+    const after = calls(db, 'coach_view_by_token').length;
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await page.waitForTimeout(300);
+    check('... and no coach read after that', calls(db, 'coach_view_by_token').length === after && db.calls.every((c) => COACH_FNS.test(c.name)), [...new Set(db.calls.map((c) => c.name))].join(','));
+    check('nothing is kept on the device, with the coach view either', await page.evaluate(() => { try { return localStorage.length === 0 && sessionStorage.length === 0; } catch (e) { return true; } }));
+    await page.context().close();
+  }
+  {
+    // Points off: the Coach section says so, and shows no rewards or asks.
+    const d = coachDb();
+    d.homework_kids[0].points_on = false;
+    ({ page, db } = await open({ label: 'coach-points-off', path: `/day.html?h=${PAT}`, db: d }));
+    await page.waitForSelector('[data-sec="coach"]');
+    check('points off: "Points are off for Jordan." and no rewards or asks; the rest shows', /Points are off for Jordan\./.test(await coachText(page))
+      && !(await page.$('.coach-rewards')) && !(await page.$('.coach-asks')) && (await texts(page, '.coach-tasks li')).length === 4, await coachText(page));
+    await page.context().close();
+  }
+  {
+    // A link with the coach view off, on schema 7: no coach call at all (the default tutorDb has no coach_notes: before 0007).
+    ({ page, db } = await open({ label: 'coach-off-7', path: `/day.html?h=${PAT}`, db: withCoach(tutorDb()) }));
+    await page.waitForSelector('.plan-tutor');
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await page.waitForTimeout(300);
+    check('schema 7, coach off: no Coach section and no coach call, even after a refresh', !(await page.$('[data-sec="coach"]:not([hidden])'))
+      && db.calls.every((c) => TUTOR_FNS.test(c.name)), db.calls.map((c) => c.name).join(','));
+    await page.context().close();
+  }
+  {
+    // Spanish, on a phone.
+    ({ page, db } = await open({ label: 'coach-es', path: `/day.html?h=${PAT}`, db: coachDb({ lang: 'es' }),
+      ctx: { viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true } }));
+    await page.waitForSelector('[data-sec="coach"]');
+    check('Spanish: the Coach section in Spanish ("Coach", the plain words, "Asunto privado")', (await text(page, '[data-sec="coach"] h2')) === 'Coach'
+      && (await text(page, '.coach-lead')) === 'La familia de Jordan te deja ver sus puntos, premios, sesiones de concentración, su propio calendario y sus tareas diarias. Solo lectura.'
+      && /Asunto privado/.test(await coachText(page)) && /Esta semana/.test(await coachText(page)) && /Enviar a la familia/.test(await coachText(page)), await coachText(page));
+    check('Spanish at 390px: no sideways scroll with the Coach section', await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth));
+    await page.locator('[data-sec="coach"]').screenshot({ path: SHOTS + 'tutor-coach-es-phone.png' });
+    await page.context().close();
+  }
 
   console.log(results.join('\n'));
   console.log(`\n${results.filter((r) => r.startsWith('PASS')).length}/${results.length} passed`);
