@@ -23,14 +23,19 @@
      steps can't reach), Questions and notes (open questions with Answer;
      every answer and coach's note of the last 7 days, earlier ones in
      qa_log too, with who and when), Assignments and lessons (+ Assignment,
-     + Lesson; Done (30 days) folded), This week (the week strip with busy
-     titles, focused minutes, pace, his blocks), Points and rewards (Give
-     points, Void, the rewards, instant or not; his instant cash-ins in
-     Recent), Switches (homework on, points and their values, his instant
-     rewards a day, homework time, Pat's links, Erase).
+     + Lesson; Done (30 days) folded), Next 3 weeks (plan.js overview: his
+     open assignments and lessons as bars over 21 days from today, each a
+     link to its page; left out when none is open), This week (the week
+     strip with busy titles, focused minutes, pace, his blocks), Points and
+     rewards (Give points, Void, the rewards, instant or not; his instant
+     cash-ins in Recent), Switches (homework on, points and their values,
+     his instant rewards a day, homework time, Pat's links, Erase).
    - An assignment: its fields (the teacher's text keeps its lines), Mark
-     done, Drop, Delete, Copy to next week (a lesson); the plan editor
-     (assets/plan.js, role 'family'); its questions, answers and notes;
+     done, Drop, Delete, Copy to next week (a lesson); its chart above the
+     plan editor (plan.js chart: a row per phase, each step on its day, the
+     plan as saved, drawn again after each read; none for a plan on fewer
+     than 2 days); the plan editor (assets/plan.js, role 'family'; Sam
+     gets the steps listed); its questions, answers and notes;
      its blocks. A due date moved here places again the steps it leaves
      behind (save_homework_plan with their days left out).
    - From 0006 (schema 6; §11, §12), the School links row of the switches,
@@ -726,6 +731,15 @@
     return section('assignments', 'Assignments and lessons', body, null, adds);
   }
 
+  // Next 3 weeks (plan.js overview, docs/v1.3-homework.md §21): his open assignments and lessons as bars over the
+  // 21 days from today, from the rows the page already read (the plan given or not), each a link to its page. ''
+  // (no section) when none is open.
+  function timelineHTML(st) {
+    const items = st.assignments.filter((a) => a.status === 'open').map((a) => P.fromRows(a, stepsOf(st, a.id)));
+    const html = P.overview(items, { today: st.today, days: 21, lang: 'en', link: (id) => `#/homework/${id}` });
+    return html ? section('timeline', P.t('tl_next_weeks', { n: 3 }, 'en'), `<div class="hw-card hw-tl">${html}</div>`) : '';
+  }
+
   function weekHTML(st) {
     const mon = mondayOf(st.today);
     const inWeek = (b, from) => { const d = householdDate(b.started_at); return d >= from && d <= dates.addDays(from, 6); };
@@ -1049,7 +1063,7 @@
     if (st.failed) {
       body = '<p class="hw-fail" role="status">Homework couldn\'t be loaded. Check the connection. <button type="button" class="linkbtn hw-retry" data-act="retry">Try again</button></p>';
     } else if (st.kid && st.row.active) {
-      body = [approveHTML(st), checkHTML(st), talkHTML(st), qaHTML(st), assignmentsHTML(st), weekHTML(st), pointsHTML(st), switchesHTML(st)].join('');
+      body = [approveHTML(st), checkHTML(st), talkHTML(st), qaHTML(st), assignmentsHTML(st), timelineHTML(st), weekHTML(st), pointsHTML(st), switchesHTML(st)].join('');
     } else if (st.kid) {
       body = switchesHTML(st);
     }
@@ -1118,6 +1132,13 @@
     return blocks.length ? `<section class="hw-sec" aria-label="Focus blocks">${heading('Focus blocks', blocks.length)}<ul class="hw-card hw-blocks hw-a-blocks">${blocks.map((b) => `<li>${esc(blockLine(st, b, true))}</li>`).join('')}</ul></section>` : '';
   }
 
+  // An assignment's chart (plan.js chart, §21): a row per phase, each step a block on its day, days without homework
+  // time shaded from his week. '' for a plan on fewer than 2 days, or none.
+  function chartHTML(st, ed) {
+    const html = ed ? P.chart(ed, { today: st.today, lang: 'en', week: st.weekFailed ? [] : st.week }) : '';
+    return html ? `<div class="hw-card hw-chart">${html}</div>` : '';
+  }
+
   function aMeta(st, a) {
     const tutor = tutorFirst(st);
     const bits = [a.subject, `${a.kind === 'lesson' ? 'do by' : 'due'} ${fmt.day(a.due_date)}`];
@@ -1150,7 +1171,8 @@
     if (!root || root.dataset.id !== a.id) {
       stopEditor(st);
       main.innerHTML = `<div class="hw-a" data-id="${esc(a.id)}"><div data-ref="head"></div><div data-ref="fields"></div><div data-ref="status"></div>`
-        + `<section class="hw-sec" aria-label="Plan">${heading('Plan')}<div class="hw-card hw-ed" data-ref="editor"></div></section><div data-ref="qa"></div><div data-ref="blocks"></div></div>`;
+        + `<section class="hw-sec" aria-label="Plan">${heading('Plan')}<div data-ref="chart"></div><div class="hw-card hw-ed" data-ref="editor"></div></section>`
+        + '<div data-ref="qa"></div><div data-ref="blocks"></div></div>';
       root = main.querySelector('.hw-a');
       st.fieldsDirty = false;
     }
@@ -1163,6 +1185,11 @@
     root.querySelector('[data-ref="blocks"]').innerHTML = blocksHTML(st, a);
     const box = root.querySelector('[data-ref="editor"]');
     const ed = editorAssignment(st, a.id);
+    // Its chart, from the plan as saved (unsaved changes in the editor show once saved); drawn only when it changed,
+    // so a chart scrolled inside its box stays where it was.
+    const chart = chartHTML(st, ed);
+    const chartBox = root.querySelector('[data-ref="chart"]');
+    if (chartBox.hwDrawn !== chart) { chartBox.innerHTML = chart; chartBox.hwDrawn = chart; }
     const more = { today: st.today, asOf: asOf(), serverNow: clockInstant(), week: st.week, length: st.row.focus_minutes, kid: kidName(st), tutor: tutorFirst(st),
       ai: aiOpts(st, a) };
     if (!admin) {
