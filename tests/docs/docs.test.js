@@ -71,12 +71,13 @@ const fnSource = fs.readdirSync(path.join(ROOT, fnDir)).filter((f) => f.endsWith
 const envNames = new Set();
 for (const m of fnSource.matchAll(/(?:\benv\(|Deno\.env\.get\()\s*['"]([A-Z0-9_]+)['"]/g)) if (!/^SUPABASE_/.test(m[1])) envNames.add(m[1]);
 // The function works without these (no health ping; "Home Hub" as the sender's name; without the
-// Google key the calendar job stops with not_set_up and the morning email is unchanged). The rest
-// stop every run (stop 'config', or 503) until they are set.
-const OPTIONAL = new Set(['HEALTHCHECK_URL', 'EMAIL_FROM_NAME', 'GOOGLE_SA_JSON']);
+// Google key the calendar job stops with not_set_up and the morning email is unchanged; without the
+// Anthropic key, v1.3 PR B, the homework_ai action answers not_set_up and everything else works). The
+// rest stop every run (stop 'config', or 503) until they are set.
+const OPTIONAL = new Set(['HEALTHCHECK_URL', 'EMAIL_FROM_NAME', 'GOOGLE_SA_JSON', 'ANTHROPIC_API_KEY']);
 const REQUIRED = [...envNames].filter((n) => !OPTIONAL.has(n)).sort();
 check('hub-jobs: the secrets it reads are the ones this test knows (add a new one to the docs and here)',
-  [...envNames].sort().join() === ['EMAIL_FROM', 'EMAIL_FROM_NAME', 'GOOGLE_SA_JSON', 'HEALTHCHECK_URL', 'HUB_CRON_SECRET', 'RESEND_API_KEY', 'SITE_URL'].join(), [...envNames].sort());
+  [...envNames].sort().join() === ['ANTHROPIC_API_KEY', 'EMAIL_FROM', 'EMAIL_FROM_NAME', 'GOOGLE_SA_JSON', 'HEALTHCHECK_URL', 'HUB_CRON_SECRET', 'RESEND_API_KEY', 'SITE_URL'].join(), [...envNames].sort());
 
 for (const [doc, text] of Object.entries(DOCS)) {
   const step4 = steps(text)['4'] || '';

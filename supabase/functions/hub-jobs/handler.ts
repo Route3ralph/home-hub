@@ -1,4 +1,4 @@
-// hub-jobs: Home Hub's morning email, its Google Calendar copy and the school feed. One Edge Function, deployed
+// hub-jobs: Home Hub's morning email, its Google Calendar copy, the school feed and the AI planner. One Edge Function, deployed
 // with verify_jwt off; each action checks who is asking itself. Kept free of outside imports so it
 // can be tested in Node; index.ts wires it up. (send-email is a separate function, unchanged.)
 //
@@ -27,6 +27,11 @@
 //            (their own sign-in; it reads every link not read in the last minute): reads the school's
 //            Blackbaud calendar links (school.ts, ical.ts; docs/v1.3-homework.md §11.3). Answers 503
 //            {stop: 'no_schema'} until migration 0006 is applied. The body is ignored except for action.
+//   homework_ai  a parent (their own sign-in) or Pat's tutor link (its token in the body): { kind: 'plan' |
+//            'revise' | 'test', assignment_id?, token?, request?, answers?, key } → 202 {run_id}, or 200 {stop}; the
+//            draft plan from Claude is written to the assignment in the background (homework.ts,
+//            docs/v1.3-homework.md §6). Without ANTHROPIC_API_KEY: 200 {stop: 'not_set_up'}. 503 {stop: 'no_schema'}
+//            until migration 0005 is applied.
 //
 // Secrets (Supabase dashboard → Edge Functions → Secrets):
 //   HUB_CRON_SECRET  at least 32 random characters; the same value as the Vault secret hub_cron_secret
@@ -34,6 +39,8 @@
 //   RESEND_API_KEY, EMAIL_FROM, EMAIL_FROM_NAME (optional)   as for send-email
 //   HEALTHCHECK_URL  optional, e.g. a healthchecks.io ping URL (it must also answer at <url>/fail)
 //   GOOGLE_SA_JSON   optional: the Google service-account key file, for the calendar (read in calendar.ts)
+//   ANTHROPIC_API_KEY  optional: the AI planner's key at Anthropic (read in homework.ts; never logged). Without it the
+//                    homework_ai action answers not_set_up and everything else works.
 // The school feed needs no secret of its own: the links are in the database (private.school_feed_urls).
 // Supabase provides SUPABASE_URL, the publishable key and the secret (service-role) key.
 
@@ -43,6 +50,7 @@ import { CORS, DETAIL_MAX, json, message, oneLine, sameSecret, isUuid } from './
 import type { Db, Deps } from './util.ts';
 import { runCalendar, testCalendar } from './calendar.ts';
 import { runSchool } from './school.ts';
+import { homeworkAi } from './homework.ts';
 
 // What the tests and index.ts import from here.
 export { CORS, sameSecret };
@@ -142,7 +150,8 @@ export async function handle(req: Request, deps: Deps): Promise<Response> {
   }
   if (action === 'calendar' || action === 'calendar_test') return calendar(req, action, body, deps);
   if (action === 'school') return school(req, deps);
-  return json(400, { error: 'Unknown action. Use digest, preview, status, calendar, calendar_test or school.' });
+  if (action === 'homework_ai') return homeworkAi(req, body, deps);
+  return json(400, { error: 'Unknown action. Use digest, preview, status, calendar, calendar_test, school or homework_ai.' });
 }
 
 // ---------------------------------------------------------------------

@@ -13,7 +13,8 @@
 // blocks); Points and rewards (Give points, Void, a reward added); the switches (homework on, points
 // and their values with both caps, homework time, Pat's link: Copy · WhatsApp · Text · New link · Off
 // · Extend; Erase asks for ERASE); Sam sees everything with no buttons; a hostile title and text drawn
-// as text; nothing about the AI; phones and desktops, light and dark. Also: a ledger past the API's 1,000
+// as text; nothing about the AI on an assignment while it is off (the AI parts, PR B, are homework-ai.test.js's);
+// phones and desktops, light and dark. Also: a ledger past the API's 1,000
 // rows read page by page; Not now's word at most 120; a Yes on an ask answered elsewhere says so; a
 // moved due date placed again from the plan as it is now (Jordan's changes kept, a change during the
 // save refused once and read again, a step ticked early sent without a day); a focus read never wipes
@@ -372,8 +373,10 @@ const emailOf = (req) => {
   check('section headings', same(heads, ['To approve', 'To check', 'To talk about', 'Questions and notes', 'Assignments and lessons', 'This week', 'Points and rewards', 'Switches']),
     JSON.stringify(heads));
   const reads = log.filter((l) => /^GET \/rest\/v1\//.test(l)).map((l) => decodeURIComponent(l.split('?')[0].replace('GET /rest/v1/', '')));
-  check('reads: the homework tables and the events of his homework time (no AI runs, no household)', ['homework_kids', 'homework_times', 'tutor_links', 'assignments',
-    'homework_steps', 'focus_sessions', 'points_ledger', 'rewards', 'reward_asks', 'events'].every((t) => reads.includes(t)) && !reads.includes('ai_runs'), JSON.stringify(reads));
+  // PR B: a parent's page also reads the household (the AI planner's switch and words) and the AI runs (this month's,
+  // and the last Test) for the switches card's AI row; Sam's reads no AI runs (homework-ai.test.js).
+  check('reads: the homework tables, the events of his homework time, and (PR B, a parent) the household and the AI runs', ['homework_kids', 'homework_times', 'tutor_links', 'assignments',
+    'homework_steps', 'focus_sessions', 'points_ledger', 'rewards', 'reward_asks', 'events', 'household', 'ai_runs'].every((t) => reads.includes(t)), JSON.stringify(reads));
 
   // ---------- To approve
   check('To approve: "Pick the movie · 100 · asked yesterday · balance 118 (this week: +31 focus and on time, +20 milestones checked by Pat)"',
@@ -1052,8 +1055,9 @@ const emailOf = (req) => {
     page.on('console', (m) => said.push(m.text()));
     check('schema 6: school_feed_status read once, for Jordan', same(calls(db, 'school_feed_status').map((c) => c.body), [{ p_kid: ID.jordan }]),
       JSON.stringify(calls(db, 'school_feed_status').map((c) => c.body)));
-    check('School links: a row of the switches, after the tutor links and before Erase', same(await page.$$eval('[data-sec="switches"] .hw-switch-row', (rs) => rs.map((r) => r.dataset.row)),
-      ['kid', 'points', 'time', 'links', 'school', 'erase']), JSON.stringify(await page.$$eval('[data-sec="switches"] .hw-switch-row', (rs) => rs.map((r) => r.dataset.row))));
+    // PR B puts the AI planner's row between the tutor links and the school links.
+    check('School links: a row of the switches, after the tutor links and the AI planner, before Erase', same(await page.$$eval('[data-sec="switches"] .hw-switch-row', (rs) => rs.map((r) => r.dataset.row)),
+      ['kid', 'points', 'time', 'links', 'ai', 'school', 'erase']), JSON.stringify(await page.$$eval('[data-sec="switches"] .hw-switch-row', (rs) => rs.map((r) => r.dataset.row))));
     check('School links: what it does, and that a link is never shown again', /Home Hub reads them every hour/.test(await tc(page, '[data-row="school"] .hw-switch-line'))
       && /never shown again/.test(await tc(page, '[data-row="school"] .hw-switch-line')), await tc(page, '[data-row="school"] .hw-switch-line'));
     check('the three links, each "Not added" with Add link: Assignments, Schedule, Games/Practices; no Check now, no date check',

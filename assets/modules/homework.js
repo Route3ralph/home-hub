@@ -1,9 +1,15 @@
 /* =====================================================================
    HOME HUB — Homework (schema 5): plans, focus sessions and points
    #/homework, and #/homework/<assignment id> for one assignment or lesson
-   (docs/v1.3-homework.md §9.1, §9.2, §4, §5, §8). The AI parts (Send to
-   Claude, the drafts, the AI switch) come with PR B; nothing here
-   mentions the AI.
+   (docs/v1.3-homework.md §9.1, §9.2, §4, §5, §8). The AI parts (PR B,
+   §6, §9.2, §9.4), for the parents only: the AI planner's row on the
+   switches card (what is sent and kept, Test the AI planner, Words never
+   to send, the switch once a Test answered Working, this month's runs and
+   their estimated cost, the key's state from the last run) and a tutor
+   link's Can ask the AI; on an assignment, plan.js's What Claude will
+   see (homework_ai_preview), Send to Claude (hub-jobs' homework_ai, with
+   the parent's sign-in), the draft and its Use this plan, Undo and Dismiss
+   (homework_ai_draft) and Ask again.
    - The kid line: his points and his homework time; a kid picker with two
      kids or more.
    - First visit (parents): homework on for a kid, his homework time
@@ -38,7 +44,10 @@
      comes back: no answer carries it, and the page keeps no copy of it.
      Assignments made from school say "from school", and when the school
      moved or took one off its site.
-   - Reads on open, on focus and after each write; nothing else polls.
+   - Reads on open, on focus and after each write; nothing else polls,
+     but the AI parts: every 5 seconds while a run is open on the
+     assignment shown (one assignments row), and every 2 seconds while a
+     Test runs (its ai_runs row), each until the run's lease ends.
    Only the parents change anything (the database refuses Sam anyway): Sam
    sees it all with no buttons. Dates are the household's (core.v2).
    ===================================================================== */
@@ -160,7 +169,10 @@
   // ============================================
   // READING
   // ============================================
-  const A_COLS = 'id,kid_id,kind,added_by,title,subject,due_date,details,stretch,status,done_at,given_at,given_by,plan_rev,created_at,created_by,updated_at,updated_by';
+  const A_COLS = 'id,kid_id,kind,added_by,title,subject,due_date,details,stretch,status,done_at,given_at,given_by,plan_rev,created_at,created_by,updated_at,updated_by,'
+    + 'ai_state,ai_stop,ai_draft,ai_prev,ai_at';
+  // The AI's runs (PR B), the parents' only: this month's and any still open; and the last Test, whenever it was.
+  const RUN_COLS = 'id,kind,status,stop,model,asked_by,assignment_id,link_id,started_at,lease_until,finished_at,cents';
 
   // Every row a read matches, page by page. The API answers at most its "Max rows" (Supabase's Settings
   // → API, 1,000 unless changed) and cuts the rest without an error, and his points ledger is never
@@ -227,12 +239,19 @@
   async function load(st) {
     const today = dates.today();
     // An assignment's address opens it whoever's it is: its kid becomes the one on screen.
-    const [kids, times, links, owner] = await Promise.all([
+    const [kids, times, links, owner, house, runs, tests] = await Promise.all([
       q(sb().from('homework_kids').select('*')),
       q(sb().from('homework_times').select('event_id,kid_id')),
       isAdmin() ? q(sb().from('tutor_links').select('*').order('created_at')) : Promise.resolve([]),
       st.params.id && !st.loaded ? q(sb().from('assignments').select('kid_id').eq('id', st.params.id)) : Promise.resolve([]),
+      isAdmin() ? q(sb().from('household').select('*').limit(1)) : Promise.resolve([]),
+      isAdmin() ? q(sb().from('ai_runs').select(RUN_COLS).or(`started_at.gte.${today.slice(0, 8)}01,status.eq.running`).order('started_at', { ascending: false }))
+        : Promise.resolve([]),
+      isAdmin() ? q(sb().from('ai_runs').select(RUN_COLS).eq('kind', 'test').order('started_at', { ascending: false }).limit(1)) : Promise.resolve([]),
     ]);
+    st.household = (house || [])[0] || null;
+    st.aiRuns = runs || [];
+    st.lastTest = (tests || [])[0] || null;
     if (owner && owner[0]) chosen = owner[0].kid_id;
     const order = (id) => { const p = v2.person(id); return p ? [Number(p.sort_order) || 0, p.name] : [1e9, '']; };
     const known = (kids || []).filter((k) => v2.person(k.kid_id)).sort((a, b) => {
@@ -401,7 +420,187 @@
     if (!row) return null;
     const a = P.fromRows(row, stepsOf(st, id), { week: st.week, today: st.today, asOf: asOf() });
     if (row.given_by && !viaLink(row.given_by) && !/\(My day\)$/.test(row.given_by)) a.given_by_name = whoName(row.given_by);
+    a.ai = aiOf(st, row, true);
     return a;
+  }
+
+  // ============================================
+  // THE AI PLANNER (PR B, docs/v1.3-homework.md §6), the parents only
+  // ============================================
+  // An assignment's AI state, as plan.js's editor takes it: { state, stop, draft, prev, at }, or null. A run still
+  // 'running' whose lease has passed reads as failed with 'timeout' (as both token views read it), when the runs read
+  // with the row say so.
+  function aiOf(st, row, withRuns) {
+    if (!row || (!row.ai_state && !row.ai_draft)) return null;
+    let state = row.ai_state;
+    let stop = row.ai_stop;
+    if (withRuns && state === 'running') {
+      const now = Date.parse(clockInstant() || '') || Date.now();
+      const open = st.aiRuns.some((r) => r.assignment_id === row.id && r.status === 'running' && Date.parse(r.lease_until) >= now);
+      if (!open && st.aiRuns.some((r) => r.assignment_id === row.id)) { state = 'failed'; stop = 'timeout'; }
+    }
+    return { state, stop, draft: row.ai_draft || null, prev: row.ai_prev || null, at: row.ai_at || null };
+  }
+  // The device's mark of what was last sent for an assignment (the preview's fold), in localStorage when it works.
+  const SENT = {
+    get: (id) => { try { return localStorage.getItem(`hh.ai.sent.${id}`); } catch (e) { return null; } },
+    set: (id, mark) => { try { localStorage.setItem(`hh.ai.sent.${id}`, mark); } catch (e) { /* no storage: always open */ } },
+  };
+  const aiOn = (st) => !!(st.household && st.household.homework_ai);
+  // hub-jobs' homework_ai, with the parent's sign-in: { run_id } | { stop, run_id? } | { error }.
+  // An answer that isn't a 2xx (a database error, no service key, 0005 not applied) is its stop, never "Can't reach
+  // Home Hub": only a request that got no answer is offline (P.aiFailure).
+  async function invokeAi(body) {
+    const r = await sb().functions.invoke('hub-jobs', { body: Object.assign({ action: 'homework_ai' }, body) });
+    if (r.error) {
+      const stop = await P.aiFailure(r.error);
+      return stop === 'offline' ? { error: r.error } : { stop };
+    }
+    return r.data && typeof r.data === 'object' ? r.data : { error: { message: 'No answer.' } };
+  }
+  // plan.js's editor's AI parts for one assignment, or null (Sam, or the AI off with nothing to show).
+  function aiOpts(st, row) {
+    if (!isAdmin() || !row || !st.row || !st.row.active) return null;
+    if (!aiOn(st) && !row.ai_draft && !row.ai_state) return null;
+    const id = row.id;
+    const fresh = async () => {
+      const rows = await q(sb().from('assignments').select(A_COLS).eq('id', id));
+      const x = rows && rows[0];
+      if (!x) return { gone: true };
+      const i = st.assignments.findIndex((y) => y.id === id);
+      if (i >= 0) st.assignments[i] = Object.assign({}, st.assignments[i], { ai_state: x.ai_state, ai_stop: x.ai_stop, ai_draft: x.ai_draft, ai_prev: x.ai_prev, ai_at: x.ai_at });
+      return { ai: aiOf(st, x, false) };
+    };
+    return {
+      on: aiOn(st),
+      sent: SENT,
+      preview: ({ kind, request, answers }) => run(sb().rpc('homework_ai_preview', { p_assignment: id, p_kind: kind, p_request: request, p_answers: answers })),
+      send: ({ kind, request, answers, key, shown }) => invokeAi({ kind, assignment_id: id, request, answers, key, shown }),
+      state: fresh,
+      draft: async (action) => {
+        try { await run(sb().rpc('homework_ai_draft', { p_assignment: id, p_action: action })); } catch (err) { return { error: err }; }
+        return fresh();
+      },
+      stretch: async (text) => {
+        try {
+          await q(sb().from('assignments').update({ stretch: text }).eq('id', id).select('id'));
+        } catch (err) { toast(hwError(err), { error: true }); return; }
+        if (!st.ctx.stale()) reload(st, true);
+      },
+    };
+  }
+
+  // The switches card's AI row (§9.2): its words.
+  const AI_KEY_LINE = {
+    auth: 'Anthropic refused the key. Make a new key and replace ANTHROPIC_API_KEY.',
+    spend_limit: 'This month\'s limit at Anthropic is reached (Console → Workspaces → Home Hub → Spend limits).',
+    billing: 'Anthropic says the account is out of credit: Console → Billing → Buy credits (or turn on auto-reload).',
+  };
+  const NOT_SET_UP = 'AI planner: not set up (README → Homework)';
+  const cents = (n) => (Number(n) || 0);
+  const aboutCents = (n) => `about ${Math.round(cents(n))} ${Math.round(cents(n)) === 1 ? 'cent' : 'cents'}`;
+  function aiTestLine(st) {
+    const t = st.aiTest;
+    if (t && t.state === 'running') return 'Testing… (usually under a minute)';
+    if (t && t.state === 'not_set_up') return NOT_SET_UP;
+    if (t && t.state === 'offline') return 'Couldn\'t reach Home Hub to test. Check the connection and try again.';
+    const r = t && t.run ? t.run : st.lastTest;
+    if (!r) return 'Not tested yet. Test it before turning it on.';
+    if (r.status === 'running') return 'Testing… (usually under a minute)';
+    if (r.status === 'ready') {
+      const secs = Math.max(1, Math.round((Date.parse(r.finished_at) - Date.parse(r.started_at)) / 1000)) || 0;
+      return `Working · ${r.model || 'claude'} · ${secs} s · ${aboutCents(r.cents)}`;
+    }
+    const stop = String(r.stop || '');
+    if (stop === 'cap') return 'Not run: AI help is used up for today (12 runs). Try again tomorrow.';
+    if (stop === 'month') return 'Not run: AI help is used up for this month. It starts again next month.';
+    if (/^refusal/.test(stop)) {
+      const cat = /^refusal_[a-z_]+$/.test(stop) ? stop.slice('refusal_'.length).replace(/_/g, ' ') : '';
+      return `Not working: the AI declined the test${cat ? ` (${cat})` : ''}.`;
+    }
+    return `Not working: ${AI_KEY_LINE[stop] || ({ timeout: 'it took too long.' }[stop] || 'try again later.')}`;
+  }
+  function aiRowHTML(st) {
+    const hh = st.household;
+    if (!hh) return '';
+    const kid = kidName(st);
+    const on = !!hh.homework_ai;
+    const tested = !!(st.lastTest && st.lastTest.status === 'ready') || !!(st.aiTest && st.aiTest.run && st.aiTest.run.status === 'ready');
+    const runs = st.aiRuns;
+    const month = runs.filter((r) => householdDate(r.started_at).slice(0, 7) === st.today.slice(0, 7));
+    const today = runs.filter((r) => householdDate(r.started_at) === st.today).length;
+    const cost = month.reduce((n, r) => n + cents(r.cents), 0);
+    const last = runs.find((r) => r.status === 'failed' && r.stop) || null;
+    const lastAny = runs.find((r) => r.status !== 'running') || null;
+    const warn = [];
+    if (st.aiTest && st.aiTest.state === 'not_set_up') warn.push(NOT_SET_UP);
+    if (lastAny && lastAny.status === 'failed' && AI_KEY_LINE[lastAny.stop]) warn.push(AI_KEY_LINE[lastAny.stop]);
+    const refusal = runs.find((r) => /^refusal_[a-z_]+$/.test(r.stop || ''));
+    if (refusal) warn.push(`The AI declined the last one: ${refusal.stop.slice('refusal_'.length).replace(/_/g, ' ')}`);
+    else if (last && last.stop === 'refusal') warn.push('The AI declined the last one.');
+    const words = hh.homework_never_send || [];
+    const busyTest = st.aiTest && st.aiTest.state === 'running';
+    return `<div class="hw-switch-row" data-row="ai"><p class="hw-switch-title">AI planner</p>
+      ${on || tested ? `<label class="hw-switch"><input type="checkbox" data-act="ai-on"${on ? ' checked' : ''}><span>${on ? 'On' : 'Off'}</span></label>` : ''}
+      <small class="hw-switch-line">When on, Pat and the parents can send an assignment (its title, class, dates and text), ${esc(kid)}'s free minutes per day, how long his steps take against the plan, and his short answers to the AI's questions, with the names Home Hub knows taken out, to Anthropic (Claude) to draft a plan. What Claude will see shows exactly what goes. Anthropic doesn't train on it. It may keep it up to 30 days, or up to 2 years if its safety checks flag it. About 6 cents a plan; never more than the $15 monthly limit.</small>
+      <p class="hw-ai-state">${esc(`AI planner: ${on ? 'on' : 'off'}`)}</p>
+      ${warn.map((x) => `<p class="hw-feed-error hw-ai-key" role="status">${esc(x)}</p>`).join('')}
+      <p class="hw-switch-line hw-ai-month">${esc(`AI planner this month: ${plural(month.length, 'run')}, about $${(cost / 100).toFixed(2)} (estimate) · ${today} of 12 today`)}</p>
+      <div class="hw-feed-acts">${btn('ai-test', 'Test the AI planner', busyTest ? ' disabled' : '')}</div>
+      <p class="hw-switch-line hw-ai-test" role="status">${esc(aiTestLine(st))}</p>
+      <p class="hw-switch-title hw-sub-title">Words never to send</p>
+      <small class="hw-switch-line">The school's name and its short form, and ${esc(kid)}'s teachers' names. They are taken out of everything sent, as the names Home Hub knows are. The AI can't be turned on without one.</small>
+      <ul class="hw-never">${words.map((x, i) => `<li><span>${esc(x)}</span><button type="button" class="linkbtn" data-act="never-remove" data-i="${i}" aria-label="${esc(`Remove ${x}`)}">Remove</button></li>`).join('')}</ul>
+      ${words.length < 20 ? `<form class="hw-neverform" data-form="never" novalidate autocomplete="off"><label class="field"><span>A word or name never to send</span>
+        <input type="text" name="word" maxlength="40" autocomplete="off" placeholder="North Field School"></label>
+        <p class="form-error" role="alert" hidden></p><div class="form-actions"><button type="submit" class="btn">Add</button></div></form>` : ''}
+      ${month.length ? `<details class="hw-ai-runs"><summary>${esc(`This month's runs (${month.length})`)}</summary><ul>${month.map((r) => `<li>${esc([
+        `${rel(st, householdDate(r.started_at))} ${fmt.time(r.started_at)}`, r.kind === 'test' ? 'Test' : r.kind === 'revise' ? 'Revision' : 'Plan',
+        r.asked_by ? whoName(r.asked_by) : '', r.status === 'ready' ? 'Done' : r.status === 'running' ? 'Running' : `Stopped: ${r.stop || 'error'}`,
+        r.cents != null ? aboutCents(r.cents) : ''].filter(Boolean).join(' · '))}</li>`).join('')}</ul></details>` : ''}
+    </div>`;
+  }
+  // Test the AI planner: a run with a fixed made-up assignment (nothing stored but its record), read every 2 seconds.
+  async function aiTest(st) {
+    if (st.aiTest && st.aiTest.state === 'running') return;
+    st.aiTest = { state: 'running' };
+    draw(st);
+    let r;
+    try { r = await invokeAi({ kind: 'test', key: P.newId() }); } catch (err) { r = { error: err }; }
+    if (st.ctx.stale()) return;
+    if (r.error) { st.aiTest = { state: 'offline' }; draw(st); return; }
+    if (r.stop === 'not_set_up') { st.aiTest = { state: 'not_set_up' }; draw(st); return; }
+    if (r.stop) { st.aiTest = { state: 'done', run: { status: 'failed', stop: r.stop } }; draw(st); return; }
+    const until = Date.now() + 6.5 * 60 * 1000;
+    const tick = async () => {
+      if (st.ctx.stale()) return;
+      let rows = null;
+      try { rows = await q(sb().from('ai_runs').select(RUN_COLS).eq('id', r.run_id)); } catch (err) { rows = null; }
+      if (st.ctx.stale()) return;
+      const x = rows && rows[0];
+      if ((!x || x.status === 'running') && Date.now() < until) { setTimeout(tick, 2000); return; }
+      st.aiTest = { state: 'done', run: x || { status: 'failed', stop: 'timeout' } };
+      reload(st, true);
+    };
+    setTimeout(tick, 2000);
+  }
+  function addNever(st, form) {
+    const err = form.querySelector('.form-error');
+    const word = P.clean(form.elements.word.value, 41);
+    const words = (st.household && st.household.homework_never_send) || [];
+    const fail = (m) => { err.textContent = m; err.hidden = false; form.elements.word.focus(); };
+    if (Array.from(word).length < 2 || Array.from(word).length > 40) return fail('A word or name of 2 to 40 characters.');
+    if (words.some((x) => x.toLowerCase() === word.toLowerCase())) return fail('That one is on the list already.');
+    return saveHouse(st, { homework_never_send: words.concat([word]) }, `Added: ${word}`);
+  }
+  // The household's AI columns, saved only if nobody changed the household since it was read (as Settings saves it).
+  function saveHouse(st, patch, done) {
+    const hh = st.household;
+    return write(st, async () => {
+      const rows = await q(sb().from('household').update(patch).eq('id', true).eq('updated_at', hh.updated_at).select());
+      if (!rows || !rows.length) throw new Error('That wasn\'t saved: someone changed the settings a moment ago. Reload, then try again.');
+      try { await v2.refresh(); } catch (err) { /* the page reads it again anyway */ }
+    }, () => toast(done));
   }
 
   // ============================================
@@ -501,6 +700,8 @@
     else if (a.added_by === 'school') sub.push(...schoolMarks(st, a));
     let state;
     if (a.status !== 'open') state = a.status === 'done' ? 'Done' : 'Dropped';
+    else if (!a.given_at && (aiOf(st, a, true) || {}).state === 'running') state = 'AI is drafting a plan… ›';
+    else if (!a.given_at && a.ai_draft) state = 'AI draft ready ›';
     else if (!steps.length) state = 'No plan yet ›';
     else if (!a.given_at) state = 'Plan not given yet ›';
     else if (/\(My day\)$/.test(a.given_by || '')) state = `Quick · ${sum(steps, (s) => s.minutes)} min`;
@@ -608,7 +809,9 @@
         <button type="button" class="btn btn-sm" data-act="new-token" data-link="${esc(l.id)}">New link</button>
         ${l.active ? btn('link-off', 'Off', ` data-link="${esc(l.id)}"`) : btn('link-on', 'On', ` data-link="${esc(l.id)}"`)}
         <button type="button" class="btn btn-sm" data-act="extend" data-link="${esc(l.id)}">Extend 180 days</button>
-      </div>${core.schemaVersion >= 7 ? coachHTML(st, l) : ''}${st.form && st.form.key === `link:${l.id}` ? linkFormHTML(l) : ''}</li>`;
+      </div>
+      <label class="hw-switch hw-link-ai"><input type="checkbox" data-act="link-ai" data-link="${esc(l.id)}"${l.can_ai ? ' checked' : ''}><span>Can ask the AI</span></label>
+      ${core.schemaVersion >= 7 ? coachHTML(st, l) : ''}${st.form && st.form.key === `link:${l.id}` ? linkFormHTML(l) : ''}</li>`;
   }
   // 0007 (docs/v1.3-homework.md §20.5): the link's coach view (off by default; set_tutor_coach), with exactly what it
   // shows, and the notes the coach left for the parents: the ones not done, each with Done, and the done ones of the
@@ -678,6 +881,7 @@
           <small class="hw-switch-line">A link with no sign-in that shows only ${esc(kid)}'s homework. Send it to the tutor; it ends after 180 days. New link stops the old one at once.</small>
           ${st.links.length ? `<ul class="hw-links">${st.links.map((l) => linkHTML(st, l)).join('')}</ul>` : ''}
           ${st.form && st.form.key === 'link:new' ? linkFormHTML(null) : st.links.length < 3 ? btn('add-link', '+ Tutor link') : ''}</div>`);
+        rows.push(aiRowHTML(st));
         if (core.schemaVersion >= 6) rows.push(schoolHTML(st));
         rows.push(`<div class="hw-switch-row" data-row="erase">${btn('erase', `Erase ${kid}'s homework…`, '', 'btn-danger')}
           <small class="hw-switch-line">Deletes all of it, for good. His homework-time events stay on the calendar.</small></div>`);
@@ -959,7 +1163,8 @@
     root.querySelector('[data-ref="blocks"]').innerHTML = blocksHTML(st, a);
     const box = root.querySelector('[data-ref="editor"]');
     const ed = editorAssignment(st, a.id);
-    const more = { today: st.today, asOf: asOf(), serverNow: clockInstant(), week: st.week, length: st.row.focus_minutes, kid: kidName(st), tutor: tutorFirst(st) };
+    const more = { today: st.today, asOf: asOf(), serverNow: clockInstant(), week: st.week, length: st.row.focus_minutes, kid: kidName(st), tutor: tutorFirst(st),
+      ai: aiOpts(st, a) };
     if (!admin) {
       box.innerHTML = stepsReadOnly(st, a);
     } else if (!st.editor) {
@@ -1286,7 +1491,7 @@
   function eraseDialog(st) {
     const kid = kidName(st);
     const form = openDialog(`<form class="form d-inner hw-erase" novalidate autocomplete="off">${dialogTop(`Erase ${kid}'s homework`)}
-      <p>This deletes ${esc(kid)}'s assignments and lessons, their plans, questions, answers and notes, his focus blocks, points, rewards and asks, and the tutor's links, for good. His homework-time events stay on the calendar; delete them there if you want.</p>
+      <p>This deletes ${esc(kid)}'s assignments and lessons, their plans, questions, answers and notes, his focus blocks, points, rewards and asks, the tutor's links and the AI planner's run records, for good. His homework-time events stay on the calendar; delete them there if you want. A copy Anthropic keeps of what was sent to the AI planner (up to 30 days) can't be reached from here.</p>
       <label class="field"><span>Type ERASE to erase</span><input type="text" name="confirm" autocapitalize="characters" spellcheck="false"></label>
       ${dialogFoot('Erase')}</form>`);
     form.querySelector('[type="submit"]').classList.replace('btn-primary', 'btn-danger');
@@ -1587,6 +1792,15 @@
       case 'school-item': schoolItemAct(st, d.item, d.do); break;
       case 'add-link': open('link:new', 'link', null); break;
       case 'erase': eraseDialog(st); break;
+      case 'ai-test': aiTest(st); break;
+      case 'never-remove': {
+        const words = (st.household && st.household.homework_never_send) || [];
+        const i = Number(d.i);
+        if (!words[i]) break;
+        if (st.household.homework_ai && words.length === 1) { toast('Turn the AI planner off first: it needs at least one word never to send.', { error: true }); break; }
+        saveHouse(st, { homework_never_send: words.filter((x, j) => j !== i) }, `Removed: ${words[i]}`);
+        break;
+      }
       case 'mark-done': setStatus(st, 'done'); break;
       case 'reopen': setStatus(st, 'open'); break;
       case 'drop': setStatus(st, 'dropped'); break;
@@ -1607,6 +1821,7 @@
     else if (form.dataset.form === 'values') savePoints(st, form);
     else if (form.dataset.form === 'link') submitLink(st, form);
     else if (form.dataset.form === 'school') saveSchool(st, form);
+    else if (form.dataset.form === 'never') addNever(st, form);
     else if (form.classList.contains('hw-afields')) saveFields(st, form);
   }
 
@@ -1616,7 +1831,7 @@
   async function renderHomework(main, ctx) {
     const st = { main, ctx, params: ctx.params, today: dates.today(), kids: [], kid: null, row: null, times: [], links: [], events: [], assignments: [], steps: [],
       sessions: [], ledger: [], rewards: [], asks: [], week: [], weekFailed: false, school: null, schoolFailed: false, schoolOpen: {}, schoolOff: false, loaded: false, failed: false,
-      busy: false, form: null, editor: null, fieldsDirty: false, typing: false };
+      busy: false, form: null, editor: null, fieldsDirty: false, typing: false, household: null, aiRuns: [], lastTest: null, aiTest: null };
     ctx.signal.addEventListener('abort', () => stopEditor(st));
     main.innerHTML = '<p class="loading">Loading…</p>';
     main.addEventListener('click', (e) => onClick(st, e), { signal: ctx.signal });
@@ -1641,6 +1856,18 @@
         const l = st.links.find((y) => y.id === x.dataset.link);
         const on = x.checked;
         if (l) write(st, () => run(sb().rpc('set_tutor_coach', { p_link: l.id, p_coach: on })), () => toast(`Coach view ${on ? 'on' : 'off'} for ${l.label}`));
+        return;
+      }
+      // The AI planner's switch: the database refuses it with no word never to send, in its own words.
+      if (x.dataset.act === 'ai-on') {
+        const want = x.checked;
+        if (!st.household) return;
+        saveHouse(st, { homework_ai: want }, want ? 'The AI planner is on' : 'The AI planner is off').then((ok) => { if (!ok && !st.ctx.stale()) draw(st); });
+        return;
+      }
+      if (x.dataset.act === 'link-ai') {
+        const l = st.links.find((y) => y.id === x.dataset.link);
+        if (l) saveLink(st, l, { can_ai: x.checked });
         return;
       }
       if (x.closest('form[data-form]')) st.typing = true;
