@@ -337,11 +337,12 @@ const missingAnon = [...anon].filter((n) => !words(tokenSec).has(n)).sort();
 check(`docs/v2-design.md "Anonymous token functions" lists every function anon can call (${[...anon].sort().join(', ')})`, anon.size > 0 && !missingAnon.length, `missing ${missingAnon.join(', ')}`);
 // Each function anon can call is a decision (a secret is its only key): adding one means adding it here,
 // to the design and to tests/db/access.test.sql. 0002: My day and the confirmation email; 0004 (v1.2):
-// the helper's shopping list; 0005 (v1.3): a kid's homework on My day (seven) and the tutor link (four).
+// the helper's shopping list; 0005 (v1.3): a kid's homework on My day (seven) and the tutor link (four);
+// 0006 (v1.3's school feed): his New from school (one).
 const ANON = ['add_to_list_by_token', 'assignment_by_token', 'buy_item_by_token', 'complete_by_token', 'confirm_digest', 'focus_by_token',
   'get_list_by_token', 'get_person_day', 'homework_by_token', 'homework_prefs_by_token', 'plan_by_token', 'reward_by_token',
-  'step_by_token', 'stop_digest', 'tutor_assignment_by_token', 'tutor_plan_by_token', 'tutor_step_by_token', 'tutor_view_by_token',
-  'undo_by_token'];
+  'school_item_by_token', 'step_by_token', 'stop_digest', 'tutor_assignment_by_token', 'tutor_plan_by_token', 'tutor_step_by_token',
+  'tutor_view_by_token', 'undo_by_token'];
 check(`the migrations let anon call exactly the ${ANON.length} token functions this check knows`, [...anon].sort().join() === ANON.join(), [...anon].sort());
 // They are all day.html's (My day, and from v1.3 the tutor link's mode), and CLAUDE.md says day.html calls only them.
 const missingClaude = ANON.filter((n) => !clientSec.includes(`\`${n}\``));

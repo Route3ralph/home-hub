@@ -103,19 +103,24 @@ check('the test can leave out the two "create extension" lines', !/^\s*create ex
     check('a placeholder secret: refused, nothing scheduled', !r.ok && /placeholder|at least 32/.test(r.err) && q('select count(*) from cron.job').out === '0', r.err);
     q(`update vault.decrypted_secrets set decrypted_secret = '${SECRET}' where name = 'hub_cron_secret'`);
 
-    // ---- Schedules the jobs. v1.1 adds hub-calendar, so there are four (this expectation changed on
-    // purpose: docs/v1.1-google-calendar.md §8.1).
+    // ---- Schedules the jobs. v1.1 adds hub-calendar, so there were four (docs/v1.1-google-calendar.md
+    // §8.1); 0006 (the school feed) adds hub-school, so there are five (this expectation changed on
+    // purpose: docs/v1.3-homework.md §12 and §16.4).
     r = runCron();
     const jobs = q("select jobname || ' ' || schedule from cron.job order by jobname").out.split('\n');
-    check('with real secrets: hub-calendar (every 5 minutes), hub-cron-cleanup (daily), hub-digest (every 15 minutes), hub-roll-missed (hourly)',
-      r.ok && jobs.length === 4 && jobs[0] === 'hub-calendar 2,7,12,17,22,27,32,37,42,47,52,57 * * * *'
+    check('with real secrets: hub-calendar (every 5 minutes), hub-cron-cleanup (daily), hub-digest (every 15 minutes), hub-roll-missed (hourly), hub-school (hourly at 23)',
+      r.ok && jobs.length === 5 && jobs[0] === 'hub-calendar 2,7,12,17,22,27,32,37,42,47,52,57 * * * *'
       && jobs[1].startsWith('hub-cron-cleanup ') && /^hub-cron-cleanup \d+ \d+ \* \* \*$/.test(jobs[1])
-      && jobs[2] === 'hub-digest */15 * * * *' && jobs[3] === 'hub-roll-missed 7 * * * *', `${r.err} ${jobs.join(' | ')}`);
+      && jobs[2] === 'hub-digest */15 * * * *' && jobs[3] === 'hub-roll-missed 7 * * * *' && jobs[4] === 'hub-school 23 * * * *', `${r.err} ${jobs.join(' | ')}`);
+    const schoolMinute = Number((jobs[4] || '').split(' ')[1]);
+    const otherMinutes = [...(jobs[0] || '').split(' ')[1].split(',').map(Number), 0, 15, 30, 45, Number((jobs[3] || '').split(' ')[1])];
+    check('hub-school runs at a minute no other hub job uses (not a quarter hour, not hub-calendar\'s or hub-roll-missed\'s)',
+      Number.isInteger(schoolMinute) && !otherMinutes.includes(schoolMinute), `${schoolMinute} vs ${otherMinutes}`);
     const minutes = (jobs[0] || '').split(' ')[1]?.split(',').map(Number) || [];
     check('hub-calendar runs every 5 minutes, never on hub-digest\'s quarter hours',
       minutes.length === 12 && minutes.every((m, i) => m === 2 + 5 * i) && minutes.every((m) => m % 15 !== 0), minutes.join(','));
     r = runCron();
-    check('running it again replaces the jobs (still four)', r.ok && q('select count(*) from cron.job').out === '4', r.err);
+    check('running it again replaces the jobs (still five)', r.ok && q('select count(*) from cron.job').out === '5', r.err);
 
     // ---- The digest job reads the URL and the secret from Vault when it runs.
     const digestCmd = q("select command from cron.job where jobname = 'hub-digest'").out;
@@ -138,6 +143,20 @@ check('the test can leave out the two "create extension" lines', !/^\s*create ex
     check('... reading Vault each time it runs (a changed URL is used without running cron.sql again)',
       q('select url from net.calls').out === 'https://other.example/functions/v1/hub-jobs', q('select url from net.calls').out);
     q(`update vault.decrypted_secrets set decrypted_secret = '${URL_OK}' where name = 'hub_jobs_url'`);
+
+    // ---- The school job: the same URL and header from Vault, {"action":"school"}, 60 seconds.
+    q('delete from net.calls');
+    const schoolCmd = q("select command from cron.job where jobname = 'hub-school'").out;
+    r = psql('crontest', [], schoolCmd.trim().replace(/;?\s*$/, ';'));
+    const schoolCall = q("select url || ' ' || (headers->>'x-hub-cron') || ' ' || (headers->>'Content-Type') || ' ' || body::text || ' ' || timeout_milliseconds from net.calls").out;
+    check('the school job posts {"action":"school"} to the Vault URL with the Vault secret, timeout 60 s',
+      r.ok && schoolCall === `${URL_OK} ${SECRET} application/json {"action": "school"} 60000`, `${r.err} ${schoolCall}`);
+    check('... and stores neither secret in the job itself', !schoolCmd.includes(SECRET) && !schoolCmd.includes(URL_OK) && /hub_cron_secret/.test(schoolCmd) && /hub_jobs_url/.test(schoolCmd));
+    // A database where cron.sql ran before 0006 (four jobs): running it again adds hub-school and keeps one of each.
+    q("delete from cron.job where jobname = 'hub-school'");
+    r = runCron();
+    check('run again after an earlier release: hub-school is added, one of each job', r.ok
+      && q("select string_agg(jobname, ',' order by jobname) from cron.job where jobname like 'hub-%'").out === 'hub-calendar,hub-cron-cleanup,hub-digest,hub-roll-missed,hub-school', r.err);
 
     // ---- The cleanup job: cron.job_run_details would otherwise keep ~120 rows a day forever.
     q(`insert into cron.job (jobname, schedule, command) values ('family-backup', '0 2 * * *', 'select 1')`);

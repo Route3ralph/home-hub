@@ -1,5 +1,6 @@
-// Supabase Edge Function hub-jobs: the morning email and the Google Calendar copy (see handler.ts for
-// the actions and secrets). Its files: index.ts, handler.ts, render.ts, util.ts, google.ts, calendar.ts.
+// Supabase Edge Function hub-jobs: the morning email, the Google Calendar copy and the school feed (see
+// handler.ts for the actions and secrets). Its files: index.ts, handler.ts, render.ts, util.ts, google.ts,
+// calendar.ts, school.ts, ical.ts.
 // Deploy with verify_jwt off (each action checks who is asking):  supabase functions deploy hub-jobs --no-verify-jwt
 // supabase/config.toml pins verify_jwt = false for the CLI. Any other deploy (the dashboard, the Supabase
 // MCP's deploy_edge_function, whose verify_jwt defaults to true) must turn it off too: with it on, the

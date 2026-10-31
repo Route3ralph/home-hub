@@ -1,10 +1,10 @@
 -- =====================================================================
--- HOME HUB v2 — schedule the morning email and the Google Calendar copy (pg_cron + pg_net)
+-- HOME HUB v2 — schedule the morning email, the Google Calendar copy and the school feed (pg_cron + pg_net)
 -- Run in the Supabase SQL editor after migration 0002 is applied and the
 -- hub-jobs function is deployed (docs/v2-design.md §7, step 5), and again after
 -- a release that changes this file (v1.1 added hub-calendar: run it again after
--- migration 0003). Safe to run again: it replaces the four jobs. It changes
--- nothing if a check fails.
+-- migration 0003; v1.3's school feed added hub-school: run it again after migration 0006).
+-- Safe to run again: it replaces the five jobs. It changes nothing if a check fails.
 --
 -- Before you run it, create two Vault secrets by hand (Dashboard → Project
 -- Settings → Vault, or in the SQL editor). Never write the real values in
@@ -36,6 +36,10 @@
 --                     (docs/v1.1-google-calendar.md §3). Until migration 0003 is applied it
 --                     answers 503 no_schema, and without GOOGLE_SA_JSON it stops at once
 --                     (not_set_up): harmless either way.
+--   hub-school        every hour at 23 minutes past: POST {"action":"school"} to hub-jobs with the
+--                     same header. Each run reads the school's calendar links that are due
+--                     (docs/v1.3-homework.md §11.3). Until migration 0006 is applied it answers
+--                     503 no_schema, and with no link set up it reads nothing: harmless either way.
 --   hub-cron-cleanup  every night: removes the hub jobs' run history (cron.job_run_details)
 --                     older than 14 days. Without it the ~400 rows a day are kept forever.
 --
@@ -134,7 +138,26 @@ select cron.schedule(
   $job$
 );
 
--- 6. Housekeeping, every night at 3:17 (UTC): pg_cron keeps a row per run in
+-- 6. The school feed, every hour at 23 minutes past (no other hub job runs then). A run starts no read
+--    after 30 seconds and each read waits at most 15, so the same 60-second timeout covers it; what's
+--    left goes in the next run. Reads the same two Vault secrets as hub-digest when it runs.
+select cron.unschedule(j.jobname) from cron.job j where j.jobname = 'hub-school';
+select cron.schedule(
+  'hub-school',
+  '23 * * * *',
+  $job$
+  select net.http_post(
+    url := (select s.decrypted_secret from vault.decrypted_secrets s where s.name = 'hub_jobs_url'),
+    body := '{"action": "school"}'::jsonb,
+    headers := jsonb_build_object(
+      'Content-Type', 'application/json',
+      'x-hub-cron', (select s.decrypted_secret from vault.decrypted_secrets s where s.name = 'hub_cron_secret')),
+    timeout_milliseconds := 60000
+  );
+  $job$
+);
+
+-- 7. Housekeeping, every night at 3:17 (UTC): pg_cron keeps a row per run in
 --    cron.job_run_details and never removes them. This keeps the hub jobs' last 14 days
 --    (and drops rows of jobs that no longer exist, such as the ones this file replaced);
 --    other jobs' history is left alone.
@@ -152,8 +175,8 @@ select cron.schedule(
 
 commit;
 
--- 7. Check: the four jobs are listed and active.
-select jobid, jobname, schedule, active from cron.job where jobname in ('hub-digest', 'hub-roll-missed', 'hub-calendar', 'hub-cron-cleanup') order by jobname;
+-- 8. Check: the five jobs are listed and active.
+select jobid, jobname, schedule, active from cron.job where jobname in ('hub-digest', 'hub-roll-missed', 'hub-calendar', 'hub-school', 'hub-cron-cleanup') order by jobname;
 
 -- Afterwards, to see how it is going:
 --   select jobname, status, return_message, start_time from cron.job_run_details d
@@ -162,5 +185,6 @@ select jobid, jobname, schedule, active from cron.job where jobname in ('hub-dig
 --   select started_at, ok, sent, detail from public.job_runs order by started_at desc limit 10;
 -- To stop the morning email:   select cron.unschedule('hub-digest');
 -- To stop the Google Calendar copy:   select cron.unschedule('hub-calendar');
+-- To stop reading the school's links:   select cron.unschedule('hub-school');
 -- To remove everything this file scheduled:
---   select cron.unschedule(j.jobname) from cron.job j where j.jobname in ('hub-digest', 'hub-roll-missed', 'hub-calendar', 'hub-cron-cleanup');
+--   select cron.unschedule(j.jobname) from cron.job j where j.jobname in ('hub-digest', 'hub-roll-missed', 'hub-calendar', 'hub-school', 'hub-cron-cleanup');
