@@ -217,6 +217,16 @@ The school links' first-import check (**Check the dates**) used to show only ass
 
 There is nothing to switch off: the answer only adds the past ones, and the page reads both. The design's §16.7 has the undo, if ever wanted.
 
+### The school items' keys (v1.3, migration 0009)
+
+Blackbaud makes its calendar feeds again every hour or two, and each time it gives every assignment and class a new ID. The hub used to tell items apart by that ID, so after each change it took every assignment for a new one: the first-import check showed each one twice, and once the link was checked every assignment would have come back in Jordan's New from school, an assignment already made from it marked "no longer on the school site", and his classes counted twice as busy time. From 0009 the hub tells an assignment by its class, its title and its first day (a class or a game by its title and start), whatever the ID, and the copies it already has become one each. A due date the school moves still keeps its assignment; a title the school rewords comes as a new item (the old one goes after two reads).
+
+**Turning it on** (nothing to merge first, nothing to deploy: no page, Edge Function or `cron.sql` change):
+1. `tests/run.sh` ends with `0 failed`; merge.
+2. **About 1 minute:** run [`supabase/migrations/0009_school_keys.sql`](supabase/migrations/0009_school_keys.sql) in the Supabase SQL editor, after 0008, at any time (if the hourly read is running just then, it waits a moment for it). "isn't installed" means 0008 is missing; "already installed" means it's done; either way nothing was changed. On the next load each assignment shows once.
+
+There is nothing to switch off. The design's §16.9 has the undo, if ever wanted.
+
 ### What goes where
 
 - **Never in an email, a text or on the wall:** the teacher's text, steps, questions, notes, points, rewards or asks. Only the homework-time event shows there, as any event does.
@@ -479,7 +489,7 @@ Never commit the token. The rules for changing the repo (tests, migrations, depl
 | `manifest.webmanifest`, `assets/icons/` | The Home Screen app: name, colours and icons |
 | `config.js` | Database connection settings |
 | `supabase/schema.sql` | The v1 tables, security rules and functions (the baseline) |
-| `supabase/migrations/` | Every database change since, in order: `0002_home_hub_v2.sql` is v2, `0003_google_calendar.sql` is v1.1 (Google Calendar), `0004_meals_and_shopping.sql` is v1.2 (Food), `0005_homework.sql` is v1.3 (Homework), `0006_homework_school.sql` its school feed, `0007_homework_coach.sql` its coach view and `0008_school_check.sql` its first-import check when nothing is due yet |
+| `supabase/migrations/` | Every database change since, in order: `0002_home_hub_v2.sql` is v2, `0003_google_calendar.sql` is v1.1 (Google Calendar), `0004_meals_and_shopping.sql` is v1.2 (Food), `0005_homework.sql` is v1.3 (Homework), `0006_homework_school.sql` its school feed, `0007_homework_coach.sql` its coach view, `0008_school_check.sql` its first-import check when nothing is due yet and `0009_school_keys.sql` its school items' keys |
 | `supabase/preflight.sql` | Read-only checks to run before applying the v2 migration (0002 only) |
 | `supabase/cron.sql` | Schedules the morning email and the Google Calendar job (pg_cron) once hub-jobs is deployed |
 | `supabase/config.toml` | Supabase CLI settings: both Edge Functions deploy with JWT verification off |
