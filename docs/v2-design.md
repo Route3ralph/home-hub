@@ -1190,8 +1190,8 @@ alter table public.projects
 ```
 
 - Row-level security on the three tables: `guests` and `project_guests` admins select ("Admins can see the guests", "Admins can see who sees each project"); `project_contacts` members select ("Family can see the contractors guests added"); no write policies (only the functions below write them). `revoke all … from public, anon, authenticated`, then `grant select … to authenticated`; service_role keeps Supabase's defaults. Index `project_guests_guest_idx` on `project_guests (guest_email)`.
-- `projects.documents_url`: members and a project's guests write it with the row; not on the share link (`get_shared_project` is unchanged).
-- On `projects`, two more policies: "Guests see their projects" (select) and "Guests update their projects" (update), both checking `private.is_guest_of` with the row's id. No insert or delete for a guest. The trigger `projects_guest_guard` (before update, `private.projects_guest_guard()`) refuses, for a signed-in caller who isn't a member, any change to `id`, `created_at`, `owner_id`, `on_calendar`, `sharing_enabled` or `share_token` (42501 "Only the family can change the owner, the calendar switch or sharing."), and a schedule whose trades link a contractor not already on the project (42501 "Link a trade only to a contractor on this project. Add new ones under Contractors.").
+- `projects.documents_url`: the family reads it; the parents and a project's guests write it with the row (an adult's change is refused by the trigger below); not on the share link (`get_shared_project` is unchanged).
+- On `projects`, two more policies: "Guests see their projects" (select) and "Guests update their projects" (update), both checking `private.is_guest_of` with the row's id. No insert or delete for a guest. The trigger `projects_guest_guard` (before update, `private.projects_guest_guard()`) refuses, for a signed-in caller who isn't a member, any change to `id`, `created_at`, `owner_id`, `on_calendar`, `sharing_enabled` or `share_token` (42501 "Only the family can change the owner, the calendar switch or sharing."), and a schedule whose trades link a contractor not already on the project (42501 "Link a trade only to a contractor on this project. Add new ones under Contractors."); and, for a member who isn't an admin, a change to `documents_url` (42501 "Only a parent or the project's guest can change the documents folder.").
 
 ### Functions
 New:
@@ -1204,7 +1204,7 @@ New:
 - `private.is_guest_of(p_project uuid)` returns boolean: the signed-in address has the project in `project_guests`. SECURITY DEFINER, STABLE; for the policies (granted to authenticated, as `private.is_member`).
 - `private.schedule_contractors(p_schedule jsonb)` returns uuid[]: the contractors a schedule's trades link (`trades.<key>.contractor_id`, uuids only). IMMUTABLE; granted to authenticated.
 - `private.guest_contact_ids(p_project uuid)` returns uuid[]: the contractors on a project (its schedule's links and its `project_contacts`) that are in the directory. SECURITY DEFINER, STABLE; no API role may call it.
-- `private.projects_guest_guard()`: the trigger above. SECURITY DEFINER (a guest can't read `project_contacts`); no API role may call it.
+- `private.projects_guest_guard()`: the trigger above (a guest's limits, and the documents link for an adult). SECURITY DEFINER (a guest can't read `project_contacts`); no API role may call it.
 Every new public function is revoked from public, anon and service_role and granted to authenticated; each checks its caller itself.
 
 Replaced, with the same signature and grants:

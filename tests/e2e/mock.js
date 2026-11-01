@@ -2440,6 +2440,11 @@ async function install(page, db, log, opts = {}) {
       return reply(200, rows);
     }
     if (table === 'projects' && (method === 'PATCH' || method === 'POST') && db.guests) {
+      // 0011's guard: of the family, only a parent changes the documents link.
+      if (method === 'PATCH' && body && 'documents_url' in body && member.role !== 'admin'
+          && db.projects.filter(match).some((p) => p.documents_url !== body.documents_url)) {
+        return reply(403, { code: '42501', message: "Only a parent or the project's guest can change the documents folder.", details: null, hint: null });
+      }
       const refused = documentsCheck(body);
       if (refused) return reply(refused.status, refused.body);
     }

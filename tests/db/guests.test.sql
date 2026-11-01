@@ -201,8 +201,19 @@ select test.is((select account_number from contractor_secrets where contractor_i
                'City Water''s account details are as they were');
 :as_adult
 select test.is((select count(*) from project_contacts), 1::bigint, 'the family sees which contractors a guest added');
+select test.throws($$update projects set documents_url = 'https://drive.google.com/drive/folders/def456' where name = 'Kitchen'$$,
+                   'Only a parent or the project''s guest can change the documents folder.', 'an adult can''t change the documents link (the parents and the guest do)');
+select test.is(test.try($$update projects set summary = 'Adult edit' where name = 'Kitchen'$$), 'rows:1', '... but changes the rest of the project, as before');
+:as_admin
 select test.is(test.try($$update projects set documents_url = 'https://drive.google.com/drive/folders/def456' where name = 'Kitchen'$$),
-               'rows:1', 'a member changes the documents link too');
+               'rows:1', 'a parent changes the documents link');
+select test.is(test.try($$update projects set documents_url = null where name = 'Kitchen'$$), 'rows:1', '... or clears it');
+update projects set documents_url = 'https://drive.google.com/drive/folders/def456' where name = 'Kitchen';
+:as_adult
+select test.is((select documents_url from projects where name = 'Kitchen'), 'https://drive.google.com/drive/folders/def456', 'the family reads the documents link');
+:as_anon
+select test.is((select (get_shared_project('aaaaaaaaaaaaaaaaaaaaaaaa'))::text like '%drive.google%'), false, 'the public share page never carries the documents link');
+:as_adult
 select test.is(test.try(format($$update projects set schedule = jsonb_set(schedule, '{trades,music}', '{"name": "Music", "contractor_id": "%s"}') where name = 'Kitchen'$$,
                                test.contractor('Rivera Music'))),
                'rows:1', 'a member links any directory entry (the guard is for guests only)');

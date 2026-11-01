@@ -125,6 +125,13 @@ const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
     const agenda = await asGuest('/rest/v1/rpc/agenda', { method: 'POST', body: JSON.stringify({ p_from: '2026-10-26', p_to: '2026-12-20' }) });
     check('... agenda: only the Kitchen\'s own dates, no event, task, meal or contractor phone', agenda.status === 200 && agenda.body.length > 0
       && agenda.body.every((a) => a.kind === 'project' && a.project_id === KITCHEN && a.contractor_phone === null), JSON.stringify(agenda.body).slice(0, 200));
+    const samToken = (await h.sessionFor('sam@example.com')).access_token;
+    const samDocs = await h.api(`/rest/v1/projects?id=eq.${KITCHEN}`, { method: 'PATCH', body: JSON.stringify({ documents_url: 'https://drive.google.com/drive/folders/other-example' }),
+      headers: { authorization: `Bearer ${samToken}`, 'content-type': 'application/json', prefer: 'return=representation' } });
+    check('... Sam (an adult) can\'t change the documents link: only a parent or the guest', samDocs.status === 403 && /Only a parent or the project's guest/.test(JSON.stringify(samDocs.body))
+      && (await one(`select documents_url from projects where id = '${KITCHEN}'`)).documents_url === DRIVE, samDocs);
+    const shared = await h.api('/rest/v1/rpc/get_shared_project', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ share: 'kitchentoken0123456789ab' }) });
+    check('... the public share page has the schedule but never the documents link', shared.status === 200 && !!shared.body && !/drive\.google/.test(JSON.stringify(shared.body)), JSON.stringify(shared.body).slice(0, 120));
     const preview = await h.hubJobsAs(RILEY, { action: 'preview' });
     check('... hub-jobs refuses Riley (not a family admin)', preview.status === 403, preview);
     const who = await asGuest('/rest/v1/rpc/whoami', { method: 'POST', body: '{}' });

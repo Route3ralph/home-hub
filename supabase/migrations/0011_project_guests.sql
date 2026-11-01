@@ -17,7 +17,8 @@
 --   • Column: projects.documents_url (the project's shared Google Drive folder; https://drive.google.com/ only).
 --   • Policies on projects: a guest selects and updates the projects assigned to them (private.is_guest_of). No insert
 --     or delete. A trigger (private.projects_guest_guard) refuses a guest's change to the owner, the calendar switch,
---     sharing or the share link, and a schedule link to a contractor who isn't on the project.
+--     sharing or the share link, and a schedule link to a contractor who isn't on the project; and an adult's change to
+--     the documents link (the parents and the project's guests change it).
 --   • New: private.is_guest_of(p_project uuid) returns boolean (SECURITY DEFINER, for the policies);
 --     private.schedule_contractors(p_schedule jsonb) returns uuid[] (IMMUTABLE: the contractors a schedule's trades
 --     link); private.guest_contact_ids(p_project uuid) returns uuid[] (the contractors on a project: linked by its
@@ -132,7 +133,8 @@ create table public.project_contacts (
   primary key (project_id, contractor_id)
 );
 
--- The project's shared folder (drawings, quotes, invoices, photos): a Google Drive address only.
+-- The project's shared folder (drawings, quotes, invoices, photos): a Google Drive address only. The family reads it;
+-- the parents and the project's guests change it (projects_guest_guard).
 alter table public.projects
   add column documents_url text
     check (documents_url is null or (length(documents_url) <= 500 and documents_url ~ '^https://drive\.google\.com/[^\s<>"'']*$'));
@@ -214,9 +216,9 @@ create policy "Guests update their projects" on public.projects
 
 -- A guest changes the schedule, name, status, summary and documents link of their projects, not who owns them,
 -- whether they're on the family calendar, or sharing; and links a trade only to a contractor already on the project
--- (guest_save_contact adds one). A member, and anything without a signed-in email (service_role, the SQL editor), is
--- not checked here. It runs with the owner's rights (a guest can't read project_contacts); the signed-in email is
--- still the guest's.
+-- (guest_save_contact adds one). Of the family, only a parent changes the documents link (an adult changes the rest, as
+-- before). Anything without a signed-in email (service_role, the SQL editor) is not checked here. It runs with the
+-- owner's rights (a guest can't read project_contacts); the signed-in email is still the caller's.
 create function private.projects_guest_guard()
 returns trigger
 language plpgsql
@@ -226,7 +228,13 @@ as $$
 declare
   v_new uuid[];
 begin
-  if public.current_email() = '' or private.is_member() then
+  if public.current_email() = '' then
+    return new;
+  end if;
+  if private.is_member() then
+    if new.documents_url is distinct from old.documents_url and not private.is_admin() then
+      raise exception 'Only a parent or the project''s guest can change the documents folder.' using errcode = '42501';
+    end if;
     return new;
   end if;
   if new.id is distinct from old.id or new.created_at is distinct from old.created_at

@@ -275,8 +275,20 @@ const rpcFor = (version) => ({ hub_schema_version: () => version, clock: (db) =>
     await context.close();
   }
   {
-    const { page, context } = await open({ label: 'adult', email: 'sam@example.com', path: '/#/projects/p-kitchen' });
-    check('adult: no Guest access (the parents only)', !(await page.$('[data-act="guests"]')) && (await text(page, '#main h1')) === 'Kitchen Renovation');
+    const db = guestDb();
+    db.projects.find((p) => p.id === 'p-kitchen').documents_url = DRIVE;
+    const { page, context } = await open({ label: 'adult', email: 'sam@example.com', path: '/#/projects/p-kitchen', db });
+    check('adult: no Guest access (the parents only); the Documents button opens the folder', !(await page.$('[data-act="guests"]')) && (await text(page, '#main h1')) === 'Kitchen Renovation'
+      && (await page.getAttribute('[data-ref="docs"]', 'href')) === DRIVE);
+    await page.click('[data-act="settings"]');
+    await page.waitForTimeout(300);
+    const noField = !(await page.$('#formDialog [name="documents_url"]'));
+    await page.fill('#formDialog [name="summary"]', 'Adult edit');
+    await page.click('#formDialog button[type="submit"]');
+    await page.waitForTimeout(600);
+    const k = db.projects.find((p) => p.id === 'p-kitchen');
+    check('adult: Settings has no documents folder (the parents and the guest change it), and saves the rest without touching it',
+      noField && k.summary === 'Adult edit' && k.documents_url === DRIVE, k);
     await context.close();
   }
   {

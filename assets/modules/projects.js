@@ -824,8 +824,9 @@
           { name: 'start', label: 'Start date', type: 'date', required: true, value: (s.project || {}).start },
         ] },
         { name: 'summary', label: 'Short description', type: 'textarea', value: p.summary },
-        // v1.4: the project's shared Google Drive folder (drawings, quotes, invoices, specs, photos).
-        ...(isV11() ? [{ name: 'documents_url', label: 'Documents folder', type: 'url', value: p.documents_url || '',
+        // v1.4: the project's shared Google Drive folder (drawings, quotes, invoices, specs, photos). The parents and the
+        // project's guest change it (the database refuses an adult); everyone sees the Documents button.
+        ...(isV11() && (isAdmin() || isGuest()) ? [{ name: 'documents_url', label: 'Documents folder', type: 'url', value: p.documents_url || '',
           placeholder: 'https://drive.google.com/drive/folders/…',
           help: 'The Google Drive folder for this project. Share it in Drive with whoever needs it; the Documents button opens it.' }] : []),
         // v2: who gets the project's lines in the morning email, and whether its tasks show on the calendar.
@@ -859,7 +860,7 @@
         (next.phases || []).forEach((ph, i) => { ph.name = v[`phase_${i}`]; });
         G.buildModel(next);
         const patch = { name: v.name, status: v.status, summary: v.summary || null, schedule: next };
-        if (isV11()) {
+        if (isV11() && (isAdmin() || isGuest())) {
           const url = String(v.documents_url || '').trim();
           if (url && !DRIVE.test(url)) throw new Error('Use the folder\'s Google Drive address: it starts with https://drive.google.com/');
           patch.documents_url = url || null;
