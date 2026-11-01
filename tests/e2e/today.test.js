@@ -3,7 +3,10 @@
 // where the browser has Web Share), the project lines, the first-run checklist and "Which one is you?". On schema 3 (migration 0003): events
 // read from Google Calendar (google_items) in each person's day and under Everyone, in time order, never
 // in Late, Heads-up or Nobody's on it; the line when they can't be loaded; the one-time notice after the
-// first Start copying (docs/v1.1-google-calendar.md §5.4). On schema 4 (migration 0004): tonight's
+// first Start copying (docs/v1.1-google-calendar.md §5.4); on schema 10 (migration 0010, §11.4) a calendar sorted by
+// Hearth person, each day as that person's My day and email have it (a kid: his, Family's and his shared ones; the
+// helper: her own tag's; a grown-up: Family's and the grown-ups'), one colour rule, and no sort_by_guest asked for on
+// schema 9. On schema 4 (migration 0004): tonight's
 // dinner in one line under the person chips, the same under every chip, to that day on the Food page;
 // "What's for dinner? ›" only after a dinner in the last 14 days; nothing when the read fails; and no
 // meals request at all below schema 4 (docs/v1.2-kitchen.md §6.2). On schema 5 (migration 0005), for
@@ -20,7 +23,7 @@
 // Run alone with: node tests/e2e/today.test.js
 const { chromium } = require('playwright');
 const { randomUUID, createHash } = require('crypto');
-const { makeDb, install, signIn, SUPA, withCalendars, calendarRow, googleEventRow, calendarRpc, withFood, mealRow, withHomework, homeworkRpc, hwKidRow, stepRow,
+const { makeDb, install, signIn, SUPA, withCalendars, calendarRow, googleEventRow, calendarRpc, withHearth, hearthTagRow, withFood, mealRow, withHomework, homeworkRpc, hwKidRow, stepRow,
   askRow, ledgerRow, stubShare } = require('./mock');
 const { serve } = require('./server');
 
@@ -946,6 +949,90 @@ const emailOf = (req) => {
   check('1280px (dark): no sideways scroll', await noSideScroll(page));
   await page.screenshot({ path: SHOTS + 'today-google-desktop-dark.png', fullPage: true });
   await page.context().close();
+
+  // =====================================================================
+  // 9g. Schema 10 (migration 0010, docs/v1.1-google-calendar.md §11.4): a calendar sorted by Hearth person. Each
+  // person's day has what reaches their own My day (a kid) or their days (a grown-up), as the email and My day:
+  // jordan → Jordan, sam → Sam, taylor → Taylor, familyanddogs → Family, dogs → the grown-ups, grandma New.
+  // =====================================================================
+  {
+    const HTAG = (n) => `${n}@team-example-0000`;
+    const tRpc = (v) => Object.assign({ hub_schema_version: () => v }, calendarRpc, homeworkRpc);
+    function hearthTodayDb(o = {}) {
+      const g = withHomework(withFood(withCalendars(todayDb(), { auth: 'service_account' })));
+      const hc = calendarRow({ google_id: 'hearth0000@group.calendar.google.com', kind: 'family', label: 'Hearth', writes: false, status: 'ok', google_name: 'Hearth Calendar' });
+      const fc = calendarRow({ google_id: 'family@example.com', kind: 'family', label: 'Family account', writes: false, status: 'ok' });
+      g.calendars.push(hc, fc);
+      const ev = (cal, title, from, to, guests, extra) => googleEventRow(Object.assign({ calendar_id: cal.id, google_calendar: cal.google_id, title, start_day: TODAY, end_day: TODAY,
+        all_day: !from, start_at: from ? at(from) : null, end_at: to ? at(to) : null }, o.schema9 ? {} : { guests: guests.map(HTAG).sort() }, extra));
+      g.google_events.push(
+        ev(hc, 'Piano', '16:30', '17:15', ['jordan']),
+        ev(hc, 'Furnace check', '10:00', '11:00', ['sam']),
+        ev(hc, 'Visit', '16:00', '16:30', ['familyanddogs']),
+        ev(hc, 'Movie', '16:45', '18:00', []),
+        ev(hc, 'Practice', '15:00', '15:45', ['jordan', 'sam']),
+        ev(hc, 'Field trip', null, null, ['jordan']),
+        ev(hc, 'Vet', '13:30', '14:00', ['dogs', 'taylor']),
+        ev(hc, 'Swim', '14:00', '14:45', ['jordan', 'dogs']),
+        ev(hc, '', '17:00', '17:30', ['jordan'], { private: true, event_id: 'privtags' }),
+        ev(hc, '', '12:30', '13:00', [], { private: true, event_id: 'privnone' }),
+        ev(hc, 'Dinner', '18:00', '19:00', ['familyanddogs', 'taylor']),
+        ev(hc, 'Tea', '11:00', '11:45', ['grandma']),
+        ev(fc, 'Farmers market', null, null, []),
+      );
+      if (o.schema9) return g;
+      withHearth(g);
+      hc.sort_by_guest = true;
+      const T = (n, x) => hearthTagRow(Object.assign({ calendar_id: hc.id, tag: HTAG(n) }, x));
+      g.hearth_tags.push(T('jordan', { matched_to: 'person', person_id: ID.jordan }), T('sam', { matched_to: 'person', person_id: ID.sam }),
+        T('taylor', { matched_to: 'person', person_id: ID.taylor }), T('familyanddogs', { matched_to: 'family' }), T('dogs', { matched_to: 'grown_ups' }), T('grandma'));
+      return g;
+    }
+    // A day's Google rows: "title time" (the private ones by their time) and the row's colour (--pc; '' is neutral).
+    const gRows = (page) => page.$$eval('[data-list="day"] .irow.k-google', (rs) => rs.map((r) => [`${r.querySelector('.irow-title').firstChild.textContent} ${r.querySelector('.irow-time').innerText.split(/\s+/)[0]}`,
+      r.style.getPropertyValue('--pc')]));
+    const names = async (page) => (await gRows(page)).map((x) => x[0]);
+    const C = { sam: '#db2777', jordan: '#16a34a', taylor: '#ca8a04' };
+    ({ page, db, log } = await open({ label: 'hearth-today', db: hearthTodayDb(), rpc: tRpc(10) }));
+    check('schema 10: the calendars read for Today asks for sort_by_guest too', log.some((l) => decodeURIComponent(l) === 'GET /rest/v1/calendars?select=kind,writes,for_kids,sort_by_guest,google_name,label&kind=eq.family'),
+      log.filter((l) => /calendars/.test(l)).map(decodeURIComponent).join(' | '));
+    const alex = await names(page);
+    check('your day (Alex, a parent): Family\'s and the grown-ups\' wall events (Swim and Vet included, Tea still New), the main calendar\'s; not Jordan\'s alone, Sam\'s or the private one with his tag',
+      same(alex, ['Farmers market All', 'Tea 11:00am', 'Private item 12:30pm', 'Vet 1:30pm', 'Swim 2:00pm', 'Visit 4:00pm', 'Movie 4:45pm', 'Dinner 6:00pm']), JSON.stringify(alex));
+    await chip(page, 'Jordan').click();
+    await page.waitForTimeout(100);
+    const jordan = await names(page);
+    check('Jordan\'s day (a kid): his, Family\'s (Visit; Dinner too) and his shared ones (Practice with Sam, Swim with the grown-ups), as his My day; not the grown-ups\' alone',
+      same(jordan, ['Field trip All', 'Swim 2:00pm', 'Practice 3:00pm', 'Visit 4:00pm', 'Piano 4:30pm', 'Private item 5:00pm', 'Dinner 6:00pm']), JSON.stringify(jordan));
+    await chip(page, 'Taylor').click();
+    await page.waitForTimeout(100);
+    const taylor = await names(page);
+    check('Taylor\'s day (the helper): only her own tag\'s (Vet, Dinner), never Family\'s or the grown-ups\' through them', same(taylor, ['Vet 1:30pm', 'Dinner 6:00pm']), JSON.stringify(taylor));
+    await chip(page, 'Sam').click();
+    await page.waitForTimeout(100);
+    const sam = await names(page);
+    check('Sam\'s day (an adult): his (Furnace check, Practice), Family\'s and the grown-ups\'', same(sam, ['Farmers market All', 'Furnace check 10:00am', 'Tea 11:00am',
+      'Private item 12:30pm', 'Vet 1:30pm', 'Swim 2:00pm', 'Practice 3:00pm', 'Visit 4:00pm', 'Movie 4:45pm', 'Dinner 6:00pm']), JSON.stringify(sam));
+    await chip(page, 'Everyone').click();
+    await page.waitForTimeout(100);
+    const all = await gRows(page);
+    check('Everyone: all twelve wall events, and the main calendar\'s', all.length === 13, JSON.stringify(all.map((x) => x[0])));
+    const colour = Object.fromEntries(all);
+    check('colours by the one rule: Practice Sam\'s (first on the family list), Swim Jordan\'s, Vet Taylor\'s, Piano Jordan\'s; Family\'s (Visit, Dinner) and the grown-ups\' alone neutral',
+      colour['Practice 3:00pm'] === C.sam && colour['Swim 2:00pm'] === C.jordan && colour['Vet 1:30pm'] === C.taylor && colour['Piano 4:30pm'] === C.jordan
+      && ['Visit 4:00pm', 'Dinner 6:00pm', 'Movie 4:45pm', 'Tea 11:00am', 'Private item 12:30pm', 'Farmers market All'].every((t) => colour[t] === ''), JSON.stringify(colour));
+    await page.screenshot({ path: SHOTS + 'today-hearth-everyone.png', fullPage: true });
+    await page.context().close();
+    // Schema 9: no sort_by_guest asked for; the same calendar read as Family (unsorted) is the grown-ups' as before.
+    ({ page, db, log } = await open({ label: 'hearth-today-v9', db: hearthTodayDb({ schema9: true }), rpc: tRpc(9) }));
+    check('schema 9: Today asks for no sort_by_guest, and draws Google events as before', !log.some((l) => /sort_by_guest/.test(decodeURIComponent(l)))
+      && log.some((l) => decodeURIComponent(l) === 'GET /rest/v1/calendars?select=kind,writes,for_kids,google_name,label&kind=eq.family') && (await names(page)).length === 13,
+      log.filter((l) => /calendars/.test(l)).map(decodeURIComponent).join(' | '));
+    await chip(page, 'Jordan').click();
+    await page.waitForTimeout(100);
+    check('schema 9: Jordan\'s day has none of a Family calendar read without Show to kids', !(await names(page)).length, JSON.stringify(await names(page)));
+    await page.context().close();
+  }
 
   // =====================================================================
   // 9e. Schema 4 (v1.2): tonight's dinner

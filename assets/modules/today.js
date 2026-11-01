@@ -63,17 +63,30 @@
   // A Google Calendar event (schema 3): whose calendar it came from is its person. One without a
   // person (a Family calendar's) is in a grown-up's day; a kid's or helper's day shows what reaches
   // their own My day and texts (private.google_for): never Family's for a helper, and for a kid only
-  // Hub – Family's or a calendar to read marked Show to kids (kidSources: those calendars' names, as
-  // google_items gives them in notes; null when they couldn't be read).
+  // Hub – Family's, a calendar to read marked Show to kids or (schema 10) one sorted by Hearth person
+  // (kidSources: those calendars' names, as google_items gives them in notes; null when they couldn't be read).
+  // From schema 10 a sorted calendar's row has nobody in charge and its people along, with category 'family',
+  // 'grown_ups' or null (docs/v1.1 §11.4), so, in order: a row naming the person (in charge or along) is in their
+  // day; one with someone else in charge, or with people along and neither 'family' nor 'grown_ups', isn't;
+  // otherwise it is in a grown-up's day (a member's off the family list too), never a helper's, and a kid's only
+  // when it is 'family' from one of kidSources. So Today matches My day and the email.
   const isGoogle = (it) => it.kind === 'google';
   const googleSource = (it) => String(it.notes || '').replace(/^From Google Calendar · /, '');
   const googleFor = (it, id, kidSources) => {
-    if (it.responsible_id) return it.responsible_id === id;
+    const along = it.participant_ids || [];
+    if (it.responsible_id === id || along.includes(id)) return true;
+    if (it.responsible_id) return false;
+    if (along.length && it.category !== 'family' && it.category !== 'grown_ups') return false;
     const p = v2.person(id);
     if (!p || (p.role !== 'kid' && p.role !== 'helper')) return true;
     if (p.role === 'helper' || it.category !== 'family') return false;
     return !kidSources || kidSources.has(googleSource(it));
   };
+  // A Google row's colour (the one rule Calendar uses too): neutral for category 'family'; else who's in charge,
+  // else the first person along, else neutral.
+  const COLOR = /^#[0-9a-fA-F]{6}$/;
+  const colorOfId = (id) => { const p = id && v2.person(id); return p && COLOR.test(p.color || '') ? p.color : null; };
+  const googleColor = (it) => (it.category === 'family' ? null : colorOfId(it.responsible_id) || colorOfId((it.participant_ids || [])[0]));
   const possessive = (name) => `${name}'s`;
 
   // The chip on screen, falling back to Me (or Everyone when the signed-in member isn't on the
@@ -122,12 +135,14 @@
 
   // Today's Google Calendar events (schema 3), or failed: true. Never throws, so the rest of the page
   // shows whatever happens to this one call. A private one is stored without its title.
-  // kidSources: the names of the Family calendars whose events reach kids (Hub – Family, or one to read
-  // with Show to kids), so a kid's day here matches his My day; null if calendars couldn't be read.
+  // kidSources: the names of the Family calendars whose events reach kids (Hub – Family, one to read
+  // with Show to kids, or from schema 10 one sorted by Hearth person, whose 'family' rows reach every kid), so a
+  // kid's day here matches his My day; null if calendars couldn't be read. sort_by_guest is asked for on 10 only.
   async function loadGoogle(today) {
     if (!(core.schemaVersion >= 3)) return { items: [], failed: false, kidSources: null };
-    const sources = q(core.sb.from('calendars').select('kind,writes,for_kids,google_name,label').eq('kind', 'family'))
-      .then((rows) => new Set((rows || []).filter((c) => c.writes || c.for_kids).map((c) => (c.google_name || '').trim() || c.label)), () => null);
+    const cols = core.schemaVersion >= 10 ? 'kind,writes,for_kids,sort_by_guest,google_name,label' : 'kind,writes,for_kids,google_name,label';
+    const sources = q(core.sb.from('calendars').select(cols).eq('kind', 'family'))
+      .then((rows) => new Set((rows || []).filter((c) => c.writes || c.for_kids || c.sort_by_guest === true).map((c) => (c.google_name || '').trim() || c.label)), () => null);
     try {
       const rows = (await call('google_items', { p_from: today, p_to: today })) || [];
       return { items: rows.map((it) => Object.assign({}, it, { title: it.private ? 'Private item' : String(it.title || '').trim() || '(No title)' })), failed: false,
@@ -409,12 +424,12 @@
     if (to) location.hash = to;
   }
 
-  // A Google event's row: no checkbox, no who dots; an outlined dot in its person's colour and "Google"
+  // A Google event's row: no checkbox, no who dots; an outlined dot in its colour (googleColor) and "Google"
   // on the second line (the look is in calendar.css). A tap opens today on the Calendar.
   function googleRow(it) {
     const row = ui.itemRow(it, { checkbox: false, showWho: false, onOpen: openItem });
-    const p = it.responsible_id && v2.person(it.responsible_id);
-    if (p && /^#[0-9a-fA-F]{6}$/.test(p.color || '')) row.style.setProperty('--pc', p.color);
+    const c = googleColor(it);
+    if (c) row.style.setProperty('--pc', c);
     let sub = row.querySelector('.irow-sub');
     if (!sub) {
       sub = document.createElement('span');

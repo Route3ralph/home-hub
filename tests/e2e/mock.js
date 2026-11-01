@@ -63,9 +63,11 @@ function makeDb() {
 //                   events and leaves its links without a calendar, as the foreign keys do.
 //   calendar_links  admins read (members get no rows); google_events, calendar_sync: members read.
 //                   Nobody signed in writes those three (hub-jobs does, as service_role).
-const CAL_TABLES = ['calendars', 'calendar_links', 'google_events', 'calendar_sync'];
+const CAL_TABLES = ['calendars', 'calendar_links', 'google_events', 'calendar_sync', 'hearth_tags'];
 const CAL_INSERT = ['google_id', 'kind', 'person_id', 'label', 'writes', 'for_kids'];
 const CAL_UPDATE = CAL_INSERT.concat(['copy_approved_at']);
+// Schema 10 (withHearth): the switch is a setting column admins update too (0010's column grant); not on insert.
+const CAL_UPDATE_10 = CAL_UPDATE.concat(['sort_by_guest']);
 function withCalendars(db, sync) {
   return Object.assign(db, {
     calendars: [], calendar_links: [], google_events: [],
@@ -100,6 +102,9 @@ function calendarProblem(row, others) {
   if ((row.kind === 'person') !== (row.person_id != null)) return CHECK('calendars_check');
   if (row.writes && !/^[a-z0-9._-]+@group\.calendar\.google\.com$/.test(row.google_id)) return CHECK('calendars_check1');
   if (row.for_kids && !(row.kind === 'family' && !row.writes)) return CHECK('calendars_check2');
+  // 0010's two checks (schema 10): sorted only when read only and Family, and never with Show to kids.
+  if (row.sort_by_guest && !(row.kind === 'family' && !row.writes)) return CHECK('calendars_check3');
+  if (row.sort_by_guest && row.for_kids) return CHECK('calendars_check4');
   if (others.some((o) => o.google_id === row.google_id)) return pgErr(409, '23505', 'duplicate key value violates unique constraint "calendars_google_id_key"');
   if (row.writes && others.some((o) => o.writes && o.kind === row.kind && (o.person_id || null) === (row.person_id || null))) {
     return pgErr(409, '23505', 'duplicate key value violates unique constraint "calendars_one_writer"');
@@ -114,10 +119,18 @@ const tidyCalendar = (r) => {
 };
 
 // The calendar tables' row-level security and grants. Returns { status, body, rows } or null (not one of them).
-function calendarTables(db, table, method, body, member, rows) {
+// select: the request's select= (PostgREST answers 400 for a column the table doesn't have).
+function calendarTables(db, table, method, body, member, rows, select) {
   if (!CAL_TABLES.includes(table) || !db[table]) return null;
   const denied = pgErr(403, '42501', `permission denied for table ${table}`);
   const admin = member.role === 'admin';
+  // Schema 9 and below (no withHearth): calendars has no sort_by_guest, as PostgREST would say.
+  const named = String(select || '').split(',').map((c) => c.trim());
+  if (table === 'calendars' && !db.hearth_tags) {
+    if (named.includes('sort_by_guest')) return pgErr(400, '42703', 'column calendars.sort_by_guest does not exist');
+    if (method === 'PATCH' && body && 'sort_by_guest' in body) return pgErr(400, 'PGRST204', 'Could not find the \'sort_by_guest\' column of \'calendars\' in the schema cache');
+  }
+  if (table === 'hearth_tags' && method === 'GET' && db.hearthFail) return pgErr(500, 'XX000', 'Database restarting');
   if (method === 'GET') return { rows: table === 'calendar_links' && !admin ? [] : rows };
   if (table !== 'calendars') return denied;
   if (method === 'POST') {
@@ -126,7 +139,7 @@ function calendarTables(db, table, method, body, member, rows) {
     if (!admin) return pgErr(403, '42501', 'new row violates row-level security policy for table "calendars"');
     const made = [];
     for (const r of items) {
-      const row = calendarRow(tidyCalendar(r));
+      const row = calendarRow(Object.assign(db.hearth_tags ? { sort_by_guest: false } : {}, tidyCalendar(r)));
       const bad = calendarProblem(row, db.calendars.concat(made));
       if (bad) return bad;
       made.push(row);
@@ -135,17 +148,26 @@ function calendarTables(db, table, method, body, member, rows) {
     return { status: 201, rows: made };
   }
   if (method === 'PATCH') {
-    if (Object.keys(body || {}).some((k) => !CAL_UPDATE.includes(k))) return denied;
+    if (Object.keys(body || {}).some((k) => !(db.hearth_tags ? CAL_UPDATE_10 : CAL_UPDATE).includes(k))) return denied;
     if (!admin) return { status: 200, rows: [] };
     const patch = tidyCalendar(body);
-    const next = rows.map((r) => {
+    const next = [];
+    for (const r of rows) {
       const n = Object.assign({}, r, patch, { updated_at: now() });
+      // 0010's additions to the tidy trigger (schema 10): only a read-only Family calendar is sorted; the switch on turns
+      // Show to kids off; Show to kids on a row still sorted is refused; a change of the switch clears read_at.
+      if (db.hearth_tags) {
+        if (n.kind !== 'family' || n.writes !== false) n.sort_by_guest = false;
+        if (n.sort_by_guest && !r.sort_by_guest) n.for_kids = false;
+        else if (n.sort_by_guest && r.sort_by_guest && n.for_kids) return pgErr(400, '22023', 'Turn off Sort by Hearth person first.');
+        if (!!n.sort_by_guest !== !!r.sort_by_guest) n.read_at = null;
+      }
       if (n.google_id !== r.google_id || n.writes !== r.writes) {
         Object.assign(n, { status: 'new', status_detail: null, access_role: null, checked_at: null, read_at: null, copy_approved_at: null });
         if (n.google_id !== r.google_id) n.google_name = null;
       }
-      return n;
-    });
+      next.push(n);
+    }
     for (const n of next) {
       const bad = calendarProblem(n, db.calendars.filter((o) => o.id !== n.id));
       if (bad) return bad;
@@ -158,6 +180,7 @@ function calendarTables(db, table, method, body, member, rows) {
     const gone = new Set(rows.map((r) => r.id));
     db.calendars.splice(0, db.calendars.length, ...db.calendars.filter((r) => !gone.has(r.id)));
     db.google_events.splice(0, db.google_events.length, ...db.google_events.filter((g) => !gone.has(g.calendar_id)));
+    if (db.hearth_tags) db.hearth_tags.splice(0, db.hearth_tags.length, ...db.hearth_tags.filter((t) => !gone.has(t.calendar_id)));
     db.calendar_links.forEach((l) => { if (gone.has(l.calendar_id)) l.calendar_id = null; });
     return { status: 204, rows };
   }
@@ -187,11 +210,14 @@ function googleItems(db, b) {
   const out = db.google_events.filter((g) => g.start_day <= b.p_to && g.end_day >= b.p_from).map((g) => {
     const c = db.calendars.find((x) => x.id === g.calendar_id && x.google_id === g.google_calendar);
     if (!c) return null;
+    // Schema 10: a sorted calendar's row (private.hearth_whose): nobody in charge, its people along, 'family' or 'grown_ups'.
+    const w = db.hearth_tags && c.sort_by_guest === true ? hearthWhose(db, g, c) : null;
     return {
       kind: 'google', item_id: md5uuid(`${g.calendar_id}/${g.event_id}`), occurrence: g.start_day, title: g.title, day: g.start_day, end_day: g.end_day,
       all_day: g.all_day, start_at: g.start_at, end_at: g.end_at, local_start: g.start_at ? wallTime(g.start_at, tz) : null, local_end: g.end_at ? wallTime(g.end_at, tz) : null,
-      responsible_id: c.kind === 'person' ? c.person_id : c.kind === 'pets' ? hh.pets_owner_id || null : c.kind === 'house' ? hh.house_owner_id || null : null,
-      participant_ids: [], status: 'open', category: { family: 'family', pets: 'pets', house: 'home' }[c.kind] || null,
+      responsible_id: w ? null : c.kind === 'person' ? c.person_id : c.kind === 'pets' ? hh.pets_owner_id || null : c.kind === 'house' ? hh.house_owner_id || null : null,
+      participant_ids: w ? w.people : [], status: 'open',
+      category: w ? (w.family ? 'family' : w.grown_ups ? 'grown_ups' : null) : { family: 'family', pets: 'pets', house: 'home' }[c.kind] || null,
       project_id: null, project_name: null, contractor_id: null, contractor_name: null, contractor_phone: null,
       location: g.location, notes: `From Google Calendar · ${c.google_name || c.label}`,
       private: g.private, repeating: g.repeating, changed: false, lead_days: null, milestone: false, day_note: null,
@@ -222,6 +248,66 @@ function calendarPreview(db, b, email) {
   });
 }
 const calendarRpc = { google_items: googleItems, calendar_preview: calendarPreview };
+
+// ---- Schema 10 (supabase/migrations/0010_hearth_people.sql, docs/v1.1-google-calendar.md §11): Hearth people.
+// withHearth(db) (after withCalendars) is for a schema-10 database: every calendars row gains sort_by_guest (false
+// unless set) and every google_events row guests ([] unless set), and the hearth_tags table is there (members read it;
+// nobody signed in writes it: set_hearth_tag does). Without it (schema 9 and below) a calendars select naming
+// sort_by_guest answers 400 (42703), a PATCH of it 400 (PGRST204), and hearth_tags 404, as PostgREST would.
+// db.hearthFail makes the hearth_tags read fail (500). hearthTagRow makes a row (name is the part before the @, as the
+// generated column). hearthRpc has set_hearth_tag, with the migration's refusals, in its order, and 'forget'.
+// googleItems routes a sorted calendar's rows by their guests (hearthWhose, as private.hearth_whose).
+function withHearth(db) {
+  db.calendars.forEach((c) => { if (c.sort_by_guest === undefined) c.sort_by_guest = false; });
+  db.google_events.forEach((g) => { if (g.guests === undefined) g.guests = []; });
+  db.hearth_tags = db.hearth_tags || [];
+  return db;
+}
+const hearthTagRow = (o) => {
+  const r = Object.assign({ id: uuid(), calendar_id: null, tag: '', matched_to: null, person_id: null, last_seen: now(), matched_at: null, matched_by: null }, o);
+  r.name = String(r.tag).split('@')[0];
+  if (r.matched_to && !r.matched_at) r.matched_at = now();
+  return r;
+};
+// The people on the family list (active), by sort_order, name, id; and one tag's reach (§11.2).
+const familyOrder = (a, b) => (Number(a.sort_order) || 0) - (Number(b.sort_order) || 0) || String(a.name).localeCompare(String(b.name)) || String(a.id).localeCompare(String(b.id));
+const activeIn = (db, id) => (db.people || []).find((p) => p.id === id && p.active !== false) || null;
+function hearthWhose(db, g, c) {
+  const reach = (g.guests || []).map((tag) => {
+    const h = db.hearth_tags.find((x) => x.calendar_id === c.id && x.tag === tag);
+    if (h && h.matched_to === 'person' && activeIn(db, h.person_id)) return { to: 'person', id: h.person_id };
+    if (h && h.matched_to === 'family') return { to: 'family' };
+    return { to: 'grown_ups' };
+  });
+  const ids = new Set(reach.filter((r) => r.to === 'person').map((r) => r.id));
+  return {
+    people: (db.people || []).filter((p) => ids.has(p.id)).sort(familyOrder).map((p) => p.id),
+    family: reach.some((r) => r.to === 'family'),
+    grown_ups: !(g.guests || []).length || reach.some((r) => r.to === 'grown_ups'),
+  };
+}
+// set_hearth_tag(p_id, p_to, p_person): parents (admins) only; checks in the migration's order.
+function setHearthTag(db, b, email) {
+  const raise = (status, code, message) => ({ __status: status, body: { code, message, details: null, hint: null } });
+  const m = db.members.find((x) => x.email === email);
+  if (!m || m.role !== 'admin') return raise(403, '42501', 'Only a parent can match Hearth people.');
+  if (!['person', 'family', 'grown_ups', 'forget'].includes(b.p_to)) return raise(400, '22023', 'Choose a person, Family or the grown-ups.');
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(b.p_id || ''))) {
+    return raise(400, '22P02', `invalid input syntax for type uuid: "${b.p_id}"`);
+  }
+  const h = db.hearth_tags.find((x) => x.id === b.p_id);
+  if (!h) return raise(400, '22023', 'That Hearth person isn\'t there any more.');
+  const c = db.calendars.find((x) => x.id === h.calendar_id);
+  if (!c || !c.sort_by_guest) return raise(400, '22023', 'Turn on Sort by Hearth person first.');
+  if (b.p_to === 'person' && !activeIn(db, b.p_person)) return raise(400, '22023', 'Choose someone on the family list.');
+  if (b.p_to === 'forget') {
+    db.hearth_tags.splice(db.hearth_tags.indexOf(h), 1);
+    return { id: h.id, name: h.name, to: 'forget' };
+  }
+  Object.assign(h, { matched_to: b.p_to, person_id: b.p_to === 'person' ? b.p_person : null, matched_at: now(), matched_by: email });
+  return { id: h.id, name: h.name, to: b.p_to, person_id: h.person_id };
+}
+const hearthRpc = { set_hearth_tag: setHearthTag };
 
 // hub-jobs { action: 'calendar' } (Sync now) and { action: 'calendar_test', calendar_id }, in the
 // shapes the build contract gives (docs/v1.1-google-calendar.md §3.4, §6.5), for a signed-in admin.
@@ -254,6 +340,8 @@ function calendarJob(db, body, email) {
   }
   const r = db.syncReply || { read: 2, stored: 5, skipped: 0, repaired: 0, inserted: 3, updated: 1, deleted: 0, failed: 0, pending: 0, hiding: 0, stop: null };
   if (r.__status) return { status: r.__status, body: r.body };
+  // What the run's reads stored (a test's db.onSync(db): say, the Hearth people a sorted calendar's read listed).
+  if (typeof db.onSync === 'function') db.onSync(db);
   return { status: 200, body: r };
 }
 
@@ -2212,7 +2300,7 @@ async function install(page, db, log, opts = {}) {
     };
     // Schema 3's calendar tables, schema 4's food tables and schema 5's homework tables: their own
     // row-level security and grants (calendarTables, foodTables and homeworkTables above).
-    const cal = calendarTables(db, table, method, body, member, db[table].filter(match))
+    const cal = calendarTables(db, table, method, body, member, db[table].filter(match), url.searchParams.get('select'))
       || foodTables(db, table, method, body, member, db[table].filter(match), { prefer: req.headers()['prefer'] || '' })
       || homeworkTables(db, table, method, body, member, db[table].filter(match))
       // 0006: members read school_feeds and school_items; only the functions write them (no grant).
@@ -3523,6 +3611,7 @@ function stubShare(page) {
 }
 
 module.exports = { makeDb, install, signIn, expectedConsoleError, SUPA, withCalendars, calendarRow, linkRow, googleEventRow, calendarRpc, md5uuid,
+  withHearth, hearthTagRow, hearthRpc,
   withFood, mealRow, shopItem, foodRpc, personDayFood, foodStamp,
   withHomework, homeworkRpc, homePlan, hwKidRow, tutorLinkRow, assignmentRow, stepRow, sessionRow, rewardRow, askRow, ledgerRow,
   withHomeworkTokens, homeworkTokenRpc, personDayHomework, tkKidRow, tkLinkRow, tkAssignmentRow, tkStepRow, tkSessionRow, tkRewardRow, tkLedgerRow, stubShare,

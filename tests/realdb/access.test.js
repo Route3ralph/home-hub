@@ -5,7 +5,8 @@
 // empty lists). The Google Calendar tables and functions (migration 0003), the dinners and the
 // shopping list (migration 0004), and homework (migration 0005) are checked again with rows in their
 // tables: anon reaches none of them, a My day link only what the token functions give it, and a tutor
-// link only Jordan's homework, through its own four functions. Last, the stand-in's PostgREST logical
+// link only Jordan's homework, through its own four functions. Hearth people (migration 0010): anon reaches neither
+// hearth_tags nor set_hearth_tag, and Sam can neither match nor switch. Last, the stand-in's PostgREST logical
 // filters (or=, and=, nested, not.or=) give the rows the SQL they stand for gives. Run through
 // tests/realdb/run.sh.
 const { setup, HOMEWORK_TABLES, HOMEWORK_FNS } = require('./lib');
@@ -152,6 +153,49 @@ const emptyLists = (b) => !!b && typeof b === 'object' && !Array.isArray(b)
     const left = await sql("select (select count(*) from calendars) as c, (select count(*) from calendar_links) as l, (select count(*) from google_events) as g, (select status from calendars) as s");
     check('google calendar: nothing was changed (the job\'s lease, the calendar, its link and its Google events are as they were)',
       JSON.stringify(after) === JSON.stringify(before) && JSON.stringify(left) === JSON.stringify([{ c: '1', l: '1', g: '1', s: 'ok' }]), { before, after, left });
+  });
+
+  // Hearth people (migration 0010, docs/v1.1-google-calendar.md §11.7): a sorted calendar with a tag. Signed out,
+  // hearth_tags and set_hearth_tag are refused; a stranger sees no rows and can't match; Sam (a member, not a parent)
+  // reads the tags but can neither match one nor turn the switch off, nor write the table.
+  await flow('hearth people', async () => {
+    const cal = 'd0000000-0000-4000-8000-0000000000a1';
+    const tagId = 'd0000000-0000-4000-8000-0000000000a2';
+    const jordan = (await sql("select id from people where name like 'Jordan%'"))[0].id;
+    await sql(`
+      insert into calendars (id, google_id, kind, label, writes, status) values ('${cal}', 'hearth0000@group.calendar.google.com', 'family', 'Hearth', false, 'ok');
+      update calendars set sort_by_guest = true where id = '${cal}';
+      insert into hearth_tags (id, calendar_id, tag, last_seen) values ('${tagId}', '${cal}', 'jordan@team-example-0000', now());`);
+    const member = (await h.sessionFor('sam@example.com')).access_token;
+    let stranger = (await h.sessionFor('casey@example.com').catch(() => null));
+    stranger = stranger && stranger.access_token;
+    if (!stranger) {
+      await sql("insert into members (email, name) values ('casey@example.com', 'Casey')");
+      stranger = (await h.sessionFor('casey@example.com')).access_token;
+      await sql("delete from members where email = 'casey@example.com'");
+    }
+    const ask = (p, auth, body, method = 'POST') => h.api(p, body === undefined ? { headers: auth ? { authorization: `Bearer ${auth}` } : {} }
+      : { method, headers: Object.assign({ 'content-type': 'application/json', prefer: 'return=representation' }, auth ? { authorization: `Bearer ${auth}` } : {}), body: JSON.stringify(body) });
+    const match = { p_id: tagId, p_to: 'person', p_person: jordan };
+    const anon = [(await ask('/rest/v1/hearth_tags?select=*', null)).status, (await ask('/rest/v1/rpc/set_hearth_tag', null, match)).status];
+    check('hearth people, signed out: hearth_tags and set_hearth_tag are refused (401)', anon.every((x) => x === 401), anon);
+    const sRead = await ask('/rest/v1/hearth_tags?select=*', stranger);
+    const sMatch = await ask('/rest/v1/rpc/set_hearth_tag', stranger, match);
+    check('hearth people, a stranger: no rows; set_hearth_tag refused (403, "Only a parent can match Hearth people.")', sRead.status === 200 && Array.isArray(sRead.body) && !sRead.body.length
+      && sMatch.status === 403 && sMatch.body.message === 'Only a parent can match Hearth people.', [sRead, sMatch]);
+    const mRead = await ask('/rest/v1/hearth_tags?select=id,name,matched_to', member);
+    const mMatch = await ask('/rest/v1/rpc/set_hearth_tag', member, match);
+    const mSwitch = await ask(`/rest/v1/calendars?id=eq.${cal}`, member, { sort_by_guest: false }, 'PATCH');
+    const mInsert = await ask('/rest/v1/hearth_tags', member, { calendar_id: cal, tag: 'sam@team-example-0000', last_seen: '2026-10-27T13:00:00Z' });
+    const mPatch = await ask(`/rest/v1/hearth_tags?id=eq.${tagId}`, member, { matched_to: 'family' }, 'PATCH');
+    check('hearth people, a member: reads the tags; can\'t match (403), turn the switch off (no row changed) or write hearth_tags (403)',
+      mRead.status === 200 && JSON.stringify(mRead.body) === JSON.stringify([{ id: tagId, name: 'jordan', matched_to: null }])
+      && mMatch.status === 403 && mMatch.body.message === 'Only a parent can match Hearth people.'
+      && (mSwitch.status >= 400 || (Array.isArray(mSwitch.body) && !mSwitch.body.length)) && mInsert.status === 403 && mPatch.status === 403, [mRead, mMatch, mSwitch, mInsert, mPatch]);
+    const left = (await sql(`select (select sort_by_guest from calendars where id = '${cal}') as s, (select count(*) from hearth_tags) as n,
+      (select matched_to from hearth_tags where id = '${tagId}') as m`))[0];
+    check('hearth people: nothing was changed (still sorted, one tag, not matched)', left.s === 't' && left.n === '1' && left.m === null, left);
+    await sql(`delete from calendars where id = '${cal}'`);
   });
 
   // Dinners and the shopping list (migration 0004), with rows in them: a locked dinner, a line to buy,

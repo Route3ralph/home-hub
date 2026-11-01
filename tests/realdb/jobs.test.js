@@ -9,7 +9,9 @@
 // and events changed or deleted in Google that are put back, and listed in Settings.
 // Then v1.2 (docs/v1.2-kitchen.md, migration 0004): a dinner set on Food on the wall, in the email,
 // locked, and kept once its day is history; and, on a second copy of the database as it is live
-// (schema 3), 0004 applied after hub-jobs has run there.
+// (schema 3), 0004 applied after hub-jobs has run there. Then 0010 (docs/v1.1-google-calendar.md §11): the wall's own
+// calendar sorted by Hearth person, end to end: added and switched on in Settings, Sync now, the tags stored and listed,
+// matched, and each event where its tags send it (My day, busy time, the email, Today).
 // Same household as flows.test.js; its own copy of the database. The clock starts on Tue Oct 27 at
 // 09:00 in New York, inside the 6:30 morning email's 3-hour window.
 const { setup } = require('./lib');
@@ -547,6 +549,152 @@ const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
       !gone.length && !!findEv(CAL.family, meal.id, TODAY) && !!(await one(`select 1 as kept from calendar_links where item_id = '${meal.id}'`)), { gone, run: await lastRun() });
     const f = await failures();
     check('dinner on the wall: no API request failed', !f.length, f);
+  });
+
+  // ===================================================================
+  // 0010 (docs/v1.1-google-calendar.md §11): the wall's own calendar, sorted by Hearth person. Fri Oct 30 (the clock as
+  // the dinner left it). Hearth Calendar, shared with See event details, has Jordan's piano lesson (jordan, and a real
+  // address that must never be kept), a Family visit (familyanddogs), the vet (dogs and taylor), a movie with no Hearth
+  // guest, a private event for Jordan (Google hides its guests from a reader) and tomorrow's tea (grandma). Alex adds it
+  // under Calendars to read as Family, turns Sort by Hearth person on and presses Sync now: the tags are stored and
+  // listed, each New, and everything is the grown-ups'. He matches jordan, taylor, familyanddogs and dogs (grandma stays
+  // New): at once, with no new read, Jordan's lesson is on his My day and is busy time in his homework week, the visit
+  // reaches him too, Taylor's My day has only the vet, and the movie and the private event stay with the grown-ups.
+  // ===================================================================
+  await flow('hearth sorted', async () => {
+    const HEARTH = GID('hearth0000');
+    const DAY = '2026-10-30';
+    const TAG = (n) => `${n}@team-example-0000`;
+    G.add(HEARTH, { summary: 'Hearth Calendar', role: 'reader' });
+    const at = (hm) => new Date(`${DAY}T${hm}:00-04:00`).toISOString();   // New York is on daylight time until Nov 1
+    const wall = (summary, from, to, guests, extra) => G.typeIn(HEARTH, Object.assign({ summary, start: { dateTime: at(from) }, end: { dateTime: at(to) },
+      attendees: guests.map((g) => ({ email: g, responseStatus: 'accepted' })) }, extra));
+    wall('Piano', '16:30', '17:15', [TAG('jordan'), 'morgan@example.com']);
+    wall('Visit', '16:00', '16:30', [TAG('familyanddogs')]);
+    wall('Vet', '13:00', '13:30', [TAG('dogs'), TAG('taylor')]);
+    wall('Movie night', '19:00', '21:00', []);
+    wall('Doctor', '12:00', '12:30', [TAG('jordan')], { visibility: 'private', location: 'Clinic' });
+    G.typeIn(HEARTH, { summary: 'Tea', start: { date: '2026-10-31' }, end: { date: '2026-11-01' }, attendees: [{ email: TAG('grandma'), responseStatus: 'accepted' }] });
+    await h.mark();
+    const n0 = G.requests.length;
+
+    // Settings: Add a calendar to read (Whose: Family), its Test, then the switch.
+    const { page, context } = await open({ email: 'alex@example.com', path: '/#/settings', label: 'hearth-settings' });
+    await page.waitForSelector('[data-act="gadd"]', { timeout: 10000 });
+    await page.click('[data-act="gadd"]');
+    await page.waitForSelector('#formDialog input[name="google_id"]');
+    await page.fill('#formDialog input[name="google_id"]', HEARTH);
+    await page.fill('#formDialog input[name="label"]', 'Hearth');
+    await page.click('#formDialog [type="submit"]');
+    await page.waitForSelector('#formDialog [data-ref="test"] .set-gtest', { timeout: 20000 });
+    check('hearth: added as Family, its Test reads it', (await tc(page, '#formDialog [data-ref="test"] .set-gtest p')) === 'Test: Home Hub can read this calendar.', await tc(page, '#formDialog'));
+    await page.click('#formDialog .form-actions [data-close]');
+    await settle(page, 300);
+    const cal = await one(`select id, kind, writes, for_kids, sort_by_guest from calendars where google_id = '${HEARTH}'`);
+    check('hearth: one calendars row, read only, Family, not sorted yet', !!cal && cal.kind === 'family' && cal.writes === 'f' && cal.sort_by_guest === 'f', cal);
+    const box = `[data-gsort="${cal.id}"]`;
+    await page.waitForSelector(box);
+    await page.click(box);
+    await until(async () => /Sorting by Hearth person/.test(await h.lastToast(page)));
+    const sorted = await one(`select sort_by_guest, for_kids, read_at from calendars where id = '${cal.id}'`);
+    check('hearth: the switch saves sort_by_guest (an admin\'s update through the column grant); "Not read yet" under the row',
+      sorted.sort_by_guest === 't' && sorted.for_kids === 'f' && sorted.read_at === null
+      && /^Not read yet\. Press Sync now/.test(await tc(page, `[data-hearth="${cal.id}"] .set-help`)), { sorted, line: await tc(page, `[data-hearth="${cal.id}"]`) });
+
+    // Sync now: hub-jobs reads it with the guests' addresses, and keeps only the Hearth tags.
+    await page.click('[data-act="gsync"]');
+    await page.waitForSelector(`[data-hearth="${cal.id}"] .set-hp-row`, { timeout: 30000 });
+    const names = await texts(page, `[data-hearth="${cal.id}"] .set-hp-name`);
+    const fresh = await texts(page, `[data-hearth="${cal.id}"] .set-hp-new`);
+    check('hearth: after Sync now Settings lists the Hearth people the read found, each New, and the line at the top names them',
+      same(names, ['dogs', 'familyanddogs', 'grandma', 'jordan', 'taylor']) && fresh.length === 5
+      && (await tc(page, '[data-ref="htodo"]')) === 'Hearth people to match: dogs, familyanddogs, grandma, jordan, taylor. See Calendars to read.', { names, todo: await tc(page, '[data-ref="htodo"]') });
+    const tags = await sql(`select name, tag, matched_to from hearth_tags where calendar_id = '${cal.id}' order by name`);
+    const ge = await sql(`select title, private, location, guests::text as guests from google_events where calendar_id = '${cal.id}' order by start_day, start_at`);
+    check('hearth: the tags are stored (never the real address), and each cached event carries its own; the private one none, and no title or place',
+      same(tags.map((t) => [t.name, t.matched_to]), [['dogs', null], ['familyanddogs', null], ['grandma', null], ['jordan', null], ['taylor', null]])
+      && same(ge.map((e) => [e.title, e.private, e.location, e.guests]), [['', 't', null, '{}'], ['Vet', 'f', null, `{${TAG('dogs')},${TAG('taylor')}}`],
+        ['Visit', 'f', null, `{${TAG('familyanddogs')}}`], ['Piano', 'f', null, `{${TAG('jordan')}}`], ['Movie night', 'f', null, '{}'], ['Tea', 'f', null, `{${TAG('grandma')}}`]])
+      && !JSON.stringify(await sql('select * from google_events')).includes('morgan@example.com'), { ge: ge.map((e) => [e.title, e.private, e.location, e.guests]), tags: tags.map((t) => t.name) });
+    const asked = G.requests.slice(n0).filter((r) => r.method === 'GET' && !r.event && r.query.fields && /items\(/.test(r.query.fields));
+    check('hearth: Google was asked for guest addresses only on that calendar', asked.some((r) => r.calendar === HEARTH && /attendees\(email,self,responseStatus\)/.test(r.query.fields))
+      && asked.filter((r) => r.calendar !== HEARTH).every((r) => !/email/.test(r.query.fields)) && asked.filter((r) => r.calendar !== HEARTH).length > 0,
+      asked.map((r) => [r.calendar, /email/.test(r.query.fields)]));
+
+    // Before any match: everything is the grown-ups'. A person's Google items on Oct 30: on their My day (get_person_day,
+    // signed out with their link, as day.html asks), and in their morning email (digest_for's Today).
+    const day = async (who) => {
+      const r = await h.api('/rest/v1/rpc/get_person_day', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ p_token: P[who].day_token }) });
+      return ((r.body && r.body.days) || []).filter((d) => d.day === DAY).flatMap((d) => d.items || []).filter((x) => x.kind === 'google').map((x) => x.title);
+    };
+    const mail = async (who) => JSON.parse((await one(`select (public.digest_for('${P[who].id}', '${DAY}') -> 'today')::text as t`)).t || '[]').filter((x) => x.kind === 'google')
+      .map((x) => (x.title === 'Private item' ? `Private item ${x.time}` : x.title)).sort();
+    const busy = async () => {
+      const r = await rpcAs('alex@example.com', 'homework_week', { p_kid: P.jordan.id, p_from: DAY, p_days: 1 });
+      return ((r.body || [])[0] || {}).busy || [];
+    };
+    await rpcAs('alex@example.com', 'save_homework_kid', { p_kid: P.jordan.id, p_active: true });
+    await rpcAs('alex@example.com', 'add_homework_time', { p_kid: P.jordan.id, p_weekdays: [5], p_start: '16:00', p_end: '17:30' });
+    const busyNew = (await busy()).map((b) => `${b.starts}-${b.ends}`);
+    const alexNew = await mail('alex');
+    const jordanNew = await day('jordan');
+    check('hearth: before any match, every wall event is the grown-ups\' (all in Alex\'s email; none on Jordan\'s My day or in his busy time)',
+      ['Piano', 'Visit', 'Vet', 'Movie night'].every((x) => alexNew.includes(x)) && !jordanNew.length && !busyNew.includes('16:30-17:15'), { busyNew, alexNew, jordanNew });
+
+    // Alex matches four of them; grandma stays New.
+    const pick = async (name, value) => {
+      const id = (await one(`select id from hearth_tags where calendar_id = '${cal.id}' and name = '${name}'`)).id;
+      await page.selectOption(`[data-hpick="${id}"]`, value);
+      await until(async () => (await h.lastToast(page)).startsWith(`${name}: `));
+      return h.lastToast(page);
+    };
+    const toasts = [await pick('jordan', `person:${P.jordan.id}`), await pick('taylor', `person:${P.taylor.id}`), await pick('familyanddogs', 'family'), await pick('dogs', 'grown_ups')];
+    check('hearth: each match through set_hearth_tag, with its toast; the line at the top names only grandma now', same(toasts, ['jordan: Jordan\'s from now on.', 'taylor: Taylor\'s from now on.',
+      'familyanddogs: Family\'s from now on.', 'dogs: the grown-ups\' from now on.']) && (await tc(page, '[data-ref="htodo"]')) === 'Hearth person to match: grandma. See Calendars to read.',
+      { toasts, todo: await tc(page, '[data-ref="htodo"]') });
+    const matched = await sql(`select name, matched_to, person_id, matched_by from hearth_tags where calendar_id = '${cal.id}' order by name`);
+    check('hearth: the matches are stored, by Alex', same(matched.map((m) => [m.name, m.matched_to, m.person_id, m.matched_by]), [['dogs', 'grown_ups', null, 'alex@example.com'],
+      ['familyanddogs', 'family', null, 'alex@example.com'], ['grandma', null, null, null], ['jordan', 'person', P.jordan.id, 'alex@example.com'], ['taylor', 'person', P.taylor.id, 'alex@example.com']]), matched);
+    await shot(page, 'settings-hearth');
+    await context.close();
+
+    // At once, with no new read.
+    const n1 = G.requests.length;
+    const jd = await day('jordan');
+    const td = await day('taylor');
+    check('hearth: Jordan\'s My day now has the Family visit and his lesson; not the vet, the movie or the private one', same(jd, ['Visit', 'Piano']), jd);
+    check('hearth: Taylor\'s My day has only her own (the vet), not the Family visit, Jordan\'s lesson or the movie', same(td, ['Vet']), td);
+    const busyNow = (await busy()).map((b) => `${b.starts}-${b.ends}`);
+    check('hearth: the lesson and the visit are Jordan\'s busy time in his homework week (16:00–16:30, 16:30–17:15); the movie, the vet and the private one aren\'t',
+      busyNow.includes('16:30-17:15') && busyNow.includes('16:00-16:30') && !busyNow.includes('19:00-21:00') && !busyNow.includes('13:00-13:30') && !busyNow.includes('12:00-12:30'), busyNow);
+    const alexMail = await mail('alex');
+    const jordanText = (await one(`select public.day_text('${P.jordan.id}', '${DAY}') as t`)).t;
+    check('hearth: Alex\'s email has the visit, the vet, the movie and the private one (untagged, as Google sends it: the grown-ups\'), not Jordan\'s lesson',
+      same(alexMail.filter((x) => !/^Private item/.test(x)), ['Movie night', 'Vet', 'Visit']) && alexMail.filter((x) => /^Private item/.test(x)).length === 1, alexMail);
+    check('hearth: Jordan\'s text has his lesson and the visit, not the movie, the vet or the private wall event (at noon)', /Piano/.test(jordanText) && /Visit/.test(jordanText)
+      && !/Movie night|Vet|12:00/.test(jordanText), jordanText);
+    check('hearth: none of it needed a new read', !G.requests.slice(n1).length, G.requests.slice(n1).map((r) => [r.method, r.calendar]));
+
+    // Today (Sam, a member): Jordan's day and Taylor's, as their My day has them.
+    const t = await open({ email: 'sam@example.com', path: '/', label: 'hearth-today' });
+    const gday = () => t.page.$$eval('[data-list="day"] .irow.k-google', (rs) => rs.map((r) => r.querySelector('.irow-title').firstChild.textContent.trim()));
+    await t.page.click(`.today-chips .pchip[data-person="${P.jordan.id}"]`);
+    await settle(t.page, 300);
+    const tj = (await gday()).filter((x) => ['Piano', 'Visit', 'Vet', 'Movie night', 'Private item'].includes(x));
+    await t.page.click(`.today-chips .pchip[data-person="${P.taylor.id}"]`);
+    await settle(t.page, 300);
+    const tt = (await gday()).filter((x) => ['Piano', 'Visit', 'Vet', 'Movie night', 'Private item'].includes(x));
+    check('hearth: Today shows Jordan\'s day with the visit and his lesson, Taylor\'s with the vet, as My day', same(tj, ['Visit', 'Piano']) && same(tt, ['Vet']), { tj, tt });
+    await t.context.close();
+    const f = await failures();
+    check('hearth: no API request failed', !f.length, f);
+
+    // Sam (a member) can't turn the switch off.
+    const samTok = (await h.sessionFor('sam@example.com')).access_token;
+    const samPatch = await h.api(`/rest/v1/calendars?id=eq.${cal.id}`, { method: 'PATCH', headers: { 'content-type': 'application/json', authorization: `Bearer ${samTok}`,
+      prefer: 'return=representation' }, body: JSON.stringify({ sort_by_guest: false }) });
+    check('hearth: Sam\'s sort_by_guest update changes nothing', (samPatch.status >= 400 || (Array.isArray(samPatch.body) && !samPatch.body.length))
+      && (await one(`select sort_by_guest from calendars where id = '${cal.id}'`)).sort_by_guest === 't', samPatch);
   });
 
   await h.finish();

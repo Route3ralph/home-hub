@@ -9,7 +9,9 @@
    sheet and the Today page open with use('calendar').openEventForm(defaults).
    Everything on screen comes from agenda(from, to), plus (schema 3) events
    typed into Google Calendar from google_items(from, to): read only, with an
-   outlined dot, no checkbox and no Edit. Dates and times are the
+   outlined dot, no checkbox and no Edit. From schema 10 a calendar sorted by
+   Hearth person gives rows with nobody in charge and their people along
+   ('family' or 'grown_ups' too); the same rules draw them. Dates and times are the
    household's (core.v2.dates / fmt), never the device's.
    ===================================================================== */
 (function () {
@@ -66,12 +68,15 @@
     const p = id ? v2.person(id) : null;
     return p && COLOR.test(p.color || '') ? p.color : null;
   }
-  const itemColor = (it) => colorOf(it.responsible_id) || colorOf((it.participant_ids || [])[0]);
+  // The colour of who's in charge, else of the first person along. A Google row with category 'family' is
+  // neutral (one rule for Calendar and Today, docs/v1.1 §11.4: Dinner, Family's and Taylor's, isn't Taylor's colour).
+  const itemColor = (it) => (isGoogle(it) && it.category === 'family' ? null : colorOf(it.responsible_id) || colorOf((it.participant_ids || [])[0]));
 
-  // Events read from Google Calendar (kind 'google', schema 3). One without a person (the Family
-  // calendar's) shows under every person filter. A private one is stored without its title.
+  // Events read from Google Calendar (kind 'google', schema 3). One with nobody in charge and either no people
+  // (a Family calendar's, or from schema 10 the grown-ups' of a sorted one) or category 'family' shows under every
+  // person filter; any other under its people's. A private one is stored without its title.
   const isGoogle = (it) => it.kind === 'google';
-  const sharedGoogle = (it) => isGoogle(it) && !it.responsible_id;
+  const sharedGoogle = (it) => isGoogle(it) && !it.responsible_id && (!(it.participant_ids || []).length || it.category === 'family');
   const asGoogle = (it) => Object.assign({}, it, { title: it.private ? 'Private item' : String(it.title || '').trim() || '(No title)' });
   const pcStyle = (c) => (c ? `--pc:${c};` : '');
   const others = (respId, ids) => (ids || []).filter((id) => id && id !== respId);
@@ -110,7 +115,7 @@
   }
 
   // The person filter: nobody chosen = everyone. An item matches when someone chosen is in charge or with;
-  // a Family Google event matches everyone.
+  // a shared Google event (sharedGoogle) matches everyone.
   const matches = (it, chosen) => !chosen.size || sharedGoogle(it) || chosen.has(it.responsible_id) || (it.participant_ids || []).some((id) => chosen.has(id));
 
   // Project work in a day's list. A job that lasts days shows in full on the day it starts
@@ -783,10 +788,21 @@
   // ============================================
   // GOOGLE EVENTS (read only: changed in Google Calendar, never here)
   // ============================================
+  // Whose it is: "Calendar: Jordan Example" (its calendar's person, Pets, House or Family). A sorted calendar's row
+  // (schema 10: people along, or 'grown_ups') says who it is for instead: "For: Jordan Example, the grown-ups",
+  // "For: Family, Taylor Example", "For: The grown-ups".
+  function googleWhose(it) {
+    const along = (it.participant_ids || []).map((id) => v2.person(id)).filter(Boolean);
+    if (along.length || it.category === 'grown_ups') {
+      const words = [it.category === 'family' ? 'Family' : ''].concat(along.map((x) => x.name), [it.category === 'grown_ups' ? 'the grown-ups' : '']).filter(Boolean).join(', ');
+      return ['For', words.charAt(0).toUpperCase() + words.slice(1)];
+    }
+    const p = it.responsible_id ? v2.person(it.responsible_id) : null;
+    return ['Calendar', p ? p.name : { pets: 'Pets', home: 'House' }[it.category] || 'Family'];
+  }
   function openGoogleDetails(st, it) {
     st.detailsSeq++;
-    const p = it.responsible_id ? v2.person(it.responsible_id) : null;
-    const whose = p ? p.name : { pets: 'Pets', home: 'House' }[it.category] || 'Family';
+    const [whoseLabel, whose] = googleWhose(it);
     const timed = !it.all_day && !!it.local_start;
     const when = !timed
       ? (it.end_day > it.day ? `${fmt.span(it.day, it.end_day)}, all day` : `${fmt.dayLong(it.day)}, all day`)
@@ -797,7 +813,7 @@
       <h3 id="dTitle">${esc(it.title)}</h3>
       <dl>
         <dt>When</dt><dd>${esc(when)}</dd>
-        <dt>Calendar</dt><dd>${esc(whose)}</dd>
+        <dt>${esc(whoseLabel)}</dt><dd>${esc(whose)}</dd>
         ${it.location ? `<dt>Place</dt><dd>${esc(it.location)}</dd>` : ''}
         ${it.repeating ? '<dt>Repeats</dt><dd>In Google Calendar</dd>' : ''}
       </dl>

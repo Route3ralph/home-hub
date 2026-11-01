@@ -1,5 +1,5 @@
 // Browser tests for the core's module system: script order, which pages register in v1 and v2 mode
-// (and for schema versions 3, 4 and 5: Food shows on 4 and up, Homework on 5 only, under More on phones), tab order, and the page context (ctx.params, ctx.signal, ctx.stale). A "probe" page module is
+// (and for schema versions 3, 4, 5 and 10: Food shows on 4 and up, Homework on 5 and up, under More on phones), tab order, and the page context (ctx.params, ctx.signal, ctx.stale). A "probe" page module is
 // appended to the last module script, so it registers through the same HomeHub.register() contract
 // as the real pages, and nothing test-only ships in the site.
 // Run alone with: node tests/e2e/modules.test.js
@@ -252,6 +252,13 @@ const probeModule = ({ name = 'probe', min = 1, max = 1, nav = null, root = fals
   check('version 5: #/homework opens the Homework page, with its tab current', (await text(page, '#main h1')) === 'Homework' && (await page.getAttribute('.tabs a[data-tab="homework"]', 'aria-current')) === 'page',
     await text(page, '#main'));
   check('version 5: use(\'homework\') finds the page', (await page.evaluate(() => { try { HomeHub.core.use('homework'); return 'found'; } catch (e) { return 'none'; } })) === 'found');
+
+  // 16. Schema version 10 (migration 0010, Hearth people: no new page): every v2 tab, the same as on 5.
+  const probe210 = probeModule({ name: 'probe', min: 2, max: 10 });
+  ({ page, db } = await open({ label: 'v10-tabs', rpc: Object.assign({}, v2, foodRpc, homeworkRpc, { hub_schema_version: () => 10 }), db: v5Db(), path: '/#/probe', probes: [probe210] }));
+  check('hub_schema_version 10 is read as 10, and is v2 mode', (await page.evaluate(() => HomeHub.core.schemaVersion)) === 10 && !!(await page.$('.bottombar')));
+  check('version 10 shows every v2 tab, the same as version 5', JSON.stringify(await tabs(page)) === JSON.stringify(V5_TABS), JSON.stringify(await tabs(page)));
+  check('version 10: a page made for 2..10 serves its address', (await text(page, '#probe')).trim() === 'probe');
 
   console.log(results.join('\n'));
   console.log(`\n${results.filter((r) => r.startsWith('PASS')).length}/${results.length} passed`);

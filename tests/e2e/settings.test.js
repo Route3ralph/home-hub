@@ -8,7 +8,13 @@
 // status line, Sync now, each column's calendar with Set (the Calendar ID or its embed address), Test,
 // the preview with Make private and Start copying, the name question and Disconnect; Calendars to read
 // with Show to kids; problems, put back, stale projects, Not on Google and the inactive-person note; a
-// member's read-only view; hub-jobs from before v1.1 ("Waiting for the hub-jobs update").
+// member's read-only view; hub-jobs from before v1.1 ("Waiting for the hub-jobs update"). On schema 10 (migration 0010,
+// docs/v1.1-google-calendar.md §11.6): Sort by Hearth person beside Show to kids on a calendar read as Family (admins),
+// Show to kids hidden while it is on and refused from a stale tab, off asking first, a save that comes back unchanged an
+// error; a sorted calendar's Hearth people (not read yet, none, the failed read, the list by name with New, "match it
+// again", off the family list, last seen, the picker and its set_hearth_tag call, each toast and a refusal, Forget, 50,
+// two of one name, a hostile name as text), the line at the top of the card, Disconnect's words, a member's read-only
+// list; and on schema 9 nothing new shown or asked for.
 //
 // The database is mock.js plus fakes that follow supabase/migrations/0002_home_hub_v2.sql: household
 // changes only for admins (anyone else's update changes no rows, as RLS does), clock →
@@ -19,7 +25,7 @@
 // Run alone with: node tests/e2e/settings.test.js
 const { chromium } = require('playwright');
 const { createHash } = require('crypto');
-const { makeDb, install, signIn, withCalendars, calendarRow, linkRow, calendarRpc, withFood } = require('./mock');
+const { makeDb, install, signIn, withCalendars, calendarRow, linkRow, calendarRpc, withFood, withHearth, hearthTagRow, hearthRpc } = require('./mock');
 const { serve } = require('./server');
 
 let BASE = '';
@@ -36,6 +42,7 @@ const TODAY = '2026-10-25';
 const ID = {
   alex: '0f1e0000-0000-4000-8000-000000000001', sam: '0f1e0000-0000-4000-8000-000000000002',
   jordan: '0f1e0000-0000-4000-8000-000000000003', morgan: '0f1e0000-0000-4000-8000-000000000004',
+  taylor: '0f1e0000-0000-4000-8000-000000000005',
 };
 const person = (id, name, role, color, sort, extra) => Object.assign({
   id, name, role, email: null, email_verified_at: null, phone: null, color, language: 'en',
@@ -991,6 +998,416 @@ const emailOf = (req) => {
     await page.context().close();
   }
 
+  {
+    // =====================================================================
+    // 6c. Schema 10 (migration 0010, docs/v1.1-google-calendar.md §11.6): Sort by Hearth person on a calendar the hub
+    // reads as Family, and that calendar's Hearth people (hearth_tags), matched with set_hearth_tag
+    // =====================================================================
+    const v10Rpc = Object.assign({ hub_schema_version: () => 10 }, calendarRpc, hearthRpc);
+    const v9Rpc = Object.assign({ hub_schema_version: () => 9 }, calendarRpc);
+    const TAG = (name, n = '0000') => `${name}@team-example-${n}`;
+    // The household of richDb (Alex a parent, Sam an adult, Jordan the kid, Morgan off the family list) plus Taylor, the
+    // helper; the family account's main calendar (read as Family, Show to kids on) and "Hearth Calendar" (read as Family,
+    // sorted, read at 8:57 today) with its tags: jordan → Jordan (seen today), sam → Sam (yesterday), taylor → Taylor
+    // (Thu Oct 22), familyanddogs → Family, dogs → the grown-ups (last year), grandma New, grandpa matched to someone
+    // since removed, morgan → Morgan (off the family list). schema9: the same calendars on a database at 9 (no switch, no
+    // tags, no sort_by_guest).
+    function hearthDb(o = {}) {
+      const db = richDb();
+      db.people.push(person(ID.taylor, 'Taylor Example', 'helper', '#ca8a04', 4, { language: 'es' }));
+      db.calendars.splice(db.calendars.indexOf(db.cal.main), 1);
+      db.cal.main = calendarRow({ google_id: 'family@example.com', kind: 'family', label: 'Family account', writes: false, for_kids: true, status: 'ok',
+        google_name: 'family@example.com', access_role: 'reader', read_at: at('08:57') });
+      db.cal.hearth = calendarRow({ google_id: GID('hearth0000'), kind: 'family', label: 'Hearth', writes: false, status: 'ok', google_name: 'Hearth Calendar',
+        access_role: 'reader', read_at: o.readAt === undefined ? at('08:57') : o.readAt });
+      db.calendars.push(db.cal.main, db.cal.hearth);
+      if (o.schema9) return db;
+      withHearth(db);
+      db.cal.hearth.sort_by_guest = true;
+      const T = (tag, extra) => hearthTagRow(Object.assign({ calendar_id: db.cal.hearth.id, tag, last_seen: at('08:57') }, extra));
+      db.hearth_tags.push(...(o.tags || [
+        T(TAG('jordan'), { matched_to: 'person', person_id: ID.jordan }),
+        T(TAG('sam'), { matched_to: 'person', person_id: ID.sam, last_seen: at('20:00', '2026-10-24') }),
+        T(TAG('taylor'), { matched_to: 'person', person_id: ID.taylor, last_seen: at('12:00', '2026-10-22') }),
+        T(TAG('familyanddogs'), { matched_to: 'family' }),
+        T(TAG('dogs'), { matched_to: 'grown_ups', last_seen: '2025-10-03T16:00:00.000000+00:00' }),
+        T(TAG('grandma')),
+        T(TAG('grandpa'), { matched_to: 'person', person_id: null }),
+        T(TAG('morgan'), { matched_to: 'person', person_id: ID.morgan }),
+      ]).map((t) => (typeof t === 'function' ? t(T) : t)));
+      return db;
+    }
+    // A sorted calendar's Hearth people block, as read: its heading, the state line, and each line (the name, New, the
+    // note, last seen, the picker's options as [value, words, selected] and its buttons).
+    const hp = (page, calId) => page.$eval(`[data-hearth="${calId}"]`, (box) => ({
+      head: (box.querySelector('.set-hp-h') || {}).textContent || null,
+      state: [...box.querySelectorAll(':scope > .set-help')].map((e) => e.textContent.replace(/\s+/g, ' ').trim()),
+      rows: [...box.querySelectorAll('.set-hp-row')].map((li) => ({
+        id: li.dataset.tag,
+        name: (li.querySelector('.set-hp-name') || {}).textContent || null,
+        isNew: !!li.querySelector('.set-hp-new'),
+        note: (li.querySelector('.set-hp-note') || {}).textContent || null,
+        seen: (li.querySelector('.set-hp-seen') || {}).textContent || null,
+        options: [...li.querySelectorAll('select option')].map((x) => [x.value, x.textContent, x.selected]),
+        label: (li.querySelector('select') || { getAttribute: () => null }).getAttribute('aria-label'),
+        buttons: [...li.querySelectorAll('button')].map((b) => b.textContent.trim()),
+        text: li.textContent.replace(/\s+/g, ' ').trim(),
+      })),
+    })).catch(() => ({ head: null, state: [], rows: [], missing: true }));
+    const rowOf = async (page, calId, name) => (await hp(page, calId)).rows.find((r) => r.name === name || r.text === name) || { options: [], missing: true };
+    const pickFor = (page, tagId) => `[data-hpick="${tagId}"]`;
+    const tagId = (db, name, n) => db.hearth_tags.find((t) => t.tag === TAG(name, n)).id;
+    const hearthCalls = (db) => (db.rpcCalls || []).filter((c) => c.name === 'set_hearth_tag').map((c) => c.body);
+    const toastIsError = (page) => page.$$eval('.toasts .toast', (ts) => !!ts.length && ts[ts.length - 1].classList.contains('toast-error')).catch(() => false);
+    const HOW = 'A person\'s events reach their My day, texts and morning email, and a kid\'s are his busy time for homework (his tutor sees only that he is busy, never what). '
+      + 'Family\'s reach every kid too, never the helper. The grown-ups\' (and events with no Hearth person, and private ones) reach only the grown-ups\' morning emails. '
+      + 'An event for several reaches each of them. Everything shows on the Calendar and Today pages for everyone who signs in. A match works at once. '
+      + 'A new person on Hearth shows here after the next read, and goes to the grown-ups until you match it.';
+    const SORT_HELP = 'For the calendar the kitchen wall keeps its own events in. Hearth adds the person an event is for as a guest (jordan@team-…). The hub sends each event to the person you match below.';
+    const READ_HELP_10 = 'On the calendar Hearth keeps its own events in, Sort by Hearth person sends each event to its person instead.';
+    const PEOPLE_OPTS = (sel) => [['grown_ups', 'The grown-ups', sel === 'grown_ups'], [`person:${ID.alex}`, 'Alex', sel === ID.alex], [`person:${ID.sam}`, 'Sam', sel === ID.sam],
+      [`person:${ID.jordan}`, 'Jordan', sel === ID.jordan], [`person:${ID.taylor}`, 'Taylor', sel === ID.taylor]];
+    const hAllowed = /status of (400|403|500)/;
+    // A shot of one part of the page, from a full-page capture (so the sticky header stays at the top of the page).
+    // (The page's sticky top bar is let go for the shot only, so it doesn't cover the part shown.)
+    const shotOf = async (page, sel, file) => {
+      const style = await page.addStyleTag({ content: '.topbar, .bottombar { position: static !important; }' });
+      const clip = await page.$eval(sel, (e) => { const r = e.getBoundingClientRect(); return { x: r.left + scrollX, y: r.top + scrollY, width: r.width, height: r.height }; });
+      await page.screenshot({ path: SHOTS + file, fullPage: true, clip });
+      await style.evaluate((e) => e.remove());
+    };
+
+    // ---------- An admin (Alex), 1280px: the switch, the list, the top line
+    let hdb = hearthDb();
+    ({ page, db, log } = await open({ label: 'hearth', db: hdb, rpc: v10Rpc, allowConsole: hAllowed, ctx: { viewport: { width: 1280, height: 900 } } }));
+    check('schema 10: the card reads hearth_tags once with its other reads (the columns it shows, by name)', (await page.evaluate(() => HomeHub.core.schemaVersion)) === 10
+      && log.filter((l) => l.startsWith('GET /rest/v1/hearth_tags')).length === 1
+      && log.some((l) => decodeURIComponent(l) === 'GET /rest/v1/hearth_tags?select=id,calendar_id,tag,name,matched_to,person_id,last_seen&order=name.asc'), log.filter((l) => /hearth/.test(l)).join(' | '));
+    check('the top of the card: "Hearth people to match: grandma, grandpa. See Calendars to read." (New, and a removed person\'s)',
+      (await tc(page, '[data-ref="calendar"] > [data-ref="htodo"]')) === 'Hearth people to match: grandma, grandpa. See Calendars to read.'
+      && await page.$eval('[data-ref="calendar"]', (b) => b.firstElementChild.dataset.ref === 'htodo'), await tc(page, '[data-ref="htodo"]'));
+    check('the help of Calendars to read gains the sentence on Sort by Hearth person', (await texts(page, '[data-ref="calendar"] > .set-help')).some((t) => t.endsWith(READ_HELP_10)),
+      JSON.stringify(await texts(page, '[data-ref="calendar"] > .set-help')));
+    let reads = await gRows(page, 'greads');
+    const mainLi = `[data-ref="greads"] > .set-gcal[data-slot="main"]`;
+    const hearthLi = () => `[data-ref="greads"] > .set-gcal[data-slot="${hdb.cal.hearth.id}"]`;
+    const box = async (page2, li, attr) => page2.$eval(`${li} [data-${attr}]`, (e) => ({ checked: e.checked, visible: !!e.offsetParent, label: e.closest('label').textContent.trim() })).catch(() => null);
+    check('the main calendar (read as Family): Show to kids (on) and, beside it, Sort by Hearth person (off), with what the switch is for',
+      same(await box(page, mainLi, 'gkids'), { checked: true, visible: true, label: 'Show to kids' }) && same(await box(page, mainLi, 'gsort'), { checked: false, visible: true, label: 'Sort by Hearth person' })
+      && (await tc(page, `${mainLi} .set-gsort-help`)) === SORT_HELP
+      && await page.$eval(`${mainLi} .set-gchecks`, (c) => { const [a, b] = [...c.querySelectorAll('label')].map((l) => l.getBoundingClientRect()); return Math.abs(a.top - b.top) < 2 && b.left > a.right; })
+      && !(await page.$(`${mainLi} [data-hearth]`)), JSON.stringify(reads));
+    check('the Hearth calendar (sorted): the switch on, Show to kids hidden (the matches replace it), and its Hearth people under the row',
+      same(await box(page, hearthLi(), 'gsort'), { checked: true, visible: true, label: 'Sort by Hearth person' }) && !(await page.$(`${hearthLi()} [data-gkids]`))
+      && (await hp(page, hdb.cal.hearth.id)).head === 'Hearth people');
+    check('no switch on a calendar the hub writes, or one read as someone\'s', !(await page.$('[data-ref="gcolumns"] [data-gsort], [data-ref="goptional"] [data-gsort]'))
+      && !(await page.$(`[data-slot="${db.cal.school.id}"] [data-gsort]`)));
+    let H = await hp(page, hdb.cal.hearth.id);
+    check('the list: one line per tag, by name, never the rest of the address', same(H.rows.map((r) => r.name), ['dogs', 'familyanddogs', 'grandma', 'grandpa', 'jordan', 'morgan', 'sam', 'taylor'])
+      && H.rows.every((r) => !/@|team-|example-0000/.test(r.text)) && !(await tc(page, '[data-ref="calendar"]')).includes('@team-example'), JSON.stringify(H.rows.map((r) => r.text)));
+    check('New: a chip on grandma only (never matched)', same(H.rows.filter((r) => r.isNew).map((r) => r.name), ['grandma']));
+    check('a removed person\'s: "Was matched to someone who was removed: match it again."; someone off the family list: "Off the family list: these go to the grown-ups for now."',
+      same(H.rows.filter((r) => r.note).map((r) => [r.name, r.note]), [['grandpa', 'Was matched to someone who was removed: match it again.'], ['morgan', 'Off the family list: these go to the grown-ups for now.']]),
+      JSON.stringify(H.rows.map((r) => [r.name, r.note])));
+    const seen = Object.fromEntries(H.rows.map((r) => [r.name, r.seen]));
+    check('last seen: today, yesterday, a weekday this year, and another year\'s date (the household\'s day)', seen.jordan === 'last seen today' && seen.sam === 'last seen yesterday'
+      && seen.taylor === 'last seen Thu Oct 22' && seen.dogs === 'last seen Oct 3, 2025', JSON.stringify(seen));
+    const opts = Object.fromEntries(H.rows.map((r) => [r.name, r.options]));
+    check('the picker of a New tag: "Choose…" (no value) selected, then The grown-ups, each person on the family list by first name in family-list order (Taylor too, not Morgan), Family',
+      same(opts.grandma, [['', 'Choose…', true]].concat(PEOPLE_OPTS(), [['family', 'Family', false]])), JSON.stringify(opts.grandma));
+    check('… and of a removed person\'s: "Choose…" too', same(opts.grandpa, opts.grandma));
+    check('a matched tag\'s picker shows its match, with no "Choose…": Jordan, Family, The grown-ups', same(opts.jordan, PEOPLE_OPTS(ID.jordan).concat([['family', 'Family', false]]))
+      && same(opts.familyanddogs, PEOPLE_OPTS().concat([['family', 'Family', true]])) && same(opts.dogs, PEOPLE_OPTS('grown_ups').concat([['family', 'Family', false]])), JSON.stringify([opts.jordan, opts.dogs]));
+    check('matched to someone off the family list: "Morgan (off the family list)", selected, before Family', same(opts.morgan, PEOPLE_OPTS().concat([[`person:${ID.morgan}`, 'Morgan (off the family list)', true], ['family', 'Family', false]])),
+      JSON.stringify(opts.morgan));
+    check('every line has Forget (admins), and the picker names its tag for screen readers', H.rows.every((r) => same(r.buttons, ['Forget'])) && (H.rows.find((r) => r.name === 'jordan') || {}).label === 'Whose are jordan\'s events');
+    check('under the list: what each match does', same(H.state, [HOW]), JSON.stringify(H.state));
+    check('no 50 line with 8 tags', !(await page.$(`[data-hearth="${hdb.cal.hearth.id}"] .set-hp-full`)));
+    await page.screenshot({ path: SHOTS + 'settings-hearth-admin-desktop.png', fullPage: true });
+
+    // Disconnect on the sorted calendar adds its matches to the question; on another, not. (Dismissed: nothing happens.)
+    db.confirm = false;
+    await page.click(`[data-gdrop="${hdb.cal.hearth.id}"]`);
+    await page.click(`[data-gdrop="${hdb.cal.main.id}"]`);
+    db.confirm = true;
+    check('Disconnect on a sorted calendar: "Disconnect Hearth? Its events stop showing in the hub. Its Hearth matches go with it."; on the main calendar as before',
+      same(db.confirms.slice(-2), [['confirm', 'Disconnect Hearth? Its events stop showing in the hub. Its Hearth matches go with it.'],
+        ['confirm', 'Disconnect Family account\'s main calendar? Its events stop showing in the hub.']]) && db.calendars.includes(hdb.cal.hearth), JSON.stringify(db.confirms.slice(-2)));
+
+    // Choose… → The grown-ups on grandma: one call, its toast, New and grandma's part of the top line gone.
+    await page.selectOption(pickFor(page, tagId(db, 'grandma')), 'grown_ups');
+    await page.waitForTimeout(500);
+    check('choosing The grown-ups on a New tag calls set_hearth_tag(p_id, \'grown_ups\') and says "grandma: the grown-ups\' from now on."',
+      same(hearthCalls(db), [{ p_id: tagId(db, 'grandma'), p_to: 'grown_ups' }]) && (await lastToast(page)) === 'grandma: the grown-ups\' from now on.' && !(await toastIsError(page)), JSON.stringify(hearthCalls(db)));
+    let r1 = await rowOf(page, hdb.cal.hearth.id, 'grandma');
+    check('… its New chip and "Choose…" go, The grown-ups is selected, and the top line names only grandpa: "Hearth person to match: grandpa. See Calendars to read."',
+      !r1.isNew && same(r1.options, PEOPLE_OPTS('grown_ups').concat([['family', 'Family', false]]))
+      && (await tc(page, '[data-ref="htodo"]')) === 'Hearth person to match: grandpa. See Calendars to read.', JSON.stringify([r1, await tc(page, '[data-ref="htodo"]')]));
+    check('… read again: only the Hearth people, not the whole card', log.filter((l) => l.startsWith('GET /rest/v1/hearth_tags')).length === 2
+      && log.filter((l) => l.startsWith('GET /rest/v1/calendars?')).length === 1);
+    await page.selectOption(pickFor(page, tagId(db, 'grandpa')), `person:${ID.jordan}`);
+    await page.waitForTimeout(500);
+    r1 = await rowOf(page, hdb.cal.hearth.id, 'grandpa');
+    check('a removed person\'s tag matched to Jordan: set_hearth_tag(p_id, \'person\', p_person), "grandpa: Jordan\'s from now on.", its note and the top line gone',
+      same(hearthCalls(db).slice(-1), [{ p_id: tagId(db, 'grandpa'), p_to: 'person', p_person: ID.jordan }]) && (await lastToast(page)) === 'grandpa: Jordan\'s from now on.'
+      && !r1.note && !(await page.$('[data-ref="htodo"]')), JSON.stringify([hearthCalls(db).slice(-1), r1]));
+    await page.selectOption(pickFor(page, tagId(db, 'dogs')), 'family');
+    await page.waitForTimeout(500);
+    check('dogs → Family: "dogs: Family\'s from now on."', same(hearthCalls(db).slice(-1), [{ p_id: tagId(db, 'dogs'), p_to: 'family' }]) && (await lastToast(page)) === 'dogs: Family\'s from now on.');
+    await page.selectOption(pickFor(page, tagId(db, 'morgan')), `person:${ID.taylor}`);
+    await page.waitForTimeout(500);
+    r1 = await rowOf(page, hdb.cal.hearth.id, 'morgan');
+    check('a helper can be matched: morgan → Taylor, "morgan: Taylor\'s from now on.", the off-the-list note and option gone', (await lastToast(page)) === 'morgan: Taylor\'s from now on.'
+      && !r1.note && same(r1.options, PEOPLE_OPTS(ID.taylor).concat([['family', 'Family', false]])), JSON.stringify(r1));
+    // A refusal: another parent forgot sam a moment ago. The toast is the function's words; the picker goes back.
+    const samId = tagId(db, 'sam');
+    db.hearth_tags.splice(db.hearth_tags.findIndex((t) => t.id === samId), 1);
+    await page.selectOption(pickFor(page, samId), 'family');
+    await page.waitForTimeout(500);
+    check('a refusal: the toast is the function\'s words ("That Hearth person isn\'t there any more."), an error, and the picker goes back to Sam',
+      (await lastToast(page)) === 'That Hearth person isn\'t there any more.' && await toastIsError(page) && (await page.inputValue(pickFor(page, samId))) === `person:${ID.sam}`
+      && !(await page.$eval(pickFor(page, samId), (s) => s.disabled)), await lastToast(page));
+    // Forget: asks first (dismissed: nothing), then set_hearth_tag(p_id, 'forget').
+    const taylorId = tagId(db, 'taylor');
+    const nCalls = hearthCalls(db).length;
+    db.confirm = false;
+    await page.click(`[data-hforget="${taylorId}"]`);
+    await page.waitForTimeout(200);
+    check('Forget asks first: "Forget taylor? Its events go to the grown-ups until it is matched again. If Hearth still uses it, it shows here again as new after the next read."; dismissed, nothing is called',
+      same(db.confirms.slice(-1)[0], ['confirm', 'Forget taylor? Its events go to the grown-ups until it is matched again. If Hearth still uses it, it shows here again as new after the next read.'])
+      && hearthCalls(db).length === nCalls, JSON.stringify(db.confirms.slice(-1)));
+    db.confirm = true;
+    await page.click(`[data-hforget="${taylorId}"]`);
+    await page.waitForTimeout(500);
+    check('Forget: set_hearth_tag(p_id, \'forget\'), "taylor: forgotten.", and the line goes', same(hearthCalls(db).slice(-1), [{ p_id: taylorId, p_to: 'forget' }])
+      && (await lastToast(page)) === 'taylor: forgotten.' && (await rowOf(page, hdb.cal.hearth.id, 'taylor')).missing === true, await lastToast(page));
+    await page.context().close();
+
+    // ---------- The switch: off asks first (dismissed: nothing), off, on again with the matches kept, a stale tab's
+    // Show to kids, a save that comes back unchanged, and on for a calendar never read with guests
+    hdb = hearthDb();
+    ({ page, db, log } = await open({ label: 'hearth-switch', db: hdb, rpc: v10Rpc, allowConsole: hAllowed }));
+    const sortSel = (c) => `[data-gsort="${c.id}"]`;
+    db.confirm = false;
+    await page.click(sortSel(hdb.cal.hearth));
+    await page.waitForTimeout(300);
+    check('turning it off asks first: "Stop sorting this calendar? Its events then reach the grown-ups only (turn on Show to kids for kids too). The matches are kept for next time."; dismissed, it stays on and nothing is saved',
+      same(db.confirms.slice(-1)[0], ['confirm', 'Stop sorting this calendar? Its events then reach the grown-ups only (turn on Show to kids for kids too). The matches are kept for next time.'])
+      && await page.$eval(sortSel(hdb.cal.hearth), (e) => e.checked) && !writes(db, 'calendars', 'PATCH').length, JSON.stringify(db.confirms));
+    db.confirm = true;
+    await page.click(sortSel(hdb.cal.hearth));
+    await page.waitForTimeout(600);
+    let w = writes(db, 'calendars', 'PATCH');
+    check('off: saves {sort_by_guest: false} and reads back id, sort_by_guest, for_kids; "Not sorted any more: its events reach the grown-ups only."',
+      w.length === 1 && same(w[0].body, { sort_by_guest: false }) && w[0].url === `?id=eq.${hdb.cal.hearth.id}&select=id,sort_by_guest,for_kids`
+      && (await lastToast(page)) === 'Not sorted any more: its events reach the grown-ups only.', JSON.stringify(w));
+    check('… then Show to kids is back, the list and the top line go, and the matches are kept', !(await page.$(`[data-hearth="${hdb.cal.hearth.id}"]`)) && !(await page.$('[data-ref="htodo"]'))
+      && same(await box(page, hearthLi(), 'gkids'), { checked: false, visible: true, label: 'Show to kids' }) && db.hearth_tags.length === 8,
+      JSON.stringify([!!(await page.$(`[data-hearth="${hdb.cal.hearth.id}"]`)), await tc(page, '[data-ref="htodo"]'), await box(page, hearthLi(), 'gkids'), db.hearth_tags.length]));
+    await page.click(sortSel(hdb.cal.hearth));
+    await page.waitForTimeout(600);
+    w = writes(db, 'calendars', 'PATCH');
+    H = await hp(page, hdb.cal.hearth.id);
+    check('on: saves {sort_by_guest: true, for_kids: false}; "Sorting by Hearth person. Press Sync now, then match each person below."', same(w.slice(-1)[0].body, { sort_by_guest: true, for_kids: false })
+      && w.slice(-1)[0].url === `?id=eq.${hdb.cal.hearth.id}&select=id,sort_by_guest,for_kids` && (await lastToast(page)) === 'Sorting by Hearth person. Press Sync now, then match each person below.', JSON.stringify(w.slice(-1)));
+    check('… the matches kept from before show again at once (read_at is cleared, the list shows whatever read_at is)', db.cal.hearth.read_at === null && H.rows.length === 8
+      && (await tc(page, '[data-ref="htodo"]')) === 'Hearth people to match: grandma, grandpa. See Calendars to read.', JSON.stringify(H && H.rows.map((r) => r.name)));
+    // Show to kids: off, as before but read back with the switch; then ticked in a tab opened before another one turned
+    // sorting on: the database refuses it, and the box goes back.
+    await page.click(`[data-gkids="${hdb.cal.main.id}"]`);
+    await page.waitForTimeout(600);
+    check('Show to kids on 10: saved as before, read back with id, sort_by_guest and for_kids', (await lastToast(page)) === 'Kids no longer see its events on My day'
+      && same(writes(db, 'calendars', 'PATCH').slice(-1)[0], { table: 'calendars', method: 'PATCH', url: `?id=eq.${hdb.cal.main.id}&select=id,sort_by_guest,for_kids`, body: { for_kids: false } })
+      && db.cal.main.for_kids === false, JSON.stringify(writes(db, 'calendars', 'PATCH').slice(-1)));
+    db.cal.main.sort_by_guest = true;
+    await page.click(`[data-gkids="${hdb.cal.main.id}"]`);
+    await page.waitForTimeout(600);
+    check('… Show to kids from a stale tab (the calendar was sorted meanwhile): "Turn off Sort by Hearth person first.", an error, the box back off',
+      (await lastToast(page)) === 'Turn off Sort by Hearth person first.' && await toastIsError(page) && db.cal.main.for_kids === false
+      && !(await page.$eval(`[data-gkids="${hdb.cal.main.id}"]`, (e) => e.checked).catch(() => false)), await lastToast(page));
+    db.cal.main.sort_by_guest = false;
+    await page.context().close();
+
+    // A save that comes back without the change (the row was changed meanwhile) is an error, never the success toast.
+    hdb = hearthDb();
+    ({ page, db } = await open({ label: 'hearth-unchanged', db: hdb, rpc: v10Rpc, allowConsole: hAllowed }));
+    await page.route((url) => url.host === 'test.supabase.co' && url.pathname === '/rest/v1/calendars', (route) => (route.request().method() === 'PATCH'
+      ? route.fulfill({ status: 200, headers: JSONH, body: JSON.stringify([{ id: hdb.cal.main.id, sort_by_guest: false, for_kids: true }]) }) : route.fallback()));
+    await page.click(sortSel(hdb.cal.main));
+    await page.waitForTimeout(500);
+    check('a switch save that comes back unchanged: an error toast, and the box back off', (await lastToast(page)) === 'It didn\'t change: this calendar was changed a moment ago. Reload the page to see the latest.'
+      && await toastIsError(page) && !(await page.$eval(sortSel(hdb.cal.main), (e) => e.checked)), await lastToast(page));
+    await page.click(`[data-gkids="${hdb.cal.main.id}"]`);
+    await page.waitForTimeout(500);
+    check('… and a Show to kids save that comes back unchanged too', (await lastToast(page)) === 'It didn\'t change: this calendar was changed a moment ago. Reload the page to see the latest.'
+      && await toastIsError(page) && await page.$eval(`[data-gkids="${hdb.cal.main.id}"]`, (e) => e.checked), await lastToast(page));
+    await page.context().close();
+    hdb = hearthDb();
+    ({ page, db } = await open({ label: 'hearth-gone', db: hdb, rpc: v10Rpc }));
+    db.calendars.splice(db.calendars.indexOf(hdb.cal.main), 1);
+    await page.click(sortSel(hdb.cal.main));
+    await page.waitForTimeout(500);
+    check('no row comes back (disconnected a moment ago): "This calendar was disconnected a moment ago. Reload the page to see the latest."',
+      (await lastToast(page)) === 'This calendar was disconnected a moment ago. Reload the page to see the latest.' && await toastIsError(page), await lastToast(page));
+    await page.context().close();
+
+    // The main calendar, never read with guests: on, then "Not read yet"; Sync now lists what the read found, as New.
+    hdb = hearthDb();
+    ({ page, db } = await open({ label: 'hearth-new', db: hdb, rpc: v10Rpc }));
+    await page.click(sortSel(hdb.cal.main));
+    await page.waitForTimeout(600);
+    H = await hp(page, hdb.cal.main.id);
+    check('on, with no tags and read_at cleared: "Not read yet. Press Sync now: the people Hearth put on its events show here."; Show to kids now off and hidden',
+      !H.missing && same(H.state, ['Not read yet. Press Sync now: the people Hearth put on its events show here.']) && !H.rows.length && db.cal.main.for_kids === false
+      && !(await page.$(`${mainLi} [data-gkids]`)), JSON.stringify(H));
+    db.onSync = (d) => {
+      d.cal.main.read_at = at('09:00');
+      d.hearth_tags.push(hearthTagRow({ calendar_id: d.cal.main.id, tag: TAG('jordan', '0001'), last_seen: at('09:00') }));
+    };
+    await page.click('[data-act="gsync"]');
+    await page.waitForTimeout(800);
+    H = await hp(page, hdb.cal.main.id);
+    check('Sync now: the card reloads and lists what the read found, New; the top line names it', !H.missing && same(H.rows.map((r) => [r.name, r.isNew, r.seen]), [['jordan', true, 'last seen today']])
+      && (await tc(page, '[data-ref="htodo"]')) === 'Hearth people to match: grandma, grandpa, jordan. See Calendars to read.', JSON.stringify([H, await tc(page, '[data-ref="htodo"]')]));
+    await page.context().close();
+
+    // ---------- The other states: none found; a list with read_at null; the failed read; 50; two of one name; a hostile name
+    ({ page } = await open({ label: 'hearth-none', db: (hdb = hearthDb({ tags: [] })), rpc: v10Rpc }));
+    H = await hp(page, hdb.cal.hearth.id);
+    check('no tags, read: "No Hearth people on its events (yesterday to 60 days ahead). Hearth adds one as a guest when an event on the wall is for someone. Is this the calendar Hearth keeps its events in?"',
+      same(H.state, ['No Hearth people on its events (yesterday to 60 days ahead). Hearth adds one as a guest when an event on the wall is for someone. Is this the calendar Hearth keeps its events in?'])
+      && !H.rows.length && !(await page.$('[data-ref="htodo"]')), JSON.stringify(H));
+    await page.context().close();
+    ({ page } = await open({ label: 'hearth-cutoff', db: (hdb = hearthDb({ readAt: null })), rpc: v10Rpc }));
+    H = await hp(page, hdb.cal.hearth.id);
+    check('tags listed but read_at null (reads cut off, or matches from before): the list, not "Not read yet"', H.rows.length === 8 && same(H.state, [HOW]), JSON.stringify(H.state));
+    await page.context().close();
+    hdb = hearthDb();
+    hdb.hearthFail = true;
+    ({ page, log } = await open({ label: 'hearth-fail', db: hdb, rpc: v10Rpc, allowConsole: /status of 500/ }));
+    H = await hp(page, hdb.cal.hearth.id);
+    check('the hearth_tags read fails: "Couldn\'t load the Hearth people. Reload the page to try again." under the row; the rest of the card shows as usual, with no top line',
+      same(H.state, ['Couldn\'t load the Hearth people. Reload the page to try again.']) && !H.rows.length && (await gRows(page, 'gcolumns')).length > 0
+      && (await gStatus(page)).length > 0 && !(await page.$('[data-ref="htodo"]')) && !!(await page.$(`[data-gsort="${hdb.cal.hearth.id}"]`)), JSON.stringify(H));
+    await page.context().close();
+    const many = (n) => Array.from({ length: n }, (x, i) => (T) => T(TAG(`kid${String(i).padStart(2, '0')}`), { matched_to: 'grown_ups' }));
+    ({ page } = await open({ label: 'hearth-50', db: (hdb = hearthDb({ tags: many(50) })), rpc: v10Rpc }));
+    H = await hp(page, hdb.cal.hearth.id);
+    check('at 50 tags, under the list: "That\'s 50, the most the hub lists. A new Hearth person isn\'t listed, and its events go to the grown-ups: forget one you don\'t need."',
+      H.rows.length === 50 && same(H.state, ['That\'s 50, the most the hub lists. A new Hearth person isn\'t listed, and its events go to the grown-ups: forget one you don\'t need.', HOW]), JSON.stringify(H.state));
+    await page.context().close();
+    ({ page } = await open({ label: 'hearth-49', db: (hdb = hearthDb({ tags: many(49) })), rpc: v10Rpc }));
+    check('at 49: no 50 line', same((await hp(page, hdb.cal.hearth.id)).state, [HOW]));
+    await page.context().close();
+    const twins = [(T) => T(TAG('jordan', '0001')), (T) => T(TAG('jordan'), { matched_to: 'person', person_id: ID.jordan }), (T) => T(TAG('sam'), { matched_to: 'person', person_id: ID.sam })];
+    ({ page, db } = await open({ label: 'hearth-twins', db: (hdb = hearthDb({ tags: twins })), rpc: v10Rpc }));
+    H = await hp(page, hdb.cal.hearth.id);
+    check('two of one name (two Hearth teams): each shows its team\'s last four characters, "jordan (…0000)", "jordan (…0001)"; a name alone stays as it is',
+      same(H.rows.map((r) => r.name), ['jordan (…0000)', 'jordan (…0001)', 'sam']) && (await tc(page, '[data-ref="htodo"]')) === 'Hearth person to match: jordan (…0001). See Calendars to read.',
+      JSON.stringify(H.rows.map((r) => r.name)));
+    await page.selectOption(pickFor(page, tagId(db, 'jordan', '0001')), 'grown_ups');
+    await page.waitForTimeout(500);
+    check('… and its toast names it so: "jordan (…0001): the grown-ups\' from now on."', (await lastToast(page)) === 'jordan (…0001): the grown-ups\' from now on.', await lastToast(page));
+    await page.context().close();
+    // A hostile name (the table's check would never let one in; the page doesn't count on it): text everywhere.
+    const XSS = '<img src=x onerror=window.__xss=1>';
+    const hostile = [(T) => Object.assign(T(TAG('x')), { tag: `${XSS}@team-example-0000`, name: XSS })];
+    ({ page, db } = await open({ label: 'hearth-xss', db: (hdb = hearthDb({ tags: hostile })), rpc: v10Rpc }));
+    H = await hp(page, hdb.cal.hearth.id);
+    db.confirm = false;
+    await page.click(`[data-hforget="${hdb.hearth_tags[0].id}"]`);
+    db.confirm = true;
+    await page.selectOption(pickFor(page, hdb.hearth_tags[0].id), 'family');
+    await page.waitForTimeout(500);
+    check('a hostile tag name is text: in the list, the top line, the picker\'s label, Forget\'s question and the toast; nothing runs',
+      H.rows[0].name === XSS && H.rows[0].label === `Whose are ${XSS}'s events` && !(await page.$('[data-ref="calendar"] img'))
+      && db.confirms.slice(-1)[0][1].startsWith(`Forget ${XSS}?`) && (await lastToast(page)) === `${XSS}: Family's from now on.`
+      && await page.evaluate(() => !window.__xss), JSON.stringify([H.rows[0], db.confirms.slice(-1)]));
+    await page.context().close();
+
+    // ---------- A member (Sam): "Sorted by Hearth person", the matches as text; no switch, picker, Forget or top line
+    ({ page, log } = await open({ label: 'hearth-member', email: 'sam@example.com', db: (hdb = hearthDb()), rpc: v10Rpc, ctx: { viewport: { width: 1280, height: 900 } } }));
+    reads = await gRows(page, 'greads');
+    H = await hp(page, hdb.cal.hearth.id);
+    check('member: "Sorted by Hearth person" on the Hearth row, "Shown to kids on My day" on the main one', same(reads.map((r) => [r.label, r.lines]), [
+      ['Family account\'s main calendar', ['In Google: family@example.com', 'Shown to kids on My day']], ['School Jordan Example', ['In Google: Maple School']],
+      ['Hearth Family', ['In Google: Hearth Calendar', 'Sorted by Hearth person']]]), JSON.stringify(reads.map((r) => [r.label, r.lines])));
+    check('member: the list as text: "jordan → Jordan", "familyanddogs → Family", "dogs → the grown-ups", "grandma → not matched yet: the grown-ups", and the removed and off-the-list ones',
+      same(H.rows.map((r) => r.text), ['dogs → the grown-ups', 'familyanddogs → Family', 'grandma → not matched yet: the grown-ups', 'grandpa → someone who was removed: the grown-ups',
+        'jordan → Jordan', 'morgan → Morgan (off the family list): the grown-ups', 'sam → Sam', 'taylor → Taylor']) && same(H.state, [HOW]), JSON.stringify(H.rows.map((r) => r.text)));
+    check('member: no switch, picker, Forget or top line; members read hearth_tags (no write)', !(await page.$$('[data-ref="calendar"] button, [data-ref="calendar"] input, [data-ref="calendar"] select')).length
+      && !(await page.$('[data-ref="htodo"]')) && log.some((l) => l.startsWith('GET /rest/v1/hearth_tags')));
+    await page.screenshot({ path: SHOTS + 'settings-hearth-member-desktop.png', fullPage: true });
+    await page.context().close();
+    ({ page } = await open({ label: 'hearth-member-new', email: 'sam@example.com', db: (hdb = hearthDb({ tags: [], readAt: null })), rpc: v10Rpc }));
+    check('member, not read yet: "Not read yet. The people Hearth put on its events show here after the next read." (Sync now is an admin\'s)',
+      same((await hp(page, hdb.cal.hearth.id)).state, ['Not read yet. The people Hearth put on its events show here after the next read.']));
+    await page.context().close();
+    ({ page } = await open({ label: 'hearth-member-50', email: 'sam@example.com', db: (hdb = hearthDb({ tags: many(50) })), rpc: v10Rpc }));
+    check('member, at 50: the line without "forget one you don\'t need"', same((await hp(page, hdb.cal.hearth.id)).state, ['That\'s 50, the most the hub lists. A new Hearth person isn\'t listed, and its events go to the grown-ups.', HOW]));
+    await page.context().close();
+
+    // ---------- Schema 9: nothing new shows, and nothing new is asked for
+    ({ page, db, log } = await open({ label: 'hearth-v9', db: (hdb = hearthDb({ schema9: true })), rpc: v9Rpc }));
+    check('schema 9: no hearth_tags request and no sort_by_guest named anywhere', (await page.evaluate(() => HomeHub.core.schemaVersion)) === 9
+      && !log.some((l) => /hearth_tags|sort_by_guest/.test(decodeURIComponent(l))), log.filter((l) => /calendars|hearth/.test(l)).join(' | '));
+    check('schema 9: no switch, no Hearth people, no top line, the help as before; Show to kids as before', !(await page.$('[data-gsort], [data-hearth], [data-ref="htodo"], .set-gsort-help'))
+      && !(await tc(page, '[data-ref="calendar"]')).includes('Hearth person') && same(await box(page, mainLi, 'gkids'), { checked: true, visible: true, label: 'Show to kids' }));
+    await page.click(`[data-gkids="${hdb.cal.main.id}"]`);
+    await page.waitForTimeout(500);
+    db.confirm = false;
+    await page.click(`[data-gdrop="${hdb.cal.hearth.id}"]`);
+    db.confirm = true;
+    w = writes(db, 'calendars', 'PATCH');
+    check('schema 9: Show to kids saves and reads back as before (select=id), and Disconnect asks as before', w.length === 1 && w[0].url === `?id=eq.${hdb.cal.main.id}&select=id`
+      && (await lastToast(page)) === 'Kids no longer see its events on My day' && same(db.confirms.slice(-1)[0], ['confirm', 'Disconnect Hearth? Its events stop showing in the hub.']), JSON.stringify(w));
+    await page.context().close();
+    // The fake answers as PostgREST would on 9 (so the checks above would catch a stray request): a select naming
+    // sort_by_guest is 400 42703, a PATCH of it 400 PGRST204, hearth_tags 404.
+    ({ page, db } = await open({ label: 'hearth-v9-fake', db: hearthDb({ schema9: true }), rpc: v9Rpc, allowConsole: /status of (400|404)/ }));
+    const fake9 = await page.evaluate(async (id) => {
+      const sb = HomeHub.core.sb;
+      const a = await sb.from('calendars').select('id,sort_by_guest');
+      const b = await sb.from('calendars').update({ sort_by_guest: true }).eq('id', id).select('id');
+      const c = await sb.from('hearth_tags').select('id');
+      return [a.error && a.error.code, b.error && b.error.code, c.status];
+    }, db.cal.hearth.id);
+    check('mock on 9: sort_by_guest named in a select → 400 42703, in a PATCH → 400 PGRST204; hearth_tags → 404', same(fake9, ['42703', 'PGRST204', 404]), JSON.stringify(fake9));
+    await page.context().close();
+
+    // ---------- Phones (390px) and 1280px, light and dark: no sideways scroll, 44px targets; the shots
+    for (const scheme of ['light', 'dark']) {
+      for (const [what, opts2] of [['phone', Object.assign({ colorScheme: scheme }, phone)], ['desktop', { colorScheme: scheme, viewport: { width: 1280, height: 900 } }]]) {
+        hdb = hearthDb({ tags: [(T) => T(TAG('jordan'), { matched_to: 'person', person_id: ID.jordan }), (T) => T(TAG('familyanddogs'), { matched_to: 'family' }),
+          (T) => T(TAG('dogs'), { matched_to: 'grown_ups', last_seen: at('12:00', '2026-10-22') }), (T) => T(TAG('grandma')), (T) => T(TAG('grandpa'), { matched_to: 'person', person_id: null }),
+          (T) => T(TAG('morgan'), { matched_to: 'person', person_id: ID.morgan, last_seen: '2025-10-03T16:00:00.000000+00:00' })] });
+        ({ page } = await open({ label: `hearth-${what}-${scheme}`, db: hdb, rpc: v10Rpc, ctx: opts2 }));
+        check(`hearth (${what}, ${scheme}): no sideways scroll; the card fits`, await noSideScroll(page)
+          && await page.$eval('section[aria-labelledby="setCalendar"]', (c) => c.getBoundingClientRect().right <= window.innerWidth));
+        const small = await page.$$eval('[data-ref="greads"] .btn, [data-ref="greads"] .set-gkids, [data-ref="greads"] select',
+          (es) => es.filter((e) => e.offsetParent).map((e) => { const r = e.getBoundingClientRect(); return [e.textContent.trim().slice(0, 24), Math.round(r.width), Math.round(r.height)]; })
+            .filter(([, w2, h]) => w2 < 44 || h < 44));
+        check(`hearth (${what}, ${scheme}): every switch, picker and Forget is at least 44px`, !small.length, JSON.stringify(small));
+        const fit = await page.$eval(`[data-hearth="${hdb.cal.hearth.id}"]`, (b) => [...b.querySelectorAll('.set-hp-row')].every((li) => li.scrollWidth <= li.clientWidth + 1));
+        check(`hearth (${what}, ${scheme}): each Hearth person's line fits its box`, fit);
+        await page.$eval(`[data-hearth="${hdb.cal.hearth.id}"]`, (c) => c.scrollIntoView());
+        await page.screenshot({ path: SHOTS + `settings-hearth-${what}-${scheme}.png`, fullPage: true });
+        await shotOf(page, 'section[aria-labelledby="setCalendar"]', `settings-hearth-card-${what}-${scheme}.png`);
+        await shotOf(page, '[data-ref="greads"]', `settings-hearth-reads-${what}-${scheme}.png`);
+        await page.context().close();
+        ({ page } = await open({ label: `hearth-50-${what}-${scheme}`, db: (hdb = hearthDb({ tags: many(50) })), rpc: v10Rpc, ctx: opts2 }));
+        check(`hearth at 50 (${what}, ${scheme}): no sideways scroll`, await noSideScroll(page));
+        await shotOf(page, `[data-hearth="${hdb.cal.hearth.id}"]`, `settings-hearth-50-${what}-${scheme}.png`);
+        await page.context().close();
+        ({ page } = await open({ label: `hearth-member-${what}-${scheme}`, email: 'sam@example.com', db: (hdb = hearthDb()), rpc: v10Rpc, ctx: opts2 }));
+        check(`hearth member (${what}, ${scheme}): no sideways scroll`, await noSideScroll(page));
+        await shotOf(page, 'section[aria-labelledby="setCalendar"]', `settings-hearth-member-${what}-${scheme}.png`);
+        await shotOf(page, '[data-ref="greads"]', `settings-hearth-member-reads-${what}-${scheme}.png`);
+        await page.context().close();
+      }
+    }
+  }
+
   // =====================================================================
   // 7. v1 mode: no Settings page
   // =====================================================================
@@ -1006,4 +1423,10 @@ const emailOf = (req) => {
   const failed = results.filter((r) => r.startsWith('FAIL')).length;
   console.log(`\n${results.length - failed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
-})().catch((e) => { console.error(e); process.exit(1); });
+})().catch((e) => {
+  // A step that throws (a selector that never appears) stops the run: report what ran, then fail.
+  console.log(results.join('\n'));
+  console.log(`FAIL  test run stopped early: ${String((e && e.message) || e).split('\n')[0]}`);
+  console.error(e);
+  process.exit(1);
+});

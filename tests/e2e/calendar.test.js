@@ -4,7 +4,10 @@
 // (migration 0003), events read from Google Calendar (google_items, docs/v1.1-google-calendar.md §5.4):
 // timed, all-day, multi-day and Family ones merged in, their look, no checkbox, read-only details, a
 // hostile title and place shown as text, the person filter, the window notes, and a failing google_items
-// that still leaves the agenda; on schema 2 no google_items call.
+// that still leaves the agenda; on schema 2 no google_items call. On schema 10 (migration 0010, docs/v1.1 §11.4), a
+// calendar sorted by Hearth person: each event under its people's filters (Family's and the grown-ups' alone under
+// every one), one colour rule (Family's neutral, else who's in charge, else the first person along), and the details'
+// "For: …" line.
 //
 // The fake agenda() works the calendar out from the mock's tables the way the migration does
 // (supabase/migrations/0002_home_hub_v2.sql) and answers with its agenda_item rows, column for column;
@@ -14,7 +17,7 @@
 // anything that used the device's time zone would show the wrong time or day.
 // Run alone with: node tests/e2e/calendar.test.js
 const { chromium } = require('playwright');
-const { makeDb, install, signIn, SUPA, withCalendars, calendarRow, googleEventRow, calendarRpc } = require('./mock');
+const { makeDb, install, signIn, SUPA, withCalendars, calendarRow, googleEventRow, calendarRpc, withHearth, hearthTagRow } = require('./mock');
 const { serve } = require('./server');
 
 let BASE = '';
@@ -1226,6 +1229,129 @@ const emailOf = (req) => {
   ({ page } = await open({ label: 'google-nosync', db: googleDb({ auth: null }), rpc: gRpc }));
   check('no window note before the job has signed in to Google', !(await page.$('.cal-gnote')));
   await page.context().close();
+
+  // =====================================================================
+  // 7e. Schema 10 (migration 0010, docs/v1.1-google-calendar.md §11.4): a calendar sorted by Hearth person. Its rows
+  // have nobody in charge and their people along, 'family' or 'grown_ups' too (mock.js routes them by their guests and
+  // hearth_tags, as private.hearth_whose): jordan → Jordan, sam → Sam, taylor → Taylor, familyanddogs → Family, dogs →
+  // the grown-ups, grandma New. The design's wall events of Oct 28 to 30, and one on Jordan's own Hub calendar.
+  // =====================================================================
+  {
+    const HTAG = (n) => `${n}@team-example-0000`;
+    function hearthCalDb() {
+      const g = withHearth(withCalendars(calDb(), { auth: 'service_account', account: 'home-hub-sync@home-hub-example.iam.gserviceaccount.com',
+        window_from: '2026-10-26', window_to: '2026-12-26' }));
+      const hc = calendarRow({ google_id: 'hearth0000@group.calendar.google.com', kind: 'family', label: 'Hearth', writes: false, status: 'ok', google_name: 'Hearth Calendar', sort_by_guest: true });
+      const jc = calendarRow({ google_id: 'jordan0123@group.calendar.google.com', kind: 'person', person_id: P.jordan, label: 'Jordan', status: 'ok', google_name: 'Hub – Jordan', sort_by_guest: false });
+      g.calendars.push(hc, jc);
+      const T = (n, o) => hearthTagRow(Object.assign({ calendar_id: hc.id, tag: HTAG(n) }, o));
+      g.hearth_tags.push(T('jordan', { matched_to: 'person', person_id: P.jordan }), T('sam', { matched_to: 'person', person_id: P.sam }),
+        T('taylor', { matched_to: 'person', person_id: P.taylor }), T('familyanddogs', { matched_to: 'family' }), T('dogs', { matched_to: 'grown_ups' }), T('grandma'));
+      const ev = (title, day, from, to, guests, o) => googleEventRow(Object.assign({ calendar_id: hc.id, google_calendar: hc.google_id, title, start_day: day, end_day: day,
+        all_day: !from, start_at: from ? instant(day, from) : null, end_at: to ? instant(day, to) : null, guests: guests.map(HTAG).sort() }, o));
+      g.google_events.push(
+        ev('Piano', '2026-10-28', '16:30', '17:15', ['jordan']),
+        ev('Furnace check', '2026-10-28', '10:00', '11:00', ['sam']),
+        ev('Visit', '2026-10-28', '16:00', '16:30', ['familyanddogs']),
+        ev('Movie', '2026-10-28', '16:45', '18:00', []),
+        ev('Practice', '2026-10-29', '16:00', '17:00', ['jordan', 'sam']),
+        ev('Field trip', '2026-10-29', null, null, ['jordan']),
+        ev('Vet', '2026-10-29', '16:30', '17:00', ['dogs', 'taylor']),
+        ev('Swim', '2026-10-30', '16:00', '17:00', ['jordan', 'dogs']),
+        ev('', '2026-10-30', '17:00', '17:30', ['jordan'], { private: true }),
+        ev('', '2026-10-30', '16:30', '17:00', [], { private: true }),
+        ev('Dinner', '2026-10-30', '18:00', '19:00', ['familyanddogs', 'taylor']),
+        ev('Tea', '2026-10-30', '15:00', '16:00', ['grandma']),
+        googleEventRow({ calendar_id: jc.id, google_calendar: jc.google_id, title: 'Dentist', start_day: '2026-10-28', end_day: '2026-10-28', all_day: false,
+          start_at: instant('2026-10-28', '09:00'), end_at: instant('2026-10-28', '09:30') }),
+      );
+      return g;
+    }
+    const hRpc = Object.assign({ hub_schema_version: () => 10 }, calendarRpc);
+    const C = { sam: '#db2777', jordan: '#16a34a', taylor: '#ca8a04' };
+    // A day's Google rows in the day panel: "title time" and its colour (--pc; '' is neutral).
+    const gDay = async (page, day) => {
+      await page.click(`.cal-cell[data-day="${day}"]`);
+      await settle(page);
+      return (await rows(page, '.cal-panel')).filter((r) => r.kind === 'google').map((r) => [`${r.title} ${r.time.split(' ')[0]}`, r.pc]);
+    };
+    const titlesOf = (list) => list.map((x) => x[0]);
+    const filterTo = async (page, ...keys) => {
+      await page.click('.cal-people [data-all]');
+      for (const k of keys) await page.click(`.cal-people [data-person="${P[k]}"]`);
+      await settle(page);
+    };
+    ({ page, db } = await open({ label: 'hearth-month', db: hearthCalDb(), rpc: hRpc }));
+    const wed = await gDay(page, '2026-10-28');
+    const thu = await gDay(page, '2026-10-29');
+    const fri = await gDay(page, '2026-10-30');
+    check('schema 10, everyone: every wall event on its day (and Jordan\'s own calendar\'s)', same(titlesOf(wed), ['Dentist 9:00am', 'Furnace check 10:00am', 'Visit 4:00pm', 'Piano 4:30pm', 'Movie 4:45pm'])
+      && same(titlesOf(thu), ['Practice 4:00pm', 'Vet 4:30pm', 'Field trip All']) && same(titlesOf(fri), ['Tea 3:00pm', 'Swim 4:00pm', 'Private item 4:30pm', 'Private item 5:00pm', 'Dinner 6:00pm']),
+      JSON.stringify([wed, thu, fri]));
+    const colour = Object.fromEntries(wed.concat(thu, fri).map(([t, c]) => [t, c]));
+    check('one colour rule: Practice (Jordan and Sam) in Sam\'s, the first on the family list; Swim (Jordan and the grown-ups) Jordan\'s; Vet Taylor\'s; Piano Jordan\'s; Furnace check Sam\'s',
+      colour['Practice 4:00pm'] === C.sam && colour['Swim 4:00pm'] === C.jordan && colour['Vet 4:30pm'] === C.taylor && colour['Piano 4:30pm'] === C.jordan
+      && colour['Furnace check 10:00am'] === C.sam && colour['Private item 5:00pm'] === C.jordan && colour['Dentist 9:00am'] === C.jordan, JSON.stringify(colour));
+    check('… Family\'s (Visit; Dinner, Family\'s and Taylor\'s) and the grown-ups\' alone (Movie, Tea, the private one Google sends without guests) are neutral, not Taylor\'s',
+      ['Visit 4:00pm', 'Dinner 6:00pm', 'Movie 4:45pm', 'Tea 3:00pm', 'Private item 4:30pm'].every((t) => colour[t] === ''), JSON.stringify(colour));
+    const labs = await page.$$eval('.cal-items[data-for="2026-10-29"] .cal-lab', (ls) => ls.map((l) => [l.textContent, l.style.getPropertyValue('--pc')]));
+    check('the month grid\'s labels follow the same rule (Practice in Sam\'s colour)', labs.some(([t, c]) => t === '4pm Practice' && c === C.sam), JSON.stringify(labs));
+    await page.screenshot({ path: SHOTS + 'calendar-hearth-month.png', fullPage: true });
+    // The person filter.
+    const under = async (keys) => {
+      await filterTo(page, ...keys);
+      return { wed: titlesOf(await gDay(page, '2026-10-28')), thu: titlesOf(await gDay(page, '2026-10-29')), fri: titlesOf(await gDay(page, '2026-10-30')) };
+    };
+    const sam = await under(['sam']);
+    const jordan = await under(['jordan']);
+    const taylor = await under(['taylor']);
+    const alex = await under(['alex']);
+    check('filter: Practice (Jordan and Sam) under Sam\'s and Jordan\'s, not Taylor\'s or Alex\'s', sam.thu.includes('Practice 4:00pm') && jordan.thu.includes('Practice 4:00pm')
+      && !taylor.thu.includes('Practice 4:00pm') && !alex.thu.includes('Practice 4:00pm'), JSON.stringify({ sam, jordan, taylor, alex }));
+    check('filter: Family\'s (Visit, Dinner) and the grown-ups\' alone (Movie, Tea, the private one without guests) under every filter',
+      [sam, jordan, taylor, alex].every((x) => x.wed.includes('Visit 4:00pm') && x.wed.includes('Movie 4:45pm') && x.fri.includes('Dinner 6:00pm') && x.fri.includes('Tea 3:00pm')
+        && x.fri.includes('Private item 4:30pm')), JSON.stringify({ sam, jordan, taylor, alex }));
+    check('filter: Swim (Jordan and the grown-ups) under Jordan\'s only; Vet (Taylor and the grown-ups) under Taylor\'s only; Piano and Field trip Jordan\'s',
+      jordan.fri.includes('Swim 4:00pm') && ![sam, taylor, alex].some((x) => x.fri.includes('Swim 4:00pm'))
+      && taylor.thu.includes('Vet 4:30pm') && ![sam, jordan, alex].some((x) => x.thu.includes('Vet 4:30pm'))
+      && same(jordan.thu, ['Practice 4:00pm', 'Field trip All']) && jordan.wed.includes('Piano 4:30pm') && !alex.wed.includes('Piano 4:30pm'), JSON.stringify({ sam, jordan, taylor, alex }));
+    check('filter: Alex (a parent) gets only what everyone gets: Visit, Movie; Tea, the private one without guests, Dinner', same(alex, { wed: ['Visit 4:00pm', 'Movie 4:45pm'], thu: [],
+      fri: ['Tea 3:00pm', 'Private item 4:30pm', 'Dinner 6:00pm'] }), JSON.stringify(alex));
+    await page.click('.cal-people [data-all]');
+    await settle(page);
+    // The details: "For: …" for a sorted calendar's row with people along or the grown-ups; "Calendar: …" otherwise.
+    const dl = async (day, title, time) => {
+      await page.click(`.cal-cell[data-day="${day}"]`);
+      await settle(page);
+      const btns = await page.$$('.cal-panel .irow');
+      for (const b of btns) {
+        const t = await b.$eval('.irow-title', (e) => e.firstChild.textContent.trim());
+        const tm = await b.$eval('.irow-time', (e) => e.innerText.split(/\s+/)[0]);
+        if (t === title && (!time || tm === time)) { await (await b.$('.irow-main')).click(); break; }
+      }
+      await settle(page);
+      const out = await page.evaluate(() => {
+        const d = document.getElementById('detail');
+        return { dl: [...d.querySelectorAll('dt, dd')].map((e) => e.textContent.trim()).slice(2), dot: d.querySelector('.cal-gdot').style.getPropertyValue('--c') };
+      });
+      await page.click('#detail .d-actions [data-close]');
+      await settle(page);
+      return out;
+    };
+    const d = {
+      swim: await dl('2026-10-30', 'Swim'), dinner: await dl('2026-10-30', 'Dinner'), movie: await dl('2026-10-28', 'Movie'), practice: await dl('2026-10-29', 'Practice'),
+      visit: await dl('2026-10-28', 'Visit'), dentist: await dl('2026-10-28', 'Dentist'), privJ: await dl('2026-10-30', 'Private item', '5:00pm'), tea: await dl('2026-10-30', 'Tea'),
+    };
+    check('details: "For: Jordan Example, the grown-ups" (Swim), "For: Family, Taylor Example" (Dinner), "For: The grown-ups" (Movie, and Tea, still New)',
+      same(d.swim.dl, ['For', 'Jordan Example, the grown-ups']) && same(d.dinner.dl, ['For', 'Family, Taylor Example']) && same(d.movie.dl, ['For', 'The grown-ups'])
+      && same(d.tea.dl, ['For', 'The grown-ups']), JSON.stringify(d));
+    check('details: "For: Sam Example, Jordan Example" (Practice, in family-list order); "For: Jordan Example" (his private one)', same(d.practice.dl, ['For', 'Sam Example, Jordan Example'])
+      && same(d.privJ.dl, ['For', 'Jordan Example']), JSON.stringify([d.practice, d.privJ]));
+    check('details: a row with no people along and not the grown-ups\' reads as before: "Calendar: Family" (Visit), "Calendar: Jordan Example" (his own calendar)',
+      same(d.visit.dl, ['Calendar', 'Family']) && same(d.dentist.dl, ['Calendar', 'Jordan Example']), JSON.stringify([d.visit, d.dentist]));
+    check('details: the dot follows the one colour rule (Dinner neutral, Practice Sam\'s)', d.dinner.dot === 'var(--text-3)' && d.practice.dot === C.sam, JSON.stringify([d.dinner.dot, d.practice.dot]));
+    await page.context().close();
+  }
 
   // =====================================================================
   // 8. Dark mode uses the dark colours
