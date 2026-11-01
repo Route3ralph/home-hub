@@ -20,6 +20,13 @@
 //   Nothing due yet    Over a break the link is removed and added again, and every assignment on it is past (the
 //                      reader keeps those due from 14 days back): Check now, and the check shows the five latest, each
 //                      past, in date order; Looks right checks the link, and it reaches Jordan.
+//   0009 on a hub      Blackbaud makes its feeds again every hour or two, and every event has a new UID each time (the
+//                      live database, 2026-10-31). On 0008 two reads with new UIDs put every assignment in twice; the
+//                      owner pastes 0009 while the hub runs: one row an item, Jordan's New from school each once, a
+//                      second paste refused, and the next read with new UIDs adds nothing.
+//   New UIDs           On 0009, the link removed and added again, every read with new UIDs: the parents' check shows
+//                      each assignment once; Looks right, and their New from school for Jordan each once; Check now
+//                      again adds nothing; Jordan's New from school each once.
 // Run through tests/realdb/run.sh (its own copy of the v5 template database).
 const { setup, SCHOOL_CALLS, COACH_CALLS } = require('./lib');
 
@@ -37,6 +44,14 @@ const LAB = { uid: 'asg-1002', summary: 'Biology - 7 (A): Lab report', lines: ['
   description: 'Write up the bean plant lab: hypothesis\\, method\\, results.' };
 const QUIZ = { uid: 'asg-1003', summary: 'Geography - 7: Map quiz', lines: ['DTSTART;VALUE=DATE:20261109', 'DTEND;VALUE=DATE:20261110'] };
 const ESSAY = { uid: 'asg-1004', summary: 'English - 7: Essay outline', lines: ['DTSTART;VALUE=DATE:20261112', 'DTEND;VALUE=DATE:20261113'] };
+// A VALUE=DATE day's DTEND: the next day ("20261130" → "20261201").
+const nextDay = (d) => { const t = new Date(`${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6)}T12:00:00Z`); t.setUTCDate(t.getUTCDate() + 1); return t.toISOString().slice(0, 10).replace(/-/g, ''); };
+// Four assignments to come, as Blackbaud writes them, each read with a new set of UIDs (asg-<set>-<n>); two classes'
+// "Homework" due the same day.
+const SOON = [['History - 7 (B): Read chapter 9', '20261201'], ['Math - 7 (A): Homework', '20261202'], ['Science - 7: Homework', '20261202'],
+  ['Geography - 7: Map of Asia', '20261203']];
+const soon = (set) => ics(SOON.map(([summary, d], i) => ({ uid: `asg-${set}-${i + 1}`, summary, lines: [`DTSTART;VALUE=DATE:${d}`, `DTEND;VALUE=DATE:${nextDay(d)}`] })));
+const SOON_LINES = ['History · Read chapter 9', 'Math · Homework', 'Science · Homework', 'Geography · Map of Asia'];
 
 (async () => {
   const h = await setup('school', { v5: true });
@@ -276,8 +291,7 @@ const ESSAY = { uid: 'asg-1004', summary: 'English - 7: Essay outline', lines: [
     const past = [['asg-2001', 'English - 7: Poem recital', '20261116'], ['asg-2002', 'Math - 7 (A): Fractions worksheet', '20261117'],
       ['asg-2003', 'Spanish - 7: Vocabulary list', '20261118'], ['asg-2004', 'Biology - 7 (A): Lab safety quiz', '20261119'],
       ['asg-2005', 'English - 7: Book report', '20261120'], ['asg-2006', 'Geography - 7: Map of Europe', '20261124']];
-    const next = (d) => { const t = new Date(`${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6)}T12:00:00Z`); t.setUTCDate(t.getUTCDate() + 1); return t.toISOString().slice(0, 10).replace(/-/g, ''); };
-    h.school.serve(SECRET, ics(past.map(([uid, summary, d]) => ({ uid, summary, lines: [`DTSTART;VALUE=DATE:${d}`, `DTEND;VALUE=DATE:${next(d)}`] }))));
+    h.school.serve(SECRET, ics(past.map(([uid, summary, d]) => ({ uid, summary, lines: [`DTSTART;VALUE=DATE:${d}`, `DTEND;VALUE=DATE:${nextDay(d)}`] }))));
     // Removed and added again (as for a new school year's link): the first-import check is asked again.
     const rm = await rpcAs('alex@example.com', 'set_school_feed', { p_kid: P.jordan.id, p_kind: 'assignments', p_url: null });
     const add = await rpcAs('alex@example.com', 'set_school_feed', { p_kid: P.jordan.id, p_kind: 'assignments', p_url: `webcal://${LINK}` });
@@ -328,6 +342,100 @@ const ESSAY = { uid: 'asg-1004', summary: 'English - 7: Essay outline', lines: [
     const f = await failures();
     check('nothing due yet: no API request failed', !f.length, f);
     await context.close();
+  });
+
+  // The link's rows for the four to come, and Jordan's New from school ("class · title", sorted).
+  const soonRows = async () => sql(`select subject, title, has_uid, missing, gone_at from school_items where feed_id = '${feedId}' and due_date >= '2026-12-01'
+    order by due_date, subject`);
+  const fromSchool = async () => (((await anonRpc('homework_by_token', { p_token: P.jordan.day_token })).body || {}).from_school || [])
+    .map((x) => `${x.subject} · ${x.title}`).sort();
+  const SOON_SORTED = [...SOON_LINES].sort();
+  const checkNowAt = async (t) => { await h.setClock(t); return h.hubJobsAs('alex@example.com', { action: 'school' }); };
+
+  await flow('0009 on a running hub', async () => {
+    // Mon Nov 30, 4:00pm in New York. On 0008, as on the live database: the feed made again, every UID new.
+    for (const [t, set] of [['2026-11-30T21:00:00Z', 'a'], ['2026-11-30T21:02:00Z', 'b']]) {
+      h.school.serve(SECRET, soon(set));
+      const r = await checkNowAt(t);
+      check(`on 0008, Check now at ${t.slice(11, 16)}Z with a new set of UIDs: one link read and stored`, r.status === 200 && r.body.stored === 1, r.body);
+    }
+    const dup = await soonRows();
+    check('on 0008 (the live database\'s fault): the four assignments are in twice, and twice in Jordan\'s New from school',
+      dup.length === 8 && same(await fromSchool(), [...SOON_LINES, ...SOON_LINES].sort()), { rows: dup.length, from: await fromSchool() });
+    const m9 = await h.migrate('supabase/migrations/0009_school_keys.sql');
+    const v = await one('select public.hub_schema_version() as v');
+    check('the owner pastes 0009 while the hub runs: it applies in one go, in its own session, and the schema version is 9', !m9.error && v.v === '9', m9.error || v);
+    const rows = await soonRows();
+    check('... one row an assignment, on the school site, has_uid false', same(rows.map((r) => `${r.subject} · ${r.title} ${r.has_uid} ${r.missing} ${r.gone_at === null}`),
+      SOON_LINES.map((l) => `${l} f 0 true`)), rows);
+    check('... and Jordan\'s New from school has each once', same(await fromSchool(), SOON_SORTED), await fromSchool());
+    const again = await h.migrate('supabase/migrations/0009_school_keys.sql');
+    check('a second paste of 0009 is refused ("already installed"), and nothing changes', !!again.error && /already installed/.test(again.error.message || again.error)
+      && (await one('select public.hub_schema_version() as v')).v === '9', again.error);
+    h.school.serve(SECRET, soon('c'));
+    const r = await checkNowAt('2026-11-30T21:04:00Z');
+    const after = await soonRows();
+    check('the next Check now, every UID new again: nothing added, nothing missing', r.status === 200 && r.body.stored === 1
+      && same(after.map((x) => `${x.subject} · ${x.title} ${x.missing}`), SOON_LINES.map((l) => `${l} 0`)) && same(await fromSchool(), SOON_SORTED), { r: r.body, after });
+    const f = await failures();
+    check('0009 on a running hub: no API request failed', !f.length, f);
+  });
+
+  await flow('new UIDs on every read', async () => {
+    // The link removed and added again (a new school year's link): the first-import check is asked again. Each read
+    // has a new set of UIDs; each Check now is 2 minutes after the one before (it reads links not tried in the last minute).
+    const rm = await rpcAs('alex@example.com', 'set_school_feed', { p_kid: P.jordan.id, p_kind: 'assignments', p_url: null });
+    const add = await rpcAs('alex@example.com', 'set_school_feed', { p_kid: P.jordan.id, p_kind: 'assignments', p_url: `webcal://${LINK}` });
+    check('Remove, then Add link again: the same link\'s row, not checked', ok(rm) && ok(add) && add.body.id === feedId
+      && (await one(`select checked from school_feeds where id = '${feedId}'`)).checked === 'f', { rm: rm.status, add: add.body });
+    await h.setClock('2026-11-30T21:10:00Z');
+    h.school.serve(SECRET, soon('d'));
+    await h.mark();
+    const { page, context } = await open({ email: 'alex@example.com', path: '/#/homework', label: 'school-uids-alex' });
+    await until(async () => !!(await page.$('[data-row="school"] [data-act="school-now"]')), 8000);
+    check('the Homework page on schema 9', (await page.evaluate(() => HomeHub.core.schemaVersion)) === 9, await page.evaluate(() => HomeHub.core.schemaVersion));
+    const state = () => tc(page, `${FEED('assignments')} .hw-feed-state`);
+    const reads = h.school.requests.length;
+    await page.click('[data-row="school"] [data-act="school-now"]');
+    await toastIs(page, /^Checked/);
+    check('Check now: "Checked 1 link · 4 items"; "Last read today 4:10pm · 4 items"', (await lastToast(page)) === 'Checked 1 link · 4 items'
+      && await until(async () => (await state()) === 'Last read today 4:10pm · 4 items'), { toast: await lastToast(page), state: await state() });
+    h.school.serve(SECRET, soon('e'));
+    await h.setClock('2026-11-30T21:12:00Z');
+    await page.click('[data-row="school"] [data-act="school-now"]');
+    check('Check now again, every UID new: "Last read today 4:12pm · 4 items", and no new row', await until(async () => (await state()) === 'Last read today 4:12pm · 4 items', 8000)
+      && h.school.requests.length === reads + 2 && (await soonRows()).length === 4, { state: await state(), rows: (await soonRows()).length });
+    await until(async () => (await texts(page, '[data-ref="school-check"] .hw-school-items li')).length > 0, 6000);
+    const lines = await texts(page, '[data-ref="school-check"] .hw-school-items li');
+    check('the first-import check: each of the four once (by day; the fifth line the latest past one, made homework before)',
+      same(lines.filter((l) => / · due /.test(l)).map((l) => l.split(' · ').slice(0, 2).join(' · ')).sort(), SOON_SORTED)
+      && new Set(lines).size === lines.length && lines.length === 5, lines);
+    await page.click('[data-ref="school-check"] [data-act="school-dates"][data-rule="end"][data-shift="0"]');
+    await toastIs(page, /^Dates checked/);
+    const NEW = '[data-row="school"] details[data-keep="new"]';
+    await until(async () => !!(await page.$(NEW)), 6000);
+    const news = async () => (await texts(page, `${NEW} .hw-school-row > span:first-child`)).map((l) => l.split(' · ').slice(0, 2).join(' · ')).sort();
+    check('Looks right: the parents\' "New from school for Jordan (4)", each once', (await tc(page, `${NEW} summary`)) === 'New from school for Jordan (4)'
+      && same(await news(), SOON_SORTED), { summary: await tc(page, `${NEW} summary`), news: await news() });
+    h.school.serve(SECRET, soon('f'));
+    await h.setClock('2026-11-30T21:14:00Z');
+    await page.click('[data-row="school"] [data-act="school-now"]');
+    check('Check now once more, every UID new: nothing added, nothing missing; still "New from school for Jordan (4)", each once',
+      await until(async () => (await state()) === 'Last read today 4:14pm · 4 items', 8000)
+      && same((await soonRows()).map((x) => `${x.subject} · ${x.title} ${x.missing} ${x.gone_at === null}`), SOON_LINES.map((l) => `${l} 0 true`))
+      && await until(async () => (await tc(page, `${NEW} summary`)) === 'New from school for Jordan (4)') && same(await news(), SOON_SORTED),
+      { state: await state(), rows: await soonRows(), news: await news() });
+    await shot(page, 'school-new-uids');
+    const f = await failures();
+    check('new UIDs, the parents\' page: no API request failed', !f.length, f);
+    await context.close();
+
+    const jordan = await open({ phone: true, path: `/day.html?t=${P.jordan.day_token}#homework`, label: 'school-uids-jordan' });
+    await until(async () => !!(await jordan.page.$('.hw-school')), 8000);
+    const his = (await texts(jordan.page, '.hw-school .hw-school-line')).map((l) => l.split(' · ').slice(0, 2).join(' · ')).sort();
+    check('Jordan\'s New from school (4): each once', (await tc(jordan.page, '#hw-school-h')) === 'New from school (4)' && same(his, SOON_SORTED),
+      { head: await tc(jordan.page, '#hw-school-h'), his });
+    await jordan.context.close();
   });
 
   await h.finish();

@@ -37,7 +37,19 @@ select test.is((whoami() -> 'person' ->> 'id')::uuid, test.person('Alex'), 'whoa
 -- 0007 (the coach view) changes it on purpose once more: the Homework page shows the coach switch and the coach's
 -- notes, and asks for coach_notes, only on 7. Migration 0008 (the first-import check's past items) changes it again,
 -- though no page asks for anything new on 8: it only replaces school_feed_status, whose answer the page reads on 7 too.
-select test.is(hub_schema_version(), 8, 'hub_schema_version is 8');
+-- Migration 0009 (the school items' keys) changes it again, and no page asks for anything new on 9 either: it only
+-- replaces private.school_rows (an item is keyed by what it is, never by Blackbaud's UIDs) and rekeys the rows.
+select test.is(hub_schema_version(), 9, 'hub_schema_version is 9');
+-- 0009 replaces private.school_rows with the same signature: still not a definer function, stable, search_path = '',
+-- and no API role may call it (as 0006 revoked it; 0009 revokes it again). Its private.school_rekey (run once by 0009,
+-- again only by the owner) runs as the owner too, and no API role may call it either.
+select test.is((select string_agg(p.proname || ' ' || p.prosecdef || ' ' || p.provolatile::text || ' ' || array_to_string(p.proconfig, ',')
+                       || ' ' || (select string_agg(r || ':' || has_function_privilege(r, p.oid, 'execute'), ' ' order by r)
+                                  from unnest(array['public', 'anon', 'authenticated']) r), ' | ' order by p.proname)
+                from pg_proc p where p.oid in ('private.school_rows(text, jsonb, text, int, date)'::regprocedure, 'private.school_rekey()'::regprocedure)),
+               'school_rekey false v search_path="" anon:false authenticated:false public:false | '
+               'school_rows false s search_path="" anon:false authenticated:false public:false',
+               'school_rows (replaced by 0009) and school_rekey (0009): not definers, search_path = ''''; no API role may call them');
 -- 0008 replaces school_feed_status with the same signature: still a definer function that sets search_path = '',
 -- stable, and callable by signed-in users only (as 0006 granted it; 0008 revokes and grants it again).
 select test.is((select p.prosecdef || ' ' || p.provolatile::text || ' ' || array_to_string(p.proconfig, ',') || ' ' || p.prorettype::regtype::text
@@ -127,7 +139,9 @@ select test.is((select string_agg(p.proname, ', ' order by p.proname) from pg_pr
                                     'school_marks', 'school_new', 'school_failed', 'school_trim', 'school_feeds_due',
                                     'homework_view_kid_v5', 'homework_view_tutor_v5', 'homework_card_v5',
                                     -- 0007: the coach view, and its stamp triggers
-                                    'coach_view', 'task_log_in_charge', 'tasks_in_charge_since', 'events_people_since')),
+                                    'coach_view', 'task_log_in_charge', 'tasks_in_charge_since', 'events_people_since',
+                                    -- 0009: the rekey of the school items
+                                    'school_rekey')),
                null, 'members cannot call the private helpers that act for someone else');
 -- What 0005 grants members in private: free_minutes (homework_week runs as the member), and clean_block
 -- and homework_word (the tidy triggers and add_homework_time run as the parent who saves).
