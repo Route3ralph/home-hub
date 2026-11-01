@@ -263,7 +263,7 @@ async function tokenRpcs(page, db) {
   let { page, db, context } = await open({ label: 'off', allowConsole: /status of 400/ });
   const row = '[data-row="ai"]';
   const line = await text(page, `${row} .hw-switch-line`);
-  check('the AI row: what is sent, to whom, and what is kept, in one line (§9.2)', /When on, Pat and the parents can send an assignment \(its title, class, dates and text\), Jordan's free minutes per day/.test(line)
+  check('the AI row: what is sent, to whom, and what is kept, in one line (§9.2)', /When on, the tutor and the parents can send an assignment \(its title, class, dates and text\), Jordan's free minutes per day/.test(line)
     && /with the names Home Hub knows taken out, to Anthropic \(Claude\) to draft a plan\. What Claude will see shows exactly what goes\. Anthropic doesn't train on it\. It may keep it up to 30 days, or up to 2 years if its safety checks flag it\. About 6 cents a plan; never more than the \$15 monthly limit\./.test(line), line);
   check('... "AI planner: off", Test the AI planner and Words never to send; no switch before a Working test',
     /AI planner: off/.test(await text(page, row)) && !!(await page.$(`${row} [data-act="ai-test"]`)) && !!(await page.$(`${row} form[data-form="never"]`))
