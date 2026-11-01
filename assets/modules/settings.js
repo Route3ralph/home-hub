@@ -8,7 +8,9 @@
    Calendar & Hearth (schema 3; on schema 2 it waits for the database
    update): which Google calendar is whose, Test, the preview and Start
    copying, Sync now, what went wrong and what was put back, and a note on
-   the Hearth wall. Members see that card read-only. Then how to put the
+   the Hearth wall; from schema 10 (migration 0010), Sort by Hearth person
+   on a calendar the hub reads as Family, and its Hearth people to match.
+   Members see that card read-only. Then how to put the
    Home Hub on a phone's Home Screen, and Sign out. Dates and times are the
    household's.
    ===================================================================== */
@@ -521,6 +523,67 @@
     + 'and never a helper\'s. One you give to a person reaches that person\'s My day, texts and morning email, kids and helpers included.';
   const FAMILY_READ = 'They reach kids\' My day only with Show to kids, and never a helper\'s.';
   const personRead = (first) => `They also reach ${first}'s My day, texts and morning email.`;
+  // Schema 10 (migration 0010, docs/v1.1 §11.6): Sort by Hearth person, on a calendar the hub reads as Family, and the
+  // Hearth people (hearth_tags) the reads of a sorted one found, each matched by a parent with set_hearth_tag.
+  const hearthOn = () => core.schemaVersion >= 10;
+  const READ_HELP_10 = 'On the calendar Hearth keeps its own events in, Sort by Hearth person sends each event to its person instead.';
+  const SORT_HELP = 'For the calendar the kitchen wall keeps its own events in. Hearth adds the person an event is for as a guest (jordan@team-…). '
+    + 'The hub sends each event to the person you match below.';
+  const SORT_ON = 'Sorting by Hearth person. Press Sync now, then match each person below.';
+  const SORT_OFF_ASK = 'Stop sorting this calendar? Its events then reach the grown-ups only (turn on Show to kids for kids too). The matches are kept for next time.';
+  const SORT_OFF = 'Not sorted any more: its events reach the grown-ups only.';
+  const GONE = 'This calendar was disconnected a moment ago. Reload the page to see the latest.';
+  const NOT_SAVED = 'It didn\'t change: this calendar was changed a moment ago. Reload the page to see the latest.';
+  const HEARTH_FAIL = 'Couldn\'t load the Hearth people. Reload the page to try again.';
+  const HEARTH_NOT_READ = 'Not read yet. Press Sync now: the people Hearth put on its events show here.';
+  const HEARTH_NOT_READ_MEMBER = 'Not read yet. The people Hearth put on its events show here after the next read.';
+  const HEARTH_NONE = 'No Hearth people on its events (yesterday to 60 days ahead). Hearth adds one as a guest when an event on the wall is for someone. '
+    + 'Is this the calendar Hearth keeps its events in?';
+  const HEARTH_MAX = 50;   // the most one calendar lists (calendar_store_events)
+  const HEARTH_FULL = 'That\'s 50, the most the hub lists. A new Hearth person isn\'t listed, and its events go to the grown-ups';
+  const HEARTH_HOW = 'A person\'s events reach their My day, texts and morning email, and a kid\'s are his busy time for homework (his tutor sees only that he is busy, never what). '
+    + 'Family\'s reach every kid too, never the helper. The grown-ups\' (and events with no Hearth person, and private ones) reach only the grown-ups\' morning emails. '
+    + 'An event for several reaches each of them. Everything shows on the Calendar and Today pages for everyone who signs in. A match works at once. '
+    + 'A new person on Hearth shows here after the next read, and goes to the grown-ups until you match it.';
+  const REMOVED = 'Was matched to someone who was removed: match it again.';
+  const OFF_LIST = 'Off the family list: these go to the grown-ups for now.';
+  const forgetAsk = (n) => `Forget ${n}? Its events go to the grown-ups until it is matched again. If Hearth still uses it, it shows here again as new after the next read.`;
+  // A calendar the hub reads as Family (the only kind that can be sorted), and one that is sorted now.
+  const readsAsFamily = (c) => !!c && c.kind === 'family' && !c.writes;
+  const isSorted = (c) => hearthOn() && readsAsFamily(c) && c.sort_by_guest === true;
+  // A Hearth tag's state: 'new' (never matched), 'removed' (matched to someone since removed), 'off' (matched to someone
+  // off the family list), or 'ok'.
+  function tagState(t) {
+    if (!t.matched_to) return 'new';
+    if (t.matched_to !== 'person') return 'ok';
+    const p = t.person_id ? v2.person(t.person_id) : null;
+    return !p ? 'removed' : p.active === false ? 'off' : 'ok';
+  }
+  const toMatch = (t) => { const s = tagState(t); return s === 'new' || s === 'removed'; };
+  // One calendar's tags by name (then address, byte order), each with the name Settings shows: "jordan", or with the
+  // team's last four characters when two of that calendar have the same name: "jordan (…0001)".
+  function tagsOf(tags, calendarId) {
+    const mine = (tags || []).filter((t) => t.calendar_id === calendarId)
+      .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : a.tag < b.tag ? -1 : a.tag > b.tag ? 1 : 0));
+    return mine.map((t) => Object.assign({}, t, {
+      label: mine.some((o) => o !== t && o.name === t.name) ? `${t.name} (…${String(t.tag).slice(-4)})` : String(t.name),
+    }));
+  }
+  // A person as the Hearth people's picker, toasts and lines name them: the first name, or the full name when someone
+  // else on the list has the same first name (the hub's rule, as the core's person chips and Food's).
+  function shortName(p) {
+    const first = firstName(p.name);
+    return v2.people().some((x) => x.id !== p.id && firstName(x.name) === first) ? p.name : first;
+  }
+  // Whose a match makes a tag's events, as the toast and a member's line say it.
+  function matchWords(t) {
+    if (t.matched_to === 'family') return 'Family';
+    if (t.matched_to === 'grown_ups') return 'the grown-ups';
+    const p = t.person_id ? v2.person(t.person_id) : null;
+    return p ? shortName(p) : '';
+  }
+  // A refusal in set_hearth_tag's own words (friendly() would turn its 42501 into a general one).
+  const hearthError = (err) => (err && (err.code === '22023' || err.code === '42501') && err.message ? err.message : friendly(err));
   // A failed item's error, as Settings words it: what hub-jobs stored (Google's own words already say
   // "Google said …"), without a full stop of its own. The 4th repair in a day is someone's doing.
   const problemText = (error) => {
@@ -593,6 +656,16 @@
     return w.date === dates.today() ? `at ${fmt.time(instant)}` : `on ${atText(instant)}`;
   }
   const hubName = (word) => `Hub – ${word}`;
+  // 'last seen today', 'last seen yesterday', 'last seen Thu Oct 29', or in another year 'last seen Oct 3, 2025': the
+  // household's day of an instant.
+  function lastSeen(instant) {
+    const w = wallOf(instant);
+    if (!w) return '';
+    const today = dates.today();
+    if (w.date >= today) return 'last seen today';
+    if (w.date === dates.addDays(today, -1)) return 'last seen yesterday';
+    return `last seen ${w.date.slice(0, 4) === today.slice(0, 4) ? fmt.day(w.date) : `${fmt.short(w.date)}, ${w.date.slice(0, 4)}`}`;
+  }
 
   // Calls hub-jobs with the admin's sign-in, as status and preview do. → { data }, { waiting: true }
   // (a hub-jobs from before v1.1 answers 400 Unknown action; one that isn't deployed, 404; a database
@@ -628,13 +701,15 @@
   // What the card shows. Members read calendars and calendar_sync; admins also what went wrong and
   // what was put back (calendar_links), projects whose dates are stale, and how many events the hub
   // keeps on Google in the job's window.
+  // Schema 10: also the Hearth people of every calendar (tags: null when that read failed, which only its own line says).
   async function loadGoogle(admin) {
     const sb = core.sb;
-    const [rows, sync] = await Promise.all([
+    const [rows, sync, tags] = await Promise.all([
       q(sb.from('calendars').select('*').order('created_at')),
       q(sb.from('calendar_sync').select('*').limit(1)),
+      hearthOn() ? q(sb.from('hearth_tags').select('id,calendar_id,tag,name,matched_to,person_id,last_seen').order('name')).then((t) => t || [], () => null) : [],
     ]);
-    const d = { rows: rows || [], sync: (sync || [])[0] || {}, problems: [], repairs: [], stale: [], copied: null };
+    const d = { rows: rows || [], sync: (sync || [])[0] || {}, tags, problems: [], repairs: [], stale: [], copied: null };
     if (!admin) return d;
     const from = d.sync.window_from;
     const [problems, repairs, stale, copied] = await Promise.all([
@@ -691,11 +766,16 @@
 
   // The card: draws itself into box, and answers its own buttons. Resolves once it has loaded.
   function googleCard(box, ctx, admin) {
-    const st = { d: null, failed: false, tests: new Map(), syncNote: null };
+    // tagSeq counts the matches and Forgets: a reload under way when one is made (Sync now's second round) keeps the
+    // Hearth people that one reads, not the older list it read itself.
+    const st = { d: null, failed: false, tests: new Map(), syncNote: null, tagSeq: 0 };
 
     async function reload() {
+      const seq = st.tagSeq;
       try {
-        st.d = await loadGoogle(admin);
+        const d = await loadGoogle(admin);
+        if (seq !== st.tagSeq && st.d) d.tags = st.d.tags;
+        st.d = d;
         st.failed = false;
       } catch (err) { st.failed = true; }
       if (!ctx.stale()) draw();
@@ -760,9 +840,8 @@
       const label = s.main ? MAIN : s.writes ? s.word : c.label;
       const ask = s.person && c && c.google_name && !c.google_name.toLowerCase().includes(first.toLowerCase())
         ? `<p class="set-gq">This calendar is called '${esc(c.google_name)}'. Is that ${esc(first)}'s?</p>` : '';
-      const kids = c && c.kind === 'family' && !c.writes
-        ? (admin ? `<label class="check set-gkids"><input type="checkbox" data-gkids="${esc(c.id)}"${c.for_kids ? ' checked' : ''}> Show to kids</label>`
-          : c.for_kids ? '<p class="set-gmeta">Shown to kids on My day</p>' : '') : '';
+      const kids = readsAsFamily(c) ? (hearthOn() ? checksHTML(c) : admin ? kidsBox(c)
+        : c.for_kids ? '<p class="set-gmeta">Shown to kids on My day</p>' : '') : '';
       const acts = !admin ? '' : `<div class="set-gacts">
         ${s.key ? `<button type="button" class="btn set-btn${c ? '' : ' btn-primary'}" data-gset="${esc(s.key)}">Set</button>` : ''}
         ${c ? `<button type="button" class="btn set-btn" data-gtest="${esc(c.id)}">Test</button>` : ''}
@@ -778,8 +857,62 @@
           <button type="button" class="btn set-btn set-copy" data-copy="${esc(hubName(s.word))}" aria-label="Copy the name ${esc(hubName(s.word))}">Copy</button></div>` : ''}
         ${c && c.google_name ? `<p class="set-gmeta">In Google: ${esc(c.google_name)}</p>` : ''}
         ${c && c.status_detail && (c.status === 'no_access' || c.status === 'error') ? `<p class="set-gdetail">${esc(c.status_detail)}</p>` : ''}
-        ${ask}${kids}${testHTML(c && st.tests.get(c.id))}${acts}
+        ${ask}${kids}${testHTML(c && st.tests.get(c.id))}${acts}${isSorted(c) ? hearthHTML(c) : ''}
       </li>`;
+    }
+    const kidsBox = (c) => `<label class="check set-gkids"><input type="checkbox" data-gkids="${esc(c.id)}"${c.for_kids ? ' checked' : ''}> Show to kids</label>`;
+    // Schema 10, a calendar the hub reads as Family: for admins Show to kids (hidden while sorted) and Sort by Hearth
+    // person beside it, with what the switch is for; for members what is on.
+    function checksHTML(c) {
+      const on = isSorted(c);
+      if (!admin) return on ? '<p class="set-gmeta">Sorted by Hearth person</p>' : c.for_kids ? '<p class="set-gmeta">Shown to kids on My day</p>' : '';
+      return `<div class="set-gchecks">${on ? '' : kidsBox(c)}<label class="check set-gkids set-gsort"><input type="checkbox" data-gsort="${esc(c.id)}"${on ? ' checked' : ''}> Sort by Hearth person</label></div>
+        <p class="set-help set-gsort-help">${esc(SORT_HELP)}</p>`;
+    }
+    // A sorted calendar's Hearth people: the failed read, not read yet, none found, or one line each (by name), the 50
+    // line and what a match does. Admins match each with a picker and can Forget one; members read the matches as text.
+    function hearthHTML(c) {
+      const d = st.d;
+      const box = (inner) => `<div class="set-hp" data-hearth="${esc(c.id)}"><h4 class="set-hp-h">Hearth people</h4>${inner}</div>`;
+      if (d.tags === null) return box(`<p class="set-help set-hp-state" role="alert">${esc(HEARTH_FAIL)}</p>`);
+      const tags = tagsOf(d.tags, c.id);
+      if (!tags.length) return box(`<p class="set-help set-hp-state">${esc(c.read_at ? HEARTH_NONE : admin ? HEARTH_NOT_READ : HEARTH_NOT_READ_MEMBER)}</p>`);
+      const full = tags.length >= HEARTH_MAX ? `<p class="set-help set-hp-full">${esc(`${HEARTH_FULL}${admin ? ': forget one you don\'t need.' : '.'}`)}</p>` : '';
+      return box(`<ul class="set-hp-list">${tags.map(admin ? tagRowHTML : tagTextHTML).join('')}</ul>${full}<p class="set-help set-hp-how">${esc(HEARTH_HOW)}</p>`);
+    }
+    // A member's line: "jordan → Jordan", "grandma → not matched yet: the grown-ups".
+    function tagTextHTML(t) {
+      const s = tagState(t);
+      const p = t.person_id ? v2.person(t.person_id) : null;
+      const to = s === 'new' ? 'not matched yet: the grown-ups' : s === 'removed' ? 'someone who was removed: the grown-ups'
+        : s === 'off' ? `${shortName(p)} (off the family list): the grown-ups` : matchWords(t);
+      return `<li class="set-hp-row set-hp-text" data-tag="${esc(t.id)}">${esc(`${t.label} → ${to}`)}</li>`;
+    }
+    // An admin's line: the name, New (or what to do), when it was last seen, the picker and Forget.
+    function tagRowHTML(t) {
+      const s = tagState(t);
+      const people = v2.people().filter((p) => p.active !== false);
+      const value = s === 'new' || s === 'removed' ? '' : t.matched_to === 'person' ? `person:${t.person_id}` : t.matched_to;
+      const opt = (v, words) => `<option value="${esc(v)}"${v === value ? ' selected' : ''}>${esc(words)}</option>`;
+      const off = s === 'off' ? v2.person(t.person_id) : null;
+      const options = [value ? '' : '<option value="" selected>Choose…</option>', opt('grown_ups', 'The grown-ups')]
+        .concat(people.map((p) => opt(`person:${p.id}`, shortName(p))), off ? [opt(`person:${off.id}`, `${shortName(off)} (off the family list)`)] : [], [opt('family', 'Family')]);
+      const note = s === 'removed' ? REMOVED : s === 'off' ? OFF_LIST : '';
+      return `<li class="set-hp-row" data-tag="${esc(t.id)}">
+        <div class="set-hp-who"><div class="set-hp-top"><b class="set-hp-name">${esc(t.label)}</b>${s === 'new' ? ' <span class="set-chip set-hp-new">New</span>' : ''}<small class="set-hp-seen">${esc(lastSeen(t.last_seen))}</small></div>
+        ${note ? `<p class="set-hp-note">${esc(note)}</p>` : ''}</div>
+        <div class="set-hp-acts">
+          <select class="set-hp-pick" data-hpick="${esc(t.id)}" data-was="${esc(value)}" aria-label="${esc(`Whose are ${t.label}'s events`)}">${options.join('')}</select>
+          <button type="button" class="btn set-btn" data-hforget="${esc(t.id)}" aria-label="${esc(`Forget ${t.label}`)}">Forget</button>
+        </div>
+      </li>`;
+    }
+    // At the top of the card (admins): the tags of a sorted calendar still to match (New, or a removed person's).
+    function todoHTML(d) {
+      if (!admin || !hearthOn() || !Array.isArray(d.tags)) return '';
+      const names = d.rows.filter(isSorted).flatMap((c) => tagsOf(d.tags, c.id).filter(toMatch).map((t) => t.label)).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+      if (!names.length) return '';
+      return `<p class="set-gtodo" data-ref="htodo" role="status">${esc(`${names.length === 1 ? 'Hearth person' : 'Hearth people'} to match: ${names.join(', ')}. See Calendars to read.`)}</p>`;
     }
 
     function listsHTML(d) {
@@ -821,7 +954,7 @@
       const d = st.d;
       const s = slotsOf(d);
       const note = st.syncNote;
-      box.innerHTML = `
+      box.innerHTML = `${todoHTML(d)}
         <div class="set-gstatus" data-ref="gstatus" aria-live="polite">${statusHTML(d)}</div>
         ${admin ? `<div class="set-actions"><button type="button" class="btn set-btn" data-act="gsync">Sync now</button></div>
           ${note ? `<p class="set-gsync is-${note.cls}" data-ref="gsync" role="status">${esc(note.text)}</p>` : ''}` : ''}
@@ -831,7 +964,7 @@
         <p class="set-help set-gopt">Optional: only if pet or house tasks are often left with nobody in charge</p>
         <ul class="set-gcals" data-ref="goptional">${s.optional.map(rowHTML).join('')}</ul>
         <h3 class="set-gh">Calendars to read</h3>
-        <p class="set-help">${esc(READ_HELP)}</p>
+        <p class="set-help">${esc(hearthOn() ? `${READ_HELP} ${READ_HELP_10}` : READ_HELP)}</p>
         <ul class="set-gcals" data-ref="greads">${[s.main].concat(s.reads.map((c) => ({ cal: c, writes: false }))).map(rowHTML).join('')}</ul>
         ${admin ? '<div class="set-actions"><button type="button" class="btn set-btn" data-act="gadd">Add a calendar to read</button></div>' : ''}
         ${listsHTML(d)}
@@ -1143,7 +1276,9 @@
         const s = slotsOf(st.d);
         const slot = s.columns.concat(s.optional).find((x) => x.cal === dropCal);
         const name = slot ? hubName(slot.word) : dropCal === s.main.cal ? MAIN : dropCal.label;
-        const ask = !dropCal.writes ? `Disconnect ${name}? Its events stop showing in the hub.`
+        // Schema 10: a sorted calendar's matches (or ones kept from before) are deleted with it.
+        const matches = hearthOn() && (isSorted(dropCal) || (Array.isArray(st.d.tags) && st.d.tags.some((x) => x.calendar_id === dropCal.id)));
+        const ask = !dropCal.writes ? `Disconnect ${name}? Its events stop showing in the hub.${matches ? ' Its Hearth matches go with it.' : ''}`
           : dropCal.status === 'no_access'
             ? `Disconnect ${name}? Home Hub can't reach that calendar now, so the events it put there stay on it, and on the wall. To take them off, delete that calendar in Google Calendar (or share it with the hub again, wait for it to connect, and then Disconnect).`
             : `Disconnect ${name}? The hub's events are taken off that calendar within a few minutes.`;
@@ -1159,6 +1294,8 @@
         if (!ctx.stale()) await reload();
         return;
       }
+      const forget = t.closest('[data-hforget]');
+      if (forget) { await forgetTag(forget); return; }
       const act = t.closest('[data-act]');
       if (act && act.dataset.act === 'gadd') openAddRead();
       if (act && act.dataset.act === 'gsync') syncNow(act);
@@ -1188,15 +1325,22 @@
       return { cls: num(x.failed) ? 'bad' : 'ok', text };
     }
 
-    // Show to kids, on a Family calendar the hub only reads.
+    // Show to kids, on a Family calendar the hub only reads; from schema 10 also Sort by Hearth person there, and each
+    // Hearth person's picker. On 10 both switches read back id, sort_by_guest and for_kids: a row without the change is
+    // an error, never the success toast (the database refuses Show to kids on a sorted row, from a tab opened before).
     async function onChange(e) {
+      const pick = e.target.closest('[data-hpick]');
+      if (pick) { if (pick !== keyNow) await matchTag(pick); return; }
+      const sort = e.target.closest('[data-gsort]');
+      if (sort) { await setSort(sort); return; }
       const box2 = e.target.closest('[data-gkids]');
       if (!box2) return;
       const on = box2.checked;
       box2.disabled = true;
       try {
-        const rows = await q(core.sb.from('calendars').update({ for_kids: on }).eq('id', box2.dataset.gkids).select('id'));
-        if (!rows || !rows.length) throw new Error('This calendar was disconnected a moment ago. Reload the page to see the latest.');
+        const rows = await q(core.sb.from('calendars').update({ for_kids: on }).eq('id', box2.dataset.gkids).select(hearthOn() ? 'id,sort_by_guest,for_kids' : 'id'));
+        if (!rows || !rows.length) throw new Error(GONE);
+        if (hearthOn() && rows[0].for_kids !== on) throw new Error(NOT_SAVED);
         toast(on ? 'Kids now see its events on My day' : 'Kids no longer see its events on My day');
       } catch (err) {
         box2.checked = !on;
@@ -1204,9 +1348,100 @@
       }
       if (!ctx.stale()) await reload();
     }
+    // Sort by Hearth person: on saves {sort_by_guest: true, for_kids: false}; off asks first, and keeps the matches.
+    async function setSort(box2) {
+      const on = box2.checked;
+      if (!on && !window.confirm(SORT_OFF_ASK)) { box2.checked = true; return; }
+      box2.disabled = true;
+      try {
+        const rows = await q(core.sb.from('calendars').update(on ? { sort_by_guest: true, for_kids: false } : { sort_by_guest: false })
+          .eq('id', box2.dataset.gsort).select('id,sort_by_guest,for_kids'));
+        if (!rows || !rows.length) throw new Error(GONE);
+        if (rows[0].sort_by_guest !== on || (on && rows[0].for_kids !== false)) throw new Error(NOT_SAVED);
+        toast(on ? SORT_ON : SORT_OFF);
+      } catch (err) {
+        box2.checked = !on;
+        toast(friendly(err), { error: true });
+      }
+      if (!ctx.stale()) await reload();
+    }
+    // The Hearth people again, after a match or Forget (the rest of the card is as it was).
+    async function reloadTags() {
+      try { st.d.tags = (await q(core.sb.from('hearth_tags').select('id,calendar_id,tag,name,matched_to,person_id,last_seen').order('name'))) || []; }
+      catch (err) { st.d.tags = null; }
+      if (!ctx.stale()) draw();
+    }
+    // A Hearth person's picker: a pick with the mouse (or a phone's list) saves at once. A key that moves the choice (an
+    // arrow, a letter) only shows it; Enter, or leaving the picker, saves it, so a keyboard user going down the list
+    // doesn't save every option on the way. keyNow is the picker a key is changing, until that key's change has run.
+    let keyNow = null;
+    const pickMoved = (pick) => !pick.disabled && pick.isConnected && pick.value !== (pick.dataset.was || '');
+    function onKey(e) {
+      const pick = e.target.closest('[data-hpick]');
+      if (!pick) return;
+      if (e.key === 'Enter') { if (pickMoved(pick)) matchTag(pick); return; }
+      keyNow = pick;
+      setTimeout(() => { if (keyNow === pick) keyNow = null; }, 0);
+    }
+    function onLeave(e) {
+      const pick = e.target.closest('[data-hpick]');
+      if (pick && pickMoved(pick)) matchTag(pick);
+    }
+    // The card is drawn again after a match: back to that tag's picker, unless the focus has gone somewhere else.
+    function focusPick(id) {
+      const pick = box.querySelector(`[data-hpick="${id}"]`);
+      if (pick && !ctx.stale() && (!document.activeElement || document.activeElement === document.body)) pick.focus();
+    }
+    const tagById = (id) => (Array.isArray(st.d.tags) ? st.d.tags.find((x) => x.id === id) : null);
+    const labelOf = (t) => (tagsOf(st.d.tags, t.calendar_id).find((x) => x.id === t.id) || t).label || t.name;
+    // A pick: set_hearth_tag(p_id, p_to, p_person). A refusal is the toast's error, in the function's words, and the
+    // picker goes back.
+    async function matchTag(pick) {
+      if (pick.disabled) return;   // its save is under way (Enter, then leaving it)
+      const t = tagById(pick.dataset.hpick);
+      const v = pick.value;
+      if (!t || !v) { pick.value = pick.dataset.was || ''; return; }
+      const person = v.startsWith('person:') ? v.slice(7) : null;
+      const to = person ? 'person' : v;
+      pick.disabled = true;
+      st.tagSeq += 1;
+      try {
+        if (person) await v2.call('set_hearth_tag', { p_id: t.id, p_to: 'person', p_person: person });
+        else await v2.call('set_hearth_tag', { p_id: t.id, p_to: to });
+        toast(`${labelOf(t)}: ${matchWords({ matched_to: to, person_id: person })}'${to === 'grown_ups' ? '' : 's'} from now on.`);
+      } catch (err) {
+        pick.value = pick.dataset.was || '';
+        pick.disabled = false;
+        if (document.activeElement === document.body) pick.focus();
+        toast(hearthError(err), { error: true });
+        return;
+      }
+      await reloadTags();
+      focusPick(t.id);
+    }
+    // Forget: asks first, then set_hearth_tag(p_id, 'forget').
+    async function forgetTag(btn) {
+      const t = tagById(btn.dataset.hforget);
+      if (!t) return;
+      const label = labelOf(t);
+      if (!window.confirm(forgetAsk(label))) return;
+      btn.disabled = true;
+      st.tagSeq += 1;
+      try {
+        await v2.call('set_hearth_tag', { p_id: t.id, p_to: 'forget' });
+        toast(`${label}: forgotten.`);
+      } catch (err) {
+        btn.disabled = false;
+        toast(hearthError(err), { error: true });
+        return;
+      }
+      await reloadTags();
+    }
 
     box.addEventListener('click', onClick, { signal: ctx.signal });
     box.addEventListener('change', onChange, { signal: ctx.signal });
+    box.addEventListener('keydown', onKey, { signal: ctx.signal });
+    box.addEventListener('focusout', onLeave, { signal: ctx.signal });
     return reload();
   }
 

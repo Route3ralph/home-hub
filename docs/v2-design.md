@@ -44,6 +44,10 @@ This is the build contract for Home Hub v2. It replaces the first draft after fo
 - Blackbaud gives every event a new UID each time it makes its feed again, every hour or two (confirmed on the live database, 2026-10-31), and 0006 keyed an item with a UID by it: each change of UIDs added every item again and marked the ones before missing, then gone. From 0009 an item is keyed by what it is (an assignment by its class, title and first day; a schedule or games item by its title and start), never by its UID, and the copies already stored become one row an item.
 - The build contract is `docs/v1.3-homework.md` §2.8, §11.3, §12 item 9 and §16.8. Its database part is migration `0009_school_keys.sql`, summarised in §14 below.
 
+**v1.1 — Hearth people: a shared calendar sorted by Hearth person (the site goes live first, then `hub-jobs`, then the migration, after 0009)**
+- The kitchen wall keeps its own events in one Google calendar, "Hearth Calendar", and marks whose each is by adding that Hearth profile as a guest (`jordan@team-…`). With **Sort by Hearth person** on that calendar, the hub sends each event to the people its tags reach, as the parents matched them once in Settings: a person, Family, or the grown-ups. `hub-jobs` asks Google for guest addresses only for such a calendar and keeps only Hearth-shaped ones. No new Edge Function, secret or `cron.sql` change.
+- The build contract is `docs/v1.1-google-calendar.md` §11. Its database part is migration `0010_hearth_people.sql`, summarised in §15 below.
+
 Later: web push, Twilio SMS.
 
 ## 1. Item model — two kinds
@@ -259,7 +263,7 @@ Tokens and secrets are 32 hex characters; `rotate_day_token(p_person uuid)` (adm
 - `digest_for(p_person uuid, p_local_date date) returns jsonb` — everything the email needs, computed in SQL (see §5): subject, today, late, heads_up, projects; for parents also people, nobody and, on Mondays, inbox_count; `empty` = a non-parent with nothing to say (send nothing). Null for an inactive person. (v1.2 wraps it to add the day's meals: §9.)
 
 ### Schema version, whoami and sign-in
-`hub_schema_version()` returns 2 (authenticated); migration 0003 makes it 3 (§8), migration 0004 makes it 4 (§9), migration 0005 makes it 5 (§10), migration 0006 makes it 6 (§11), migration 0007 makes it 7 (§12), migration 0008 makes it 8 (§13), and migration 0009 makes it 9 (§14). `whoami()` gains `person` (id, name, role, language, color) when a person row matches the caller's email; existing keys unchanged. `mark_signed_in()` (authenticated; the core calls it after every sign-in): signing in with a code sent to an address proves it works, so the caller's own person row gets email_verified_at (the first time only). The confirmation secret stays, so the button in a confirmation email sent earlier says "confirmed" too. Does nothing for anyone who isn't a member.
+`hub_schema_version()` returns 2 (authenticated); migration 0003 makes it 3 (§8), migration 0004 makes it 4 (§9), migration 0005 makes it 5 (§10), migration 0006 makes it 6 (§11), migration 0007 makes it 7 (§12), migration 0008 makes it 8 (§13), migration 0009 makes it 9 (§14), and migration 0010 makes it 10 (§15). `whoami()` gains `person` (id, name, role, language, color) when a person row matches the caller's email; existing keys unchanged. `mark_signed_in()` (authenticated; the core calls it after every sign-in): signing in with a code sent to an address proves it works, so the caller's own person row gets email_verified_at (the first time only). The confirmation secret stays, so the button in a confirmation email sent earlier says "confirmed" too. Does nothing for anyone who isn't a member.
 
 ## 4. Client
 
@@ -356,7 +360,8 @@ calendars (which Google calendar is whose; one writing calendar per Hearth colum
           for_kids only on a read-only Family row. Unique index calendars_one_writer: one writing calendar per column.
   Triggers calendars_stamp (private.stamp()) and calendars_tidy (private.calendars_tidy()).
   RLS: members select; admins insert, update, delete. Column grants: authenticated inserts google_id, kind, person_id,
-  label, writes, for_kids, and updates those and copy_approved_at; nothing else.
+  label, writes, for_kids, and updates those and copy_approved_at; nothing else. (0010 adds sort_by_guest, updated
+  only: §15.)
 calendar_links (what hub-jobs wrote to Google: one row per Google event; kept after the event is past)
   google_calendar text, base_id text ('^hh[0-9a-f]{32}$'), event_id text (base_id, or a new one after a clash), gen int,
   calendar_id uuid → calendars (set null), item_kind ('event','task','project','late'; 0004 adds 'meal', §9), item_id uuid, job_id text,
@@ -379,13 +384,13 @@ Anon has no privilege on the four tables. Signed-in users have select on all fou
 
 ### Functions
 Pages (`authenticated`, `service_role`):
-- `google_items(p_from date, p_to date)` returns `setof public.agenda_item`: Google events as agenda rows of kind `'google'` (a fifth kind beside 'event', 'task', 'project' and 'contract'), with `item_id = md5(calendar_id || '/' || event_id)`, the calendar's person (or the household's pets or house owner) as `responsible_id`, and the source in `notes`. Range 1 to 62 days, like `agenda(p_from, p_to)`.
+- `google_items(p_from date, p_to date)` returns `setof public.agenda_item`: Google events as agenda rows of kind `'google'` (a fifth kind beside 'event', 'task', 'project' and 'contract'), with `item_id = md5(calendar_id || '/' || event_id)`, the calendar's person (or the household's pets or house owner) as `responsible_id`, and the source in `notes`. Range 1 to 62 days, like `agenda(p_from, p_to)`. (A calendar sorted by Hearth person's rows have nobody in charge and their people along: §15.)
 - `calendar_preview(p_calendar uuid)` returns table `(day, title, private, item_kind, item_id, place, details)`: everything Start copying puts on one calendar (the job's window, yesterday to 60 days ahead), as the wall will show it, with each event's place and the rest of its description on one line. Admins only.
 
 The calendar job (`service_role` only):
 - `calendar_begin()` returns jsonb `{go, stop, run_id}`: takes the lease (`stop` is 'busy' or 'paused' when `go` is false).
 - `calendar_signed_in(p_run uuid, p_auth text, p_account text, p_key_id text)`: how this run signed in to Google.
-- `calendar_read_due(p_force boolean default false, p_limit int default 10)` returns table `(calendar_id, google_id, writes, w_from, w_to, time_min, time_max, tz)`: the calendars to read now (never-read ones first, then the one Google answered about longest ago).
+- `calendar_read_due(p_force boolean default false, p_limit int default 10)` returns table `(calendar_id, google_id, writes, w_from, w_to, time_min, time_max, tz)`: the calendars to read now (never-read ones first, then the one Google answered about longest ago). (Made again by 0010 with `sort_by_guest` last: §15.)
 - `calendar_store_events(p_calendar uuid, p_google_id text, p_from date, p_to date, p_name text, p_access text, p_complete boolean, p_events jsonb, p_seen jsonb)` returns jsonb `{kept, skipped, seen, repaired, adopted}`: stores one calendar's read, sets its status from its Google name and access role, puts back changes made in Google to the hub's events (on an approved calendar, for events the plan will write again), and adopts the hub's events that have no link.
 - `calendar_mark(p_calendar uuid, p_google_id text, p_status text, p_detail text default null, p_name text default null, p_access text default null)`: what a failed read, a write's 403 or Test found.
 - `calendar_plan(p_site text default null, p_limit int default 60)` returns table `(op, calendar_id, google_calendar, base_id, event_id, gen, item_kind, item_id, job_id, occurrence, part, day, end_day, title, body, hash, pending, hiding)`: the next Google writes, privacy first and the past's history last; read only. Hiding what the hub wrote (an item made private, a delete) goes ahead on a calendar in error the hub can still write to. (Migration 0004 replaces it so a past dinner stays on Google: §9.)
@@ -1082,3 +1087,61 @@ New:
 - `private.school_rekey()` returns int: run once by 0009, in its transaction (and only by the owner after that: run again it changes nothing). Every `school_items` row on the key `school_rows` gives it, computed from its stored `subject`, `title` and `first_day` (an Assignments link's) or `title` and `starts_at` (a Schedule or Games link's), and `has_uid` false. Of one link's rows with the same key one stays, chosen in this order: the one made an assignment (`assignment_id`); else one made one once (`made_at`, its assignment deleted since: never new again); else one hidden; else one still on the school site (`gone_at` null); else the latest `last_seen_at`; then by id. It takes `hidden` if any copy had it, the earliest `first_seen_at` and the latest `last_seen_at`, and, if any copy was in the link's last good read (`last_seen_at >= school_feeds.last_ok_at`), `missing` 0 and `gone_at` null; else its own. The others are deleted, but never a row made an assignment: when a group has two or more of those, the one already on the key stays if there is one (else as above), and each other stays on its old key, unchanged, so the next reads mark it missing and then gone, and its assignment "no longer on the school site" (a copy the parents can delete). Answers how many rows it deleted. Not a definer, `set search_path = ''`; revoked from public, anon, authenticated and service_role.
 
 Undoing it isn't needed (nothing on the pages changes). If wanted, in one go: 0006's `create function private.school_rows(p_kind text, p_items jsonb, p_rule text, p_shift int, p_today date)` and `create function public.school_store(p_run uuid, p_feed uuid, p_items jsonb, p_stop text, p_repeats int default 0)` blocks again, each to its `$$;`, with `create or replace`, and `hub_schema_version()` returning 8 (`docs/v1.3-homework.md` §16.9). The rekeyed rows then change once more at the next read, and every change of UIDs adds them again, as before 0009; `private.school_rekey` can stay. 0009 can then run again.
+
+## 15. v1.1: Hearth people (a shared calendar sorted by Hearth person)
+
+The build contract is `docs/v1.1-google-calendar.md` §11; this section lists what its migration, `supabase/migrations/0010_hearth_people.sql`, adds to the database, so the docs check can hold the two together. Fresh install = `schema.sql`, then `0002` to `0010`. It is one transaction and additive, and every rule in §3 applies. It refuses to run without 0009 (`hub_schema_version() < 9`: "The school items' keys (migration 0009) aren't installed"), twice ("Hearth people (migration 0010) is already installed"), on a database set back to 9 (`hearth_tags` already there: "… was set back to 9"), or on a database that isn't as 0009 left it (`calendars`' `kind`, `person_id`, `writes`, `for_kids`, `google_id` and `read_at` and no `sort_by_guest`; `google_events`' 14 columns of §8 and nothing else; `calendar_read_due` answering 8 columns; `private.google_item`, `private.google_for`, `private.calendars_tidy`, `calendar_store_events`, `private.active_person`, `private.is_admin`, `private.is_member`, `private.now`, `current_email`, `private.free_minutes` and `private.coach_view` with their arguments; none of its own three functions yet), or while a calendar run holds the lease ("A calendar run is under way. Try again in a minute."; it first locks `calendar_sync` in exclusive mode, so a run that begins meanwhile waits for its commit). It leaves the switch off on every calendar, so with nothing sorted every page, email, text and view answers exactly as on 9. Nothing new for anon; the only new SECURITY DEFINER function is `set_hearth_tag`.
+
+### Tables
+```sql
+-- "Sort by Hearth person": only on a calendar the hub reads as Family, and never with Show to kids (the matches
+-- replace it). private.calendars_tidy keeps both.
+alter table public.calendars
+  add column sort_by_guest boolean not null default false
+    check (not sort_by_guest or (kind = 'family' and not writes))
+    check (not (sort_by_guest and for_kids));
+
+-- A cached event's Hearth tags: private.hearth_tag's answers, distinct, sorted, at most 16; '{}' on every calendar
+-- without the switch (calendar_store_events).
+alter table public.google_events
+  add column guests text[] not null default '{}' check (cardinality(guests) <= 16);
+
+-- The Hearth people seen on a sorted calendar, and what a parent matched each to.
+create table public.hearth_tags (
+  id          uuid primary key default gen_random_uuid(),                -- set_hearth_tag's p_id
+  calendar_id uuid not null references public.calendars (id) on delete cascade,
+  tag         text not null check (tag ~ '^[a-z0-9._+-]{1,64}@team-[a-z0-9-]{1,120}$'),
+  name        text generated always as (split_part(tag, '@', 1)) stored,   -- what Settings shows: "jordan"
+  matched_to  text check (matched_to in ('person', 'family', 'grown_ups')),  -- null: never matched ("New")
+  person_id   uuid references public.people (id) on delete set null,     -- with 'person'; null again after remove_person
+  last_seen   timestamptz not null,                                      -- the last read with guests that found it on a kept event
+  matched_at  timestamptz,                                               -- the last set_hearth_tag
+  matched_by  text,                                                      -- public.current_email() then
+  unique (calendar_id, tag),
+  check (person_id is null or matched_to = 'person'),
+  check ((matched_to is null) = (matched_at is null))
+);
+```
+
+- `calendars.sort_by_guest`: signed-in users may update it (`grant update (sort_by_guest)`; row-level security lets only admins, as for `for_kids`), never insert it. The tidy trigger (below) keeps it on a read-only Family row only.
+- `google_events.guests`: members read it with the row (row-level security decides); only hub-jobs writes it, through `calendar_store_events`.
+- Row-level security on `hearth_tags`: members select (policy "Family can see the Hearth people"); no write policy. `revoke all … from public, anon, authenticated`, then `grant select … to authenticated`; service_role keeps Supabase's default privileges, which it needs: `calendar_store_events` runs as it. Written only by `calendar_store_events` and `set_hearth_tag`. Disconnect deletes a calendar's tags with it; a new Google ID keeps them (a tag names a Hearth profile, not a Google calendar); `remove_person` sets `person_id` null and keeps `matched_to` 'person'.
+- **What one tag reaches:** matched to a person on the family list (`private.active_person`), that person; to Family (`'family'`), every kid and every parent's and adult's email (never a helper); anything else (`'grown_ups'`, New, not listed, or a person off the family list or removed), the grown-ups (every parent's and adult's email and their days on Today; never a My day or a text). An event goes to everyone its tags reach; one with no tag is the grown-ups'.
+
+### Functions
+New:
+- `set_hearth_tag(p_id uuid, p_to text, p_person uuid default null)` returns jsonb: the parents match one tag of a sorted calendar to a person on the family list (`'person'`, with `p_person`), to Family (`'family'`) or to the grown-ups (`'grown_ups'`), setting `matched_to`, `person_id`, `matched_at` (`private.now()`) and `matched_by` (`current_email()`), and answers `{id, name, to, person_id}`; or forgets it (`'forget'`: the row is deleted, answers `{id, name, to}`, and the next read with guests lists the tag again as New). It locks the row. Works at once. Refuses 42501 "Only a parent can match Hearth people." unless `private.is_admin()`; 22023 "Choose a person, Family or the grown-ups." for any other `p_to`; 22023 "That Hearth person isn't there any more." for an unknown `p_id`; 22023 "Turn on Sort by Hearth person first." while its calendar's switch is off; 22023 "Choose someone on the family list." for `'person'` with `p_person` null, unknown or not active. SECURITY DEFINER; revoked from public, anon and service_role; granted to authenticated.
+- `private.hearth_tag(p_email text)` returns text: `lower(btrim(p_email))` when it matches `^[a-z0-9._+-]{1,64}@team-[a-z0-9-]{1,120}$` (Hearth's `<profile>@team-<family>-<digits>`), else null. IMMUTABLE. Revoked from public, anon and authenticated; granted to service_role (`calendar_store_events`).
+- `private.hearth_whose(g public.google_events, c public.calendars, out people uuid[], out family boolean, out grown_ups boolean)`: for a row of a sorted calendar (read from its current Google ID), from that calendar's `hearth_tags` and the rule above: the people on the family list its tags reach, each once, in family-list order (`sort_order`, `name`, `id`); whether any tag reaches Family; whether it has no tag or any tag that reaches the grown-ups. Any other row: `'{}'`, false, false. STABLE. A helper of `google_item` only; revoked from public and anon, granted to authenticated and service_role (`google_item` runs with a member's rights in `google_items`, `day_text` and `homework_week`).
+
+Replaced, with the same signatures (`create or replace`, so they keep their grants), from 0003's bodies:
+- `private.google_item(g, c)`: a sorted calendar's row has `responsible_id` null, `participant_ids` its `hearth_whose` people, and `category` `'family'` when a tag reaches Family, else `'grown_ups'` (new; only a sorted calendar's rows have it) when it reaches the grown-ups, else null. Every other row exactly as 0003 made it.
+- `private.google_for(p_person, p_from, p_to, p_grown_up)`: 0003's rule for every other calendar; a sorted calendar's row, as `google_item` built it, reaches `p_person` when they are on it (whatever their role), or it is `'family'` and they are a kid (with `p_grown_up` false) or a parent or adult (with `p_grown_up` true), or it is `'grown_ups'`, `p_grown_up` is true and they are a parent or adult. It reads only the row's fields, as the pages do. So My day, `day_text`, `private.person_items`, `get_person_day`, `digest_for`, `private.free_minutes` (busy time), `homework_week`, the tutor's week and the coach view follow without code of their own; the coach view, which takes only Google rows its kid is in charge of, shows none of a sorted calendar's.
+- `private.calendars_tidy()`: before the checks run, a calendar that isn't read-only Family gets `sort_by_guest` false (changing Whose or switching to writing turns it off); an update that turns it on sets `for_kids` false; an update after which a row is still sorted with `for_kids` true is refused, 22023 "Turn off Sort by Hearth person first."; a change of `sort_by_guest` clears `read_at` (the next run reads it first) and counts as an admin's edit (`updated_at` moves).
+- `calendar_store_events(p_calendar uuid, p_google_id text, p_from date, p_to date, p_name text, p_access text, p_complete boolean, p_events jsonb, p_seen jsonb)`: 0003's, with rows built by column name. A read "with guests" is one whose `p_events` has an event with a `guests` key, or has no events. On a sorted calendar each kept event of `p_events` stores its `guests` through `private.hearth_tag`, nulls dropped, distinct, sorted, the first 16 (`'{}'` on any other calendar, and for `p_seen`'s entries); a sorted calendar's read without guests stores `'{}'` and leaves `read_at`, so it stays due. After a read with guests of a sorted calendar (not one found `no_access`), in a block of its own that can't fail the store: every tag on a kept event it doesn't list yet is added (`last_seen` now), in tag order, while it lists fewer than 50; every listed one on a kept event gets `last_seen = greatest(last_seen, now)`; and after a complete read only, its New, `'grown_ups'` and removed person's (`'person'`, `person_id` null) tags with `last_seen` over 90 days ago are deleted. Its answer is unchanged: `{kept, skipped, seen, repaired, adopted}`.
+- `hub_schema_version()` returns 10. The pages ask for `hearth_tags` and `calendars.sort_by_guest` only on 10.
+
+Dropped and made again (its answer gains a column):
+- `calendar_read_due(p_force boolean default false, p_limit int default 10)` returns table `(calendar_id, google_id, writes, w_from, w_to, time_min, time_max, tz, sort_by_guest)`: 0003's, plus `sort_by_guest`, so hub-jobs asks Google for guest addresses (`attendees(email,…)`) only for a sorted calendar and keeps only Hearth-shaped ones (`calendar.ts`, §11.3). Revoked from public, anon and authenticated; granted to service_role, as 0003.
+
+Undoing it isn't needed (with the switch off on every calendar every answer is 9's). If wanted, in one go, as the migration's header writes it out: `update public.calendars set sort_by_guest = false`; 0003's `private.google_item`, `private.google_for`, `private.calendars_tidy` and `calendar_store_events` blocks again with `create or replace`; `calendar_read_due` dropped and made again from 0003's block, with 0003's revoke and grant; drop `set_hearth_tag`, `private.hearth_whose` and `private.hearth_tag`; drop table `hearth_tags`; drop the columns `google_events.guests` and `calendars.sort_by_guest`; `hub_schema_version()` returning 9 (`docs/v1.1-google-calendar.md` §11.9). 0010 can then run again.

@@ -111,6 +111,30 @@ dialog:has(> .set-preview) { width: min(680px, calc(100vw - 16px)); }
 /* A block link keeps the list's bullet on its first line when it wraps (and the 44px tap target). */
 .set-glist a { display: block; padding: 12px 0; }
 .set-hearth { font-size: 14px; }
+/* Schema 10 (docs/v1.1 §11.6): Sort by Hearth person beside Show to kids, the line at the top of the card, and a
+   sorted calendar's Hearth people under its row. */
+.set-gchecks { display: flex; flex-wrap: wrap; gap: 0 22px; }
+.set-gsort-help { margin: 0; font-size: 13px; }
+.set-gtodo { margin: 0 0 12px; padding: 8px 12px; border-radius: 10px; background: var(--warn-soft); color: var(--warn); font-size: 14px; overflow-wrap: anywhere; }
+.set-hp { margin: 6px 0 2px; padding: 10px 12px; border-radius: 10px; background: var(--surface-2); }
+.set-hp-h { margin: 0 0 4px; font-size: 14px; font-weight: 650; }
+.set-hp .set-help { margin: 0; font-size: 13px; }
+.set-hp-list { list-style: none; margin: 0; padding: 0; }
+/* One line each where there is room (the name on the left, the picker and Forget on the right); two on a phone. */
+.set-hp-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; padding: 8px 0; border-bottom: 1px solid var(--border); }
+.set-hp-who { flex: 1 1 200px; min-width: 0; display: grid; gap: 2px; }
+.set-hp-row:last-child { border-bottom: 0; }
+.set-hp-text { font-size: 14px; overflow-wrap: anywhere; }
+.set-hp-top { display: flex; align-items: baseline; flex-wrap: wrap; gap: 2px 8px; min-width: 0; }
+.set-hp-name { overflow-wrap: anywhere; min-width: 0; }
+.set-chip.set-hp-new { background: var(--warn-soft); color: var(--warn); align-self: center; }
+.set-hp-seen { color: var(--text-3); font-size: 13px; }
+.set-hp-note { margin: 0; font-size: 13px; color: var(--warn); overflow-wrap: anywhere; }
+.set-hp-acts { flex: 0 1 330px; display: flex; align-items: center; gap: 8px; min-width: 0; }
+.set-hp-acts .set-hp-pick { flex: 1 1 auto; width: 0; min-width: 0; min-height: 44px; }
+.set-hp-acts .btn { flex: none; }
+.set-hp .set-hp-full { margin-top: 8px; color: var(--warn); }
+.set-hp .set-hp-how { margin-top: 8px; }
 /* Set, Add a calendar to read, and the Test-and-preview dialog. */
 dialog:has(> .set-gform), dialog:has(> .set-gcheck) { width: min(620px, calc(100vw - 16px)); }
 .set-gform .d-close, .set-gcheck .d-close { width: 44px; height: 44px; }

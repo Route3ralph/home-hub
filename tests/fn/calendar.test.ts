@@ -1,13 +1,14 @@
 // Unit tests for hub-jobs' Google Calendar actions (supabase/functions/hub-jobs/calendar.ts, google.ts),
 // through handle() as the Edge Function runs them: a fake Google behind the injected fetch (its token
 // endpoint checks the signed request with the public half of a key pair made here), a fake database
-// answering the calendar_* functions with the shapes migration 0003 returns, and a fake clock.
+// answering the calendar_* functions with the shapes migration 0003 returns (and 0010's sort_by_guest from calendar_read_due,
+// for the wall's own calendar sorted by Hearth person), and a fake clock.
 // Everything is fictional: the test household (Alex, Morgan, Taylor, Jordan), example.com addresses,
 // made-up calendar ids and a key that exists only while the test runs.
 // Run alone with: node --experimental-strip-types tests/fn/calendar.test.ts
 import { handle } from '../../supabase/functions/hub-jobs/handler.ts';
 import { resetTokenCache, contentHash, readServiceAccount, KEY_BAD, KEY_REFUSED, API_OFF, NO_SCOPE, SCOPE, TOKEN_URI } from '../../supabase/functions/hub-jobs/google.ts';
-import { READ_BUDGET_MS, READ_FIELDS, RECORD_BATCH, RUN_BUDGET_MS, verdict } from '../../supabase/functions/hub-jobs/calendar.ts';
+import { HEARTH_TAG, READ_BUDGET_MS, READ_FIELDS, READ_FIELDS_GUESTS, RECORD_BATCH, RUN_BUDGET_MS, hearthTags, verdict } from '../../supabase/functions/hub-jobs/calendar.ts';
 import { readFileSync, readdirSync } from 'node:fs';
 
 const results: string[] = [];
@@ -30,6 +31,7 @@ const CAL = {   // calendars rows: id, Google ID
   family: { id: 'cccccccc-0000-4000-8000-000000000003', google: 'hub-family-9a8b7c6d@group.calendar.google.com' },
   main: { id: 'cccccccc-0000-4000-8000-000000000004', google: 'family@example.com' },
   holidays: { id: 'cccccccc-0000-4000-8000-000000000005', google: 'en.example#holiday@group.v.calendar.google.com' },
+  hearth: { id: 'cccccccc-0000-4000-8000-000000000006', google: 'hearth-5e6f7a8b@group.calendar.google.com' },   // the wall's own (Hearth Calendar)
 };
 const MARKER = 'MARKER-7f3a9c';
 
@@ -626,6 +628,94 @@ const calendarCalls = (s: ReturnType<typeof setup>) => s.G.calls.filter((c) => c
   check('no email address, description or attendee list goes to the database', !/@example\.com|Bring cleats|555-0177|coach/.test(sent), sent.slice(0, 300));
   check('the counts come back in the run\'s result', r.body.read === 1 && r.body.stored === 3 && s.finish()?.p_result.read === 1, r.body);
 
+  // -------------------------------------------------------------------
+  // Hearth people (docs/v1.1-google-calendar.md §11.3): a sorted calendar's guests, and only its Hearth tags
+  // -------------------------------------------------------------------
+  const sortedRow = (c: { id: string; google: string }) => ({ ...dueRow(c, false), sort_by_guest: true });
+  const consoleHearth: string[] = [];
+  const savedHearth = { log: console.log, error: console.error, warn: console.warn, info: console.info, debug: console.debug };
+  for (const k of Object.keys(savedHearth) as (keyof typeof savedHearth)[]) console[k] = (...a: unknown[]) => { consoleHearth.push(a.map(String).join(' ')); };
+  try {
+    s = setup({ due: [sortedRow(CAL.hearth), { ...dueRow(CAL.main, false), sort_by_guest: false }, dueRow(CAL.jordan)] });
+    const wall = s.cal(CAL.hearth.google, 'Hearth Calendar', 'reader');
+    const guest = (email: unknown, o: Record<string, unknown> = {}) => ({ email, responseStatus: 'needsAction', ...o });
+    wall.events.set('piano1', {
+      id: 'piano1', status: 'confirmed', summary: 'Piano', start: { dateTime: '2026-11-04T21:30:00Z' }, end: { dateTime: '2026-11-04T22:15:00Z' },
+      organizer: { email: CAL.hearth.google, self: true }, updated: '2026-11-01T10:00:00.000Z',
+      attendees: [guest(' Jordan@Team-Example-0000 '), guest(CAL.hearth.google, { self: true, responseStatus: 'accepted' }), guest('morgan@example.com', { responseStatus: 'accepted' })],
+    });
+    wall.events.set('vet1', {
+      id: 'vet1', status: 'confirmed', summary: 'Vet', start: { dateTime: '2026-11-05T21:30:00Z' }, end: { dateTime: '2026-11-05T22:00:00Z' },
+      organizer: { email: CAL.hearth.google, self: true }, updated: '2026-11-01T10:00:00.000Z',
+      attendees: [guest('taylor@team-example-0000'), guest('dogs@team-example-0000'), guest('taylor@team-example-0000'), guest('jordan@team-example-0000.com'),
+        guest('sam@team.example'), guest(123), guest(null), { responseStatus: 'accepted' }, guest('pat lee@team-example-0000'), guest(`${MARKER}@team-example-0000`.toLowerCase())],
+    });
+    wall.events.set('movie1', { id: 'movie1', status: 'confirmed', summary: 'Movie', start: { date: '2026-11-06' }, end: { date: '2026-11-07' }, organizer: { email: CAL.hearth.google, self: true } });
+    // A private event as Google shows it to a reader (See event details): no title, place or guests.
+    wall.events.set('private1', { id: 'private1', status: 'confirmed', visibility: 'private', start: { dateTime: '2026-11-06T21:00:00Z' }, end: { dateTime: '2026-11-06T21:30:00Z' },
+      organizer: { email: CAL.hearth.google, self: true } });
+    const wallHub = hhId(78);
+    wall.events.set(wallHub, { id: wallHub, status: 'confirmed', summary: 'Hub thing', start: { date: '2026-11-03' }, end: { date: '2026-11-04' }, organizer: { self: true },
+      attendees: [guest('jordan@team-example-0000')], extendedProperties: { private: { homehub: '1', homehub_base: wallHub } } });
+    const main = s.cal(CAL.main.google, 'Family', 'reader');
+    main.events.set('club1', { id: 'club1', status: 'confirmed', summary: 'Book club', start: { date: '2026-11-04' }, end: { date: '2026-11-05' }, organizer: { self: true },
+      attendees: [guest('jordan@team-example-0000'), guest('morgan@example.com')] });
+    const jordanCal = s.cal(CAL.jordan.google, 'Hub – Jordan');
+    jordanCal.events.set('soccer1', { id: 'soccer1', status: 'confirmed', summary: 'Soccer', start: { date: '2026-11-04' }, end: { date: '2026-11-05' }, organizer: { self: true },
+      attendees: [guest('jordan@team-example-0000')] });
+    r = await run(s);
+    const listOf = (c: string) => s.G.calls.find((x) => x.method === 'GET' && x.cal === c && x.event === null)?.query;
+    check('a sorted calendar (sort_by_guest true) is read with READ_FIELDS_GUESTS: READ_FIELDS with attendees(email,self,responseStatus)',
+      listOf(CAL.hearth.google)?.get('fields') === READ_FIELDS.replace('attendees(self,responseStatus)', 'attendees(email,self,responseStatus)')
+      && READ_FIELDS_GUESTS === READ_FIELDS.replace('attendees(self,responseStatus)', 'attendees(email,self,responseStatus)') && READ_FIELDS_GUESTS !== READ_FIELDS,
+      listOf(CAL.hearth.google)?.get('fields'));
+    check('... without maxAttendees (with it Google answers a longer guest list with only the calendar\'s own entry)',
+      !!listOf(CAL.hearth.google) && !listOf(CAL.hearth.google)!.has('maxAttendees') && s.G.calls.every((x) => !x.query.has('maxAttendees')), listOf(CAL.hearth.google)?.toString());
+    check('a calendar with sort_by_guest false is read with READ_FIELDS: no address asked for', listOf(CAL.main.google)?.get('fields') === READ_FIELDS, listOf(CAL.main.google)?.get('fields'));
+    check('... and a schema-9 row (no sort_by_guest key) too', listOf(CAL.jordan.google)?.get('fields') === READ_FIELDS, listOf(CAL.jordan.google)?.get('fields'));
+    const stores = Object.fromEntries(s.rpcs('calendar_store_events').map((c) => [c.args.p_calendar, c.args]));
+    const hearthStore = stores[CAL.hearth.id];
+    const byId = (list: any[], id: string) => list.find((e: any) => e.id === id);
+    check('a sorted calendar\'s read: a guests key on every item of p_events',
+      !!hearthStore && hearthStore.p_events.length === 4 && hearthStore.p_events.every((e: any) => Array.isArray(e.guests)), hearthStore?.p_events);
+    check('... each its Hearth tags: trimmed, lowercased; the calendar\'s own entry and a real-looking address dropped',
+      JSON.stringify(byId(hearthStore?.p_events ?? [], 'piano1')?.guests) === '["jordan@team-example-0000"]', byId(hearthStore?.p_events ?? [], 'piano1'));
+    check('... duplicates once, sorted; a dot after the @, another shape, a non-string, a missing email and a space dropped',
+      JSON.stringify(byId(hearthStore?.p_events ?? [], 'vet1')?.guests) === `["dogs@team-example-0000","${MARKER.toLowerCase()}@team-example-0000","taylor@team-example-0000"]`,
+      byId(hearthStore?.p_events ?? [], 'vet1'));
+    check('... [] for an event with no guest list, and for a private one as Google sends it to a reader',
+      JSON.stringify(byId(hearthStore?.p_events ?? [], 'movie1')?.guests) === '[]' && JSON.stringify(byId(hearthStore?.p_events ?? [], 'private1')?.guests) === '[]');
+    check('... the other keys as for any calendar', Object.keys(byId(hearthStore?.p_events ?? [], 'piano1') ?? {}).sort().join()
+      === 'end,guests,hash,id,location,organizer_self,props,recurring,response,start,status,title,updated,visibility');
+    check('... no guests key on its p_seen (the hub\'s own)', hearthStore?.p_seen.length === 1 && hearthStore.p_seen.every((e: any) => !('guests' in e)), hearthStore?.p_seen);
+    check('no guests key on any item of a calendar that isn\'t sorted (sort_by_guest false, or a schema-9 row)',
+      [stores[CAL.main.id], stores[CAL.jordan.id]].every((a) => !!a && a.p_events.length === 1 && [...a.p_events, ...a.p_seen].every((e: any) => !('guests' in e))),
+      [stores[CAL.main.id]?.p_events, stores[CAL.jordan.id]?.p_events]);
+    const allArgs = JSON.stringify(s.st.calls);
+    check('a real-looking address on an event (morgan@example.com) is in no RPC argument, nor any address that isn\'t a tag',
+      !/morgan|team\.example|team-example-0000\.com|pat lee/i.test(allArgs) && !allArgs.includes(`"${CAL.hearth.google}"]`), allArgs.slice(0, 300));
+    check('... nor in the run\'s answer', !/@example\.com|team-example/.test(JSON.stringify(r.body)) && r.body.read === 3 && r.body.stop === null, r.body);
+  } finally {
+    Object.assign(console, savedHearth);
+  }
+  check('... and nothing goes to the console', consoleHearth.length === 0, consoleHearth.join(' | '));
+
+  // hearthTags on its own: the pattern of private.hearth_tag(p_email), the first 100 entries, 16 at most.
+  check('HEARTH_TAG is private.hearth_tag\'s pattern', HEARTH_TAG.source === '^[a-z0-9._+-]{1,64}@team-[a-z0-9-]{1,120}$' && HEARTH_TAG.flags === '', HEARTH_TAG.source);
+  check('hearthTags: not a list → []', JSON.stringify([hearthTags(undefined), hearthTags(null), hearthTags('jordan@team-example-0000'), hearthTags({ email: 'x' })]) === '[[],[],[],[]]');
+  check('hearthTags: trimmed and lowercased, kept exactly so, or dropped', JSON.stringify(hearthTags([{ email: '\tSAM@TEAM-EXAMPLE-0000\n' }, { email: 'Sam@Team-Example-0001' }]))
+    === '["sam@team-example-0000","sam@team-example-0001"]');
+  check('hearthTags: the calendar\'s own entry (self true) is skipped, even when it is shaped like a tag',
+    JSON.stringify(hearthTags([{ email: 'jordan@team-example-0000', self: true }, { email: 'sam@team-example-0000', self: false }])) === '["sam@team-example-0000"]');
+  check('hearthTags: a dot after the @, a domain that isn\'t team-…, too long a profile, an empty or non-string email are dropped',
+    JSON.stringify(hearthTags([{ email: 'jordan@team-example-0000.com' }, { email: 'jordan@example.com' }, { email: `${'a'.repeat(65)}@team-example-0000` },
+      { email: '' }, { email: 42 }, { email: ['jordan@team-example-0000'] }, null, 'jordan@team-example-0000', { email: 'jordan@team-' }, { email: `a@team-${'b'.repeat(121)}` }])) === '[]');
+  const tags101 = Array.from({ length: 101 }, (_, i) => ({ email: i === 100 ? 'aaa@team-example-0000' : `x${String(i).padStart(3, '0')}@team-example-0000` }));
+  check('hearthTags: only the first 100 entries are read', !hearthTags(tags101).includes('aaa@team-example-0000'));
+  const tags20 = Array.from({ length: 20 }, (_, i) => ({ email: `kid${String(20 - i).padStart(2, '0')}@team-example-0000` }));
+  check('hearthTags: duplicates once, sorted, the first 16', JSON.stringify(hearthTags([...tags20, ...tags20]))
+    === JSON.stringify(Array.from({ length: 16 }, (_, i) => `kid${String(i + 1).padStart(2, '0')}@team-example-0000`)), hearthTags(tags20));
+
   // Pages, and more than 4 pages.
   s = setup({ due: [dueRow(CAL.taylor)] });
   const paged = s.cal(CAL.taylor.google, 'Hub – Taylor');
@@ -1057,6 +1147,8 @@ const calendarCalls = (s: ReturnType<typeof setup>) => s.G.calls.filter((c) => c
     JSON.stringify(s.rpcs('calendar_mark')[0]?.args) === JSON.stringify({ p_calendar: CAL.taylor.id, p_google_id: CAL.taylor.google, p_status: 'ok', p_detail: null, p_name: 'Hub – Taylor', p_access: 'writer' })
     && s.rpcs('calendar_mark')[0]?.who === 'service' && s.st.tables[0]?.who === 'service', s.rpcs('calendar_mark')[0]);
   check('... Test takes no lease and writes no run', !s.rpcs('calendar_begin').length && !s.rpcs('calendar_finish').length && !s.rpcs('calendar_signed_in').length);
+  check('... and asks Google for no guest (no attendees or email in any fields)', s.G.calls.length > 0 && s.G.calls.every((c) => !/attendees|email/.test(c.query.get('fields') ?? '')),
+    s.G.calls.map((c) => c.query.get('fields')));
 
   const refusals: [string, string, string, string, string][] = [
     ['a name that doesn\'t start with "Hub"', 'Taylor', 'writer', 'error', "This calendar isn't named 'Hub …'. The hub writes only to calendars whose name starts with Hub. If it is the right one, rename it in Google."],

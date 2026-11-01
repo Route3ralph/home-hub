@@ -82,11 +82,16 @@ function fakeGoogle(nowIso) {
     const s = at(ev.start);
     return [s, at(ev.end) ?? s];
   };
-  // An event as Google answers it: times in the event's zone (or the list's), defaults left out.
-  const show = (ev, tz) => {
+  // An event as Google answers it: times in the event's zone (or the list's), defaults left out. To a calendar shared
+  // with See event details (role 'reader'), a private or confidential event comes without its details: no title,
+  // description, place, guests or extended properties (docs/v1.1-google-calendar.md §11.2).
+  const show = (ev, tz, role) => {
     const when = (t) => (!t ? t : t.date ? { date: t.date } : { dateTime: inZone(Date.parse(t.dateTime), t.timeZone || tz), timeZone: t.timeZone || tz });
     const out = { kind: 'calendar#event', etag: `"${ev.etag}"`, id: ev.id, status: ev.status, created: ev.created, updated: ev.updated };
-    for (const k of ['summary', 'description', 'location', 'colorId', 'recurringEventId', 'attendees', 'extendedProperties']) if (ev[k] !== undefined) out[k] = ev[k];
+    const hidden = role === 'reader' && (ev.visibility === 'private' || ev.visibility === 'confidential');
+    for (const k of ['summary', 'description', 'location', 'colorId', 'recurringEventId', 'attendees', 'extendedProperties']) {
+      if (ev[k] !== undefined && !(hidden && k !== 'recurringEventId')) out[k] = ev[k];
+    }
     out.organizer = ev.organizer || { self: true };
     out.start = when(ev.start);
     out.end = when(ev.end);
@@ -102,12 +107,37 @@ function fakeGoogle(nowIso) {
     cal.events.set(ev.id, ev);
     return ev;
   };
-  // Top-level fields only ("summary,accessRole,items(id,…)" keeps summary, accessRole and items).
-  const pick = (obj, fields) => {
-    if (!fields) return obj;
-    const keep = new Set(fields.replace(/\([^)]*\)/g, '').split(',').map((f) => f.split('/')[0].trim()));
-    return Object.fromEntries(Object.entries(obj).filter(([k]) => keep.has(k)));
+  // Google's fields selector, to any depth: "accessRole,items(id,organizer/self,attendees(self,responseStatus))" keeps
+  // accessRole, and of each item its id, its organizer's self and of each attendee self and responseStatus (so no
+  // email unless asked for). A path a/b keeps b of a; a(b,c) keeps b and c of a (of each element of an array).
+  const parseFields = (spec) => {
+    let i = 0;
+    const merge = (a, b) => (a === true || b === true ? true : !a ? b : Object.assign(a, ...Object.entries(b).map(([k, v]) => ({ [k]: merge(a[k], v) }))));
+    const list = () => {
+      const out = {};
+      for (;;) {
+        let name = '';
+        while (i < spec.length && !',()'.includes(spec[i])) name += spec[i++];
+        let sub = true;
+        if (spec[i] === '(') { i++; sub = list(); i++; }
+        const path = name.trim().split('/').filter(Boolean);
+        if (path.length) {
+          const leaf = path.reduceRight((acc, k) => ({ [k]: acc }), sub);
+          const [k] = Object.keys(leaf);
+          out[k] = merge(out[k], leaf[k]);
+        }
+        if (spec[i] === ',') { i++; continue; }
+        return out;
+      }
+    };
+    return list();
   };
+  const select = (v, sel) => {
+    if (sel === true || v == null || typeof v !== 'object') return v;
+    if (Array.isArray(v)) return v.map((x) => select(x, sel));
+    return Object.fromEntries(Object.entries(sel).filter(([k]) => v[k] !== undefined).map(([k, s]) => [k, select(v[k], s)]));
+  };
+  const pick = (obj, fields) => (fields ? select(obj, parseFields(fields)) : obj);
 
   async function token(init) {
     const form = new URLSearchParams(String(init.body || ''));
@@ -149,12 +179,12 @@ function fakeGoogle(nowIso) {
       }).sort((a, b) => range(a, tz)[0] - range(b, tz)[0] || (a.id < b.id ? -1 : 1));
       const skip = Number(entry.query.pageToken || 0);
       const max = Math.min(Number(entry.query.maxResults || 250), 2500);
-      const out = { kind: 'calendar#events', summary: cal.summary, accessRole: cal.role, timeZone: tz, items: all.slice(skip, skip + max).map((ev) => show(ev, tz)) };
+      const out = { kind: 'calendar#events', summary: cal.summary, accessRole: cal.role, timeZone: tz, items: all.slice(skip, skip + max).map((ev) => show(ev, tz, cal.role)) };
       if (skip + max < all.length) out.nextPageToken = String(skip + max);
       return done(200, pick(out, entry.query.fields));
     }
     const ev = entry.event ? cal.events.get(entry.event) : null;
-    if (method === 'GET') return ev ? done(200, pick(show(ev, tz), entry.query.fields)) : done(404, problem(404, 'notFound', 'Not Found'));
+    if (method === 'GET') return ev ? done(200, pick(show(ev, tz, cal.role), entry.query.fields)) : done(404, problem(404, 'notFound', 'Not Found'));
     if (cal.role === 'reader') return done(403, problem(403, 'requiredAccessLevel', 'You need to have writer access to this calendar.'));
     if (method === 'POST') {
       const id = entry.body && entry.body.id;
@@ -293,10 +323,10 @@ async function setup(name, opts = {}) {
   const socket = env('REALDB_SOCKET');
   const port = env('REALDB_PORT');
   // The template: the full database (every migration), the v1 one (opts.v1), v2 without migration 0003
-  // (opts.v2), v1.1 without migration 0004 (opts.v3), v1.2 without migration 0005 (opts.v4), or v1.3 without
-  // migration 0006 (opts.v5).
+  // (opts.v2), v1.1 without migration 0004 (opts.v3), v1.2 without migration 0005 (opts.v4), v1.3 without
+  // migration 0006 (opts.v5), or everything up to 0009 without 0010 (opts.v9, Hearth people).
   const template = opts.v1 ? env('REALDB_V1_TEMPLATE') : opts.v2 ? env('REALDB_V2_TEMPLATE') : opts.v3 ? env('REALDB_V3_TEMPLATE')
-    : opts.v4 ? env('REALDB_V4_TEMPLATE') : opts.v5 ? env('REALDB_V5_TEMPLATE') : env('REALDB_TEMPLATE');
+    : opts.v4 ? env('REALDB_V4_TEMPLATE') : opts.v5 ? env('REALDB_V5_TEMPLATE') : opts.v9 ? env('REALDB_V9_TEMPLATE') : env('REALDB_TEMPLATE');
   const dbName = `rt_${name}`;
   const admin = await connect({ socketDir: socket, port, database: 'postgres' });
   await admin.query(`drop database if exists ${ident(dbName)}`);
