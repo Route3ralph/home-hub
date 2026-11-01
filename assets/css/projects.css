@@ -58,3 +58,11 @@
 .proj-form input[type="text"], .proj-form input[type="date"], .proj-form input[type="number"], .proj-form select { min-height: 44px; }
 .proj-form input[type="color"] { height: 44px; }
 .proj-form .sharebox input { min-height: 44px; }
+
+/* v1.4: the Contractors list (a project guest) and Guest access (the parents): one row each, a button on the right. */
+.contact-list { list-style: none; margin: 4px 0 12px; padding: 0; }
+.contact-list li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 2px; border-bottom: 1px solid var(--line); }
+.contact-list li:last-child { border-bottom: 0; }
+.contact-list li > div { min-width: 0; overflow-wrap: anywhere; }
+.contact-list .btn { flex: none; min-height: 44px; }
+.proj-form input[type="email"], .proj-form input[type="url"], .proj-form input[type="tel"] { min-height: 44px; }

@@ -10,7 +10,9 @@
    copying, Sync now, what went wrong and what was put back, and a note on
    the Hearth wall; from schema 10 (migration 0010), Sort by Hearth person
    on a calendar the hub reads as Family, and its Hearth people to match.
-   Members see that card read-only. Then how to put the
+   Members see that card read-only. From schema 11 (migration 0011), the
+   parents also get Project guests: every guest, their projects, and Remove
+   guest (docs/v1.4-project-guests.md §5). Then how to put the
    Home Hub on a phone's Home Screen, and Sign out. Dates and times are the
    household's.
    ===================================================================== */
@@ -110,6 +112,53 @@
   }
 
   // ============================================
+  // PROJECT GUESTS (schema 11, the parents)
+  // Everyone outside the family who signs in to manage a project, with their projects. A guest is added from a
+  // project's Guest access; Remove guest (remove_guest) takes every project away and stops new logins for the address.
+  // ============================================
+  async function drawGuests(box, ctx) {
+    let guests;
+    let links;
+    let projects;
+    try {
+      [guests, links, projects] = await Promise.all([
+        q(core.sb.from('guests').select('email,name').order('name')),
+        q(core.sb.from('project_guests').select('project_id,guest_email')),
+        q(core.sb.from('projects').select('id,name')),
+      ]);
+    } catch (err) {
+      if (ctx.stale()) return;
+      box.innerHTML = `<p class="form-error" role="alert">Couldn't load the guests. ${esc(friendly(err))}</p>`;
+      return;
+    }
+    if (ctx.stale()) return;
+    const names = new Map((projects || []).map((p) => [p.id, p.name]));
+    const theirs = (email) => (links || []).filter((l) => l.guest_email === email).map((l) => names.get(l.project_id)).filter(Boolean).sort();
+    box.innerHTML = `<p class="set-help">A guest, like a designer, signs in with an emailed code and sees only the projects you give them, from the project's Guest access. Removing a guest takes every project away; their login stays in Supabase (Authentication, Users) until you delete it there, and sees nothing.</p>
+      ${(guests || []).length ? `<ul class="set-guests">${guests.map((g) => {
+        const ps = theirs(g.email);
+        return `<li class="set-row"><span class="set-row-text"><b>${esc(g.name)}</b> · ${esc(g.email)}<br><small>${ps.length ? esc(ps.join(', ')) : 'No projects'}</small></span>
+          <button type="button" class="btn btn-danger set-btn" data-guest-remove="${esc(g.email)}">Remove guest</button></li>`;
+      }).join('')}</ul>` : '<p class="set-status">No guests.</p>'}
+      <p class="form-error" role="alert" hidden></p>`;
+    box.querySelectorAll('[data-guest-remove]').forEach((b) => b.addEventListener('click', async () => {
+      const g = guests.find((x) => x.email === b.dataset.guestRemove);
+      if (!window.confirm(`Remove ${g.name}? They won't see any project any more.`)) return;
+      b.disabled = true;
+      try {
+        await q(core.sb.rpc('remove_guest', { p_email: g.email }));
+        toast(`${g.name} removed`);
+        drawGuests(box, ctx);
+      } catch (err) {
+        b.disabled = false;
+        const e = box.querySelector('.form-error');
+        e.textContent = friendly(err);
+        e.hidden = false;
+      }
+    }));
+  }
+
+  // ============================================
   // THE PAGE
   // ============================================
   async function renderSettings(main, ctx) {
@@ -156,6 +205,10 @@
         <div class="set-body" data-ref="calendar">${core.schemaVersion >= 3 ? '<p class="set-status">Checking…</p>'
           : '<div class="set-row"><span class="set-row-text">Waiting for the database update</span></div>'}</div>
       </section>
+      ${admin && core.schemaVersion >= 11 ? `<section class="card set-card" aria-labelledby="setGuests">
+        <div class="card-head"><h2 id="setGuests">Project guests</h2><span class="card-sub">People outside the family who manage a project</span></div>
+        <div class="set-body" data-ref="guests"><p class="set-status">Checking…</p></div>
+      </section>` : ''}
       <section class="card set-card" aria-labelledby="setApp">
         <div class="card-head"><h2 id="setApp">Add Home Hub to your Home Screen</h2></div>
         <div class="set-body">
@@ -181,6 +234,8 @@
     let standalone = false;
     try { standalone = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true; } catch (e) { /* older browsers */ }
     ref('standalone').hidden = !standalone;
+
+    if (ref('guests')) drawGuests(ref('guests'), ctx);
 
     if (!hh) {
       ref('household').innerHTML = '<p class="set-help">The household\'s settings aren\'t there yet. Reload the page to try again.</p>';

@@ -249,6 +249,128 @@ function calendarPreview(db, b, email) {
 }
 const calendarRpc = { google_items: googleItems, calendar_preview: calendarPreview };
 
+
+// ---- Schema 11 (supabase/migrations/0011_project_guests.sql, docs/v1.4-project-guests.md): project guests.
+// withGuests(db) adds guests, project_guests and project_contacts, and documents_url (null) on every project. A guest
+// (an address in guests and not in members) may sign in (the hook), calls hub_schema_version, guest_whoami, clock and
+// the guest functions, reads and updates only the projects in project_guests for them (row-level security), with the
+// trigger's refusals (owner, calendar switch, sharing; a trade linked to a contractor not on the project), and reads
+// nothing else. guests and project_guests: admins read; project_contacts: members read; nobody signed in writes them
+// (the functions do). guestRpc has guest_whoami, guest_contacts, guest_save_contact, add_project_guest,
+// remove_project_guest and remove_guest, with the migration's checks and messages.
+function withGuests(db) {
+  db.guests = db.guests || [];
+  db.project_guests = db.project_guests || [];
+  db.project_contacts = db.project_contacts || [];
+  db.projects.forEach((p) => { if (p.documents_url === undefined) p.documents_url = null; });
+  return db;
+}
+const DRIVE_URL = /^https:\/\/drive\.google\.com\/[^\s<>"']*$/;
+const UUIDISH = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const isMemberIn = (db, email) => (db.members || []).some((m) => m.email === email);
+const guestIn = (db, email) => (db.guests && email && !isMemberIn(db, email) ? db.guests.find((g) => g.email === email) || null : null);
+const guestProjectIds = (db, email) => (db.project_guests || []).filter((l) => l.guest_email === email).map((l) => l.project_id);
+const isGuestOf = (db, email, pid) => !!email && guestProjectIds(db, email).includes(pid);
+// The contractors a schedule's trades link (private.schedule_contractors); in the fakes an id is any string.
+const scheduleContractors = (s) => [...new Set(Object.values((s && s.trades) || {}).map((t) => t && t.contractor_id).filter(Boolean))];
+function guestContactIds(db, pid) {
+  const p = db.projects.find((x) => x.id === pid);
+  const ids = new Set([...(p ? scheduleContractors(p.schedule) : []), ...db.project_contacts.filter((c) => c.project_id === pid).map((c) => c.contractor_id)]);
+  return [...ids].filter((id) => db.contractors.some((c) => c.id === id));
+}
+const hasSecrets = (db, id) => (db.contractor_secrets || []).some((x) => x.contractor_id === id);
+const contactView = (db, c) => ({ id: c.id, name: c.name, company: c.company || null, trade: c.trade || null, phone: c.phone || null, email: c.email || null,
+  website: c.website || null, kind: c.kind || 'contractor', editable: !hasSecrets(db, c.id) });
+const gFail = (status, code, message) => ({ __status: status, body: { code, message, details: null, hint: null } });
+const blank = (x) => { const t = String(x == null ? '' : x).trim(); return t || null; };
+const guestRpc = {
+  guest_whoami: (db, b, email) => {
+    const g = guestIn(db, email);
+    if (!g) return null;
+    const order = db.projects.map((p) => p.id);
+    return { email: g.email, name: g.name, projects: guestProjectIds(db, email).sort((x, y) => order.indexOf(x) - order.indexOf(y)) };
+  },
+  guest_contacts: (db, b, email) => {
+    if (!isGuestOf(db, email, b.p_project)) return gFail(403, '42501', "That project isn't shared with you.");
+    return guestContactIds(db, b.p_project).map((id) => contactView(db, db.contractors.find((c) => c.id === id)))
+      .sort((x, y) => x.name.toLowerCase().localeCompare(y.name.toLowerCase()));
+  },
+  guest_save_contact: (db, b, email) => {
+    (db.guestSaves = db.guestSaves || []).push(b);
+    if (!isGuestOf(db, email, b.p_project)) return gFail(403, '42501', "That project isn't shared with you.");
+    const x = b.p_contact || {};
+    const name = String(x.name || '').trim();
+    if (!name || name.length > 120) return gFail(400, '22023', 'Give the contractor a name (up to 120 characters).');
+    const mail = blank(x.email) && blank(x.email).toLowerCase();
+    if (mail && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(mail)) return gFail(400, '22023', `"${mail}" doesn't look like an email address.`);
+    const fields = { name, company: blank(x.company), trade: blank(x.trade), phone: blank(x.phone), email: mail, website: blank(x.website) };
+    let row;
+    if (x.id) {
+      if (!guestContactIds(db, b.p_project).includes(x.id)) return gFail(403, '42501', "That contractor isn't on this project.");
+      if (hasSecrets(db, x.id)) return gFail(403, '42501', 'This contractor has account details saved, so only a parent can change them.');
+      row = db.contractors.find((c) => c.id === x.id);
+      Object.assign(row, fields, { updated_at: now(), updated_by: email });
+    } else {
+      row = Object.assign({ id: uuid(), kind: 'contractor', notes: null, created_at: now(), updated_at: now(), updated_by: email }, fields);
+      db.contractors.push(row);
+      db.project_contacts.push({ project_id: b.p_project, contractor_id: row.id, added_at: now(), added_by: email });
+    }
+    return Object.assign(contactView(db, row), { editable: true });
+  },
+  add_project_guest: (db, b, email) => {
+    if (!(db.members.find((m) => m.email === email) || {}).role || db.members.find((m) => m.email === email).role !== 'admin') {
+      return gFail(403, '42501', 'Only a parent can give someone access to a project.');
+    }
+    const mail = String(b.p_email || '').trim().toLowerCase();
+    const name = blank(b.p_name);
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(mail)) return gFail(400, '22023', "Type the guest's email address.");
+    if (isMemberIn(db, mail)) return gFail(400, '22023', `${mail} already signs in as family, so they see every project.`);
+    if (!db.projects.some((p) => p.id === b.p_project)) return gFail(400, '22023', "That project isn't there any more.");
+    let g = db.guests.find((x) => x.email === mail);
+    if (!g) {
+      if (!name) return gFail(400, '22023', "Type the guest's name.");
+      g = { email: mail, name, created_at: now(), created_by: email };
+      db.guests.push(g);
+    } else if (name) g.name = name;
+    if (!db.project_guests.some((l) => l.project_id === b.p_project && l.guest_email === mail)) {
+      db.project_guests.push({ project_id: b.p_project, guest_email: mail, added_at: now(), added_by: email });
+    }
+    return { email: g.email, name: g.name, project_id: b.p_project };
+  },
+  remove_project_guest: (db, b, email) => {
+    if ((db.members.find((m) => m.email === email) || {}).role !== 'admin') return gFail(403, '42501', 'Only a parent can change who sees a project.');
+    const mail = String(b.p_email || '').trim().toLowerCase();
+    const before = db.project_guests.length;
+    db.project_guests = db.project_guests.filter((l) => !(l.project_id === b.p_project && l.guest_email === mail));
+    return db.project_guests.length < before;
+  },
+  remove_guest: (db, b, email) => {
+    if ((db.members.find((m) => m.email === email) || {}).role !== 'admin') return gFail(403, '42501', 'Only a parent can remove a guest.');
+    const mail = String(b.p_email || '').trim().toLowerCase();
+    const had = db.guests.some((g) => g.email === mail);
+    db.guests = db.guests.filter((g) => g.email !== mail);
+    db.project_guests = db.project_guests.filter((l) => l.guest_email !== mail);
+    return had;
+  },
+};
+// What a guest may change on one of their projects (private.projects_guest_guard), and the documents link's check.
+function guestProjectPatch(db, p, body) {
+  for (const k of ['id', 'created_at', 'owner_id', 'on_calendar', 'sharing_enabled', 'share_token']) {
+    if (k in body && JSON.stringify(body[k]) !== JSON.stringify(p[k])) {
+      return { status: 403, body: { code: '42501', message: 'Only the family can change the owner, the calendar switch or sharing.', details: null, hint: null } };
+    }
+  }
+  if ('schedule' in body) {
+    const ok = guestContactIds(db, p.id);
+    if (scheduleContractors(body.schedule).some((id) => !ok.includes(id))) {
+      return { status: 403, body: { code: '42501', message: 'Link a trade only to a contractor on this project. Add new ones under Contractors.', details: null, hint: null } };
+    }
+  }
+  return null;
+}
+const documentsCheck = (body) => (body && body.documents_url != null && !(String(body.documents_url).length <= 500 && DRIVE_URL.test(body.documents_url))
+  ? { status: 400, body: { code: '23514', message: 'new row for relation "projects" violates check constraint "projects_documents_url_check"', details: null, hint: null } } : null);
+
 // ---- Schema 10 (supabase/migrations/0010_hearth_people.sql, docs/v1.1-google-calendar.md §11): Hearth people.
 // withHearth(db) (after withCalendars) is for a schema-10 database: every calendars row gains sort_by_guest (false
 // unless set) and every google_events row guests ([] unless set), and the hearth_tags table is there (members read it;
@@ -2233,14 +2355,14 @@ async function install(page, db, log, opts = {}) {
     // ---- Auth
     if (path === '/auth/v1/otp') {
       if (opts.smtpDown) return reply(500, { code: 500, error_code: 'unexpected_failure', msg: 'Error sending magic link email' });
-      if (!db.members.some((m) => m.email === String(body.email).toLowerCase())) {
+      if (!db.members.some((m) => m.email === String(body.email).toLowerCase()) && !guestIn(db, String(body.email).toLowerCase())) {
         return reply(403, { code: 403, error_code: 'hook_error', msg: 'This email is not on the family list.' });
       }
       return reply(200, {});
     }
     if (path === '/auth/v1/verify' && method === 'POST') {
       (db.verifyCalls = db.verifyCalls || []).push(body);
-      if (body.type === 'email' && body.token === '123456' && db.members.some((m) => m.email === body.email)) return reply(200, sessionFor(body.email));
+      if (body.type === 'email' && body.token === '123456' && (db.members.some((m) => m.email === body.email) || guestIn(db, body.email))) return reply(200, sessionFor(body.email));
       return reply(403, { code: 403, error_code: 'otp_expired', msg: 'Token has expired or is invalid' });
     }
     if (path === '/auth/v1/user') return reply(200, sessionFor(emailFrom(req)).user);
@@ -2274,11 +2396,15 @@ async function install(page, db, log, opts = {}) {
     if (path.startsWith('/rest/v1/rpc/')) {
       const name = path.slice('/rest/v1/rpc/'.length);
       (db.rpcCalls = db.rpcCalls || []).push({ name, body, email });
-      const fn = opts.rpc && opts.rpc[name];
+      const fn = (opts.rpc && opts.rpc[name]) || (db.guests && guestRpc[name]);
       // No handler: 404, as PostgREST answers for a missing function. hub_schema_version has no handler
       // unless a test adds one, so by default the site runs in v1 mode, as it does on today's database.
       if (!fn) return reply(404, { code: 'PGRST202', message: `Could not find the function public.${name}` });
-      if (!member) return reply(401, { code: '42501', message: 'permission denied' });
+      // Schema 11: anyone signed in may call hub_schema_version, clock and guest_whoami (the database grants them to
+      // authenticated); a guest the guest functions too, which check the caller themselves.
+      const openToAll = db.guests && email && ['hub_schema_version', 'clock', 'guest_whoami'].includes(name);
+      const guestCall = guestIn(db, email) && guestRpc[name];
+      if (!member && !openToAll && !guestCall) return reply(401, { code: '42501', message: 'permission denied' });
       try {
         const out = fn(db, body || {}, email);
         if (out && out.__status) return reply(out.__status, out.body);
@@ -2289,7 +2415,34 @@ async function install(page, db, log, opts = {}) {
     // ---- Tables (row-level security: members only)
     const table = path.replace('/rest/v1/', '');
     if (!db[table]) return reply(404, { message: 'not found' });
+    // Schema 11: a project guest reads and updates only their own projects; every other table answers nothing.
+    const guest = !member && guestIn(db, email);
+    if (guest && table === 'projects' && (method === 'GET' || method === 'PATCH')) {
+      const gFilters = [...url.searchParams].filter(([k]) => !['select', 'order', 'limit', 'offset', 'columns', 'on_conflict'].includes(k));
+      const rows = db.projects.filter((r) => isGuestOf(db, email, r.id) && gFilters.every(([k, v]) => matchFilter(r[k], v)));
+      const wantsOne = (req.headers()['accept'] || '').includes('vnd.pgrst.object');
+      if (method === 'PATCH') {
+        for (const r of rows) {
+          const refused = guestProjectPatch(db, r, body) || documentsCheck(body);
+          if (refused) return reply(refused.status, refused.body);
+        }
+        rows.forEach((r) => Object.assign(r, body, { updated_at: now() }));
+      }
+      if (wantsOne) return rows.length === 1 ? reply(200, rows[0]) : reply(406, { code: 'PGRST116', message: 'JSON object requested, multiple (or no) rows returned' });
+      return reply(200, rows);
+    }
     if (!member) return method === 'GET' ? reply(200, []) : reply(403, { code: '42501', message: `new row violates row-level security policy for table "${table}"` });
+    // Schema 11's tables: guests and project_guests admins read, project_contacts members read; nobody writes them.
+    if (['guests', 'project_guests', 'project_contacts'].includes(table)) {
+      if (method !== 'GET') return reply(403, { code: '42501', message: `permission denied for table ${table}`, details: null, hint: null });
+      const gFilters = [...url.searchParams].filter(([k]) => !['select', 'order', 'limit', 'offset', 'columns', 'on_conflict'].includes(k));
+      const rows = table !== 'project_contacts' && member.role !== 'admin' ? [] : db[table].filter((r) => gFilters.every(([k, v]) => matchFilter(r[k], v)));
+      return reply(200, rows);
+    }
+    if (table === 'projects' && (method === 'PATCH' || method === 'POST') && db.guests) {
+      const refused = documentsCheck(body);
+      if (refused) return reply(refused.status, refused.body);
+    }
     const filters = [...url.searchParams].filter(([k]) => !['select', 'order', 'limit', 'offset', 'columns', 'on_conflict'].includes(k));
     const match = (row) => filters.every(([k, v]) => (k === 'or' ? matchLogic(row, v, true) : k === 'and' ? matchLogic(row, v, false) : matchFilter(row[k], v)));
     const wantsObject = (req.headers()['accept'] || '').includes('vnd.pgrst.object');
@@ -3611,6 +3764,7 @@ function stubShare(page) {
 }
 
 module.exports = { makeDb, install, signIn, expectedConsoleError, SUPA, withCalendars, calendarRow, linkRow, googleEventRow, calendarRpc, md5uuid,
+  withGuests, guestRpc,
   withHearth, hearthTagRow, hearthRpc,
   withFood, mealRow, shopItem, foodRpc, personDayFood, foodStamp,
   withHomework, homeworkRpc, homePlan, hwKidRow, tutorLinkRow, assignmentRow, stepRow, sessionRow, rewardRow, askRow, ledgerRow,
