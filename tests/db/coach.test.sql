@@ -700,7 +700,8 @@ select test.is((select string_agg(p.proname || ' ' || r, ', ' order by p.proname
                 where p.pronamespace = 'private'::regnamespace and p.proname in ('task_log_in_charge', 'tasks_in_charge_since', 'events_people_since')
                   and (has_function_privilege(r, p.oid, 'execute') or not coalesce(p.proconfig, '{}') @> '{"search_path=\"\""}')), null,
                '... nobody may call their functions, and each sets search_path = ''''');
-select test.is(hub_schema_version(), 7, 'hub_schema_version is 7');
+-- 7 since 0007; 0008 (the first-import check's past items) makes it 8.
+select test.is(hub_schema_version(), 8, 'hub_schema_version is 8 (0007 made it 7, 0008 makes it 8)');
 
 -- ---------------------------------------------------------------------
 -- Erase takes the notes with it

@@ -21,7 +21,7 @@ const results = [];
 const check = (name, ok, detail) => results.push(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? `  (${String(detail).slice(0, 200)})` : ''}`);
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const CORS = { 'access-control-allow-origin': '*', 'access-control-allow-headers': '*', 'access-control-allow-methods': 'GET,POST,PATCH,DELETE,OPTIONS', 'access-control-expose-headers': '*' };
-const V = '20261031h';   // the timelines (no migration): the overview, an assignment's chart, his path
+const V = '20261031h';   // the timelines (no migration) on the first-import check's past items (0008)
 
 // ---- Fixtures (fictional people only)
 const T = '2026-10-24T16:00:00.000000+00:00';

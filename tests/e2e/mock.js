@@ -1444,6 +1444,10 @@ const coachRpc = {
 // { action: 'school' } (Check now) is schoolJob below: db.schoolJob = 'no_schema' | 'old' answers as those would,
 // db.schoolReply replaces the answer, db.schoolRead(db, feed) is what a read brought (it may add items).
 // Without withSchool every one answers 404 and the keys aren't there, as on schema 5.
+// withSchoolCheck(db) (after withSchool) is 0008 (schema 8): the status card's check fills up with the latest past items
+// when fewer than 5 are to come, each with past (docs/v1.3-homework.md §12.8), and a removed link added again starts as
+// not read (set_school_feed). Without it, 0006's: a check of only items due today or later, no past key (so [] when every
+// item is past), and a link added again keeps its old last read, as on schema 6 and 7.
 const SCHOOL_KINDS = ['assignments', 'schedule', 'games'];
 const SCHOOL_URLS = new WeakMap();
 function withSchool(db, opts) {
@@ -1452,6 +1456,11 @@ function withSchool(db, opts) {
   db.schoolSuffix = (opts && opts.suffix) || db.schoolSuffix || '.school.example';
   if (db.schoolLastRun === undefined) db.schoolLastRun = null;
   if (!SCHOOL_URLS.has(db)) SCHOOL_URLS.set(db, new Map());
+  return db;
+}
+function withSchoolCheck(db) {
+  withSchool(db);
+  db.schoolCheck8 = true;
   return db;
 }
 const schoolUrlOf = (db, feedId) => (SCHOOL_URLS.get(db) || new Map()).get(feedId) || null;
@@ -1503,6 +1512,19 @@ function scNew(db, kid, today) {
     && i.due_date >= today && i.due_date <= tkAdd(today, 30)).sort(scByDue).slice(0, 20)
     .map((i) => ({ id: i.id, title: i.title, subject: i.subject, due_date: i.due_date, quick: tkBetween(today, i.due_date) <= 3 }));
 }
+// The first-import check: an Assignments link not checked (nor removed). 0006: its next 5 items, due today or later.
+// 0008 (db.schoolCheck8): up to 5 still on the school site, the ones to come earliest first, then the latest past ones;
+// in date order, each with past.
+function scCheck(db, kid, today) {
+  const open = scItemsOf(db, kid, (i, f) => f.kind === 'assignments' && !f.checked && !f.removed_at && i.due_date != null && !i.gone_at);
+  const keys = (i) => ({ id: i.id, title: i.title, subject: i.subject, first_day: i.first_day, last_day: i.last_day, due_date: i.due_date });
+  const next = open.filter((i) => i.due_date >= today).sort(scByDue);
+  if (!db.schoolCheck8) return next.slice(0, 5).map(keys);
+  // Latest first; on one day, by title and id, as the database's distance from today, then title, id.
+  const past = open.filter((i) => i.due_date < today).sort((x, y) => (x.due_date > y.due_date ? -1 : x.due_date < y.due_date ? 1 : scByDue(x, y)));
+  return next.slice(0, 5).concat(past.slice(0, Math.max(0, 5 - next.length))).sort(scByDue)
+    .map((i) => Object.assign(keys(i), { past: i.due_date < today }));
+}
 // The status card (school_feed_status). A removed link (its row kept only for the assignments made from it) isn't on it.
 function scStatus(db, kid, nowMs, today) {
   const order = { assignments: 1, schedule: 2, games: 3 };
@@ -1515,8 +1537,7 @@ function scStatus(db, kid, nowMs, today) {
       id: f.id, kind: f.kind, host: f.host, url_end: f.url_end, checked: f.checked, date_rule: f.date_rule, date_shift: f.date_shift, paused: f.paused,
       last_try_at: f.last_try_at, last_ok_at: f.last_ok_at, last_count: f.last_count, last_repeats: f.last_repeats, last_stop: f.last_stop, fails: f.fails,
       next_at: f.next_at, stale: !f.paused && on && f.next_at != null && tkMs(f.next_at) < nowMs - 2 * 3600e3 })),
-    check: scItemsOf(db, kid, (i, f) => f.kind === 'assignments' && !f.checked && !f.removed_at && i.due_date != null && i.due_date >= today && !i.gone_at).sort(scByDue).slice(0, 5)
-      .map((i) => ({ id: i.id, title: i.title, subject: i.subject, first_day: i.first_day, last_day: i.last_day, due_date: i.due_date })),
+    check: scCheck(db, kid, today),
     new: scItemsOf(db, kid, (i, f) => f.kind === 'assignments' && f.checked && !f.removed_at && !i.made_at && !i.hidden && !i.gone_at && i.due_date >= today
       && i.due_date <= tkAdd(today, 30)).sort(scByDue).slice(0, 50).map(pick),
     hidden: scItemsOf(db, kid, (i, f) => f.kind === 'assignments' && !f.removed_at && !i.made_at && i.hidden && !i.gone_at && i.due_date >= today).sort(scByDue).map(pick),
@@ -1611,7 +1632,11 @@ const schoolRpc = {
     if (!f) {
       f = schoolFeedRow({ kid_id: b.p_kid, kind: b.p_kind, host, url_end: url.slice(-4), next_at: at, created_by: email, updated_by: email });
       db.school_feeds.push(f);
-    } else Object.assign(f, { host, url_end: url.slice(-4), next_at: at, fails: 0, last_stop: null, removed_at: null, updated_by: email, updated_at: now() });
+    } else {
+      // 0008 (db.schoolCheck8): a removed link added again starts as not read (Replace keeps its last read); 0006 keeps it.
+      if (db.schoolCheck8 && f.removed_at) Object.assign(f, { last_try_at: null, last_ok_at: null, last_count: null, last_repeats: null });
+      Object.assign(f, { host, url_end: url.slice(-4), next_at: at, fails: 0, last_stop: null, removed_at: null, updated_by: email, updated_at: now() });
+    }
     SCHOOL_URLS.get(db).set(f.id, url);
     return { id: f.id, kind: f.kind, host: f.host, url_end: f.url_end };
   }),
@@ -3501,4 +3526,4 @@ module.exports = { makeDb, install, signIn, expectedConsoleError, SUPA, withCale
   withFood, mealRow, shopItem, foodRpc, personDayFood, foodStamp,
   withHomework, homeworkRpc, homePlan, hwKidRow, tutorLinkRow, assignmentRow, stepRow, sessionRow, rewardRow, askRow, ledgerRow,
   withHomeworkTokens, homeworkTokenRpc, personDayHomework, tkKidRow, tkLinkRow, tkAssignmentRow, tkStepRow, tkSessionRow, tkRewardRow, tkLedgerRow, stubShare,
-  withSchool, schoolRpc, schoolFeedRow, schoolItemRow, schoolUrlOf, withCoach, coachRpc, coachNoteRow, aiRpc, aiJob, aiMessage, aiComplete };
+  withSchool, withSchoolCheck, schoolRpc, schoolFeedRow, schoolItemRow, schoolUrlOf, withCoach, coachRpc, coachNoteRow, aiRpc, aiJob, aiMessage, aiComplete };

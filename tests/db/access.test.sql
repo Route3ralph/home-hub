@@ -35,8 +35,25 @@ select test.is((whoami() -> 'person' ->> 'id')::uuid, test.person('Alex'), 'whoa
 -- anything of it (Today's lines, Jordan's card, the tutor link), only on 5. Migration 0006 (the school
 -- feed) changes it on purpose again: the client shows the school links and New from school only on 6. Migration
 -- 0007 (the coach view) changes it on purpose once more: the Homework page shows the coach switch and the coach's
--- notes, and asks for coach_notes, only on 7.
-select test.is(hub_schema_version(), 7, 'hub_schema_version is 7');
+-- notes, and asks for coach_notes, only on 7. Migration 0008 (the first-import check's past items) changes it again,
+-- though no page asks for anything new on 8: it only replaces school_feed_status, whose answer the page reads on 7 too.
+select test.is(hub_schema_version(), 8, 'hub_schema_version is 8');
+-- 0008 replaces school_feed_status with the same signature: still a definer function that sets search_path = '',
+-- stable, and callable by signed-in users only (as 0006 granted it; 0008 revokes and grants it again).
+select test.is((select p.prosecdef || ' ' || p.provolatile::text || ' ' || array_to_string(p.proconfig, ',') || ' ' || p.prorettype::regtype::text
+                       || ' ' || (select string_agg(r || ':' || has_function_privilege(r, p.oid, 'execute'), ' ' order by r)
+                                  from unnest(array['public', 'anon', 'authenticated', 'service_role']) r)
+                from pg_proc p where p.oid = 'public.school_feed_status(uuid)'::regprocedure),
+               'true s search_path="" jsonb anon:false authenticated:true public:false service_role:false',
+               'school_feed_status (replaced by 0008): definer, stable, search_path = '''', jsonb; signed-in users only');
+-- ... and set_school_feed (Add link, Replace, Remove; replaced by 0008 so a removed link added again starts as not
+-- read): the same rules as 0006 gave it, a volatile definer function only signed-in users may call.
+select test.is((select p.prosecdef || ' ' || p.provolatile::text || ' ' || array_to_string(p.proconfig, ',') || ' ' || p.prorettype::regtype::text
+                       || ' ' || (select string_agg(r || ':' || has_function_privilege(r, p.oid, 'execute'), ' ' order by r)
+                                  from unnest(array['public', 'anon', 'authenticated', 'service_role']) r)
+                from pg_proc p where p.oid = 'public.set_school_feed(uuid, text, text)'::regprocedure),
+               'true v search_path="" jsonb anon:false authenticated:true public:false service_role:false',
+               'set_school_feed (replaced by 0008): definer, volatile, search_path = '''', jsonb; signed-in users only');
 :as_removed
 select test.is(whoami(), null, 'removed member: whoami is null even with a person row');
 :as_stranger

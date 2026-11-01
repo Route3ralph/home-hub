@@ -10,7 +10,9 @@
 # migration 0006 too, with school links and their items in that household (step 5d), and that with
 # homework on and no school link 0006 leaves My day, his homework view and Pat's as 0005 made them (step 5e),
 # and 0007 (the coach view) too while it is off, as 0007 leaves every link (5d, 5e); turning it on for a link
-# adds one key to that link's view and changes nothing else (step 5f).
+# adds one key to that link's view and changes nothing else (step 5f); and that migration 0008 changes only the
+# school status card's first-import check and what a removed link added again keeps of its last read (its refusals,
+# its undo, and "same status card").
 # Prints one "PASS  name" or "FAIL  name  (detail)" line per check, then the totals,
 # and exits non-zero if anything failed.
 # Needs the PostgreSQL 16 server binaries (PG_BIN overrides where they are); cluster.sh starts
@@ -224,6 +226,157 @@ SQL
 if [[ $got == "true true true true 1 1 done:false,skipped:true" ]]; then
   report "PASS  migration 0007 stamps the tasks and events already there with its time, without saving them; earlier task entries have no stamp, later ones their task's person"
 else report "FAIL  migration 0007 stamps the tasks and events already there  (${out:0:200}; got $got)"; fi
+
+# 0008 (the first-import check's past items) refuses to run twice, on a v1 database, and without 0007 (at 0005 and
+# at 0006): each says why, and changes nothing.
+out=$(quiet -d hub_again -f supabase/migrations/0008_school_check.sql 2>&1)
+if [[ $out == *"already installed"* ]] && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 8 ]]; then
+  report "PASS  migration 0008 refuses to run twice"
+else report "FAIL  migration 0008 refuses to run twice  (${out:0:200})"; fi
+out=$(quiet -d hub_v1_again -f supabase/migrations/0008_school_check.sql 2>&1)
+if [[ $out == *"isn't installed"* ]] && [[ -z $(quiet -d hub_v1_again -A -t -c "select to_regprocedure('public.hub_schema_version()')") ]]; then
+  report "PASS  migration 0008 refuses to run on a v1 database (0002 isn't installed), and changes nothing"
+else report "FAIL  migration 0008 refuses to run on a v1 database  (${out:0:200})"; fi
+before=$(catalog_of hub_05_again)
+out=$(quiet -d hub_05_again -f supabase/migrations/0008_school_check.sql 2>&1)
+if [[ $out == *"(migration 0007) isn't installed"* ]] && [[ $(catalog_of hub_05_again) == "$before" ]] \
+   && [[ $(quiet -d hub_05_again -A -t -c "select public.hub_schema_version()") == 5 ]]; then
+  report "PASS  migration 0008 refuses to run on a database at 0005, and changes nothing"
+else report "FAIL  migration 0008 refuses to run on a database at 0005  (${out:0:200})"; fi
+sql -d postgres -c 'create database hub_06_only template hub_05_again'
+quiet -d hub_06_only -f supabase/migrations/0006_homework_school.sql >/dev/null 2>&1
+before=$(catalog_of hub_06_only)
+out=$(quiet -d hub_06_only -f supabase/migrations/0008_school_check.sql 2>&1)
+if [[ $out == *"(migration 0007) isn't installed"* ]] && [[ $(catalog_of hub_06_only) == "$before" ]] \
+   && [[ $(quiet -d hub_06_only -A -t -c "select public.hub_schema_version()") == 6 ]]; then
+  report "PASS  migration 0008 refuses to run without 0007 (a database at 0006), and changes nothing"
+else report "FAIL  migration 0008 refuses to run without 0007  (${out:0:200})"; fi
+# ... and on a database at 0007 that isn't as 0007 left it, where what 0008 replaces or reads is missing: the status
+# card's function, Add link's (set_school_feed), the column that marks an item gone from the school site, or the
+# table that keeps a link's address.
+n=0
+for broken in 'drop function public.school_feed_status(uuid)' 'drop function public.set_school_feed(uuid, text, text)' \
+              'alter table public.school_items drop column gone_at' 'drop table private.school_feed_urls'; do
+  n=$((n + 1))
+  sql -d postgres -c "create database hub_07_shape$n template hub_06_stamps"
+  quiet -d "hub_07_shape$n" -c "$broken" >/dev/null
+  before=$(catalog_of "hub_07_shape$n")
+  out=$(quiet -d "hub_07_shape$n" -f supabase/migrations/0008_school_check.sql 2>&1)
+  if [[ $out == *"isn't as migration 0007 left it"* ]] && [[ $(catalog_of "hub_07_shape$n") == "$before" ]] \
+     && [[ $(quiet -d "hub_07_shape$n" -A -t -c "select public.hub_schema_version()") == 7 ]]; then
+    report "PASS  migration 0008 refuses a database at 0007 not as 0007 left it ($broken), and changes nothing"
+  else report "FAIL  migration 0008 refuses a database at 0007 not as 0007 left it ($broken)  (${out:0:200})"; fi
+done
+# Undo, as docs/v1.3-homework.md §16.7 says: 0006's school_feed_status and set_school_feed again (their create
+# function … $$; blocks from 0006, with create or replace) and hub_schema_version() returning 7. The two functions are
+# then 0006's (the same as on a database at 0007, with the same grants), and 0008 runs again, leaving the functions as on
+# a fresh install.
+sql -d postgres -c 'create database hub_set_back_7 template hub'
+{ for f in 'school_feed_status(p_kid uuid)' 'set_school_feed(p_kid uuid, p_kind text, p_url text)'; do
+    sed -n "/^create function public\.$f\$/,/^\\$\\$;\$/p" supabase/migrations/0006_homework_school.sql \
+      | sed '1s/^create function/create or replace function/'
+  done
+  echo "create or replace function public.hub_schema_version() returns int language sql immutable set search_path = '' as \$\$ select 7 \$\$;"
+} >"$dir/undo_0008.sql"
+fn_of() { quiet -d "$1" -A -t -c "select string_agg(p.proname || ' ' || md5(p.prosrc) || ' ' || p.prosecdef || ' ' || p.provolatile || ' ' || array_to_string(p.proconfig, ',')
+                                         || ' ' || has_function_privilege('anon', p.oid, 'execute') || ' ' || has_function_privilege('authenticated', p.oid, 'execute')
+                                         || ' ' || has_function_privilege('service_role', p.oid, 'execute'), ' | ' order by p.proname)
+                                  from pg_proc p where p.oid in ('public.school_feed_status(uuid)'::regprocedure, 'public.set_school_feed(uuid,text,text)'::regprocedure)"; }
+undo=$(quiet -d hub_set_back_7 -f "$dir/undo_0008.sql" 2>&1)
+v07=$(fn_of hub_06_stamps)
+got_undo="$(quiet -d hub_set_back_7 -A -t -c "select public.hub_schema_version()") $([[ $(fn_of hub_set_back_7) == "$v07" ]] && echo same-as-0007)"
+out=$(quiet -d hub_set_back_7 -f supabase/migrations/0008_school_check.sql 2>&1)
+got_again="$(quiet -d hub_set_back_7 -A -t -c "select public.hub_schema_version()") $([[ $(catalog_of hub_set_back_7) == "$(catalog_of hub)" && $(fn_of hub_set_back_7) == "$(fn_of hub)" ]] && echo same-as-fresh)"
+if [[ -z $undo && $got_undo == "7 same-as-0007" && -z $out && $got_again == "8 same-as-fresh" ]]; then
+  report "PASS  migration 0008's undo: 0006's status card and Add link back, schema 7; then 0008 runs again, as on a fresh install"
+else report "FAIL  migration 0008's undo  (undo: ${undo:0:150}; then: $got_undo; again: ${out:0:150} $got_again)"; fi
+# Same output: on a database at 0007 with school links (as 5d's), 0008 changes only the status card's check: every
+# other key of every kid's card is as before; a link with five or more items to come gets the same five, each with
+# past: false; a link whose items are all past gets its five latest (it had none); a checked link still none.
+sql -d postgres -c 'create database hub_07_school template hub_06_stamps'
+quiet -d hub_07_school >"$dir/load.log" 2>&1 <<'SQL'
+insert into public.people (name, role, sort_order) values ('Taylor', 'kid', 3), ('Robin', 'kid', 4), ('Riley', 'kid', 5);
+insert into public.homework_kids (kid_id, active) select id, true from public.people where name in ('Taylor', 'Robin', 'Riley');
+insert into public.school_feeds (id, kid_id, kind, host, url_end, checked, last_ok_at, last_count, next_at)
+select f.id::uuid, p.id, f.kind, 'academy.school.example', f.url_end, f.checked, '2026-11-02 13:00+00', 7, '2026-11-02 13:50+00'
+from (values ('f0000000-0000-4000-8000-000000000001', 'Taylor', 'assignments', 'a1b2', false), ('f0000000-0000-4000-8000-000000000002', 'Taylor', 'schedule', 'c3d4', false),
+             ('f0000000-0000-4000-8000-000000000003', 'Robin', 'assignments', 'e5f6', true), ('f0000000-0000-4000-8000-000000000004', 'Riley', 'assignments', 'g7h8', false))
+     f (id, name, kind, url_end, checked)
+join public.people p on p.name = f.name;
+insert into public.assignments (id, kid_id, title, due_date, added_by)
+select a.id::uuid, p.id, a.title, a.due::date, 'school' from (values ('a0000000-0000-4000-8000-000000000011', 'Lab write-up', '2026-11-05'),
+                                                         ('a0000000-0000-4000-8000-000000000012', 'Old essay', '2026-11-03')) a (id, title, due)
+join public.people p on p.name = 'Robin';
+insert into public.school_items (feed_id, key, has_uid, title, subject, first_day, last_day, due_date, hidden, gone_at, assignment_id, made_at, applied,
+                                 first_seen_at, last_seen_at)
+select i.feed::uuid, md5(i.title), true, i.title, 'English', i.due::date, i.due::date, i.due::date, i.hidden, i.gone::timestamptz, i.asg::uuid,
+       case when i.asg is not null then '2026-10-30 12:00+00'::timestamptz end,
+       case when i.asg is not null then jsonb_build_object('title', i.title, 'subject', 'English', 'due_date', i.applied_due, 'details', null) end,
+       '2026-10-20 12:00+00', '2026-11-02 13:00+00'
+from (values
+  -- Taylor's link, not checked: seven to come, two past, and one gone from the school site that would be first.
+  ('f0000000-0000-4000-8000-000000000001', 'Read chapter 5', '2026-11-03', false, null, null, null),
+  ('f0000000-0000-4000-8000-000000000001', 'Lab report', '2026-11-04', false, null, null, null),
+  ('f0000000-0000-4000-8000-000000000001', 'Map quiz', '2026-11-05', false, null, null, null),
+  ('f0000000-0000-4000-8000-000000000001', 'Poem', '2026-11-06', false, null, null, null),
+  ('f0000000-0000-4000-8000-000000000001', 'Essay outline', '2026-11-09', false, null, null, null),
+  ('f0000000-0000-4000-8000-000000000001', 'Spelling test', '2026-11-10', false, null, null, null),
+  ('f0000000-0000-4000-8000-000000000001', 'Science fair form', '2026-11-12', false, null, null, null),
+  ('f0000000-0000-4000-8000-000000000001', 'Reading log', '2026-10-30', false, null, null, null),
+  ('f0000000-0000-4000-8000-000000000001', 'Worksheet', '2026-10-29', false, null, null, null),
+  ('f0000000-0000-4000-8000-000000000001', 'Old quiz', '2026-11-02', false, '2026-11-01 12:00+00', null, null),
+  -- Robin's link, checked: one new, one hidden, one made homework whose date the school moved, one made homework gone.
+  ('f0000000-0000-4000-8000-000000000003', 'Vocabulary quiz', '2026-11-04', false, null, null, null),
+  ('f0000000-0000-4000-8000-000000000003', 'Map project', '2026-11-06', true, null, null, null),
+  ('f0000000-0000-4000-8000-000000000003', 'Lab write-up', '2026-11-09', false, null, 'a0000000-0000-4000-8000-000000000011', '2026-11-05'),
+  ('f0000000-0000-4000-8000-000000000003', 'Old essay', '2026-11-03', false, '2026-11-01 12:00+00', 'a0000000-0000-4000-8000-000000000012', '2026-11-03'),
+  -- Riley's link, not checked: everything past (read over a break).
+  ('f0000000-0000-4000-8000-000000000004', 'Book report', '2026-10-20', false, null, null, null),
+  ('f0000000-0000-4000-8000-000000000004', 'Fractions', '2026-10-22', false, null, null, null),
+  ('f0000000-0000-4000-8000-000000000004', 'Lab safety', '2026-10-25', false, null, null, null),
+  ('f0000000-0000-4000-8000-000000000004', 'Vocabulary list', '2026-10-27', false, null, null, null),
+  ('f0000000-0000-4000-8000-000000000004', 'Poem recital', '2026-10-28', false, null, null, null),
+  ('f0000000-0000-4000-8000-000000000004', 'Map of Europe', '2026-10-30', false, null, null, null),
+  ('f0000000-0000-4000-8000-000000000004', 'Unit review', '2026-11-01', false, null, null, null)
+) i (feed, title, due, hidden, gone, asg, applied_due);
+insert into public.school_items (feed_id, key, has_uid, title, starts_at, ends_at, first_seen_at, last_seen_at)
+values ('f0000000-0000-4000-8000-000000000002', md5('orchestra'), true, 'Orchestra rehearsal', '2026-11-03 21:00+00', '2026-11-03 21:45+00', now(), now());
+SQL
+[[ $? -ne 0 ]] && report "FAIL  same status card: loading school data  ($(grep -m 1 ERROR "$dir/load.log" || tail -n 1 "$dir/load.log"))"
+cards() { # every person's status card, as Alex, on Mon Nov 2 at 9am
+  quiet -d hub_07_school -A -t <<'SQL'
+set hub.now = '2026-11-02 09:00 America/New_York';
+set request.jwt.claims = '{"role": "authenticated", "email": "alex@example.com"}';
+set role authenticated;
+select jsonb_object_agg(p.name, public.school_feed_status(p.id)) from public.people p;
+SQL
+}
+before=$(cards)
+out=$(quiet -d hub_07_school -f supabase/migrations/0008_school_check.sql 2>&1)
+got=$(quiet -d hub_07_school -A -t -v before="$before" <<'SQL'
+set hub.now = '2026-11-02 09:00 America/New_York';
+set request.jwt.claims = '{"role": "authenticated", "email": "alex@example.com"}';
+set role authenticated;
+with b as (select key as name, nullif(value, 'null') as s from jsonb_each(:'before'::jsonb)),
+     a as (select p.name, public.school_feed_status(p.id) as s from public.people p),
+     t as (select a.s -> 'check' as now, b.s -> 'check' as was from a join b using (name) where name = 'Taylor'),
+     r as (select a.s -> 'check' as now, b.s -> 'check' as was from a join b using (name) where name = 'Riley'),
+     o as (select b.s as was, a.s -> 'check' as now from a join b using (name) where name = 'Robin')
+select (select count(*) from b) || ' ' || (select count(*) from b where s is not null) || ' '
+       || (select bool_and((a.s - 'check') is not distinct from (b.s - 'check')) from a join b using (name)) || ' '
+       || (select string_agg(x ->> 'title', ',' order by n) from t, jsonb_array_elements(t.was) with ordinality j (x, n)) || ' '
+       || (select (select jsonb_agg(x - 'past' order by n) from jsonb_array_elements(t.now) with ordinality j (x, n)) = t.was
+                  and (select bool_and(x -> 'past' = 'false') from jsonb_array_elements(t.now) x) from t) || ' '
+       || (select jsonb_array_length(r.was) || ' ' || (select string_agg((x ->> 'due_date') || ':' || (x ->> 'past'), ',' order by n)
+                                                       from jsonb_array_elements(r.now) with ordinality j (x, n)) from r) || ' '
+       || (select jsonb_array_length(o.was -> 'new') || ',' || jsonb_array_length(o.was -> 'hidden') || ',' || jsonb_array_length(o.was -> 'moved') || ','
+                  || jsonb_array_length(o.was -> 'gone') || ',' || jsonb_array_length(o.was -> 'feeds') || ' ' || (o.was -> 'check')::text || ' ' || o.now::text from o);
+SQL
+)
+want="5 3 true Read chapter 5,Lab report,Map quiz,Poem,Essay outline true 0 2026-10-25:true,2026-10-27:true,2026-10-28:true,2026-10-30:true,2026-11-01:true 1,1,1,1,1 [] []"
+if [[ -z $out && $got == "$want" ]]; then
+  report "PASS  same status card: 0008 changes only the check (past: false on five to come, the five latest for a link with none to come)"
+else report "FAIL  same status card: 0008 changes only the check  (${out:0:150}; got ${got:0:400}; want $want)"; fi
 
 # 5. preflight.sql's promise, "nothing migration 0002 creates exists yet", covers everything the
 #    migration creates that a live database could already have under the same name (which would
