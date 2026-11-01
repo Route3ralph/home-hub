@@ -70,6 +70,8 @@ Make each step easy to start and easy to finish:
 - Mark one to four steps as milestones (kind "milestone"), where a real piece of the work is finished; at most one in a plan of three steps or fewer. A deadline inside the assignment, such as an outline due on a date, becomes a milestone on or before that date.
 - A plan of four or more steps has a check step (kind "check": compare the work with the instructions) before the turn-in. Every assignment ends with one turn-in step (kind "turn_in") of 5 minutes; a lesson may have none.
 - A small assignment (about 30 minutes or less) gets two or three steps.
+- A plan has at most 12 steps. A long job gets bigger steps, not more of them.
+- Keep it short: a step's title is 80 characters or fewer, done_looks_like 160 or fewer, each question and stretch 160 or fewer, summary and note_for_adult 300 or fewer.
 
 Fit the plan to the time:
 - Use only days listed in free_time, and never more minutes on a day than it has free. Leave some free time unused when you can.
@@ -228,21 +230,30 @@ type Fields = { kind?: string; session_minutes?: number; current_plan?: unknown 
 
 // The answer as the draft homework_ai_finish takes, or null ('invalid').
 export function checkPlan(raw: unknown, fields: Fields): Draft | null {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const r = planCheck(raw, fields);
+  return 'draft' in r ? r.draft : null;
+}
+// The same checks, saying which one failed: a fixed code, never any of the answer's text (logged by runWork).
+export function planCheck(raw: unknown, fields: Fields): { draft: Draft } | { why: string } {
+  const bad = (why: string) => ({ why });
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return bad('not_object');
   const a = raw as Record<string, unknown>;
-  if (Object.keys(a).sort().join() !== KEYS.join()) return null;
-  if (typeof a.fits !== 'boolean' || !Array.isArray(a.questions) || !Array.isArray(a.steps)) return null;
+  if (Object.keys(a).sort().join() !== KEYS.join()) return bad('keys');
+  if (typeof a.fits !== 'boolean' || !Array.isArray(a.questions) || !Array.isArray(a.steps)) return bad('types');
   // The counts before any text is looked at. The answer may repeat a locked step (the copy is dropped), never more.
-  if (a.questions.length > 3 || a.steps.length > 12 + (Array.isArray(fields.current_plan) ? fields.current_plan.length : 0)) return null;
+  if (a.questions.length > 3) return bad('questions_count');
+  if (a.steps.length > 12 + (Array.isArray(fields.current_plan) ? fields.current_plan.length : 0)) return bad('steps_count');
   const summary = text(a.summary);
   const stretch = text(a.stretch);
   const note = text(a.note_for_adult);
-  if (!within(summary, 1, 300) || !within(stretch, 0, 160) || !within(note, 0, 300)) return null;
-  if (a.questions.length > 3) return null;
+  if (!within(summary, 1, 300)) return bad('summary_length');
+  if (!within(stretch, 0, 160)) return bad('stretch_length');
+  if (!within(note, 0, 300)) return bad('note_length');
+  if (a.questions.length > 3) return bad('questions_count');
   const questions: string[] = [];
   for (const q of a.questions) {
     const t = text(q);
-    if (!within(t, 1, 160)) return null;
+    if (!within(t, 1, 160)) return bad('question_length');
     questions.push(t!);
   }
   const session = Number.isInteger(fields.session_minutes) && (fields.session_minutes as number) >= 5 ? (fields.session_minutes as number) : 20;
@@ -257,9 +268,9 @@ export function checkPlan(raw: unknown, fields: Fields): Draft | null {
   const out: Out[] = [];
   const seen = new Set<string>();
   for (const s of a.steps as unknown[]) {
-    if (!s || typeof s !== 'object' || Array.isArray(s)) return null;
+    if (!s || typeof s !== 'object' || Array.isArray(s)) return bad('step_not_object');
     const x = s as Record<string, unknown>;
-    if (Object.keys(x).sort().join() !== STEP_KEYS.join()) return null;
+    if (Object.keys(x).sort().join() !== STEP_KEYS.join()) return bad('step_keys');
     const ref = typeof x.ref === 'string' ? x.ref : '';
     const at = order.has(ref) ? order.get(ref)! : -1;
     const lk = locked.get(ref);
@@ -267,16 +278,17 @@ export function checkPlan(raw: unknown, fields: Fields): Draft | null {
       if (seen.has(ref)) continue;   // the same locked ref again: the first copy is kept
       seen.add(ref);
       const restored = restore(lk, x);
-      if (!restored) return null;
+      if (!restored) return bad('locked_step');
       out.push(Object.assign(restored, { at }));
       continue;
     }
     const kind = typeof x.kind === 'string' ? x.kind : '';
-    if (!KINDS.includes(kind)) return null;
-    if (typeof x.minutes !== 'number' || !Number.isInteger(x.minutes)) return null;
+    if (!KINDS.includes(kind)) return bad('step_kind');
+    if (typeof x.minutes !== 'number' || !Number.isInteger(x.minutes)) return bad('step_minutes');
     const title = text(x.title);
     const dll = text(x.done_looks_like);
-    if (!within(title, 3, 80) || !within(dll, 3, 160)) return null;
+    if (!within(title, 3, 80)) return bad('step_title_length');
+    if (!within(dll, 3, 160)) return bad('step_done_length');
     const minutes = kind === 'turn_in' ? 5 : kind === 'start' ? clamp(x.minutes, 5, Math.min(10, session)) : clamp(x.minutes, 5, session);
     out.push({ ref: 'new', title: title!, done_looks_like: dll!, minutes, day: dateOf(x.day), kind, at });
   }
@@ -284,7 +296,7 @@ export function checkPlan(raw: unknown, fields: Fields): Draft | null {
   for (const [ref, lk] of locked) {
     if (seen.has(ref)) continue;
     const restored = restore(lk, null);
-    if (!restored) return null;
+    if (!restored) return bad('locked_step');
     const mine = order.get(ref)!;
     let pos = 0;
     out.forEach((s, i) => { if (s.at >= 0 && s.at < mine) pos = i + 1; });
@@ -297,13 +309,13 @@ export function checkPlan(raw: unknown, fields: Fields): Draft | null {
   if (steps.some((s) => s.kind === 'turn_in' && s.ref !== 'new')) {
     for (let i = steps.length - 1; i >= 0; i--) if (steps[i].kind === 'turn_in' && steps[i].ref === 'new') steps.splice(i, 1);
   }
-  if (steps.length < 1 || steps.length > 12) return null;
+  if (steps.length < 1 || steps.length > 12) return bad('steps_count');
   const turnIns = steps.filter((s) => s.kind === 'turn_in').length;
-  if (turnIns > 1 || (turnIns === 1 && steps[steps.length - 1].kind !== 'turn_in')) return null;
-  if (fields.kind !== 'lesson' && turnIns !== 1) return null;
-  if (steps.length >= 3 && steps[0].kind !== 'start') return null;
-  if (steps.filter((s) => s.kind === 'milestone').length > 4) return null;
-  return { summary: summary!, questions, steps, stretch: stretch!, fits: a.fits, note_for_adult: note! };
+  if (turnIns > 1 || (turnIns === 1 && steps[steps.length - 1].kind !== 'turn_in')) return bad('turn_in_place');
+  if (fields.kind !== 'lesson' && turnIns !== 1) return bad('turn_in_missing');
+  if (steps.length >= 3 && steps[0].kind !== 'start') return bad('start_first');
+  if (steps.filter((s) => s.kind === 'milestone').length > 4) return bad('milestones_count');
+  return { draft: { summary: summary!, questions, steps, stretch: stretch!, fits: a.fits, note_for_adult: note! } };
 }
 const clamp = (n: number, lo: number, hi: number) => Math.min(Math.max(n, lo), Math.max(hi, lo));
 const dateOf = (v: unknown) => (typeof v === 'string' && DATE.test(v) && !Number.isNaN(Date.parse(`${v}T00:00:00Z`)) ? v : null);
@@ -425,7 +437,7 @@ const timedOut = (err: unknown) => {
   return n === 'TimeoutError' || n === 'AbortError';
 };
 
-type Ended = { stop: string | null; draft: Draft | null; usage: Record<string, number> | null; model: string | null };
+type Ended = { stop: string | null; draft: Draft | null; usage: Record<string, number> | null; model: string | null; why?: string };
 
 // One run's work. Never throws.
 async function runWork(deps: Deps, w: Work): Promise<void> {
@@ -443,7 +455,8 @@ async function runWork(deps: Deps, w: Work): Promise<void> {
   await finish(deps, w.run, ended);
   const u = ended.usage;
   console.log(`homework_ai: ${ended.stop ?? 'ready'} ms=${Math.max(0, Math.round(now() - started))}`
-    + (u ? ` in=${tokens(u.input_tokens)} out=${tokens(u.output_tokens)}` : ''));
+    + (u ? ` in=${tokens(u.input_tokens)} out=${tokens(u.output_tokens)}` : '')
+    + (ended.why ? ` why=${ended.why}` : ''));
 }
 
 // homework_ai_finish, tried twice. Only a fixed code is logged.
@@ -514,17 +527,17 @@ function read(body: string, w: Work): Ended {
     cache_creation_input_tokens: tokens(u.cache_creation_input_tokens), output_tokens: tokens(u.output_tokens),
     cents: estimateCents(u, model, m),
   } : null;
-  const end = (stop: string | null, draft: Draft | null): Ended => ({ stop, draft, usage, model });
+  const end = (stop: string | null, draft: Draft | null, why?: string): Ended => ({ stop, draft, usage, model, why });
   if (m.stop_reason === 'refusal') {
     const cat = typeof m.stop_details?.category === 'string' && /^[a-z_]{1,30}$/.test(m.stop_details.category) ? m.stop_details.category : null;
     return end(cat ? `refusal_${cat}` : 'refusal', null);
   }
-  if (m.stop_reason === 'max_tokens') return end('invalid', null);
+  if (m.stop_reason === 'max_tokens') return end('invalid', null, 'max_tokens');
   const block = Array.isArray(m.content) ? m.content.find((b: any) => b && b.type === 'text' && typeof b.text === 'string') : null;
-  if (!block) return end('invalid', null);
+  if (!block) return end('invalid', null, 'no_text');
   let answer: unknown;
-  try { answer = JSON.parse(block.text); } catch { return end('invalid', null); }
-  const draft = checkPlan(answer, w.fields);
-  if (!draft) return end('invalid', null);
-  return end(null, w.kind === 'test' ? null : draft);
+  try { answer = JSON.parse(block.text); } catch { return end('invalid', null, 'json'); }
+  const checked = planCheck(answer, w.fields);
+  if ('why' in checked) return end('invalid', null, checked.why);
+  return end(null, w.kind === 'test' ? null : checked.draft);
 }
