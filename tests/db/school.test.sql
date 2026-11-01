@@ -1448,3 +1448,175 @@ select test.is(pg_temp.titles(school_feed_status(test.person('Quinn')) -> 'gone'
 select md5(string_agg(i::text, ',' order by i.id)) as all_before from school_items i \gset
 select test.is(private.school_rekey(), 0, 'school_rekey run again deletes nothing ...');
 select test.is((select md5(string_agg(i::text, ',' order by i.id)) from school_items i), :'all_before', '... and changes nothing (0009 runs again after its undo)');
+
+-- ---------------------------------------------------------------------
+-- The moved-date step without a UID to go by (0009 replaces school_store, §11.3): every Blackbaud item now goes through
+-- it, so it pairs the read's new keys with the old rows nearest first across the whole read (not in feed order), and a
+-- row hidden, or made an assignment that is no longer open, is never moved: a same-class, same-title item deleted and
+-- another added in one read looks like a move, and moving such a row would hide the new one.
+-- ---------------------------------------------------------------------
+-- Quinn's read with other classes besides (p_extra: {subject, title, first_day}, each one day long, every UID new).
+create function pg_temp.qmore(p_batch int, p_extra jsonb) returns jsonb language sql immutable as $$
+  select pg_temp.quinn_more(p_batch)
+         || (select jsonb_agg(x || jsonb_build_object('uid', 'qx' || p_batch || '-' || n || '@academy.school.example', 'last_day', x -> 'first_day') order by n)
+             from jsonb_array_elements(p_extra) with ordinality t (x, n))
+$$;
+create function pg_temp.qday(p_subject text, p_title text, p_day date) returns uuid language sql stable security definer as $$
+  select i.id from public.school_items i join public.school_feeds f on f.id = i.feed_id
+  where f.kid_id = test.person('Quinn') and f.kind = 'assignments' and i.subject = p_subject and i.title = p_title and i.first_day = p_day
+$$;
+-- "class title due" of his New from school, for the classes named.
+create function pg_temp.qnew(j jsonb, p_subjects text[]) returns text language sql immutable as $$
+  select string_agg((x ->> 'subject') || ' ' || (x ->> 'title') || ' ' || (x ->> 'due_date'), ' | ' order by x ->> 'subject', x ->> 'due_date')
+  from jsonb_array_elements(j) x where x ->> 'subject' = any (p_subjects)
+$$;
+:as_owner
+set hub.now = '2027-02-01 22:23 America/New_York';
+:as_service
+select test.is(pg_temp.read('Quinn', 'assignments', pg_temp.qmore(12, '[
+    {"subject": "Algebra", "title": "Practice set", "first_day": "2027-02-02"},
+    {"subject": "Geometry", "title": "Proof sheet", "first_day": "2027-02-02"},
+    {"subject": "Chemistry", "title": "Lab sheet", "first_day": "2027-02-02"},
+    {"subject": "Physics", "title": "Problem set", "first_day": "2027-02-02"},
+    {"subject": "Spanish 7", "title": "Homework", "first_day": "2027-02-02"},
+    {"subject": "Spanish 7", "title": "Homework", "first_day": "2027-02-03"},
+    {"subject": "Spanish 7", "title": "Homework", "first_day": "2027-02-04"},
+    {"subject": "French 7", "title": "Worksheet", "first_day": "2027-02-03"},
+    {"subject": "Art 7", "title": "Sketch", "first_day": "2027-02-03"}
+  ]')) - 'stored' - 'stop', '{"kept": 20, "added": 9, "missing": 0, "gone": 0}'::jsonb,
+               'Quinn''s link with nine more items (four classes'' one each, Spanish''s "Homework" three days running, French''s and Art''s)');
+-- Plan with Pat on the four classes' items, two of them then given a plan; he hides Spanish's Wednesday homework and
+-- French's worksheet; Plan with Pat on Spanish's Thursday homework, and on Art's sketch, which he then finishes.
+:as_anon
+select school_item_by_token(test.token('Quinn'), pg_temp.qday('Algebra', 'Practice set', '2027-02-02'), 'with_tutor') ->> 'assignment_id' as m_alg \gset
+select school_item_by_token(test.token('Quinn'), pg_temp.qday('Geometry', 'Proof sheet', '2027-02-02'), 'with_tutor') ->> 'assignment_id' as m_geo \gset
+select school_item_by_token(test.token('Quinn'), pg_temp.qday('Chemistry', 'Lab sheet', '2027-02-02'), 'with_tutor') ->> 'assignment_id' as m_chem \gset
+select school_item_by_token(test.token('Quinn'), pg_temp.qday('Physics', 'Problem set', '2027-02-02'), 'with_tutor') ->> 'assignment_id' as m_phys \gset
+select test.ok(school_item_by_token(test.token('Quinn'), pg_temp.qday('Spanish 7', 'Homework', '2027-02-03'), 'hide') is not null, 'he hides Spanish''s Wednesday homework');
+select test.ok(school_item_by_token(test.token('Quinn'), pg_temp.qday('French 7', 'Worksheet', '2027-02-03'), 'hide') is not null, '... and French''s worksheet');
+select school_item_by_token(test.token('Quinn'), pg_temp.qday('Spanish 7', 'Homework', '2027-02-04'), 'with_tutor') ->> 'assignment_id' as m_spa \gset
+select school_item_by_token(test.token('Quinn'), pg_temp.qday('Art 7', 'Sketch', '2027-02-03'), 'with_tutor') ->> 'assignment_id' as m_art \gset
+:as_owner
+insert into homework_steps (assignment_id, pos, title, minutes, day) values (:'m_geo', 1, 'Do the proofs', 20, '2027-02-01'), (:'m_phys', 1, 'Do the problems', 20, '2027-02-01');
+update assignments set status = 'done', done_at = now() where id = :'m_art';
+select pg_temp.qday('Spanish 7', 'Homework', '2027-02-03') as m_spa_hid \gset
+select pg_temp.qday('Art 7', 'Sketch', '2027-02-03') as m_art_item \gset
+-- The next read, every UID new: each of the four classes' items moved a day, and another of each posted a day after
+-- that (Algebra and Geometry list the farther one first, Chemistry and Physics the nearer); Spanish's Wednesday and
+-- Thursday homework deleted and Monday's and Tuesday's posted; French's worksheet and Art's sketch deleted and next
+-- week's posted.
+set hub.now = '2027-02-01 23:23 America/New_York';
+:as_service
+select test.is(pg_temp.read('Quinn', 'assignments', pg_temp.qmore(13, '[
+    {"subject": "Algebra", "title": "Practice set", "first_day": "2027-02-04"},
+    {"subject": "Algebra", "title": "Practice set", "first_day": "2027-02-03"},
+    {"subject": "Geometry", "title": "Proof sheet", "first_day": "2027-02-04"},
+    {"subject": "Geometry", "title": "Proof sheet", "first_day": "2027-02-03"},
+    {"subject": "Chemistry", "title": "Lab sheet", "first_day": "2027-02-03"},
+    {"subject": "Chemistry", "title": "Lab sheet", "first_day": "2027-02-04"},
+    {"subject": "Physics", "title": "Problem set", "first_day": "2027-02-03"},
+    {"subject": "Physics", "title": "Problem set", "first_day": "2027-02-04"},
+    {"subject": "Spanish 7", "title": "Homework", "first_day": "2027-02-02"},
+    {"subject": "Spanish 7", "title": "Homework", "first_day": "2027-02-08"},
+    {"subject": "Spanish 7", "title": "Homework", "first_day": "2027-02-09"},
+    {"subject": "French 7", "title": "Worksheet", "first_day": "2027-02-10"},
+    {"subject": "Art 7", "title": "Sketch", "first_day": "2027-02-10"}
+  ]')) - 'stored' - 'stop', '{"kept": 24, "added": 7, "missing": 3, "gone": 0}'::jsonb,
+               'the next read: seven new (the four classes'' later ones, Spanish''s Tuesday, French''s and Art''s next week), three missing '
+               '(Spanish''s hidden Wednesday, French''s hidden worksheet, Art''s finished sketch)');
+:as_owner
+select test.is((select string_agg(a.subject || ' ' || i.due_date || ' ' || a.due_date, ' | ' order by a.subject)
+                from assignments a join school_items i on i.assignment_id = a.id where a.id in (:'m_alg', :'m_geo', :'m_chem', :'m_phys')),
+               'Algebra 2027-02-03 2027-02-03 | Chemistry 2027-02-03 2027-02-03 | Geometry 2027-02-03 2027-02-02 | Physics 2027-02-03 2027-02-02',
+               'each moved item keeps its row on the nearest new date (Feb 3) whichever the feed lists first; the ones without a plan follow, the planned ones stay');
+:as_anon
+select homework_by_token(test.token('Quinn')) as mv \gset
+select test.is((select string_agg((x ->> 'subject') || ' ' || coalesce(x -> 'school' ->> 'moved_to', '-'), ' | ' order by x ->> 'subject')
+                from jsonb_array_elements(:'mv'::jsonb -> 'assignments') x where (x ->> 'id')::uuid in (:'m_alg', :'m_geo', :'m_chem', :'m_phys')),
+               'Algebra - | Chemistry - | Geometry 2027-02-03 | Physics 2027-02-03', '... the planned ones marked: the school''s date moved to Feb 3');
+select test.is(pg_temp.qnew(:'mv'::jsonb -> 'from_school', '{Algebra,Geometry,Chemistry,Physics,Spanish 7,French 7,Art 7}'),
+               'Algebra Practice set 2027-02-04 | Art 7 Sketch 2027-02-10 | Chemistry Lab sheet 2027-02-04 | French 7 Worksheet 2027-02-10 | '
+               'Geometry Proof sheet 2027-02-04 | Physics Problem set 2027-02-04 | Spanish 7 Homework 2027-02-02 | Spanish 7 Homework 2027-02-09',
+               '... and his New from school has every new one: the four later ones, Spanish''s Tuesday, French''s and Art''s next week');
+select test.is((select (x -> 'school')::text || ' ' || (x ->> 'due_date') from jsonb_array_elements(:'mv'::jsonb -> 'assignments') x where (x ->> 'id')::uuid = :'m_spa'),
+               '{"gone": false, "moved_to": null} 2027-02-08',
+               'Spanish''s open Thursday homework takes the nearest new one (Monday''s, and follows it); the hidden Wednesday one is never moved');
+:as_admin
+select school_feed_status(test.person('Quinn')) as mvs \gset
+select test.is((select string_agg((x ->> 'subject') || ' ' || (x ->> 'title') || ' ' || (x ->> 'due_date'), ' | ' order by x ->> 'due_date', x ->> 'subject')
+                from jsonb_array_elements(:'mvs'::jsonb -> 'hidden') x),
+               'French 7 Worksheet 2027-02-03 | Spanish 7 Homework 2027-02-03 | English Spelling list 2027-02-17',
+               '... the parents'' Hidden: only what he hid (not Spanish''s Tuesday homework or French''s next worksheet)');
+select test.is(pg_temp.titles(:'mvs'::jsonb -> 'moved'), 'Problem set | Proof sheet | Read chapter 7', '... and "Due date moved": the two planned ones (and the chapter, before)');
+:as_owner
+select test.is((select due_date || ' ' || missing || ' ' || (assignment_id = :'m_art') from school_items where id = :'m_art_item')
+                 || ' ' || (select due_date || ' ' || status from assignments where id = :'m_art'),
+               '2027-02-03 1 true 2027-02-03 done', 'Art''s finished sketch keeps its row and its date (missing once), and its assignment is as it was');
+set hub.now = '2027-02-01 23:53 America/New_York';
+:as_service
+select test.is(pg_temp.read('Quinn', 'assignments', pg_temp.qmore(14, '[
+    {"subject": "Algebra", "title": "Practice set", "first_day": "2027-02-03"},
+    {"subject": "Algebra", "title": "Practice set", "first_day": "2027-02-04"},
+    {"subject": "Geometry", "title": "Proof sheet", "first_day": "2027-02-03"},
+    {"subject": "Geometry", "title": "Proof sheet", "first_day": "2027-02-04"},
+    {"subject": "Chemistry", "title": "Lab sheet", "first_day": "2027-02-04"},
+    {"subject": "Chemistry", "title": "Lab sheet", "first_day": "2027-02-03"},
+    {"subject": "Physics", "title": "Problem set", "first_day": "2027-02-04"},
+    {"subject": "Physics", "title": "Problem set", "first_day": "2027-02-03"},
+    {"subject": "Spanish 7", "title": "Homework", "first_day": "2027-02-09"},
+    {"subject": "Spanish 7", "title": "Homework", "first_day": "2027-02-08"},
+    {"subject": "Spanish 7", "title": "Homework", "first_day": "2027-02-02"},
+    {"subject": "French 7", "title": "Worksheet", "first_day": "2027-02-10"},
+    {"subject": "Art 7", "title": "Sketch", "first_day": "2027-02-10"}
+  ]')) - 'stored' - 'stop', '{"kept": 24, "added": 0, "missing": 3, "gone": 3}'::jsonb,
+               '... the read after, every UID new and in another order: nothing added, nothing moved; the three deleted ones gone');
+:as_owner
+select test.is((select hidden || ' ' || (gone_at is not null) from school_items where id = :'m_spa_hid'), 'true true',
+               '... Spanish''s hidden Wednesday homework, on its own row, is gone');
+
+-- 0009 run again after its undo (§16.9): a copy on its content key made an assignment on 9, gone after the undo's
+-- reads, and a later copy on a UID key made one too, in the last good read. The one already on the key stays (else the
+-- other couldn't take the key: unique (feed_id, key)) and is on the school site again; the UID copy stays as it was.
+:as_owner
+select pg_temp.qasg('Poem', 'English', '2027-02-22') as asg_poem1 \gset
+select pg_temp.qasg('Poem', 'English', '2027-02-22') as asg_poem2 \gset
+select pg_temp.copy('pm-1', 'English', 'Poem', '2027-02-22', '3 hours', 2, true, false, :'asg_poem1') as g6a \gset
+update school_items set key = md5('title:english' || E'\n' || 'poem|2027-02-22'), has_uid = false where id = :'g6a';
+select pg_temp.copy('pm-2', 'English', 'Poem', '2027-02-22', '0', 0, false, false, :'asg_poem2') as g6b \gset
+select key as g6b_key from school_items where id = :'g6b' \gset
+select test.is(private.school_rekey(), 0, 'school_rekey after the undo: two copies made assignments, one already on the content key: nothing deleted, no clash');
+select test.is((select string_agg((i.id = :'g6a') || ' ' || (i.key = md5('title:english' || E'\n' || 'poem|2027-02-22')) || ' ' || (i.key = :'g6b_key')
+                                  || ' ' || i.has_uid || ' ' || i.missing || ' ' || (i.gone_at is not null), ' | ' order by i.id = :'g6a' desc)
+                from school_items i where i.feed_id = :'quinn_feed' and i.title = 'Poem'),
+               'true true false false 0 false | false false true true 0 false',
+               '... the copy on the key kept, on the school site again (seen by the last good read); the UID copy on its old key, as it was');
+
+-- A copy the school lists without a class (a summary without "Class: ", so school.ts sends subject null): its two
+-- copies are one row, on the key school_rows gives it. Run in a session not on UTC: a start's key is in UTC whatever
+-- the session's time zone, so his schedule rows stay on theirs.
+select pg_temp.copy('ps-1', null, 'Permission slip', '2027-02-20', '1 hour', 1, false) as g7a \gset
+select pg_temp.copy('ps-2', null, 'Permission slip', '2027-02-20', '0', 0, false) as g7b \gset
+set timezone = 'America/New_York';
+select test.is(private.school_rekey(), 1, 'school_rekey, in a session on New York time: of a class-less item''s two copies, one is deleted');
+reset timezone;
+select test.is((select string_agg(i.id || ' ' || i.has_uid || ' ' || i.missing || ' ' || (i.gone_at is not null), ',') from school_items i
+                where i.feed_id = :'quinn_feed' and i.title = 'Permission slip'),
+               :'g7b' || ' false 0 false', '... the copy seen last stays, has_uid false, on the school site');
+select test.is((select key from school_items where id = :'g7b'),
+               (select r.key from private.school_rows('assignments', '[{"title": "Permission slip", "first_day": "2027-02-20", "last_day": "2027-02-20"}]',
+                                                      'end', 0, '2027-02-01') r),
+               '... on the key school_rows gives an item without a class');
+select test.ok((select bool_and(key = md5('title:' || lower(title) || '|' || to_char(starts_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS')))
+                from school_items where feed_id = :'quinn_sched'),
+               '... and his schedule rows are on their keys still (a start''s key in UTC)');
+
+-- The cost, accepted (§11.3): two classes the hub reads as one (school.ts leaves a section and a block out of the
+-- class: "Music - Band (A)" and "Music - Choir (B)" are both Music) with the same title on the same first day are one
+-- item: the last in the read wins. (0008 kept them apart by their UIDs, but no UID lasts an hour.)
+select test.is((select count(*) || ' ' || string_agg(r.subject || ' ' || r.title || ' ' || r.first_day || ' ' || r.details, ', ')
+                from private.school_rows('assignments', '[
+                  {"uid": "mb-1@academy.school.example", "title": "Practice log", "subject": "Music", "details": "Band: scales.", "first_day": "2027-02-05", "last_day": "2027-02-05"},
+                  {"uid": "mc-1@academy.school.example", "title": "Practice log", "subject": "Music", "details": "Choir: warm-ups.", "first_day": "2027-02-05", "last_day": "2027-02-05"}
+                ]', 'end', 0, '2027-02-01') r),
+               '1 Music Practice log 2027-02-05 Choir: warm-ups.',
+               'two classes read as one ("Music") with the same title on the same first day: one item, the last in the read');

@@ -223,7 +223,7 @@ Blackbaud makes its calendar feeds again every hour or two, and each time it giv
 
 **Turning it on** (nothing to merge first, nothing to deploy: no page, Edge Function or `cron.sql` change):
 1. `tests/run.sh` ends with `0 failed`; merge.
-2. **About 1 minute:** run [`supabase/migrations/0009_school_keys.sql`](supabase/migrations/0009_school_keys.sql) in the Supabase SQL editor, after 0008. "isn't installed" means 0008 is missing; "already installed" means it's done; either way nothing was changed. On the next load each assignment shows once.
+2. **About 1 minute:** run [`supabase/migrations/0009_school_keys.sql`](supabase/migrations/0009_school_keys.sql) in the Supabase SQL editor, after 0008, at any time (if the hourly read is running just then, it waits a moment for it). "isn't installed" means 0008 is missing; "already installed" means it's done; either way nothing was changed. On the next load each assignment shows once.
 
 There is nothing to switch off. The design's §16.9 has the undo, if ever wanted.
 
