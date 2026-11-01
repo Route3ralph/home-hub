@@ -975,7 +975,7 @@
 
   // The signed-out screens replace the whole shell, so the v2 bottom bar and its sheet go too.
   function leaveShell() {
-    document.body.classList.remove('has-bottombar');
+    document.body.classList.remove('has-bottombar', 'guest-shell');
     closeSheet();
     clearActionToasts();
   }
@@ -1263,6 +1263,7 @@
       <main class="page" id="main"></main>`;
     app.querySelector('[data-shell="sign-out"]').addEventListener('click', signOut);
     document.body.classList.remove('has-bottombar');
+    document.body.classList.add('guest-shell');
   }
 
   // The page for the current address: the first module (in tab order) whose match() accepts it.

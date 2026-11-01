@@ -228,6 +228,8 @@ const rpcFor = (version) => ({ hub_schema_version: () => version, clock: (db) =>
   {
     const { page, context } = await open({ label: 'guest phone', ctx: phone });
     check('guest on a phone: the project fits (no side scroll); their name and Sign out show', (await noSideScroll(page)) && (await visible(page, '[data-shell="sign-out"]')));
+    const bar = await page.$eval('.topbar', (e) => Math.round(e.getBoundingClientRect().height));
+    check('... the header is one row (the brand links to Projects, so the lone tab goes)', bar < 80 && !(await visible(page, '.topbar .tabs a')), bar);
     await page.screenshot({ path: SHOTS + 'guest-phone.png' });
     await context.close();
   }
