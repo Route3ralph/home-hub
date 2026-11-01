@@ -48,6 +48,10 @@ This is the build contract for Home Hub v2. It replaces the first draft after fo
 - The kitchen wall keeps its own events in one Google calendar, "Hearth Calendar", and marks whose each is by adding that Hearth profile as a guest (`jordan@team-…`). With **Sort by Hearth person** on that calendar, the hub sends each event to the people its tags reach, as the parents matched them once in Settings: a person, Family, or the grown-ups. `hub-jobs` asks Google for guest addresses only for such a calendar and keeps only Hearth-shaped ones. No new Edge Function, secret or `cron.sql` change.
 - The build contract is `docs/v1.1-google-calendar.md` §11. Its database part is migration `0010_hearth_people.sql`, summarised in §15 below.
 
+**v1.4 — project guests (the site goes live first, then the migration, after 0010; no Edge Function or `cron.sql` change)**
+- A project guest, such as an interior designer, signs in with an emailed code like the family but is not a member: every policy and function gated on `private.is_member()` or `private.is_admin()` keeps them out, unchanged. A parent gives them a project from its **Guest access**; they then see and manage only that project's schedule, trades and the contractors on it (names, phones, emails; never account details), and nothing else. A project gets a **Documents** link to its shared Google Drive folder.
+- The build contract is `docs/v1.4-project-guests.md`. Its database part is migration `0011_project_guests.sql`, summarised in §16 below.
+
 Later: web push, Twilio SMS.
 
 ## 1. Item model — two kinds
@@ -67,7 +71,8 @@ The Add sheet starts with an Event | Task switch and the help line *"Piano, pick
 - An email address is confirmed before any morning email goes to it: by the button on the page the confirmation email opens (`confirm_digest`, §3), or by signing in with a code sent to it (the core calls `mark_signed_in()` after every sign-in).
 - The migration seeds one person per existing member (admin → parent; member → adult), one `household` row, and colours.
 - Account numbers (`contractor_secrets`) are **admins only**. Revoked from `anon` and `service_role` too.
-- Invariant: every policy is `private.is_member()`-gated (full members = everyone who can sign in in v2), except the anonymous token functions, which check the token: My day's `get_person_day`, `complete_by_token`, `undo_by_token` and `stop_digest`, the confirmation email's `confirm_digest`, (v1.2, §9) the helper's shopping list, `get_list_by_token`, `add_to_list_by_token` and `buy_item_by_token`; (v1.3, §10) a kid's homework on My day, `homework_by_token`, `step_by_token`, `plan_by_token`, `focus_by_token`, `reward_by_token`, `assignment_by_token` and `homework_prefs_by_token`; and v1.3's tutor link, whose four functions find one kid's homework by its token: `tutor_view_by_token`, `tutor_assignment_by_token`, `tutor_plan_by_token` and `tutor_step_by_token`.
+- v1.4 (§16): a **project guest** signs in with a code but is not a member (`guests`, not `members`), so the invariant below keeps them out of everything except the projects a parent gives them (`project_guests`; the policies "Guests see their projects" and "Guests update their projects"). `whoami()` is null for them; the site asks `guest_whoami()` instead.
+- Invariant: every policy is `private.is_member()`-gated (full members = everyone who can sign in in v2), except the project guests' two policies on `projects` (§16), and except the anonymous token functions, which check the token: My day's `get_person_day`, `complete_by_token`, `undo_by_token` and `stop_digest`, the confirmation email's `confirm_digest`, (v1.2, §9) the helper's shopping list, `get_list_by_token`, `add_to_list_by_token` and `buy_item_by_token`; (v1.3, §10) a kid's homework on My day, `homework_by_token`, `step_by_token`, `plan_by_token`, `focus_by_token`, `reward_by_token`, `assignment_by_token` and `homework_prefs_by_token`; and v1.3's tutor link, whose four functions find one kid's homework by its token: `tutor_view_by_token`, `tutor_assignment_by_token`, `tutor_plan_by_token` and `tutor_step_by_token`.
 
 ## 3. Database (migration 0002; schema.sql stays the v1 baseline)
 
@@ -263,7 +268,7 @@ Tokens and secrets are 32 hex characters; `rotate_day_token(p_person uuid)` (adm
 - `digest_for(p_person uuid, p_local_date date) returns jsonb` — everything the email needs, computed in SQL (see §5): subject, today, late, heads_up, projects; for parents also people, nobody and, on Mondays, inbox_count; `empty` = a non-parent with nothing to say (send nothing). Null for an inactive person. (v1.2 wraps it to add the day's meals: §9.)
 
 ### Schema version, whoami and sign-in
-`hub_schema_version()` returns 2 (authenticated); migration 0003 makes it 3 (§8), migration 0004 makes it 4 (§9), migration 0005 makes it 5 (§10), migration 0006 makes it 6 (§11), migration 0007 makes it 7 (§12), migration 0008 makes it 8 (§13), migration 0009 makes it 9 (§14), and migration 0010 makes it 10 (§15). `whoami()` gains `person` (id, name, role, language, color) when a person row matches the caller's email; existing keys unchanged. `mark_signed_in()` (authenticated; the core calls it after every sign-in): signing in with a code sent to an address proves it works, so the caller's own person row gets email_verified_at (the first time only). The confirmation secret stays, so the button in a confirmation email sent earlier says "confirmed" too. Does nothing for anyone who isn't a member.
+`hub_schema_version()` returns 2 (authenticated); migration 0003 makes it 3 (§8), migration 0004 makes it 4 (§9), migration 0005 makes it 5 (§10), migration 0006 makes it 6 (§11), migration 0007 makes it 7 (§12), migration 0008 makes it 8 (§13), migration 0009 makes it 9 (§14), migration 0010 makes it 10 (§15), and migration 0011 makes it 11 (§16). `whoami()` gains `person` (id, name, role, language, color) when a person row matches the caller's email; existing keys unchanged. `mark_signed_in()` (authenticated; the core calls it after every sign-in): signing in with a code sent to an address proves it works, so the caller's own person row gets email_verified_at (the first time only). The confirmation secret stays, so the button in a confirmation email sent earlier says "confirmed" too. Does nothing for anyone who isn't a member.
 
 ## 4. Client
 
@@ -1145,3 +1150,65 @@ Dropped and made again (its answer gains a column):
 - `calendar_read_due(p_force boolean default false, p_limit int default 10)` returns table `(calendar_id, google_id, writes, w_from, w_to, time_min, time_max, tz, sort_by_guest)`: 0003's, plus `sort_by_guest`, so hub-jobs asks Google for guest addresses (`attendees(email,…)`) only for a sorted calendar and keeps only Hearth-shaped ones (`calendar.ts`, §11.3). Revoked from public, anon and authenticated; granted to service_role, as 0003.
 
 Undoing it isn't needed (with the switch off on every calendar every answer is 9's). If wanted, in one go, as the migration's header writes it out: `update public.calendars set sort_by_guest = false`; 0003's `private.google_item`, `private.google_for`, `private.calendars_tidy` and `calendar_store_events` blocks again with `create or replace`; `calendar_read_due` dropped and made again from 0003's block, with 0003's revoke and grant; drop `set_hearth_tag`, `private.hearth_whose` and `private.hearth_tag`; drop table `hearth_tags`; drop the columns `google_events.guests` and `calendars.sort_by_guest`; `hub_schema_version()` returning 9 (`docs/v1.1-google-calendar.md` §11.9). 0010 can then run again.
+
+## 16. v1.4: project guests
+
+The build contract is `docs/v1.4-project-guests.md`; this section lists what its migration, `supabase/migrations/0011_project_guests.sql`, adds to the database, so the docs check can hold the two together. Fresh install = `schema.sql`, then `0002` to `0011`. It is one transaction and additive, and every rule in §3 applies. It refuses to run without 0010 (`hub_schema_version() < 10`: "Hearth people (migration 0010) isn't installed"), twice ("Project guests (migration 0011) is already installed"), on a database set back to 10 (`guests` already there: "… was set back to 10"), or on a database that isn't as 0010 left it (`projects`' `id`, `name`, `schedule`, `owner_id`, `on_calendar`, `sharing_enabled`, `share_token` and `created_at` and no `documents_url`; `contractors`' `id`, `name`, `company`, `trade`, `phone`, `email`, `website` and `kind`; `members`, `hook_family_only_signup`, `private.is_admin`, `private.is_member`, `private.has_secrets` and `current_email`; none of its own functions yet). With no guest added every page, email and view answers exactly as on 10. Nothing new for anon.
+
+### Tables
+```sql
+-- Who may sign in as a project guest. Never a member (add_project_guest refuses one).
+create table public.guests (
+  email      text primary key check (email = lower(email) and email ~ '^[^@\s]+@[^@\s]+\.[^@\s]+$' and length(email) <= 254),
+  name       text not null check (length(name) between 1 and 80 and name = btrim(name)),
+  created_at timestamptz not null default now(),
+  created_by text
+);
+
+-- Which projects each guest sees and manages.
+create table public.project_guests (
+  project_id  uuid not null references public.projects (id) on delete cascade,
+  guest_email text not null references public.guests (email) on delete cascade,
+  added_at    timestamptz not null default now(),
+  added_by    text,
+  primary key (project_id, guest_email)
+);
+
+-- The contractors a guest added to a project.
+create table public.project_contacts (
+  project_id    uuid not null references public.projects (id) on delete cascade,
+  contractor_id uuid not null references public.contractors (id) on delete cascade,
+  added_at      timestamptz not null default now(),
+  added_by      text,
+  primary key (project_id, contractor_id)
+);
+
+-- The project's shared folder (drawings, quotes, invoices, photos): a Google Drive address only.
+alter table public.projects
+  add column documents_url text
+    check (documents_url is null or (length(documents_url) <= 500 and documents_url ~ '^https://drive\.google\.com/[^\s<>"'']*$'));
+```
+
+- Row-level security on the three tables: `guests` and `project_guests` admins select ("Admins can see the guests", "Admins can see who sees each project"); `project_contacts` members select ("Family can see the contractors guests added"); no write policies (only the functions below write them). `revoke all … from public, anon, authenticated`, then `grant select … to authenticated`; service_role keeps Supabase's defaults. Index `project_guests_guest_idx` on `project_guests (guest_email)`.
+- `projects.documents_url`: members and a project's guests write it with the row; not on the share link (`get_shared_project` is unchanged).
+- On `projects`, two more policies: "Guests see their projects" (select) and "Guests update their projects" (update), both checking `private.is_guest_of` with the row's id. No insert or delete for a guest. The trigger `projects_guest_guard` (before update, `private.projects_guest_guard()`) refuses, for a signed-in caller who isn't a member, any change to `id`, `created_at`, `owner_id`, `on_calendar`, `sharing_enabled` or `share_token` (42501 "Only the family can change the owner, the calendar switch or sharing."), and a schedule whose trades link a contractor not already on the project (42501 "Link a trade only to a contractor on this project. Add new ones under Contractors.").
+
+### Functions
+New:
+- `guest_whoami()` returns jsonb: `{email, name, projects}` (the caller's project ids, oldest project first) when the signed-in address is in `guests` and not in `members`; else null. The core calls it only when `whoami()` is null. SECURITY DEFINER, STABLE.
+- `guest_contacts(p_project uuid)` returns table `(id uuid, name text, company text, trade text, phone text, email text, website text, kind text, editable boolean)`: the contractors on one of the caller's projects (`private.guest_contact_ids`), by name; `editable` false when it has account details saved. Never notes, addresses or account details. Refuses 42501 "That project isn't shared with you." unless `private.is_guest_of(p_project)`. SECURITY DEFINER, STABLE.
+- `guest_save_contact(p_project uuid, p_contact jsonb)` returns jsonb: the caller, a guest of the project, adds a contractor (`{name, company?, trade?, phone?, email?, website?}`: a new `contractors` row of kind `'contractor'` and a `project_contacts` row with `added_by`) or edits one on the project (`id` given) that has no account details; answers the row as `guest_contacts` does. Trims every field, lower-cases the email. Refuses 42501 "That project isn't shared with you."; 22023 for a missing or long name, a detail over 200 characters or an email that doesn't look like one; 42501 "That contractor isn't on this project."; 42501 "This contractor has account details saved, so only a parent can change them." SECURITY DEFINER.
+- `add_project_guest(p_project uuid, p_email text, p_name text default null)` returns jsonb `{email, name, project_id}`: the parents give a guest a project, making the guest (with `p_name`) or renaming them, then linking the project (again: nothing changes). Refuses 42501 "Only a parent can give someone access to a project." unless `private.is_admin()`; 22023 for an address that doesn't look like one, a member's ("… already signs in as family, so they see every project."), a project that isn't there, a long name, or a new guest without a name. SECURITY DEFINER.
+- `remove_project_guest(p_project uuid, p_email text)` returns boolean (whether they had it): the parents take a project away; the guest keeps their sign-in, with no projects. Refuses 42501 unless `private.is_admin()`. SECURITY DEFINER.
+- `remove_guest(p_email text)` returns boolean (whether they were a guest): the parents remove a guest everywhere (the row, and with it their projects); the sign-up hook then turns the address down. A login already made stays in Supabase Auth until deleted there, and sees nothing. Refuses 42501 unless `private.is_admin()`. SECURITY DEFINER.
+- `private.is_guest_of(p_project uuid)` returns boolean: the signed-in address has the project in `project_guests`. SECURITY DEFINER, STABLE; for the policies (granted to authenticated, as `private.is_member`).
+- `private.schedule_contractors(p_schedule jsonb)` returns uuid[]: the contractors a schedule's trades link (`trades.<key>.contractor_id`, uuids only). IMMUTABLE; granted to authenticated.
+- `private.guest_contact_ids(p_project uuid)` returns uuid[]: the contractors on a project (its schedule's links and its `project_contacts`) that are in the directory. SECURITY DEFINER, STABLE; no API role may call it.
+- `private.projects_guest_guard()`: the trigger above. SECURITY DEFINER (a guest can't read `project_contacts`); no API role may call it.
+Every new public function is revoked from public, anon and service_role and granted to authenticated; each checks its caller itself.
+
+Replaced, with the same signature and grants:
+- `hook_family_only_signup(event jsonb)` returns jsonb: schema.sql's body, letting an address in `members` or in `guests` make a login; anyone else gets 403 "This email is not on the family list."
+- `hub_schema_version()` returns 11. The site shows a guest their projects, and the parents Guest access, the Project guests card in Settings and the documents folder, only on 11.
+
+Undoing it isn't needed (with no guest added every answer is 10's). If wanted, in one go, as the migration's header writes it out: drop the six public functions, the trigger and its function, the two policies on `projects`, the three private helpers, the three tables and `projects.documents_url`; schema.sql's `hook_family_only_signup` block again; `hub_schema_version()` returning 10. 0011 can then run again.

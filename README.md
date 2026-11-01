@@ -241,6 +241,20 @@ There is nothing to switch off. The design's §16.9 has the undo, if ever wanted
 - **The school links** are never shown again once saved, not even to the parents: only "…a1b2". An assignment's description from the school is its teacher's text: for the grown-ups and Pat, never on Jordan's screen.
 - **How long things are kept:** the teacher's text until 30 days after the due date; done and dropped assignments, focus blocks, questions and notes 180 days; points until **Erase**.
 
+## Project guests: a designer's own login (v1.4, migration 0011)
+
+A **project guest** is someone outside the family, such as an interior designer, who manages one of your projects in the hub. They sign in with an emailed code, like the family, but see only the projects you give them: the schedule, the trades and the contractors on it (names, phones and emails; never account numbers). They never see the calendar, tasks, the family, homework, school, food, settings, emails or the rest of the Directory. They get no email from the hub besides their sign-in code, and their messages to contractors go from their own phone or email.
+
+- **Give access (a parent, about 1 minute):** open the project → **Guest access** → type their name and email → **Give access**. Tell them to go to the hub's address and sign in with that email.
+- **What they can do:** change the schedule (tasks, dates, phases, trades), the project's name, status, description and documents folder; add contractors to the project under **Contractors** and link them to trades; copy the share link while you have sharing on. They can't change the owner, **Show in Home Hub calendar**, sharing, or any other project, and can't delete a project. Their schedule changes reach the family calendar and the morning email like anyone's.
+- **When the job ends:** the project → **Guest access** → **Remove**, or Settings → **Project guests** → **Remove guest** (every project at once). It works on their next tap. Their Supabase login stays (it sees nothing); to delete it too: Supabase → Authentication → Users → their address → Delete user.
+- **Documents:** each project's **Settings** has a **Documents folder**: paste the Google Drive folder's address (it must start with `https://drive.google.com/`). A **Documents** button then opens it. Share the folder itself in Google Drive (Editor, and keep it Restricted rather than "anyone with the link"); the hub only links to it.
+
+### Turning on project guests
+
+1. **Merge the site first.** On the current database (schema 10) nothing changes.
+2. **About 1 minute:** run [`supabase/migrations/0011_project_guests.sql`](supabase/migrations/0011_project_guests.sql) in the Supabase SQL editor, after 0010. "isn't installed" means 0010 is missing; "already installed" means it's done; either way nothing was changed. On the next load the parents see **Guest access** on each project.
+
 ## Messaging contractors
 
 A **Message** button appears on a project's Team cards and in a schedule task's details (and on the Contractors page before v2). It drafts a note with that contractor's upcoming dates and, if sharing is on, a link to their part of the live schedule. Edit the draft, then choose how to send it:
@@ -248,7 +262,7 @@ A **Message** button appears on a project's Team cards and in a schedule task's 
 - **Text** or **WhatsApp** opens the app on your phone with the message ready to send.
 - **Share** opens your device's share menu with the same message, for WhatsApp Business or any other app. It appears wherever the browser has a share menu (phones, and some desktop browsers such as Safari on a Mac), beside every WhatsApp button that sends a ready message.
 - **Open in my email** does the same with your email app.
-- **Send email now** sends it from the hub through Resend, with your address set for replies.
+- **Send email now** sends it from the hub through Resend, with your address set for replies. (Not for a project guest: theirs go from their own email.)
 
 The first three come from your own phone number or email address, so replies come straight back to you, and they need no setup. The Directory's cards have one-tap Call, Text and WhatsApp as well.
 
@@ -262,6 +276,7 @@ The first three come from your own phone number or email address, so replies com
 - **Google Calendar (v1.1)** copies to the kitchen wall only what everyone in the house may see, and only after an admin has looked at it: see [Privacy](#privacy) under Google Calendar and Hearth.
 - **The shopping list (v1.2)** is seen by every grown-up who signs in, and by the helper's My day link (and so anyone her link reaches) while a parent allows it. A locked line never reaches a My day link. What is typed there is shown as plain text, only on the Food page and her own screen, never in an email, a text or on the wall. A dinner's note and recipe link go only to the person cooking it.
 - **Homework (v1.3)** is read by every grown-up who signs in; only the parents change it. Jordan's My day shows his own homework and points, never the teacher's text or anyone's email. The tutor's link shows only Jordan's homework: never points, rewards, family names, the family's events or anything live; it ends after 180 days, and **New link** or **Off** stops it at once. Nothing about homework goes into an email, a text or onto the wall, except the homework-time event, as any event.
+- **Project guests (v1.4)** see only the projects a parent gives them, and on those only the schedule, trades and the contractors' names, companies, phones, emails and websites; never account numbers, directory notes or addresses. Every other table answers them nothing. A parent removes them at once from the project or from Settings.
 - This repository is public, but it contains only code. `config.js` holds a *publishable* key, which is designed to be public. Never put a `service_role` or secret key in this repo.
 
 The rules are in [`supabase/schema.sql`](supabase/schema.sql) and [`supabase/migrations/`](supabase/migrations/).
@@ -276,7 +291,7 @@ The rules are in [`supabase/schema.sql`](supabase/schema.sql) and [`supabase/mig
 4. **Set the sign-in redirect.** In Supabase, open **Authentication → URL Configuration**:
    - Set **Site URL** to the site's address, here `https://hub.webshek.com/`.
    - Add the same address followed by `**` (`https://hub.webshek.com/**`) under **Redirect URLs**.
-5. **Recommended: block strangers from creating logins.** Go to **Authentication → Hooks → Before User Created → Postgres function** and choose `hook_family_only_signup`.
+5. **Recommended: block strangers from creating logins.** Go to **Authentication → Hooks → Before User Created → Postgres function** and choose `hook_family_only_signup`. (From migration 0011 it also lets in a project guest a parent has added.)
 6. **Set up email.** This step is required: see [Email through Resend](#email-through-resend) below.
 7. **Publish.** In GitHub, open **Settings → Pages** and deploy from branch `main`, folder `/ (root)`.
    - **Your own address (optional).** At your domain's DNS host, add a CNAME record from a subdomain (here `hub`) to `<your GitHub user>.github.io`. Then in **Settings → Pages**, enter it under **Custom domain**, and tick **Enforce HTTPS** once GitHub offers it. Afterwards change the **Site URL** and **Redirect URLs** (step 4) and the `SITE_URL` secret to the new address. The `github.io` address keeps working and forwards to it.
@@ -526,7 +541,7 @@ Never commit the token. The rules for changing the repo (tests, migrations, depl
 | `manifest.webmanifest`, `assets/icons/` | The Home Screen app: name, colours and icons |
 | `config.js` | Database connection settings |
 | `supabase/schema.sql` | The v1 tables, security rules and functions (the baseline) |
-| `supabase/migrations/` | Every database change since, in order: `0002_home_hub_v2.sql` is v2, `0003_google_calendar.sql` is v1.1 (Google Calendar), `0004_meals_and_shopping.sql` is v1.2 (Food), `0005_homework.sql` is v1.3 (Homework), `0006_homework_school.sql` its school feed, `0007_homework_coach.sql` its coach view, `0008_school_check.sql` its first-import check when nothing is due yet and `0009_school_keys.sql` its school items' keys |
+| `supabase/migrations/` | Every database change since, in order: `0002_home_hub_v2.sql` is v2, `0003_google_calendar.sql` is v1.1 (Google Calendar), `0004_meals_and_shopping.sql` is v1.2 (Food), `0005_homework.sql` is v1.3 (Homework), `0006_homework_school.sql` its school feed, `0007_homework_coach.sql` its coach view, `0008_school_check.sql` its first-import check when nothing is due yet and `0009_school_keys.sql` its school items' keys; `0010_hearth_people.sql` sorts the wall's own calendar by Hearth person (v1.1); `0011_project_guests.sql` is v1.4 (project guests) |
 | `supabase/preflight.sql` | Read-only checks to run before applying the v2 migration (0002 only) |
 | `supabase/cron.sql` | Schedules the morning email and the Google Calendar job (pg_cron) once hub-jobs is deployed |
 | `supabase/config.toml` | Supabase CLI settings: both Edge Functions deploy with JWT verification off |
@@ -537,6 +552,7 @@ Never commit the token. The rules for changing the repo (tests, migrations, depl
 | `docs/v1.1-google-calendar.md` | The v1.1 design: Google Calendar and Hearth |
 | `docs/v1.2-kitchen.md` | The v1.2 design: Food, dinners and the shopping list |
 | `docs/v1.3-homework.md` | The v1.3 design: Homework, plans, focus sessions and points, and the tutor's link |
+| `docs/v1.4-project-guests.md` | The v1.4 design: project guests (a designer's own login) and the Documents link |
 | `.mcp.json`, `.claude/settings.json` | Supabase access for Claude Code sessions (token comes from the environment) |
 | `tests/` | Automated tests: run `tests/run.sh` (see [`tests/README.md`](tests/README.md)) |
 | `CLAUDE.md` | Rules for changing this repo: tests, migrations, deploy order, test data |

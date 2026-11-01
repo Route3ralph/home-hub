@@ -297,8 +297,8 @@ check(`docs/v2-design.md names every function a migration renames, old and new n
 check('docs/v2-design.md says a later change to a wrapped function replaces the wrapper and its _v3 body together',
   !renamed.some(([, to]) => /_v\d+$/.test(to)) || /replaces the wrapper and its `?_v3`? body together/.test(design));
 
-// Every signature written out in the design (and in the v1.1, v1.2 and v1.3 designs,
-// docs/v1.1-google-calendar.md, docs/v1.2-kitchen.md and docs/v1.3-homework.md) has the real parameter names,
+// Every signature written out in the design (and in the v1.1, v1.2, v1.3 and v1.4 designs,
+// docs/v1.1-google-calendar.md, docs/v1.2-kitchen.md, docs/v1.3-homework.md and docs/v1.4-project-guests.md) has the real parameter names,
 // in order. A signature is
 // "f()" or arguments that are parameters: "p" or "p_…" (the migrations' naming), or a name and a type
 // ("p_from date", "t public.tasks"), or any plain names after a schema ("private.series_after(t, p_after)").
@@ -307,7 +307,8 @@ check('docs/v2-design.md says a later change to a wrapped function replaces the 
 const PARAM = /^(?:out\s+)?(?:p(?:_[a-z0-9_]*)?|[a-z_][a-z0-9_]*\s+[a-z_][a-z0-9_.]*(?:\[\])?)(?:\s+[a-z_][a-z0-9_.]*(?:\[\])?|\s+default\s+\S+)*$/i;
 const designSignatures = new Set();   // the functions whose signature docs/v2-design.md writes out
 for (const [file, text] of [['docs/v2-design.md', design], ['docs/v1.1-google-calendar.md', read('docs/v1.1-google-calendar.md')],
-  ['docs/v1.2-kitchen.md', read('docs/v1.2-kitchen.md')], ['docs/v1.3-homework.md', read('docs/v1.3-homework.md')]]) {
+  ['docs/v1.2-kitchen.md', read('docs/v1.2-kitchen.md')], ['docs/v1.3-homework.md', read('docs/v1.3-homework.md')],
+  ['docs/v1.4-project-guests.md', read('docs/v1.4-project-guests.md')]]) {
   const wrong = [];
   let signatures = 0;
   for (const m of text.matchAll(/(?<![\w.])(?:(public|private)\.)?([a-z_][a-z0-9_]*)\(([^()]*)\)/g)) {
@@ -465,7 +466,7 @@ check(`docs/v2-design.md writes out every table, added column and constraint of 
 // Example data in the docs is fictional (CLAUDE.md "Test data"): phone numbers in 555-0100 to 555-0199
 // ---------------------------------------------------------------------
 for (const f of ['CLAUDE.md', 'README.md', 'docs/v2-design.md', 'docs/v1.1-google-calendar.md', 'docs/v1.2-kitchen.md',
-  'docs/v1.3-homework.md', 'tests/README.md']) {
+  'docs/v1.3-homework.md', 'docs/v1.4-project-guests.md', 'tests/README.md']) {
   const bad = [...read(f).matchAll(/\b555-(\d{4})\b/g)].map((m) => m[0]).filter((n) => !/^555-01\d\d$/.test(n));
   check(`${f}: example phone numbers are fictional (555-0100 to 555-0199)`, !bad.length, bad);
 }

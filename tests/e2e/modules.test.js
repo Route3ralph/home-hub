@@ -260,6 +260,14 @@ const probeModule = ({ name = 'probe', min = 1, max = 1, nav = null, root = fals
   check('version 10 shows every v2 tab, the same as version 5', JSON.stringify(await tabs(page)) === JSON.stringify(V5_TABS), JSON.stringify(await tabs(page)));
   check('version 10: a page made for 2..10 serves its address', (await text(page, '#probe')).trim() === 'probe');
 
+  // 17. Schema version 11 (migration 0011, project guests: no new page for the family): every v2 tab, the same as on 5;
+  // only the Projects module is registered for guests (guest: true), so a guest's shell has that tab alone.
+  const probe211 = probeModule({ name: 'probe', min: 2, max: 11 });
+  ({ page, db } = await open({ label: 'v11-tabs', rpc: Object.assign({}, v2, foodRpc, homeworkRpc, { hub_schema_version: () => 11 }), db: v5Db(), path: '/#/probe', probes: [probe211] }));
+  check('hub_schema_version 11 is read as 11, and is v2 mode', (await page.evaluate(() => HomeHub.core.schemaVersion)) === 11 && !!(await page.$('.bottombar')));
+  check('version 11 shows every v2 tab to the family, the same as version 5', JSON.stringify(await tabs(page)) === JSON.stringify(V5_TABS), JSON.stringify(await tabs(page)));
+  check('version 11: core.guest is null for the family', (await page.evaluate(() => HomeHub.core.guest)) === null);
+
   console.log(results.join('\n'));
   console.log(`\n${results.filter((r) => r.startsWith('PASS')).length}/${results.length} passed`);
   console.log('PAGE ERRORS:', errors.length ? '\n' + errors.join('\n') : 'none');
