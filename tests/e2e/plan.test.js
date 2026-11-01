@@ -5,7 +5,10 @@
 // a given day kept or moved, "doesn't fit" with the minutes over, the turn-in on the due date, done steps
 // and the past left alone, the 8-week horizon, no homework time), homework time left, the starter plans
 // (every step of every plan in both languages against plan_check's rules and his first length), the two
-// bars, the week strip, pace, the timer counted from the server's clock with the device's clock a day
+// bars, the week strip, the timelines (the overview of open assignments, an assignment's chart by phase,
+// his path of days with the next flag: columns and clipping, overdue, milestones known or only the next,
+// behind steps, folding past 14 days, escaping, Spanish, the Nov 1 clock change, and drawn at 390px and
+// 1280px, light and dark), pace, the timer counted from the server's clock with the device's clock a day
 // off, the ring, the end screen's points line, what an answer means and the database's messages in his
 // words. Then the plan editor (each role's rules: a parent's or Pat's whole plan, Jordan's plain steps,
 // starter plans, Save, Give, Place again, Re-plan, a stale save, a link that no longer works) and Pat's
@@ -127,7 +130,10 @@ const WEEK = [
     // checks) and aiFailure (a failed hub-jobs call as a stop).
     'cleanBlock', 'daysBetween', 'editor', 'ended', 'esc', 'estimate', 'firstDay', 'fmt', 'focused', 'friendly', 'fromRows', 'goalBar', 'guess', 'hashText', 'homeworkDays',
     'horizon', 'isoWeekday', 'lastWorkDay', 'left', 'ms', 'newId', 'onTimeLine', 'pace', 'place', 'pointsLine', 'previewMark', 'previewSeal', 'aiFailure', 'ring', 'spare', 'starter',
-    't', 'timeLeft', 'timer', 'tutor', 'week', 'weekday', 'workLeft'];
+    't', 'timeLeft', 'timer', 'tutor', 'week', 'weekday', 'workLeft',
+    // The timelines: the overview of open assignments, an assignment's chart, and Jordan's path; tlScroll opens a chart
+    // wider than its box on today.
+    'overview', 'chart', 'path', 'tlScroll'];
   check('the documented API, and nothing else', same(basics.names, API.slice().sort()), JSON.stringify(basics.names));
   check('constants: lengths 10/15/20/25, the five kinds, the plain ones, 56 days, plan_check\'s limits',
     same(basics.constants, [[10, 15, 20, 25], ['start', 'step', 'milestone', 'check', 'turn_in'], ['start', 'step', 'check'], 56, 20, 4, [3, 80], [5, 60], 160]),
@@ -397,6 +403,448 @@ const WEEK = [
     same(drawn.pace, ['Steps take about 1.3× the planned time', 'Los pasos llevan unas 1,3 veces el tiempo previsto', 'Steps take about 1.0× the planned time', '']), JSON.stringify(drawn.pace));
   check('focused: this week against his own last week', same(drawn.focused, ['1 h 40 focused this week (last week 1 h 15)', '45 min de concentración esta semana (la semana pasada 0 min)', '']),
     JSON.stringify(drawn.focused));
+
+  // =====================================================================
+  // 5b. The timelines: the overview of open assignments, an assignment's chart, and Jordan's path
+  // =====================================================================
+  // Monday Nov 2 is today. The essay runs two weeks with two milestones (one earlier step not done, so
+  // behind); the poster runs past the 3 weeks; the worksheet is overdue; the reading log comes from Pat's
+  // list (counts and next_milestone only, no step days); the lesson has no plan yet; done and dropped ones
+  // aren't drawn.
+  const tlStep = (id, kind, title, minutes, day, done) => ({ id, kind, title, done_looks_like: null, minutes, day, done: !!done, checked: false });
+  const ESSAY = { id: 'A1', kind: 'assignment', title: 'Essay', subject: 'English', due_date: '2026-11-13', status: 'open', state: 'given',
+    next_milestone: { title: 'Outline', day: '2026-11-05' },
+    steps: [tlStep('s0', 'start', 'Copy the requirements', 10, '2026-10-29', true), tlStep('s1', 'step', "List what's unclear", 10, '2026-10-30'),
+      tlStep('s2', 'step', 'Gather sources', 20, '2026-11-02', true), tlStep('s3', 'milestone', 'Outline', 25, '2026-11-05'),
+      tlStep('s4', 'step', 'Draft the first half', 25, '2026-11-08'), tlStep('s5', 'step', 'Draft the second half', 25, '2026-11-08'),
+      tlStep('s6', 'milestone', 'Full draft', 25, '2026-11-10'), tlStep('s7', 'check', 'Check it against the instructions', 20, '2026-11-11'),
+      tlStep('s8', 'turn_in', 'Turn it in', 5, '2026-11-13')] };
+  const POSTER = { id: 'A2', kind: 'assignment', title: 'River poster', subject: 'Science', due_date: '2026-11-30', status: 'open', state: 'given',
+    steps: [tlStep('p0', 'start', 'Pick the river', 10, '2026-11-09', true), tlStep('p1', 'milestone', 'Sketch', 20, '2026-11-12', true),
+      tlStep('p2', 'step', 'Paint it', 25, '2026-11-19'), tlStep('p3', 'milestone', 'Poster painted', 25, '2026-11-25'), tlStep('p4', 'turn_in', 'Turn it in', 5, '2026-11-30')] };
+  const WORKSHEET = { id: 'A3', kind: 'assignment', title: 'Worksheet 4.2', subject: 'Math', due_date: '2026-10-30', status: 'open', state: 'given',
+    steps: [tlStep('w0', 'step', 'Do it', 20, '2026-10-29'), tlStep('w1', 'turn_in', 'Turn it in', 5, '2026-10-30')] };
+  const READING = { id: 'A4', kind: 'assignment', title: 'Reading log', subject: 'English', due_date: '2026-11-06', status: 'open', state: 'given',
+    steps: 4, steps_done: 1, next_milestone: { title: 'Half the book', day: '2026-11-04' } };
+  const LESSON = { id: 'A5', kind: 'lesson', title: 'Fractions practice', subject: 'Math', due_date: '2026-11-06', status: 'open', state: 'none', steps: [] };
+  const DONE = { id: 'A6', kind: 'assignment', title: 'Done one', subject: 'Math', due_date: '2026-11-04', status: 'done', steps: [] };
+  const DROPPED = { id: 'A7', kind: 'assignment', title: 'Dropped one', subject: 'Math', due_date: '2026-11-04', status: 'dropped', steps: [] };
+  // Where a chart wider than its box opens (data-at, tlScroll): the day before today, or before its first open step when
+  // later (6 weeks, begun 3 weeks ago, its first open step Wed Nov 4).
+  const ANCHOR = { id: 'N1', kind: 'assignment', title: 'Book project', subject: 'English', due_date: '2026-11-20', status: 'open', state: 'given',
+    steps: [tlStep('n1', 'start', 'Choose the book', 10, '2026-10-12', true), tlStep('n2', 'step', 'Read it', 25, '2026-10-20', true), tlStep('n3', 'step', 'Notes', 20, '2026-11-04'),
+      tlStep('n4', 'milestone', 'Poster sketch', 20, '2026-11-10'), tlStep('n5', 'turn_in', 'Turn it in', 5, '2026-11-20')] };
+  const TL = { ESSAY, POSTER, WORKSHEET, READING, LESSON, DONE, DROPPED, HOSTILE, WEEK, ANCHOR, today: '2026-11-02' };
+  const drawTl = (TL) => {
+    const P = window.HomePlan;
+    if (typeof P.overview !== 'function' || typeof P.chart !== 'function' || typeof P.path !== 'function') return { missing: true };
+    const { ESSAY, POSTER, WORKSHEET, READING, LESSON, DONE, DROPPED, HOSTILE, WEEK, today } = TL;
+    const clone = (x) => JSON.parse(JSON.stringify(x));
+    const box = document.createElement('div');
+    document.body.appendChild(box);
+    const txt = (el, sel) => { const x = sel ? el.querySelector(sel) : el; return x ? x.textContent.replace(/\s+/g, ' ').trim() : null; };
+    const col = (el) => (el ? el.style.gridColumn || null : null);
+    const head = () => Array.from(box.querySelectorAll('.plan-tl-hday')).map((d) => ({
+      l: txt(d, '.plan-tl-letter'), d: txt(d, '.plan-tl-date'), m: txt(d, '.plan-tl-month'),
+      today: d.classList.contains('is-today'), mon: d.classList.contains('is-mon'), off: d.classList.contains('is-off'), due: d.classList.contains('is-due') }));
+    const idx = (h, k) => h.map((x, i) => (x[k] ? i : -1)).filter((i) => i >= 0);
+    const readOverview = (html) => {
+      box.innerHTML = html;
+      const root = box.firstElementChild;
+      if (!root) return null;
+      const h = head();
+      return {
+        root: root.className, group: root.getAttribute('role'), label: root.getAttribute('aria-label'),
+        letters: h.map((x) => x.l).join(''), dates: h.map((x) => Number(x.d)), months: h.map((x) => x.m || ''), today: idx(h, 'today'), mon: idx(h, 'mon'),
+        rows: Array.from(box.querySelectorAll('.plan-tl-row')).map((r) => {
+          const a = r.querySelector('a.plan-tl-name');
+          return {
+            id: r.dataset.id, late: r.classList.contains('is-late'), href: a ? a.getAttribute('href') : null,
+            title: txt(r, '.plan-tl-title'), sub: txt(r, '.plan-tl-sub'), sr: txt(r, '.sr-only'),
+            bar: col(r.querySelector('.plan-tl-bar')), fill: r.querySelector('.plan-tl-fill') ? r.querySelector('.plan-tl-fill').style.width : null,
+            ms: Array.from(r.querySelectorAll('.plan-tl-ms')).map((m) => [col(m), m.classList.contains('is-done'), m.classList.contains('is-behind')]),
+            due: col(r.querySelector('.plan-tl-due')), arrow: !!r.querySelector('.plan-tl-arrow'),
+            todayCell: col(r.querySelector('.plan-tl-cell.is-today')),
+          };
+        }),
+        img: !!box.querySelector('img'), hidden: Array.from(box.querySelectorAll('.plan-tl-track')).every((x) => x.getAttribute('aria-hidden') === 'true'),
+      };
+    };
+    const readChart = (html) => {
+      box.innerHTML = html;
+      const root = box.firstElementChild;
+      if (!root) return null;
+      const h = head();
+      return {
+        root: root.className, label: root.getAttribute('aria-label'), count: h.length,
+        letters: h.map((x) => x.l).join(''), dates: h.map((x) => Number(x.d)), today: idx(h, 'today'), mon: idx(h, 'mon'), off: idx(h, 'off'), due: idx(h, 'due'),
+        rows: Array.from(box.querySelectorAll('.plan-tl-row')).map((r) => ({
+          title: txt(r, '.plan-tl-title'), sub: txt(r, '.plan-tl-sub'), done: !!r.querySelector('.plan-tl-title .is-done'),
+          todayCell: col(r.querySelector('.plan-tl-cell.is-today')),
+          off: Array.from(r.querySelectorAll('.plan-tl-cell.is-off')).map(col),
+          steps: Array.from(r.querySelectorAll('.plan-tl-step')).map((s) => [col(s.closest('.plan-tl-slot')), txt(s, '.plan-tl-min'),
+            (/\bk-(\w+)/.exec(s.className) || [])[1], s.classList.contains('is-done'), s.classList.contains('is-behind'), txt(s, '.sr-only')]),
+        })),
+        tips: Array.from(box.querySelectorAll('.plan-tl-step')).map((s) => s.getAttribute('title')),
+        arrow: !!box.querySelector('.plan-tl-arrow'), foot: txt(box, '.plan-tl-foot'), img: !!box.querySelector('img'),
+        behind: box.querySelectorAll('.plan-tl-step.is-behind').length,
+        scroll: (() => { const sc = box.querySelector('.plan-tl-scroll'); return sc ? [sc.getAttribute('tabindex'), sc.getAttribute('role'), sc.getAttribute('aria-label'), sc.dataset.at == null ? null : Number(sc.dataset.at)] : null; })(),
+      };
+    };
+    const readPath = (html) => {
+      box.innerHTML = html;
+      const root = box.firstElementChild;
+      if (!root) return null;
+      const days = Array.from(box.querySelectorAll('.plan-path-day'));
+      return {
+        line: txt(box, '.plan-path-line'), names: days.map((d) => txt(d, '.plan-path-name')),
+        today: idx(days.map((d) => ({ x: d.classList.contains('is-today') })), 'x'), due: idx(days.map((d) => ({ x: d.classList.contains('is-due') })), 'x'),
+        flags: days.map((d, i) => (d.querySelector('.plan-path-flag') ? i : -1)).filter((i) => i >= 0),
+        flagsDone: days.map((d, i) => (d.querySelector('.plan-path-flag.is-done') ? i : -1)).filter((i) => i >= 0),
+        earlier: days.map((d, i) => (d.querySelector('.plan-path-flag.is-earlier') ? i : -1)).filter((i) => i >= 0),
+        work: days.map((d, i) => (d.classList.contains('has-work') ? i : -1)).filter((i) => i >= 0),
+        fold: txt(box, '.plan-path-fold'), won: box.querySelectorAll('.plan-path-won .plan-path-flag').length, sr: txt(box, '.sr-only'),
+        hidden: (box.querySelector('.plan-path-days') || {}).getAttribute ? box.querySelector('.plan-path-days').getAttribute('aria-hidden') : null,
+        img: !!box.querySelector('img'),
+      };
+    };
+    const link = (id) => (id === 'A4' ? null : `#/homework/${id}`);
+    const all = [ESSAY, POSTER, WORKSHEET, READING, LESSON, DONE, DROPPED];
+    const ms = (steps, day, extra) => steps.filter((s) => s.id !== 's6').map((s) => (s.id === 's3' ? Object.assign({}, s, { day }, extra || {}) : s));
+    const kid = (steps, more) => Object.assign(clone(ESSAY), { steps }, more || {});
+    const hostile = { id: 'A8', kind: 'assignment', title: HOSTILE, subject: HOSTILE, due_date: '2026-11-06', status: 'open', state: 'given',
+      steps: [tlStep('h0', 'step', HOSTILE, 20, '2026-11-03'), tlStep('h1', 'milestone', HOSTILE, 20, '2026-11-04'), tlStep('h2', 'turn_in', 'Turn it in', 5, '2026-11-06')] };
+    function tlStep(id, kind, title, minutes, day, done) { return { id, kind, title, done_looks_like: null, minutes, day, done: !!done, checked: false }; }
+    const clock = { id: 'C1', kind: 'assignment', title: 'Clock', subject: 'Math', due_date: '2026-11-03', status: 'open', state: 'given',
+      steps: [tlStep('c1', 'step', 'Before the change', 10, '2026-10-31'), tlStep('c2', 'milestone', 'On the change', 10, '2026-11-01'), tlStep('c3', 'turn_in', 'Turn it in', 5, '2026-11-03')] };
+    const long = { id: 'L1', kind: 'assignment', title: 'Long project', subject: 'Science', due_date: '2027-02-26', status: 'open', state: 'given',
+      steps: [tlStep('l1', 'step', 'Begin', 20, '2026-11-02'), tlStep('l2', 'milestone', 'Half', 20, '2026-12-20'), tlStep('l3', 'turn_in', 'Turn it in', 5, '2027-02-26')] };
+    // Longer than 9 weeks: the first steps 4 weeks back (done), the turn-in 7 weeks ahead; and one begun 70 days ago,
+    // with an earlier step still not done.
+    const back = { id: 'B1', kind: 'assignment', title: 'Research project', subject: 'Science', due_date: '2026-12-21', status: 'open', state: 'given',
+      steps: [tlStep('b1', 'start', 'Pick topic', 10, '2026-10-05', true), tlStep('b2', 'milestone', 'Proposal', 20, '2026-10-12', true), tlStep('b3', 'step', 'Research', 20, '2026-11-03'),
+        tlStep('b4', 'milestone', 'Outline', 20, '2026-11-22'), tlStep('b5', 'step', 'Draft', 25, '2026-12-10'), tlStep('b6', 'milestone', 'Full draft', 25, '2026-12-14'),
+        tlStep('b7', 'turn_in', 'Turn it in', 5, '2026-12-21')] };
+    const far = { id: 'B2', kind: 'assignment', title: 'Garden log', subject: 'Science', due_date: '2026-11-20', status: 'open', state: 'given',
+      steps: [tlStep('g1', 'start', 'Plant the seeds', 10, '2026-08-24', true), tlStep('g2', 'step', 'Measure them', 15, '2026-09-01'), tlStep('g3', 'step', 'Write it up', 20, '2026-11-03'),
+        tlStep('g4', 'turn_in', 'Turn it in', 5, '2026-11-20')] };
+    // Done (or dropped) with steps left unticked: nothing behind.
+    const closed = (status) => ({ id: 'D1', kind: 'assignment', title: 'Book report', subject: 'English', due_date: '2026-10-30', status,
+      steps: [tlStep('d1', 'step', 'Read', 15, '2026-10-26'), tlStep('d2', 'milestone', 'Outline', 15, '2026-10-28', true), tlStep('d3', 'step', 'Draft', 15, '2026-10-29'),
+        tlStep('d4', 'turn_in', 'Turn in', 15, '2026-10-30')] });
+    // Its first step after the 3 weeks: no bar in them; one whose first step is their last day.
+    const later = (id, first) => ({ id, kind: 'assignment', title: 'Science fair', subject: 'Science', due_date: '2026-12-11', status: 'open', state: 'given',
+      steps: [tlStep(`${id}1`, 'step', 'Build it', 20, first), tlStep(`${id}2`, 'turn_in', 'Turn it in', 5, '2026-12-11')] });
+    // A lesson's path says "do by", never "due".
+    const lesson = (due, steps) => ({ id: 'L2', kind: 'lesson', title: 'Fractions practice', subject: 'Math', due_date: due, status: 'open', state: 'given',
+      steps: steps || [tlStep('k1', 'step', 'Practice 1', 15, '2026-11-03'), tlStep('k2', 'step', 'Practice 2', 15, '2026-11-05')] });
+    const lessonFlag = [tlStep('k1', 'step', 'Practice 1', 15, '2026-11-02', true), tlStep('k2', 'milestone', 'Half the sheets', 15, '2026-11-02', true), tlStep('k3', 'step', 'Practice 2', 15, '2026-11-05')];
+    const anchor = TL.ANCHOR;
+    const out = {
+      chartBack: readChart(P.chart(back, { today, lang: 'en' })),
+      chartFar: readChart(P.chart(far, { today, lang: 'en' })),
+      chartClosed: ['done', 'dropped', 'open', null].map((st) => readChart(P.chart(Object.assign(closed(st), st == null ? { status: undefined } : {}), { today, lang: 'en' }))),
+      ovLater: readOverview(P.overview([later('F1', '2026-11-30'), later('F2', '2026-11-23'), later('F3', '2026-11-22')], { today, lang: 'en' })),
+      pathLesson: [readPath(P.path(lesson('2026-11-08'), { today, lang: 'en' })), readPath(P.path(lesson('2026-11-08'), { today, lang: 'es' })),
+        readPath(P.path(lesson('2026-11-08', lessonFlag), { today, lang: 'en' })), readPath(P.path(lesson('2026-11-25'), { today, lang: 'en' })),
+        readPath(P.path(lesson('2026-11-25'), { today, lang: 'es' })), readPath(P.path(Object.assign(lesson('2026-11-08'), { kind: 'assignment' }), { today, lang: 'en' })),
+        readPath(P.path(Object.assign(lesson('2026-11-25'), { kind: 'assignment' }), { today, lang: 'es' }))].map((x) => [x.line, x.fold]),
+      pathYesterday: [readPath(P.path(kid(ms(ESSAY.steps, '2026-11-01')), { today, lang: 'en' })).line, readPath(P.path(kid(ms(ESSAY.steps, '2026-11-01')), { today, lang: 'es' })).line,
+        readPath(P.path(kid(ms(ESSAY.steps, '2026-10-27')), { today, lang: 'en' })).line, readPath(P.path(kid(ms(ESSAY.steps, '2026-10-24')), { today, lang: 'en' })).line],
+      chartAnchor: readChart(P.chart(anchor, { today, lang: 'en' })),
+      ov: readOverview(P.overview(all, { today, lang: 'en', link })),
+      ovDefault: readOverview(P.overview([ESSAY], { today, lang: 'en' })),
+      ovEs: readOverview(P.overview([ESSAY, WORKSHEET], { today, lang: 'es', link })),
+      ovNone: [P.overview([], { today, lang: 'en' }), P.overview([DONE, DROPPED], { today, lang: 'en' }), P.overview(null, { today })],
+      ovHostile: readOverview(P.overview([hostile], { today, lang: 'en', link })),
+      ovClock: readOverview(P.overview([clock], { today: '2026-10-30', days: 7, lang: 'en' })),
+      chart: readChart(P.chart(ESSAY, { today, lang: 'en', week: WEEK })),
+      chartNoWeek: readChart(P.chart(ESSAY, { today, lang: 'en' })),
+      chartEs: readChart(P.chart(ESSAY, { today, lang: 'es', week: WEEK })),
+      chartShort: readChart(P.chart({ id: 'Q', kind: 'assignment', title: 'Short', due_date: '2026-11-04', status: 'open',
+        steps: [tlStep('q1', 'step', 'Do it', 20, '2026-11-03'), tlStep('q2', 'turn_in', 'Turn it in', 5, '2026-11-04')] }, { today, lang: 'en' })),
+      chartPractice: readChart(P.chart({ id: 'R', kind: 'lesson', title: 'Practice', due_date: '2026-11-04', status: 'open',
+        steps: [tlStep('r1', 'step', 'Practice 1', 20, '2026-11-02', true), tlStep('r2', 'step', 'Practice 2', 20, '2026-11-03'), tlStep('r3', 'milestone', 'Practice 3', 20, '2026-11-04', true)] }, { today, lang: 'en' })),
+      chartNot: [
+        P.chart({ id: 'Q', due_date: '2026-11-04', status: 'open', steps: [tlStep('q1', 'step', 'Quick one', 15, '2026-11-02')] }, { today }),
+        P.chart({ id: 'Q', due_date: '2026-11-04', status: 'open', steps: [tlStep('q1', 'step', 'Do it', 15, null), tlStep('q2', 'turn_in', 'Turn it in', 5, null)] }, { today }),
+        P.chart({ id: 'Q', due_date: '2026-11-04', status: 'open', steps: [] }, { today }), P.chart(null, { today }),
+      ],
+      chartHostile: readChart(P.chart(hostile, { today, lang: 'en' })),
+      chartClock: readChart(P.chart(clock, { today: '2026-10-30', lang: 'en' })),
+      chartLong: readChart(P.chart(long, { today, lang: 'en' })),
+      path: readPath(P.path(ESSAY, { today, lang: 'en', points: 20 })),
+      pathNoPoints: readPath(P.path(ESSAY, { today, lang: 'en' })),
+      pathZero: readPath(P.path(ESSAY, { today, lang: 'en', points: 0 })),
+      pathWhen: [ms(ESSAY.steps, '2026-11-02'), ms(ESSAY.steps, '2026-11-03'), ms(ESSAY.steps, '2026-11-11')]
+        .map((steps) => readPath(P.path(kid(steps), { today, lang: 'en' })).line),
+      pathEarlier: readPath(P.path(kid(ms(ESSAY.steps, '2026-10-30')), { today, lang: 'en', points: 20 })),
+      pathAll: readPath(P.path(kid(ESSAY.steps.map((s) => (s.kind === 'milestone' ? Object.assign({}, s, { done: true }) : s))), { today, lang: 'en', points: 20 })),
+      pathWon: readPath(P.path(kid(ms(ESSAY.steps, '2026-10-30', { done: true })), { today, lang: 'en' })),
+      pathNoMs: readPath(P.path(kid([tlStep('n1', 'step', 'Read', 20, '2026-11-03'), tlStep('n2', 'step', 'Read more', 20, '2026-11-05'), tlStep('n3', 'turn_in', 'Turn it in', 5, '2026-11-09')],
+        { due_date: '2026-11-09' }), { today, lang: 'en' })),
+      pathSoon: readPath(P.path(kid([tlStep('n1', 'step', 'Read', 20, '2026-11-03'), tlStep('n3', 'turn_in', 'Turn it in', 5, '2026-11-06')], { due_date: '2026-11-06' }), { today, lang: 'en' })),
+      pathFold: readPath(P.path(kid([tlStep('f1', 'step', 'Sketch', 20, '2026-11-03'), tlStep('f2', 'milestone', 'Paint done', 25, '2026-11-20'), tlStep('f3', 'turn_in', 'Turn it in', 5, '2026-11-27')],
+        { due_date: '2026-11-27' }), { today, lang: 'en' })),
+      path14: readPath(P.path(kid([tlStep('f1', 'step', 'Sketch', 20, '2026-11-03'), tlStep('f3', 'turn_in', 'Turn it in', 5, '2026-11-15')], { due_date: '2026-11-15' }), { today, lang: 'en' })),
+      pathNot: [P.path(kid([]), { today, lang: 'en' }), P.path(Object.assign(clone(ESSAY), { status: 'done' }), { today, lang: 'en' }),
+        P.path(Object.assign(clone(ESSAY), { due_date: '2026-11-01' }), { today, lang: 'en' }), P.path(null, { today })],
+      pathHostile: readPath(P.path(hostile, { today, lang: 'en', points: 20 })),
+      pathEs: readPath(P.path(ESSAY, { today, lang: 'es', points: 20 })),
+      pathEsMore: [readPath(P.path(kid(ms(ESSAY.steps, '2026-11-03')), { today, lang: 'es' })).line, readPath(P.path(kid(ms(ESSAY.steps, '2026-10-30')), { today, lang: 'es' })).line,
+        readPath(P.path(kid(ms(ESSAY.steps, '2026-11-11')), { today, lang: 'es' })).line,
+        readPath(P.path(kid(ESSAY.steps.map((s) => (s.kind === 'milestone' ? Object.assign({}, s, { done: true }) : s))), { today, lang: 'es' })).line,
+        readPath(P.path(kid([tlStep('f1', 'step', 'Sketch', 20, '2026-11-03'), tlStep('f3', 'turn_in', 'Turn it in', 5, '2026-11-27')], { due_date: '2026-11-27' }), { today, lang: 'es' })).fold],
+      pathClock: readPath(P.path(kid([tlStep('c2', 'milestone', 'On Monday', 10, '2026-11-02'), tlStep('c3', 'turn_in', 'Turn it in', 5, '2026-11-04')], { due_date: '2026-11-04' }),
+        { today: '2026-10-31', lang: 'en' })),
+    };
+    box.remove();
+    return out;
+  };
+  const tl = await ev(drawTl, TL);
+  // The same drawings in a zone whose clocks go back on Nov 1 (Kiritimati never changes its clocks), so a day counted in
+  // local time would show here: Nov 1 twice and the last day lost.
+  const nyContext = await browser.newContext({ viewport: { width: 390, height: 844 }, timezoneId: 'America/New_York', locale: 'en-US' });
+  const nyPage = await openPage(nyContext);
+  const tlNy = await nyPage.evaluate(drawTl, TL);
+  const nyDays = await nyPage.evaluate(() => { const P = window.HomePlan; return [P.addDays('2026-10-31', 2), P.addDays('2026-11-01', -1), P.daysBetween('2026-10-31', '2026-11-02'), P.weekday('2026-11-01')]; });
+  await nyContext.close();
+  if (tl.missing) check('overview, chart and path are drawn by plan.js', false, 'HomePlan.overview, chart or path is missing');
+  else {
+    const ov = tl.ov;
+    const row = (id) => ov.rows.find((r) => r.id === id) || {};
+    check('overview: one row per open assignment, by due date (done and dropped left out)', same(ov.rows.map((r) => r.id), ['A3', 'A4', 'A5', 'A1', 'A2']), JSON.stringify(ov.rows.map((r) => r.id)));
+    check('overview: a header of 21 days from today, weekday letter and date, today marked, each week from its Monday, the month on the first day',
+      ov.letters === 'MTWTFSSMTWTFSSMTWTFSS' && same(ov.dates, [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]) && same(ov.today, [0])
+      && same(ov.mon, [0, 7, 14]) && ov.months[0] === 'Nov' && ov.months.slice(1).every((m) => !m), JSON.stringify([ov.letters, ov.dates, ov.today, ov.mon, ov.months]));
+    check('overview: o.days defaults to 21', tl.ovDefault.dates.length === 21, tl.ovDefault.dates.length);
+    check('overview: a group with its label; each track is hidden from screen readers (the row\'s label says it all)',
+      ov.group === 'group' && ov.label === 'Open assignments, Mon Nov 2 to Sun Nov 22' && ov.hidden && /plan-tl-overview/.test(ov.root), JSON.stringify([ov.group, ov.label, ov.hidden, ov.root]));
+    check('overview: a bar from the first step day, clipped to today when that is earlier, to the due date, with the done share filled (2 of 9)',
+      row('A1').bar === '1 / 13' && row('A1').fill === '22.2%' && row('A1').due === '12' && !row('A1').arrow && !row('A1').late, JSON.stringify(row('A1')));
+    check('overview: milestones as diamonds on their known days, not done (Outline Thu, Full draft Tue)',
+      same(row('A1').ms, [['4', false, false], ['9', false, false]]), JSON.stringify(row('A1').ms));
+    check('overview: the row\'s label for screen readers ("Essay · steps from Mon Nov 2 · milestone … · due Fri Nov 13 · 2 of 9 steps done")',
+      row('A1').sr === 'Essay · steps from Mon Nov 2 · milestone Outline Thu Nov 5 · milestone Full draft Tue Nov 10 · due Fri Nov 13 · 2 of 9 steps done', row('A1').sr);
+    check('overview: the visible name and its line (class · n of m · due day)', row('A1').title === 'Essay' && row('A1').sub === 'English · 2 of 9 · due Fri Nov 13', JSON.stringify(row('A1')));
+    check('overview: a plan starting later starts its bar there; a due date past the 3 weeks runs to the edge with an arrow and "due <day>"; a done milestone filled, one past the range left out',
+      row('A2').bar === '8 / 22' && row('A2').arrow && !row('A2').due && same(row('A2').ms, [['11', true, false]]) && row('A2').fill === '40%'
+      && /due Mon Nov 30/.test(row('A2').sub) && row('A2').sr === 'River poster · steps from Mon Nov 9 · milestone Sketch done · milestone Poster painted Wed Nov 25 · due Mon Nov 30 · 2 of 5 steps done',
+      JSON.stringify(row('A2')));
+    check('overview: an overdue open one is marked late, its bar on today only',
+      row('A3').late && row('A3').bar === '1 / 2' && row('A3').fill === '0%' && /late/.test(row('A3').sub) && row('A3').sr === 'Worksheet 4.2 · late · due Fri Oct 30 · 0 of 2 steps done',
+      JSON.stringify(row('A3')));
+    check('overview: Pat\'s list (counts, no step days): a bar from today, the share from steps_done, only next_milestone',
+      row('A4').bar === '1 / 6' && row('A4').fill === '25%' && same(row('A4').ms, [['3', false, false]]) && row('A4').due === '5'
+      && row('A4').sr === 'Reading log · milestone Half the book Wed Nov 4 · due Fri Nov 6 · 1 of 4 steps done', JSON.stringify(row('A4')));
+    check('overview: no plan yet: a bar from today to the do-by day, nothing filled, "no plan yet"',
+      row('A5').bar === '1 / 6' && row('A5').fill === null && !row('A5').ms.length && row('A5').sr === 'Fractions practice · no plan yet · do by Fri Nov 6', JSON.stringify(row('A5')));
+    check('overview: each row links to the assignment when o.link gives an href (and not when it gives none)',
+      same(ov.rows.map((r) => r.href), ['#/homework/A3', null, '#/homework/A5', '#/homework/A1', '#/homework/A2']), JSON.stringify(ov.rows.map((r) => r.href)));
+    check('overview: today\'s column marked on every row', ov.rows.every((r) => r.todayCell === '1'), JSON.stringify(ov.rows.map((r) => r.todayCell)));
+    check('overview: nothing drawn (an empty string) with no open assignment', same(tl.ovNone, ['', '', '']), JSON.stringify(tl.ovNone));
+    check('overview: a hostile title and class are drawn as text', !tl.ovHostile.img && tl.ovHostile.rows[0].title === HOSTILE && tl.ovHostile.rows[0].sr.startsWith(`${HOSTILE} · steps from Tue Nov 3`)
+      && tl.ovHostile.rows[0].sub.startsWith(HOSTILE), JSON.stringify(tl.ovHostile.rows[0]));
+    check('overview in Spanish: L M X J V S D, "pasos desde el lun 2 nov", "hito … el jue 5 nov", "para el vie 13 nov", "con retraso"',
+      tl.ovEs.letters === 'LMXJVSDLMXJVSDLMXJVSD' && tl.ovEs.rows[1].sr === 'Essay · pasos desde el lun 2 nov · hito Outline el jue 5 nov · hito Full draft el mar 10 nov · para el vie 13 nov · 2 de 9 pasos hechos'
+      && tl.ovEs.rows[0].sr === 'Worksheet 4.2 · con retraso · para el vie 30 oct · 0 de 2 pasos hechos' && tl.ovEs.label === 'Trabajos abiertos, del lun 2 nov al dom 22 nov',
+      JSON.stringify([tl.ovEs.letters, tl.ovEs.rows.map((r) => r.sr), tl.ovEs.label]));
+    check('the clock-change drawings (overview, chart, path) are the same in New York, whose clocks go back on Nov 1, as at Kiritimati; addDays and daysBetween too',
+      !tlNy.missing && same([tlNy.ovClock, tlNy.chartClock, tlNy.pathClock], [tl.ovClock, tl.chartClock, tl.pathClock]) && same(nyDays, ['2026-11-02', '2026-10-31', 2, 0]),
+      JSON.stringify([tlNy.ovClock && tlNy.ovClock.dates, tlNy.chartClock && tlNy.chartClock.dates, tlNy.pathClock && tlNy.pathClock.names, nyDays]));
+    check('overview across the Nov 1 clock change: whole days (Fri Oct 30 + 7 days: Oct, Nov on the 1st, Monday the 2nd starts a week)',
+      tl.ovClock.letters === 'FSSMTWT' && same(tl.ovClock.dates, [30, 31, 1, 2, 3, 4, 5]) && same(tl.ovClock.mon, [3]) && same(tl.ovClock.months, ['Oct', '', 'Nov', '', '', '', ''])
+      && tl.ovClock.rows[0].bar === '2 / 6' && same(tl.ovClock.rows[0].ms, [['3', false, false]]) && tl.ovClock.rows[0].due === '5', JSON.stringify(tl.ovClock));
+
+    const ch = tl.chart;
+    check('chart: days from the first step\'s day to the due date (Thu Oct 29 to Fri Nov 13), today marked, weeks from Monday, the due day flagged',
+      ch.count === 16 && ch.letters === 'TFSSMTWTFSSMTWTF' && same(ch.dates, [29, 30, 31, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]) && same(ch.today, [4]) && same(ch.mon, [4, 11])
+      && same(ch.due, [15]) && ch.label === 'Plan by day, Thu Oct 29 to Fri Nov 13' && /plan-tl-chart/.test(ch.root), JSON.stringify([ch.count, ch.letters, ch.dates, ch.today, ch.mon, ch.due, ch.label]));
+    check('chart: rows are phases, each the steps up to and including a milestone, then the check and turn-in',
+      same(ch.rows.map((r) => [r.title, r.sub]), [['Outline', '4 steps · 1 h 05'], ['Full draft', '3 steps · 1 h 15'], ['Check and turn in', '2 steps · 25 min']]),
+      JSON.stringify(ch.rows.map((r) => [r.title, r.sub])));
+    check('chart: each step a block on its day with its minutes; done filled; an earlier one not done marked behind ("from earlier"); two on one day stacked',
+      same(ch.rows[0].steps.map((s) => s.slice(0, 5)), [['1', '10', 'start', true, false], ['2', '10', 'step', false, true], ['5', '20', 'step', true, false], ['8', '25', 'milestone', false, false]])
+      && same(ch.rows[1].steps.map((s) => s.slice(0, 5)), [['11', '25', 'step', false, false], ['11', '25', 'step', false, false], ['13', '25', 'milestone', false, false]])
+      && same(ch.rows[2].steps.map((s) => s.slice(0, 5)), [['14', '20', 'check', false, false], ['16', '5', 'turn_in', false, false]]),
+      JSON.stringify(ch.rows.map((r) => r.steps.map((s) => s.slice(0, 5)))));
+    check('chart: each block says itself to screen readers (title · kind · day · minutes · done / from earlier)',
+      same([ch.rows[0].steps[0][5], ch.rows[0].steps[1][5], ch.rows[0].steps[3][5], ch.rows[2].steps[1][5]],
+        ['Copy the requirements · start · Thu Oct 29 · 10 min · done', "List what's unclear · Fri Oct 30 · 10 min · from earlier", 'Outline · milestone · Thu Nov 5 · 25 min',
+          'Turn it in · turn in · Fri Nov 13 · 5 min']), JSON.stringify(ch.rows.map((r) => r.steps.map((s) => s[5]))));
+    check('chart: today\'s line on every row', ch.rows.every((r) => r.todayCell === '5'), JSON.stringify(ch.rows.map((r) => r.todayCell)));
+    check('chart: days without homework time shaded where the page knows the week (Fri, Sat; Fri the 13th), on the header and every row',
+      same(ch.off, [1, 2, 8, 9, 15]) && ch.rows.every((r) => same(r.off, ['2', '3', '9', '10', '16'])), JSON.stringify([ch.off, ch.rows.map((r) => r.off)]));
+    check('chart: nothing shaded without the week', same(tl.chartNoWeek.off, []) && tl.chartNoWeek.rows.every((r) => !r.off.length), JSON.stringify(tl.chartNoWeek.off));
+    check('chart: a plan without milestones is one row ("The plan"), from today', same(tl.chartShort.rows.map((r) => r.title), ['The plan']) && same(tl.chartShort.dates, [2, 3, 4])
+      && same(tl.chartShort.today, [0]), JSON.stringify(tl.chartShort));
+    check('chart: a plan that ends on its milestone has no last row; a done milestone\'s diamond filled',
+      same(tl.chartPractice.rows.map((r) => r.title), ['Practice 3']) && tl.chartPractice.rows[0].done, JSON.stringify(tl.chartPractice.rows));
+    check('chart: not drawn for a plan on fewer than 2 distinct days, without days, or without steps', same(tl.chartNot, ['', '', '', '']), JSON.stringify(tl.chartNot));
+    check('chart: a hostile step title is drawn as text (the tip and the block)', !tl.chartHostile.img && tl.chartHostile.tips[0] === `${HOSTILE} · 20 min`
+      && tl.chartHostile.rows[0].title === HOSTILE, JSON.stringify(tl.chartHostile.tips));
+    check('chart in Spanish: "Revisar y entregar", "pasos", "de antes", "hecho", L M X J V S D',
+      tl.chartEs.rows[2].title === 'Revisar y entregar' && tl.chartEs.rows[2].sub === '2 pasos · 25 min' && tl.chartEs.letters === 'JVSDLMXJVSDLMXJV'
+      && tl.chartEs.rows[0].steps[1][5] === "List what's unclear · vie 30 oct · 10 min · de antes" && tl.chartEs.rows[0].steps[0][5] === 'Copy the requirements · inicio · jue 29 oct · 10 min · hecho'
+      && tl.chartEs.label === 'Plan por días, del jue 29 oct al vie 13 nov', JSON.stringify([tl.chartEs.rows.map((r) => [r.title, r.sub]), tl.chartEs.rows[0].steps.map((s) => s[5]), tl.chartEs.label]));
+    check('chart across the Nov 1 clock change: one column a day (Fri Oct 30 to Tue Nov 3)',
+      same(tl.chartClock.dates, [30, 31, 1, 2, 3]) && same(tl.chartClock.rows.map((r) => r.steps.map((s) => s[0])), [['2', '3'], ['5']]) && same(tl.chartClock.mon, [3]),
+      JSON.stringify(tl.chartClock));
+    check('chart: at most 63 days; a due date past them is an arrow and "due <day>"', tl.chartLong.count === 63 && tl.chartLong.arrow && tl.chartLong.foot === 'due Fri Feb 26 →',
+      JSON.stringify([tl.chartLong.count, tl.chartLong.arrow, tl.chartLong.foot]));
+    check('chart past 63 days: each block on its own day (Begin Mon Nov 2, Half Sun Dec 20); the turn-in past them isn\'t drawn on the last day shown (Sun Jan 3), its row still counts it',
+      same(tl.chartLong.dates.slice(0, 1).concat(tl.chartLong.dates.slice(-1)), [2, 3]) && same(tl.chartLong.rows.map((r) => r.steps.map((x) => x[0])), [['1', '49'], []])
+      && tl.chartLong.rows[1].sub === '1 step · 5 min', JSON.stringify(tl.chartLong.rows.map((r) => [r.title, r.sub, r.steps.map((x) => [x[0], x[5]])])));
+    const cb = tl.chartBack;
+    check('chart longer than 63 days from its first step: it keeps today and what\'s ahead (Tue Oct 20 to Mon Dec 21, today the 14th day), each block on its own day, the done ones before it left out, no arrow',
+      cb.count === 63 && cb.label === 'Plan by day, Tue Oct 20 to Mon Dec 21' && same(cb.today, [13]) && same(cb.due, [62]) && !cb.arrow && cb.foot === null
+      && same(cb.rows.map((r) => [r.title, r.steps.map((x) => x[0])]), [['Proposal', []], ['Outline', ['15', '34']], ['Full draft', ['52', '56']], ['Check and turn in', ['63']]])
+      && same(cb.rows[1].steps.map((x) => x[5]), ['Research · Tue Nov 3 · 20 min', 'Outline · milestone · Sun Nov 22 · 20 min']) && cb.rows[0].sub === '2 steps · 30 min',
+      JSON.stringify([cb.count, cb.label, cb.today, cb.due, cb.arrow, cb.foot, cb.rows.map((r) => [r.title, r.sub, r.steps.map((x) => [x[0], x[5]])])]));
+    const cf = tl.chartFar;
+    check('chart begun 70 days ago, due in 18: today has its column (Sat Sep 19 to Fri Nov 20, today the 45th day), each block on its own day, one not done from before the days "from earlier" in the first',
+      cf.count === 63 && cf.label === 'Plan by day, Sat Sep 19 to Fri Nov 20' && same(cf.today, [44]) && same(cf.due, [62]) && !cf.arrow
+      && same(cf.rows.map((r) => r.steps.map((x) => [x[0], x[4]])), [[['1', true], ['46', false], ['63', false]]])
+      && cf.rows[0].steps[0][5] === 'Measure them · Tue Sep 1 · 15 min · from earlier' && cf.rows.every((r) => r.todayCell === '45'),
+      JSON.stringify([cf.count, cf.label, cf.today, cf.rows.map((r) => r.steps.map((x) => [x[0], x[4], x[5]]))]));
+    check('chart of a done or dropped assignment: no step "from earlier" (its steps left unticked aren\'t behind); an open one\'s are, and one with no status',
+      same(tl.chartClosed.map((c) => c.behind), [0, 0, 3, 3]) && tl.chartClosed.slice(0, 2).every((c) => c.rows.every((r) => r.steps.every((x) => !/from earlier/.test(x[5]))))
+      && /Turn in · turn in · Fri Oct 30 · 15 min · from earlier/.test(JSON.stringify(tl.chartClosed[2].rows)),
+      JSON.stringify(tl.chartClosed.map((c) => [c.behind, c.rows.map((r) => r.steps.map((x) => x[5]))])));
+    const an = tl.chartAnchor;
+    check('chart: its box scrolls by keyboard (tabindex 0, a region with the chart\'s label) and opens on the day before today or its first open step, when later (Nov 4: day 23, so 22)',
+      same(an.scroll, ['0', 'region', 'Plan by day, Mon Oct 12 to Fri Nov 20', 22]) && same(tl.chart.scroll, ['0', 'region', 'Plan by day, Thu Oct 29 to Fri Nov 13', 3])
+      && same(tl.chartShort.scroll.slice(3), [0]), JSON.stringify([an.scroll, tl.chart.scroll, tl.chartShort.scroll]));
+    const lt = tl.ovLater;
+    check('overview: a plan whose first step is after the 3 weeks has no bar in them, only the arrow and "due Fri Dec 11"; one starting on their last day has its bar there',
+      lt.rows[0].bar === null && lt.rows[0].arrow && lt.rows[0].due === null && lt.rows[0].sub === 'Science · 0 of 2 · due Fri Dec 11'
+      && lt.rows[0].sr === 'Science fair · steps from Mon Nov 30 · due Fri Dec 11 · 0 of 2 steps done' && lt.rows[1].bar === null && lt.rows[1].arrow
+      && lt.rows[2].bar === '21 / 22' && lt.rows[2].arrow, JSON.stringify(lt.rows));
+
+    const pa = tl.path;
+    check('path: one line on top, the next flag, its day in plain words and the points at his tick ("Next flag: Outline · Thu (3 days) · +20 points now")',
+      pa.line === 'Next flag: Outline · Thu (3 days) · +20 points now', pa.line);
+    check('path: no points when his view gives none (or 0)', tl.pathNoPoints.line === 'Next flag: Outline · Thu (3 days)' && tl.pathZero.line === 'Next flag: Outline · Thu (3 days)',
+      JSON.stringify([tl.pathNoPoints.line, tl.pathZero.line]));
+    check('path: a dot a day from today to the due date, "Today" first, flags on the milestones\' days, the due date at the end, days with work marked',
+      same(pa.names, ['Today', 'T', 'W', 'T', 'F', 'S', 'S', 'M', 'T', 'W', 'T', 'F']) && same(pa.today, [0]) && same(pa.flags, [3, 8]) && same(pa.flagsDone, [])
+      && same(pa.due, [11]) && same(pa.work, [3, 6, 8, 9, 11]) && pa.fold === null && pa.won === 0 && pa.hidden === 'true',
+      JSON.stringify(pa));
+    check('path: said to screen readers in one line', pa.sr === 'From today to Fri Nov 13 · flag Outline Thu Nov 5 · flag Full draft Tue Nov 10', pa.sr);
+    check('path: the next flag today, tomorrow, in 9 days', same(tl.pathWhen, ['Next flag: Outline · today', 'Next flag: Outline · tomorrow', 'Next flag: Outline · in 9 days']),
+      JSON.stringify(tl.pathWhen));
+    check('path: a flag not done whose day has passed is today\'s, "from Fri Oct 30" (a weekday alone would read as this Friday, which the dots show)',
+      tl.pathEarlier.line === 'Next flag: Outline · from Fri Oct 30 · +20 points now' && same(tl.pathEarlier.earlier, [0]) && same(tl.pathEarlier.flags, [0]), JSON.stringify(tl.pathEarlier));
+    check('path: a flag from yesterday says "from yesterday" ("de ayer"); older ones their date',
+      same(tl.pathYesterday, ['Next flag: Outline · from yesterday', 'Siguiente bandera: Outline · de ayer', 'Next flag: Outline · from Tue Oct 27', 'Next flag: Outline · from Sat Oct 24']),
+      JSON.stringify(tl.pathYesterday));
+    check('path of a lesson: "Do by Sun (6 days)" ("Hacer para el dom (6 días)"), "Every flag done! Do by …", "… do by Wed Nov 25" ("… hacer para el mié 25 nov"); an assignment still "Due …"',
+      same(tl.pathLesson, [['Do by Sun (6 days)', null], ['Hacer para el dom (6 días)', null], ['Every flag done! Do by Sun (6 days)', null],
+        ['Do by Wed Nov 25 (23 days)', '… do by Wed Nov 25'], ['Hacer para el mié 25 nov (23 días)', '… hacer para el mié 25 nov'], ['Due Sun (6 days)', null],
+        ['Se entrega el mié 25 nov (23 días)', '… para el mié 25 nov']]), JSON.stringify(tl.pathLesson));
+    check('path: every flag done: a short cheer and the due date; done flags filled', tl.pathAll.line === 'Every flag done! Due Fri Nov 13 (11 days)'
+      && same(tl.pathAll.flagsDone, [3, 8]), JSON.stringify(tl.pathAll));
+    check('path: flags already won before today counted at the start', tl.pathWon.won === 1 && /1 flag done/.test(tl.pathWon.sr) && tl.pathWon.line === 'Every flag done! Due Fri Nov 13 (11 days)',
+      JSON.stringify(tl.pathWon));
+    check('path: a plan without milestones says when it is due ("Due Mon Nov 9 (7 days)", "Due Fri (4 days)")',
+      tl.pathNoMs.line === 'Due Mon Nov 9 (7 days)' && !tl.pathNoMs.flags.length && tl.pathSoon.line === 'Due Fri (4 days)', JSON.stringify([tl.pathNoMs.line, tl.pathSoon.line]));
+    check('path: at most 14 dots, the rest folded into "… due <day>" (and a flag past them only in the line)',
+      tl.pathFold.names.length === 14 && tl.pathFold.fold === '… due Fri Nov 27' && !tl.pathFold.flags.length && same(tl.pathFold.due, [])
+      && tl.pathFold.line === 'Next flag: Paint done · in 18 days', JSON.stringify(tl.pathFold));
+    check('path: exactly 14 days is 14 dots, the due date last, nothing folded', tl.path14.names.length === 14 && same(tl.path14.due, [13]) && tl.path14.fold === null, JSON.stringify(tl.path14));
+    check('path: nothing drawn without a plan, once done, past its due date (his screen never says late) or without an assignment', same(tl.pathNot, ['', '', '', '']), JSON.stringify(tl.pathNot));
+    check('path: a hostile title is drawn as text', !tl.pathHostile.img && tl.pathHostile.line === `Next flag: ${HOSTILE} · Wed (2 days) · +20 points now`, tl.pathHostile.line);
+    check('path in Spanish: "Siguiente bandera", "el jue (3 días)", "+20 puntos ahora", "Hoy"',
+      tl.pathEs.line === 'Siguiente bandera: Outline · el jue (3 días) · +20 puntos ahora' && same(tl.pathEs.names, ['Hoy', 'M', 'X', 'J', 'V', 'S', 'D', 'L', 'M', 'X', 'J', 'V'])
+      && tl.pathEs.sr === 'De hoy al vie 13 nov · bandera Outline el jue 5 nov · bandera Full draft el mar 10 nov', JSON.stringify([tl.pathEs.line, tl.pathEs.names, tl.pathEs.sr]));
+    check('path in Spanish: mañana, "del vie 30 oct", "en 9 días", the cheer, the fold',
+      same(tl.pathEsMore, ['Siguiente bandera: Outline · mañana', 'Siguiente bandera: Outline · del vie 30 oct', 'Siguiente bandera: Outline · en 9 días',
+        '¡Todas las banderas hechas! Se entrega el vie 13 nov (11 días)', '… para el vie 27 nov']), JSON.stringify(tl.pathEsMore));
+    check('path across the Nov 1 clock change: Sat Oct 31 to Wed Nov 4, a dot a day, "Mon (2 days)"',
+      same(tl.pathClock.names, ['Today', 'S', 'M', 'T', 'W']) && same(tl.pathClock.flags, [2]) && same(tl.pathClock.due, [4]) && tl.pathClock.line === 'Next flag: On Monday · Mon (2 days)',
+      JSON.stringify(tl.pathClock));
+  }
+
+  // The three drawn on a page: at 390px nothing scrolls the page sideways (the chart may scroll in its own box,
+  // the overview and the path fit); at 1280px the overview's names sit beside their bars. Light and dark.
+  const TL_SHOTS = `${(process.env.TIMELINE_SHOTS || SHOTS).replace(/\/+$/, '')}/`;
+  fs.mkdirSync(TL_SHOTS, { recursive: true });
+  const drawTimelines = (lang) => ev(({ TL, lang }) => {
+    const P = window.HomePlan;
+    if (typeof P.overview !== 'function') return false;
+    const { ESSAY, POSTER, WORKSHEET, READING, LESSON, WEEK, today } = TL;
+    document.getElementById('app').innerHTML = `<section class="tl-demo"><h2>${P.esc(P.t('tl_next_weeks', { n: 3 }, lang))}</h2>`
+      + `${P.overview([ESSAY, POSTER, WORKSHEET, READING, LESSON], { today, lang, link: (id) => `#a/${id}` })}</section>`
+      + `<section class="tl-demo"><h2>${P.esc(ESSAY.title)}</h2>${P.chart(ESSAY, { today, lang, week: WEEK })}</section>`
+      + `<section class="tl-demo"><h2>My day</h2>${P.path(ESSAY, { today, lang, points: 20 })}${P.path(POSTER, { today, lang })}</section>`;
+    return true;
+  }, { TL, lang });
+  const layout = () => ev(() => {
+    const r = (sel) => { const x = document.querySelector(sel); return x ? x.getBoundingClientRect() : null; };
+    const ovScroll = document.querySelector('.plan-tl-overview .plan-tl-scroll');
+    const path = document.querySelector('.plan-path');
+    const name = r('.plan-tl-overview .plan-tl-row .plan-tl-name');
+    const track = r('.plan-tl-overview .plan-tl-row .plan-tl-track');
+    return { page: document.documentElement.scrollWidth, width: window.innerWidth, ovFits: ovScroll ? ovScroll.scrollWidth <= ovScroll.clientWidth + 1 : false,
+      pathFits: path ? path.scrollWidth <= path.clientWidth + 1 : false, side: name && track ? name.right <= track.left + 1 && Math.abs(name.top - track.top) < 40 : null,
+      stacked: name && track ? name.bottom <= track.top + 1 : null };
+  });
+  // A chart wider than its box, opened by tlScroll on the day before its first open step (Wed Nov 4, after today): that step
+  // and the day before it in view, its names too (they stay in view while it scrolls), at 390px; in a wide box (names
+  // beside the days, 700px) every open step and the due date too, right of the names.
+  const opened = () => ev(({ TL }) => {
+    const P = window.HomePlan;
+    const sec = document.createElement('section');
+    sec.className = 'tl-demo tl-anchor';
+    sec.innerHTML = P.chart(TL.ANCHOR, { today: TL.today, lang: 'en' });
+    document.getElementById('app').appendChild(sec);
+    const sc = sec.querySelector('.plan-tl-scroll');
+    const before = sc.scrollLeft;
+    if (typeof P.tlScroll === 'function') P.tlScroll(sec);
+    const box = sc.getBoundingClientRect();
+    const name = sec.querySelector('.plan-tl-row .plan-tl-name').getBoundingClientRect();
+    const wide = name.bottom > sec.querySelector('.plan-tl-row .plan-tl-track').getBoundingClientRect().top + 1;
+    const from = wide ? name.right : box.left;
+    const seen = (el) => { const b = el.getBoundingClientRect(); return b.left >= from - 0.5 && b.right <= box.right + 0.5; };
+    const hd = Array.from(sec.querySelectorAll('.plan-tl-hday'));
+    const out = { before, after: sc.scrollLeft, overflows: sc.scrollWidth > sc.clientWidth, wide, prev: seen(hd[22]), first: seen(hd[23]), due: seen(hd[hd.length - 1]),
+      open: Array.from(sec.querySelectorAll('.plan-tl-step:not(.is-done)')).every(seen), name: name.left >= box.left - 0.5 && name.left < box.right };
+    return out;
+  }, { TL });
+  if (await drawTimelines('en')) {
+    await page.setViewportSize({ width: 390, height: 844 });
+    let op = await opened();
+    check('tlScroll at 390px: a chart wider than its box opens on the day before its first open step (Tue Nov 3, then Wed Nov 4), its names in view',
+      op.overflows && op.before === 0 && op.after > 0 && op.prev && op.first && op.name, JSON.stringify(op));
+    await page.screenshot({ path: `${TL_SHOTS}plan-timelines-anchor-390-light.png`, fullPage: true });
+    await ev(() => document.querySelector('.tl-anchor').remove());
+    await page.setViewportSize({ width: 700, height: 900 });
+    op = await opened();
+    check('tlScroll in a wide box (names beside the days): it opens with the first open step right of the names, not under them, every open step and the due date in view; the names stay in view',
+      op.wide && op.overflows && op.after > 0 && op.prev && op.first && op.open && op.due && op.name, JSON.stringify(op));
+    await page.screenshot({ path: `${TL_SHOTS}plan-timelines-anchor-700-light.png`, fullPage: true });
+    await ev(() => document.querySelector('.tl-anchor').remove());
+    await page.setViewportSize({ width: 390, height: 844 });
+    let lay = await layout();
+    check('timelines at 390px: nothing scrolls the page sideways; the overview and the path fit; each name over its bar',
+      lay.page <= 390 && lay.ovFits && lay.pathFits && lay.stacked, JSON.stringify(lay));
+    await page.emulateMedia({ colorScheme: 'light' });
+    await page.screenshot({ path: `${TL_SHOTS}plan-timelines-390-light.png`, fullPage: true });
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await page.screenshot({ path: `${TL_SHOTS}plan-timelines-390-dark.png`, fullPage: true });
+    await page.setViewportSize({ width: 1280, height: 900 });
+    lay = await layout();
+    check('timelines at 1280px: nothing scrolls the page sideways; the overview\'s names beside their bars', lay.page <= 1280 && lay.ovFits && lay.pathFits && lay.side, JSON.stringify(lay));
+    await page.screenshot({ path: `${TL_SHOTS}plan-timelines-1280-dark.png`, fullPage: true });
+    await page.emulateMedia({ colorScheme: 'light' });
+    await page.screenshot({ path: `${TL_SHOTS}plan-timelines-1280-light.png`, fullPage: true });
+    await drawTimelines('es');
+    await page.setViewportSize({ width: 390, height: 844 });
+    lay = await layout();
+    check('timelines in Spanish at 390px: nothing scrolls the page sideways', lay.page <= 390 && lay.ovFits && lay.pathFits, JSON.stringify(lay));
+    await page.screenshot({ path: `${TL_SHOTS}plan-timelines-390-es-light.png`, fullPage: true });
+    await ev(() => { document.getElementById('app').innerHTML = ''; });
+  } else check('timelines drawn on a page', false, 'HomePlan.overview is missing');
 
   // =====================================================================
   // 6. The timer, from the server's clock (§7.2), with the device's clock a day off

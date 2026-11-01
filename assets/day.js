@@ -35,6 +35,10 @@
    database before 0005, or no plan.js) there is no card and no homework request. day.html?h=<token>,
    with no t=, is the tutor link: nobody's day is loaded, and plan.js's tutor view draws Jordan's homework
    with the four tutor functions only.
+   Timelines (docs/v1.3-homework.md §21, no migration): on #homework, under Tonight, "Your path": plan.js's
+   path() for each plan given to him that is due 4 or more days out or has a milestone (three, then "+N
+   more"), its name a link to #plan/<id>, where the path is at the top; on the tutor link, plan.js's tutor
+   view draws Next 3 weeks and an assignment's chart. Both from the answers already read: no new request.
    Loads config.js, supabase-js, shoplist.js and plan.js only, never the hub.
    ===================================================================== */
 (function () {
@@ -161,6 +165,9 @@
       hw_got: 'Got it', hw_k_milestone_done: 'Milestone done', hw_cash_none: 'No more instant rewards today: ask a parent.',
       // 0007: his screen when a tutor link of his has the coach view on ({coach}: its label's first word).
       hw_who_sees_coach: '{tutor} and the grown-ups in your family see your plan and your notes. The grown-ups and {coach} see your points and rewards, your focus sessions, your own calendar and your daily tasks.',
+      // His path (docs/v1.3-homework.md §21): the heading over his paths on #homework and the fold after the first three;
+      // plan.js's path() has the path's own words.
+      hw_paths: 'Your path', hw_paths_more: '+{n} more',
       // 0007: the tutor link's Coach section (docs/v1.3-homework.md §20.6). {kid} is the kid's first name.
       coach_title: 'Coach', coach_lead: "{kid}'s family lets you see his points, rewards, focus sessions, his own calendar and his daily tasks. Read-only.",
       coach_points: 'Points', coach_balance: '{n} points', coach_points_off: 'Points are off for {kid}.',
@@ -264,6 +271,7 @@
       hw_cash_btn: 'Conseguir ya', hw_cash_sure: 'Sí, conseguirlo · −{n}', hw_cashed_toast: 'Conseguido: {title}. Avisa a tus padres.', hw_instant: 'al momento',
       hw_got: 'Conseguido', hw_k_milestone_done: 'Hito hecho', hw_cash_none: 'Hoy no quedan premios al momento: pídeselo a tus padres.',
       hw_who_sees_coach: '{tutor} y los adultos de tu familia ven tu plan y tus notas. Los adultos y {coach} ven tus puntos y premios, tus sesiones de concentración, tu propio calendario y tus tareas diarias.',
+      hw_paths: 'Tu camino', hw_paths_more: '+{n} más',
       coach_title: 'Coach', coach_lead: 'La familia de {kid} te deja ver sus puntos, premios, sesiones de concentración, su propio calendario y sus tareas diarias. Solo lectura.',
       coach_points: 'Puntos', coach_balance: '{n} puntos', coach_points_off: 'Los puntos están desactivados para {kid}.',
       coach_this_week: 'Esta semana', coach_last_week: 'La semana pasada',
@@ -1284,6 +1292,7 @@
   let addOpen = false;      // the + Homework form
   let earlierOpen = false;  // From earlier unfolded
   let schoolMoreOpen = false;   // New from school's folded rest unfolded (0006)
+  let pathsMoreOpen = false;    // Your path's folded rest unfolded (§21)
   const schoolBusy = new Set(); // New from school: the items with a Quick, Plan with Pat or Hide on its way
   let schoolScroll = false;     // the card's "New from school" line was tapped: #homework opens at the list
   let sheet = null;         // { kind: 'stuck' | 'smaller' | 'ask' | 'cue' | 'ifstuck', step, text }
@@ -1396,7 +1405,10 @@
     else if (view === 'points') renderPoints(force);
     else if (view === 'focus') renderFocus();
     else if (view === 'plan' && !ed) renderPlan(planIdFromHash());
-    else if (view === 'plan' && !ed.dirty()) { const a = editorAssignment(edFor); if (a) ed.set(a, editorOpts()); else renderHomeworkView('homework'); }
+    else if (view === 'plan') {
+      drawPlanPath(edFor);   // the path follows what was saved, even under unsaved changes in the editor
+      if (!ed.dirty()) { const a = editorAssignment(edFor); if (a) ed.set(a, editorOpts()); else renderHomeworkView('homework'); }
+    }
   }
   // homework_by_token (or a writer) answered null: homework was turned off a moment ago, or the link no
   // longer works. get_person_day says which.
@@ -1834,6 +1846,35 @@
       <div class="hw-list">${list.slice(0, SCHOOL_SHOWN).map(schoolRowHTML).join('')}${more.length ? `<details class="hw-school-more"${schoolMoreOpen ? ' open' : ''}>
         <summary>${esc(hw('hw_school_more', { n: more.length }))}</summary>${more.map(schoolRowHTML).join('')}</details>` : ''}</div></section>`;
   }
+  // His path (docs/v1.3-homework.md §21): the weeks of a long plan as a dot a day from today to its due date, flags on its
+  // milestones and one line on top (plan.js path()). On #homework, under Tonight (tonight stays first), one for each plan
+  // given to him that is due 4 or more days out or has a milestone, by due date: three, the rest folded under "+N more".
+  // Each name opens the plan (#plan/<id>), where the path is at the top. The line leaves the points out: his view
+  // doesn't carry what a milestone pays at his tick (only the check's half once he has ticked it), so nothing is guessed.
+  const PATHS_SHOWN = 3;
+  const pathOf = (a) => (plan && hv && a ? plan.path(a, { today: hv.today, lang }) : '');
+  function pathList() {
+    return ((hv && hv.assignments) || []).filter((a) => a.status === 'open' && a.state === 'given' && Array.isArray(a.steps)
+      && (plan.daysBetween(hv.today, a.due_date) >= 4 || a.steps.some((s) => s && s.kind === 'milestone')))
+      .map((a) => ({ a, html: pathOf(a) })).filter((x) => x.html);
+  }
+  const pathCardHTML = (x) => `<div class="hw-path" data-asg="${esc(x.a.id)}"><a class="hw-path-title" href="#plan/${esc(x.a.id)}">${esc(`${x.a.title} ›`)}</a>${x.html}</div>`;
+  function pathsHTML() {
+    const list = pathList();
+    if (!list.length) return '';
+    const more = list.slice(PATHS_SHOWN);
+    return `<section class="hw-paths day-sec" aria-labelledby="hw-paths-h"><h2 class="sec-head" id="hw-paths-h">${esc(hw('hw_paths'))}</h2>
+      ${list.slice(0, PATHS_SHOWN).map(pathCardHTML).join('')}${more.length ? `<details class="hw-paths-more"${pathsMoreOpen ? ' open' : ''}>
+        <summary>${esc(hw('hw_paths_more', { n: more.length }))}</summary>${more.map(pathCardHTML).join('')}</details>` : ''}</section>`;
+  }
+  // #plan/<id>: its path at the top (drawn again from every read and save; '' for a plan not given to him).
+  function drawPlanPath(id) {
+    const box = view === 'plan' ? root.querySelector('.hw-plan-path') : null;
+    if (!box) return;
+    const a = asgById(id);
+    const html = a && a.status === 'open' && a.state === 'given' ? pathOf(a) : '';
+    if (box.hwDrawn !== html) { box.innerHTML = html; box.hwDrawn = html; box.hidden = !html; }
+  }
   function nowHTML() {
     const s = nowStep();
     const w = hv.window;
@@ -1890,7 +1931,7 @@
   function renderHomework(force) {
     if (!hv) { hwFrame('homework'); return; }
     const key = JSON.stringify([Object.assign({}, hv, { as_of: null, server_now: null }), nowId, menuOpen, quickOpen, addOpen, earlierOpen, lengthPick, withPick, lang, notifyAsked,
-      schoolMoreOpen, [...schoolBusy], timeAnswer(), !!cheer]);
+      schoolMoreOpen, pathsMoreOpen, [...schoolBusy], timeAnswer(), !!cheer]);
     if (!force && key === hvDrawn && root.querySelector('.hw-tonight')) return;
     if (!force && (addOpen || sheet) && root.querySelector('.hw-tonight')) return;   // never under his fingers
     hvDrawn = key;
@@ -1925,6 +1966,7 @@
           ${addOpen ? addFormHTML() : `<p class="hw-add"><button type="button" class="btn" data-act="hw-add">${esc(plan.t('add_homework', null, lang))}</button></p>`}
         </div>
       </section>
+      ${pathsHTML()}
       ${due.length ? `<section class="hw-due day-sec" aria-labelledby="hw-due-h"><h2 class="sec-head" id="hw-due-h">${esc(plan.t('due_soon', null, lang))}</h2>
         <div class="hw-list">${due.map(dueRowHTML).join('')}</div></section>` : ''}
       ${schoolHTML(school)}
@@ -2651,6 +2693,7 @@
     const r = await hwWrite(start, true);
     if (r.gone) return { gone: true };
     if (r.error) return { error: r.error };
+    drawPlanPath(id);
     const a = editorAssignment(id);
     return a ? { assignment: a } : { gone: true };
   }
@@ -2661,8 +2704,9 @@
     if (ed) { ed.stop(); ed = null; }
     const a = editorAssignment(id);
     root.innerHTML = `<header class="day-head hw-head"><a class="list-back" href="#homework">${esc(hw('hw_back_home'))}</a></header>
-      <div class="hw-plan">${a ? '' : `<p class="empty-line">${esc(hw('hw_being_planned'))}</p>`}</div>${footerHTML()}`;
+      <div class="hw-plan-path" hidden></div><div class="hw-plan">${a ? '' : `<p class="empty-line">${esc(hw('hw_being_planned'))}</p>`}</div>${footerHTML()}`;
     document.title = `${(asgById(id) || {}).title || hw('homework')} · ${t('my_day')}`;
+    drawPlanPath(id);
     if (!a) return;
     edFor = id;
     ed = plan.editor(root.querySelector('.hw-plan'), Object.assign(editorOpts(), {
@@ -2674,6 +2718,7 @@
           try { v = await readHomework(); } catch (err) { return { error: err }; }
           if (!v) return { gone: true };
           take(v);
+          drawPlanPath(id);
           const x = editorAssignment(id);
           return x ? { assignment: x } : { gone: true };
         },
@@ -2826,6 +2871,7 @@
   root.addEventListener('toggle', (e) => {
     if (e.target.classList && e.target.classList.contains('hw-earlier')) earlierOpen = e.target.open;
     else if (e.target.classList && e.target.classList.contains('hw-school-more')) schoolMoreOpen = e.target.open;
+    else if (e.target.classList && e.target.classList.contains('hw-paths-more')) pathsMoreOpen = e.target.open;
   }, true);
   root.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && sheet) closeSheet();

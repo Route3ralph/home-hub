@@ -28,6 +28,13 @@
 // what it shows in plain words; set_tutor_coach) and the coach's notes for the parents (coach_notes, read only on 7 and
 // only by the parents; Done with coach_note_done, the done ones of the last 30 days folded); none of it on schema 6 or
 // for Sam; a phone.
+// The timelines (no migration; docs/v1.3-homework.md §21): "Next 3 weeks" between Assignments and lessons and This week
+// (plan.js overview: a row per open assignment by due date, each a link to its page, its bar from the first step day or
+// today to the due date with the done share, milestones as diamonds, the due date a flag, overdue ones late, one due past
+// the 3 weeks an arrow; nothing when nothing is open), and on an assignment its chart above the plan editor (plan.js chart:
+// a row per phase, each step on its day with its minutes, done ones filled, earlier ones not done behind, today's line,
+// days without homework time shaded; none for a plan on one day or no plan; drawn again after a save); Sam sees both; a
+// hostile title as text; 390px and 1280px, light and dark, with no sideways page scroll (screenshots to TIMELINE_SHOTS).
 //
 // mock.js has the tables and the signed-in functions (withHomework, homeworkRpc) with the migration's
 // rules and shapes. The other v2 pages are small stubs. The household's clock is Thu Nov 5 2026,
@@ -367,11 +374,12 @@ const emailOf = (req) => {
   check('the kid line: "Jordan · 118 points · Homework time Mon–Thu 4:30–5:15pm, Sun 5:00–5:45pm ›"',
     (await tc(page, '.hw-kidline')) === 'Jordan · 118 points · Homework time Mon–Thu 4:30–5:15pm, Sun 5:00–5:45pm ›', await tc(page, '.hw-kidline'));
   check('one kid: no kid picker', !(await page.$('select[name="kid"]')));
-  check('the sections in order: To approve · To check · To talk about · Questions and notes · Assignments and lessons · This week · Points and rewards · Switches',
-    same(await secs(page), ['approve', 'check', 'talk', 'qa', 'assignments', 'week', 'points', 'switches']), JSON.stringify(await secs(page)));
+  // The timelines (§21) add Next 3 weeks between Assignments and lessons and This week, while an assignment is open.
+  check('the sections in order: To approve · To check · To talk about · Questions and notes · Assignments and lessons · Next 3 weeks · This week · Points and rewards · Switches',
+    same(await secs(page), ['approve', 'check', 'talk', 'qa', 'assignments', 'timeline', 'week', 'points', 'switches']), JSON.stringify(await secs(page)));
   const heads = await page.$$eval('#main section.hw-sec > .sec-head > span:first-child', (es) => es.map((e) => e.textContent));
-  check('section headings', same(heads, ['To approve', 'To check', 'To talk about', 'Questions and notes', 'Assignments and lessons', 'This week', 'Points and rewards', 'Switches']),
-    JSON.stringify(heads));
+  check('section headings', same(heads, ['To approve', 'To check', 'To talk about', 'Questions and notes', 'Assignments and lessons', 'Next 3 weeks', 'This week', 'Points and rewards',
+    'Switches']), JSON.stringify(heads));
   const reads = log.filter((l) => /^GET \/rest\/v1\//.test(l)).map((l) => decodeURIComponent(l.split('?')[0].replace('GET /rest/v1/', '')));
   // PR B: a parent's page also reads the household (the AI planner's switch and words) and the AI runs (this month's,
   // and the last Test) for the switches card's AI row; Sam's reads no AI runs (homework-ai.test.js).
@@ -743,6 +751,7 @@ const emailOf = (req) => {
     && (await text(page, '.hw-a h1')) === 'Essay: a place I love' && (await tc(page, '.hw-a .hw-a-meta')) === 'English · due Fri Nov 20 · Open', await tc(page, '.hw-a .hw-a-meta'));
   check('the teacher\'s text keeps its lines', (await page.inputValue('form.hw-afields [name="details"]')) === 'Write 500 words.\nDescribe a place you love.\n\nUse three senses.');
   check('no plan yet: the editor offers the starter plans', !!(await page.$(`${ED} .plan-editor`)) && (await tc(page, `${ED} .plan-empty`)).startsWith('No steps yet'));
+  check('no plan yet: no chart above the editor', !(await page.$('.hw-a .plan-tl-chart')) && (await page.$eval('.hw-a [data-ref="chart"]', (e) => e.innerHTML).catch(() => null)) === '');
   await page.click(`${ED} [data-act="starter"]`);
   check('the starter plan its title suggests is marked (an essay)', await page.$eval(`${ED} [data-starter="essay"]`, (b) => b.classList.contains('is-guess')));
   await page.click(`${ED} [data-starter="essay"]`);
@@ -756,6 +765,8 @@ const emailOf = (req) => {
     placedDays.length === 9 && placedDays.every((d) => d >= TODAY) && placedDays[8] === '2026-11-20' && placedDays.slice(0, 8).every((d) => ![5, 6].includes(new Date(`${d}T00:00:00Z`).getUTCDay())),
     JSON.stringify(placedDays));
   check('the editor shows them with their days, and fits', (await page.$$(`${ED} .plan-step`)).length === 9 && /Fits/.test(await tc(page, `${ED} .plan-ed-fit`)), await tc(page, `${ED} .plan-ed-fit`));
+  check('... and its chart above the editor: a step block for each of the nine, the turn-in on the due date', (await page.$$('.hw-a [data-ref="chart"] .plan-tl-step')).length === 9
+    && (await page.$$eval('.hw-a [data-ref="chart"] .plan-tl-hday.is-due', (es) => es.length)) === 1 && !!(await page.$('.hw-a [data-ref="chart"] .plan-tl-step.k-turn_in')));
   // Edit a step: a new title.
   await page.click(`${ED} .plan-step[data-i="2"] [data-act="more"]`);
   await page.fill(`${ED} .plan-step-edit [name="title"]`, 'Find 2 photos of the place');
@@ -947,8 +958,10 @@ const emailOf = (req) => {
   // 5. Sam reads it all, with no buttons
   // =====================================================================
   ({ page, db, log } = await open({ label: 'sam', email: 'sam@example.com' }));
-  check('Sam: the same sections, but no tutor links (they are the parents\' only)', same(await secs(page), ['approve', 'check', 'talk', 'qa', 'assignments', 'week', 'points', 'switches'])
+  check('Sam: the same sections, but no tutor links (they are the parents\' only)', same(await secs(page), ['approve', 'check', 'talk', 'qa', 'assignments', 'timeline', 'week', 'points', 'switches'])
     && !(await page.$('.hw-link')), JSON.stringify(await secs(page)));
+  check('Sam: Next 3 weeks, each open assignment a link to its page', same(await page.$$eval('[data-sec="timeline"] .plan-tl-row a.plan-tl-name', (as) => as.map((a) => a.getAttribute('href'))),
+    ['a5c10000-0000-4000-8000-000000000002', 'a5c10000-0000-4000-8000-000000000003', 'a5c10000-0000-4000-8000-000000000004', SCI].map((id) => `#/homework/${id}`)));
   const samButtons = await page.$$eval('#main button:not([disabled]), #main input:not([disabled]), #main select:not([disabled])', (es) => es.map((e) => e.dataset.act || e.name || e.className));
   check('Sam: no button anywhere on the page (Done (30 days) is a fold, not a button)', samButtons.length === 0, JSON.stringify(samButtons));
   check('Sam: the switches say "Only parents can change these."', /Only parents can change these\./.test(await tc(page, '[data-sec="switches"]')));
@@ -956,6 +969,8 @@ const emailOf = (req) => {
   await go(page, `#/homework/${SCI}`);
   check('Sam on an assignment: the teacher\'s text as text, the steps listed, no editor and no fields', !(await page.$('.plan-editor')) && !(await page.$('form.hw-afields'))
     && (await page.$$('.hw-steps-ro li')).length === 8 && (await text(page, '.hw-a-text')).startsWith('Make a poster about a river.\nShow its source'), await text(page, '.hw-a-text'));
+  check('Sam on an assignment: its chart above the steps', !!(await page.$('.hw-a [data-ref="chart"] .plan-tl-chart'))
+    && await page.evaluate(() => !!(document.querySelector('[data-ref="chart"]').compareDocumentPosition(document.querySelector('.hw-steps-ro')) & Node.DOCUMENT_POSITION_FOLLOWING)));
   await page.context().close();
 
   // =====================================================================
@@ -971,6 +986,9 @@ const emailOf = (req) => {
   ({ page, db } = await open({ label: 'evil', db: evil }));
   check('a hostile title, class and question show as text', (await texts(page, '.hw-arow-title')).includes('<img src=x onerror="window.__pwned=1">')
     && (await tc(page, '[data-sec="qa"]')).includes('<img src=y onerror=window.__pwned=4>') && !(await page.evaluate(() => window.__pwned)));
+  check('... and in Next 3 weeks: the title and class as text, no element made from them', (await texts(page, '[data-sec="timeline"] .plan-tl-title')).includes('<img src=x onerror="window.__pwned=1">')
+    && (await texts(page, '[data-sec="timeline"] .plan-tl-sub')).some((t) => t.startsWith('<b>Art</b> · ')) && !(await page.$('[data-sec="timeline"] img, [data-sec="timeline"] b'))
+    && !(await page.evaluate(() => window.__pwned)), JSON.stringify(await texts(page, '[data-sec="timeline"] .plan-tl-sub')));
   check('two kids: a kid picker, Jordan first', same(await page.$$eval('select[name="kid"] option', (os) => os.map((o) => o.textContent)), ['Jordan', 'Riley']));
   await go(page, `#/homework/${bad.id}`);
   check('a hostile teacher\'s text and stretch question stay text in their fields', (await page.inputValue('form.hw-afields [name="details"]')).startsWith('<script>')
@@ -1657,6 +1675,221 @@ const emailOf = (req) => {
       && (await checkLine(page)) === `Once the Assignments link is read, its next 5 items show here, to check against Blackbaud. ${UNTIL}` && !(await page.$(`${CHK} button`)),
       `${await tc(page, `${FEED('assignments')} .hw-feed-state`)} | ${await checkLine(page)}`);
     await page.context().close();
+  }
+
+  // =====================================================================
+  // 12. The timelines (no migration; docs/v1.3-homework.md §21): Next 3 weeks on the list, an assignment's chart
+  // =====================================================================
+  // Today is Thu Nov 5. timelineDb() is fullDb() and four more of Jordan's: the two-week essay (given, its plan from
+  // Monday, two milestones), the book list (due Tuesday, still open: late), the cell model (due Dec 4, past the 3
+  // weeks; its plan not given yet) and a dropped map (not drawn). His homework time is Mon–Thu and Sun.
+  const ESSAY = 'a5c10000-0000-4000-8000-000000000011';
+  const BOOKS = 'a5c10000-0000-4000-8000-000000000012';
+  const CELL = 'a5c10000-0000-4000-8000-000000000013';
+  const MATH = 'a5c10000-0000-4000-8000-000000000002';
+  const FRACTIONS = 'a5c10000-0000-4000-8000-000000000003';
+  const HIST = 'a5c10000-0000-4000-8000-000000000004';
+  const timelineDb = () => {
+    const d = fullDb();
+    const A = (o) => { const a = assignmentRow(Object.assign({ kid_id: ID.jordan, created_by: 'alex@example.com' }, o)); d.assignments.push(a); return a; };
+    const S = (a, pos, o) => d.homework_steps.push(stepRow(Object.assign({ assignment_id: a.id, pos, source: 'template' }, o)));
+    const essay = A({ id: ESSAY, title: 'Essay: a river\'s journey', subject: 'English', due_date: '2026-11-20', given_at: at(TODAY, '09:00'), given_by: 'alex@example.com', plan_rev: 2 });
+    S(essay, 1, { kind: 'start', title: 'Copy the requirements into your notes', minutes: 10, day: '2026-11-09' });
+    S(essay, 2, { kind: 'milestone', title: 'Outline', minutes: 20, day: '2026-11-10' });
+    S(essay, 3, { title: 'Draft the first half', minutes: 20, day: '2026-11-11' });
+    S(essay, 4, { title: 'Draft the second half', minutes: 20, day: '2026-11-12' });
+    S(essay, 5, { kind: 'milestone', title: 'Full draft', minutes: 20, day: '2026-11-16' });
+    S(essay, 6, { kind: 'check', title: 'Check it against the instructions', minutes: 15, day: '2026-11-17' });
+    S(essay, 7, { kind: 'turn_in', title: 'Turn it in', minutes: 5, day: '2026-11-20' });
+    const books = A({ id: BOOKS, title: 'Book list', subject: 'English', due_date: '2026-11-03', given_at: at('2026-10-30', '17:00'), given_by: 'alex@example.com', plan_rev: 1 });
+    S(books, 1, { title: 'Write down 5 books', minutes: 20, day: '2026-11-02', source: 'typed' });
+    const cell = A({ id: CELL, title: 'Model of a cell', subject: 'Science', due_date: '2026-12-04', plan_rev: 1 });
+    S(cell, 1, { kind: 'start', title: 'Read the instructions', minutes: 10, day: '2026-11-23' });
+    S(cell, 2, { kind: 'milestone', title: 'Cell drawn', minutes: 20, day: '2026-11-30' });
+    S(cell, 3, { kind: 'check', title: 'Check the labels', minutes: 15, day: '2026-12-02' });
+    S(cell, 4, { kind: 'turn_in', title: 'Turn it in', minutes: 5, day: '2026-12-04' });
+    A({ title: 'Map of the town', subject: 'Geography', due_date: '2026-11-12', status: 'dropped', updated_at: at('2026-11-04', '18:00') });
+    return d;
+  };
+  // What the page drew in a timeline (sel): its head of days and its rows.
+  const readTl = (page, sel) => page.evaluate((sel) => {
+    const root = document.querySelector(sel);
+    if (!root) return null;
+    const txt = (el, s) => { const x = el && (s ? el.querySelector(s) : el); return x ? x.textContent.replace(/\s+/g, ' ').trim() : null; };
+    const col = (el) => (el ? el.style.gridColumn || null : null);
+    const flags = (el) => ['is-done', 'is-behind', 'is-late', 'is-past'].filter((c) => el.classList.contains(c)).map((c) => ` ${c.slice(3)}`).join('');
+    const head = Array.from(root.querySelectorAll('.plan-tl-hday'));
+    const idx = (cls) => head.map((d, i) => (d.classList.contains(cls) ? i : -1)).filter((i) => i >= 0);
+    return {
+      label: root.getAttribute('aria-label'), days: head.map((d) => `${txt(d, '.plan-tl-letter')}${txt(d, '.plan-tl-date')}`), month: txt(head[0], '.plan-tl-month'),
+      today: idx('is-today'), mon: idx('is-mon'), off: idx('is-off'), due: idx('is-due'), key: txt(root, '.plan-tl-key'),
+      rows: Array.from(root.querySelectorAll('.plan-tl-row')).map((r) => {
+        const a = r.querySelector('a.plan-tl-name');
+        const bar = r.querySelector('.plan-tl-bar');
+        const fill = r.querySelector('.plan-tl-fill');
+        return {
+          id: r.dataset.id || null, late: r.classList.contains('is-late'), href: a ? a.getAttribute('href') : null, title: txt(r, '.plan-tl-title'), sub: txt(r, '.plan-tl-sub'),
+          sr: txt(r, '.plan-tl-name > .sr-only'), bar: bar ? `${col(bar)}${flags(bar)}` : null, fill: fill ? fill.style.width : null,
+          ms: Array.from(r.querySelectorAll('.plan-tl-ms')).map((m) => `${col(m)}${flags(m)}`), due: col(r.querySelector('.plan-tl-due')),
+          arrow: !!r.querySelector('.plan-tl-track > .plan-tl-arrow'), today: col(r.querySelector('.plan-tl-cell.is-today')),
+          steps: Array.from(r.querySelectorAll('.plan-tl-step')).map((x) => `${col(x.closest('.plan-tl-slot'))}:${txt(x, '.plan-tl-min')}${flags(x)}`),
+          stepSr: Array.from(r.querySelectorAll('.plan-tl-step .sr-only')).map((x) => txt(x)),
+        };
+      }),
+    };
+  }, sel);
+  const TL = '[data-sec="timeline"] .plan-tl-overview';
+  const CHART = '.hw-a [data-ref="chart"] .plan-tl-chart';
+  const TL_SHOTS = `${(process.env.TIMELINE_SHOTS || SHOTS).replace(/\/+$/, '')}/`;
+  require('fs').mkdirSync(TL_SHOTS, { recursive: true });
+  {
+    ({ page, db, log } = await open({ label: 'timeline', db: timelineDb() }));
+    check('timelines: Next 3 weeks between Assignments and lessons and This week, its heading "Next 3 weeks"',
+      same(await secs(page), ['approve', 'check', 'talk', 'qa', 'assignments', 'timeline', 'week', 'points', 'switches'])
+      && (await tc(page, '[data-sec="timeline"] > .sec-head')) === 'Next 3 weeks', JSON.stringify([await secs(page), await tc(page, '[data-sec="timeline"] > .sec-head')]));
+    const ov = await readTl(page, TL);
+    check('the overview: 21 days from today, "Open assignments, Thu Nov 5 to Wed Nov 25", Nov on the first, today\'s column first, each week from its Monday',
+      !!ov && ov.label === 'Open assignments, Thu Nov 5 to Wed Nov 25' && ov.days.length === 21 && ov.days[0] === 'T5' && ov.days[4] === 'M9' && ov.days[20] === 'W25'
+      && ov.month === 'Nov' && same(ov.today, [0]) && same(ov.mon, [4, 11, 18]) && ov.key === 'milestone due date today', JSON.stringify(ov && [ov.label, ov.days, ov.month, ov.today, ov.mon, ov.key]));
+    const rows = ov ? ov.rows : [];
+    const row = (id) => rows.find((r) => r.id === id) || {};
+    check('a row per open assignment and lesson, by due date (not the done, the dropped or the old ones), each a link to its page',
+      same(rows.map((r) => r.title), ['Book list', 'Worksheet 5.1', 'Fractions practice', 'History timeline', 'Science project: river poster', 'Essay: a river\'s journey', 'Model of a cell'])
+      && same(rows.map((r) => r.href), [BOOKS, MATH, FRACTIONS, HIST, SCI, ESSAY, CELL].map((id) => `#/homework/${id}`)) && rows.every((r) => r.today === '1'),
+      JSON.stringify(rows.map((r) => [r.title, r.href, r.today])));
+    const essay = row(ESSAY);
+    check('the two-week essay: its bar from its first step day (Mon) to its due date, nothing done yet, its two milestones as diamonds on their days, the due date a flag',
+      essay.bar === '5 / 17' && essay.fill === '0%' && same(essay.ms, ['6', '12']) && essay.due === '16' && !essay.arrow && !essay.late
+      && essay.sub === 'English · 0 of 7 · due Fri Nov 20', JSON.stringify(essay));
+    check('... and its label for screen readers: "Essay: a river\'s journey · steps from Mon Nov 9 · milestone Outline Tue Nov 10 · milestone Full draft Mon Nov 16 · due Fri Nov 20 · 0 of 7 steps done"',
+      essay.sr === 'Essay: a river\'s journey · steps from Mon Nov 9 · milestone Outline Tue Nov 10 · milestone Full draft Mon Nov 16 · due Fri Nov 20 · 0 of 7 steps done', essay.sr);
+    const sci = row(SCI);
+    check('the science project: from today (its first step was Monday) to Fri Nov 13, 3 of 8 done filled; Outline done before today not drawn, Full draft (Mon, not done) behind on today',
+      sci.bar === '1 / 10' && sci.fill === '37.5%' && same(sci.ms, ['1 behind']) && sci.due === '9' && sci.sub === 'Science · 3 of 8 · due Fri Nov 13'
+      && sci.sr === 'Science project: river poster · steps from Thu Nov 5 · milestone Outline with 3 main points done · milestone Full draft Mon Nov 2 · due Fri Nov 13 · 3 of 8 steps done', JSON.stringify(sci));
+    const books = row(BOOKS);
+    check('the book list, due Tuesday and still open: marked late (on today\'s column, no flag)', books.late && books.bar === '1 / 2 late' && books.due === null
+      && books.sub === 'English · 0 of 1 · late · due Tue Nov 3' && books.sr === 'Book list · late · due Tue Nov 3 · 0 of 1 steps done', JSON.stringify(books));
+    const cell = row(CELL);
+    check('the cell model, due Dec 4 (past the 3 weeks): its bar from its first step day to the edge, an arrow, "due Fri Dec 4"; its milestone past the days not drawn',
+      cell.bar === '19 / 22 past' && cell.arrow && cell.due === null && !cell.ms.length && cell.sub === 'Science · 0 of 4 · due Fri Dec 4', JSON.stringify(cell));
+    const les = row(FRACTIONS);
+    const hist = row(HIST);
+    check('the lesson without a plan: "no plan yet", from today to its do-by day; the history timeline 1 of 4 with its checked milestone (before today) not drawn',
+      les.bar === '1 / 6' && les.fill === null && les.due === '5' && les.sub === 'Math · no plan yet · do by Mon Nov 9' && hist.bar === '1 / 8' && hist.fill === '25%' && !hist.ms.length
+      && hist.due === '7' && hist.sub === 'History · 1 of 4 · due Wed Nov 11', JSON.stringify([les, hist]));
+    // No request of its own: the steps of every assignment in the page's one batched read, no request (REST or RPC) that
+    // names one open assignment, and no token function.
+    const OPEN = [BOOKS, MATH, FRACTIONS, HIST, SCI, ESSAY, CELL];
+    const stepReads = log.filter((l) => l.startsWith('GET /rest/v1/homework_steps?'));
+    const perOne = log.filter((l) => OPEN.some((id) => l.includes(`eq.${id}`)))
+      .concat((db.rpcCalls || []).filter((c) => OPEN.some((id) => JSON.stringify(c.body || null).includes(id))).map((c) => `rpc/${c.name}`));
+    check('the timeline is read from what the page already reads (no other request): the steps in one read for every assignment, no request for one of them, no token function',
+      stepReads.length === 1 && stepReads[0].includes('assignment_id=in.') && !perOne.length && !log.some((l) => /rpc\/(homework_by_token|tutor_view_by_token)/.test(l)),
+      JSON.stringify({ stepReads: stepReads.length, perOne: perOne.slice(0, 3) }));
+    // A row's link opens the assignment, with its chart above the editor.
+    await page.click(`${TL} .plan-tl-row[data-id="${ESSAY}"] a.plan-tl-name`);
+    await until(page, (id) => location.hash === `#/homework/${id}` && !!document.querySelector('.hw-a[data-id]'), 4000, ESSAY);
+    await settle(page);
+    const ch = await readTl(page, CHART);
+    check('a row\'s link opens its assignment: the chart above the plan editor', (await page.evaluate(() => location.hash)) === `#/homework/${ESSAY}` && !!ch
+      && await page.evaluate(() => !!(document.querySelector('[data-ref="chart"]').compareDocumentPosition(document.querySelector('[data-ref="editor"]')) & Node.DOCUMENT_POSITION_FOLLOWING)),
+      await page.evaluate(() => location.hash));
+    check('the essay\'s chart: today (before its first step) to the due date, 16 days; Mondays; Fri and Sat without homework time shaded; the due day marked',
+      !!ch && ch.label === 'Plan by day, Thu Nov 5 to Fri Nov 20' && ch.days.length === 16 && same(ch.today, [0]) && same(ch.mon, [4, 11]) && same(ch.off, [1, 2, 8, 9, 15])
+      && same(ch.due, [15]) && ch.key === 'done from earlier milestone turn in no homework time', JSON.stringify(ch && [ch.label, ch.days.length, ch.today, ch.mon, ch.off, ch.due, ch.key]));
+    check('... a row per phase: the steps up to each milestone, then Check and turn in, each with its steps and minutes; each step a block on its day with its minutes',
+      !!ch && same(ch.rows.map((r) => [r.title, r.sub, r.steps]), [['Outline', '2 steps · 30 min', ['5:10', '6:20']], ['Full draft', '3 steps · 1 h', ['7:20', '8:20', '12:20']],
+        ['Check and turn in', '2 steps · 20 min', ['13:15', '16:5']]]) && ch.rows.every((r) => r.today === '1'), JSON.stringify(ch && ch.rows.map((r) => [r.title, r.sub, r.steps, r.today])));
+    check('... each block says what it is for screen readers', !!ch && same(ch.rows[0].stepSr, ['Copy the requirements into your notes · start · Mon Nov 9 · 10 min', 'Outline · milestone · Tue Nov 10 · 20 min']),
+      JSON.stringify(ch && ch.rows[0].stepSr));
+    // A save in the editor draws the chart again: the second half moved to Sunday.
+    await page.selectOption(`${ED} .plan-step[data-i="3"] select[name="day"]`, '2026-11-15');
+    await page.click(`${ED} [data-act="save"]`);
+    await settle(page);
+    const moved = await readTl(page, CHART);
+    check('a save moves the block: "Draft the second half" on Sunday (the plan as saved, read again)', (lastCall(db, 'save_homework_plan').body.p_steps || [])[3].day === '2026-11-15'
+      && !!moved && same(moved.rows[1].steps, ['7:20', '11:20', '12:20']), JSON.stringify(moved && moved.rows[1].steps));
+    // The science project: from its first step (Monday, before today) to its due date; done steps filled; Full draft behind.
+    await go(page, `#/homework/${SCI}`);
+    const sc = await readTl(page, CHART);
+    check('the science project\'s chart: Mon Nov 2 to Fri Nov 13, today the 4th day, its done steps filled, Full draft (Monday, not done) "from earlier"',
+      !!sc && sc.label === 'Plan by day, Mon Nov 2 to Fri Nov 13' && sc.days.length === 12 && same(sc.today, [3]) && same(sc.off, [4, 5, 11])
+      && same(sc.rows.map((r) => [r.title, r.sub, r.steps]), [['Outline with 3 main points', '3 steps · 50 min', ['1:10 done', '2:20 done', '3:20 done']],
+        ['Full draft', '1 step · 20 min', ['1:20 behind']], ['Check and turn in', '4 steps · 1 h 05', ['4:20', '8:20', '9:20', '12:5']]])
+      && same(sc.rows[1].stepSr, ['Full draft · milestone · Mon Nov 2 · 20 min · from earlier']), JSON.stringify(sc && [sc.label, sc.today, sc.off, sc.rows.map((r) => [r.title, r.sub, r.steps, r.stepSr])]));
+    // No chart for a plan on one day, or no plan.
+    await go(page, `#/homework/${MATH}`);
+    const oneDay = !(await page.$(CHART)) && !!(await page.$(`${ED} .plan-editor`));
+    await go(page, `#/homework/${FRACTIONS}`);
+    check('no chart for a plan on one day (the worksheet) or no plan (the lesson)', oneDay && !(await page.$(CHART)) && !!(await page.$(`${ED} .plan-editor`)));
+    await page.context().close();
+  }
+  {
+    // A class name of 38 characters (the school's feed and the form allow 40): at 1280px it wraps inside the name column,
+    // never into the days.
+    const long = timelineDb();
+    long.assignments.find((a) => a.id === ESSAY).subject = 'English Language Arts 7 Honors Section';
+    ({ page } = await open({ label: 'timeline-long-class', db: long }));
+    const spill = await page.evaluate((sel) => Array.from(document.querySelectorAll(`${sel} .plan-tl-row`)).map((r) => {
+      const right = r.querySelector('.plan-tl-name').getBoundingClientRect().right;
+      const ends = Array.from(r.querySelectorAll('.plan-tl-sub > span')).flatMap((x) => Array.from(x.getClientRects()).map((b) => b.right));
+      return { id: r.dataset.id, right, over: ends.filter((x) => x > right + 0.5) };
+    }), TL);
+    const essayRow = spill.find((r) => r.id === ESSAY) || {};
+    check('a class name of 38 characters at 1280px: it wraps inside the name column (no part of any row\'s line runs into the days)',
+      spill.length === 7 && spill.every((r) => !r.over.length) && (await page.$eval(`${TL} .plan-tl-row[data-id="${ESSAY}"] .plan-tl-sub`, (e) => e.textContent)).startsWith('English Language Arts 7 Honors Section'),
+      JSON.stringify(essayRow));
+    await page.context().close();
+  }
+  {
+    // Nothing open: no Next 3 weeks at all.
+    const none = fullDb();
+    none.assignments.filter((a) => a.status === 'open').forEach((a) => Object.assign(a, { status: 'done', done_at: at(TODAY, '10:00') }));
+    ({ page, db } = await open({ label: 'timeline-none', db: none }));
+    const left = await secs(page);
+    check('nothing open: no Next 3 weeks (the done ones folded under Assignments and lessons, then This week)', !(await page.$('[data-sec="timeline"]')) && !(await page.$('.plan-tl'))
+      && !left.includes('timeline') && left.indexOf('week') === left.indexOf('assignments') + 1 && !!(await page.$('[data-sec="assignments"] details.hw-done')), JSON.stringify(left));
+    await page.context().close();
+  }
+  // Phones and desktops, light and dark: no sideways page scroll (a chart wider than its box scrolls inside it).
+  for (const [w, ctxOpts] of [[390, phone], [1280, { viewport: { width: 1280, height: 900 } }]]) {
+    for (const scheme of ['light', 'dark']) {
+      ({ page } = await open({ label: `timeline-${w}-${scheme}`, db: timelineDb(), ctx: Object.assign({ colorScheme: scheme }, ctxOpts) }));
+      const lay = await page.evaluate((sel) => {
+        const r = document.querySelector(`${sel} .plan-tl-row`);
+        const n = r.querySelector('.plan-tl-name').getBoundingClientRect();
+        const t = r.querySelector('.plan-tl-track').getBoundingClientRect();
+        const box = document.querySelector(`${sel} .plan-tl-scroll`);
+        return { beside: n.right <= t.left, over: n.bottom <= t.top + 1, links: Array.from(document.querySelectorAll(`${sel} a.plan-tl-name`)).every((a) => a.getBoundingClientRect().height >= 44),
+          fits: box.scrollWidth <= box.clientWidth + 1 };
+      }, TL);
+      check(`timelines ${w}px (${scheme}): Next 3 weeks with no sideways page scroll, ${w < 540 ? 'each name over its days' : 'each name beside its days'}, the 3 weeks inside the card, each link at least 44px tall`,
+        await noSideScroll(page) && (w < 540 ? lay.over : lay.beside) && lay.fits && lay.links, JSON.stringify(lay));
+      await page.evaluate(() => { document.activeElement.blur(); window.scrollTo(0, 0); });
+      await page.locator('[data-sec="timeline"]').screenshot({ path: `${TL_SHOTS}homework-next-3-weeks-${w}-${scheme}.png` });
+      await go(page, `#/homework/${ESSAY}`);
+      const box = await page.evaluate((sel) => { const b = document.querySelector(`${sel} .plan-tl-scroll`); return b ? { sw: b.scrollWidth, cw: b.clientWidth, ox: getComputedStyle(b).overflowX } : null; }, CHART);
+      check(`timelines ${w}px (${scheme}): the essay's chart with no sideways page scroll (it scrolls inside its own box when wider)`, await noSideScroll(page) && !!box
+        && (box.sw <= box.cw + 1 || box.ox === 'auto'), JSON.stringify(box));
+      // It opens on what's next: its due day (Fri Nov 20) and every step in view, though 16 days are wider than a phone's box;
+      // the box scrolls by keyboard.
+      const seen = await page.evaluate((sel) => {
+        const b = document.querySelector(`${sel} .plan-tl-scroll`);
+        const r = b.getBoundingClientRect();
+        const inside = (el) => { const x = el.getBoundingClientRect(); return x.left >= r.left - 0.5 && x.right <= r.right + 0.5; };
+        return { due: inside(b.querySelector('.plan-tl-hday.is-due')), steps: Array.from(b.querySelectorAll('.plan-tl-step')).every(inside), at: b.scrollLeft,
+          tab: b.getAttribute('tabindex'), label: b.getAttribute('aria-label') };
+      }, CHART);
+      check(`timelines ${w}px (${scheme}): the essay's chart opens with its due day and every step in view; its box scrolls by keyboard (tabindex 0, labelled)`,
+        seen.due && seen.steps && seen.tab === '0' && seen.label === 'Plan by day, Thu Nov 5 to Fri Nov 20', JSON.stringify(seen));
+      await page.evaluate(() => { document.activeElement.blur(); window.scrollTo(0, 0); });
+      await page.locator('.hw-a [data-ref="chart"]').screenshot({ path: `${TL_SHOTS}homework-chart-${w}-${scheme}.png` });
+      await page.screenshot({ path: `${TL_SHOTS}homework-assignment-${w}-${scheme}.png`, fullPage: true });
+      await go(page, '#/homework');
+      await page.screenshot({ path: `${TL_SHOTS}homework-list-${w}-${scheme}.png`, fullPage: true });
+      await page.context().close();
+    }
   }
 
   console.log(results.join('\n'));
