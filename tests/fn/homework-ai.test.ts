@@ -20,7 +20,7 @@
 // Run alone with: node --experimental-strip-types tests/fn/homework-ai.test.ts
 import { handle } from '../../supabase/functions/hub-jobs/handler.ts';
 import {
-  HOMEWORK_MODEL, ANTHROPIC, AI_LIMITS, SYSTEM_PROMPT, PLAN_SCHEMA, PRICES, buildRequest, checkPlan, classify, estimateCents, cutOff, OPEN_RUNS,
+  HOMEWORK_MODEL, ANTHROPIC, AI_LIMITS, SYSTEM_PROMPT, PLAN_SCHEMA, PRICES, buildRequest, checkPlan, planCheck, classify, estimateCents, cutOff, OPEN_RUNS,
   previewSeal,
 } from '../../supabase/functions/hub-jobs/homework.ts';
 import { readFileSync, readdirSync } from 'node:fs';
@@ -207,6 +207,8 @@ const keepAlive = setInterval(() => { /* waiting */ }, 1000);
     && objects.every((o) => o.additionalProperties === false && same(Object.keys(o.properties).sort(), [...o.required].sort())));
   check('... with none of the keywords structured outputs refuse (minLength, maxLength, minimum, maximum, maxItems, minItems)',
     !/"(minLength|maxLength|minimum|maximum|maxItems|minItems|multipleOf|pattern)"/.test(JSON.stringify(PLAN_SCHEMA)));
+  check('the system prompt states checkPlan\'s limits (the schema can\'t): 12 steps, and each text field\'s length',
+    SYSTEM_PROMPT.includes('at most 12 steps') && /title is 80 characters or fewer, done_looks_like 160 or fewer, each question and stretch 160 or fewer, summary and note_for_adult 300 or fewer/.test(SYSTEM_PROMPT));
   check('the system prompt holds no date, no name and no number of a household (its bytes never change)',
     !/\b20\d\d-\d\d-\d\d\b|Jordan|Alex|Morgan|Pat\b|Lee\b|Sam\b|Taylor|@|555-01/.test(SYSTEM_PROMPT));
 
@@ -354,6 +356,13 @@ const keepAlive = setInterval(() => { /* waiting */ }, 1000);
     check('parses as the schema\'s object: a list, a string, a missing key or an extra key → invalid',
       ok([PLAN]) === null && ok('{}') === null && ok(Object.assign({}, PLAN, { fits: undefined })) === null && ok(Object.assign({}, PLAN, { extra: 1 })) === null);
     const thirteen = Array.from({ length: 13 }, (_, i) => step({ kind: i === 0 ? 'start' : i === 12 ? 'turn_in' : 'step', minutes: i === 0 || i === 12 ? 5 : 15 }));
+    const why = (p: unknown, f: any = FIELDS) => { const x = planCheck(p, f); return 'why' in x ? x.why : null; };
+    check('planCheck names the rule an answer failed, and agrees with checkPlan', why(PLAN) === null
+      && why(steps({ summary: '' })) === 'summary_length' && why(steps({ stretch: 's'.repeat(161) })) === 'stretch_length'
+      && why(steps({ questions: ['a?', 'b?', 'c?', 'd?'] })) === 'questions_count' && why(steps({ steps: [] })) === 'steps_count'
+      && why(steps({ steps: PLAN.steps.slice(0, 4) })) === 'turn_in_missing' && why(steps({ steps: PLAN.steps.slice(1) })) === 'start_first'
+      && why(steps({ steps: [PLAN.steps[0], step({ done_looks_like: 'ok' }), PLAN.steps[4]] })) === 'step_done_length'
+      && why(Object.assign({}, PLAN, { extra: 1 })) === 'keys');
     check('13 steps → invalid; 12 are fine', ok(steps({ steps: thirteen })) === null && !!ok(steps({ steps: thirteen.slice(0, 11).concat([thirteen[12]]) })));
     check('no steps → invalid', ok(steps({ steps: [] })) === null);
     check('an assignment with no turn-in → invalid', ok(steps({ steps: PLAN.steps.slice(0, 4) })) === null);
@@ -538,6 +547,21 @@ const keepAlive = setInterval(() => { /* waiting */ }, 1000);
     const s = setup({ replies: [json(200, Object.assign(anthropicOk(PLAN), { content: [], stop_reason: 'refusal', stop_details: { type: 'refusal', category: 'bio', explanation: 'x' } }))] });
     await run(s, post(ask(), ADMIN_JWT));
     check('... a refusal still reports its usage (some are billed)', finishes(s)[0].p_usage && finishes(s)[0].p_usage.input_tokens === 900);
+    // An invalid answer's log line names the rule it failed, as a fixed code, and nothing of the answer.
+    const whys: [string, Reply[], string][] = [
+      ['a 13-step answer', [json(200, anthropicOk(Object.assign({}, PLAN, { steps: Array.from({ length: 13 }, () => PLAN.steps[1]) })))], 'steps_count'],
+      ['a step title of 81 characters', [json(200, anthropicOk(Object.assign({}, PLAN, { steps: [PLAN.steps[0], Object.assign({}, PLAN.steps[1], { title: 'W'.repeat(81) }), PLAN.steps[4]] })))], 'step_title_length'],
+      ['an answer whose text isn\'t JSON', [json(200, Object.assign(anthropicOk(PLAN), { content: [{ type: 'text', text: '{"summary": "half' }] }))], 'json'],
+      ['an answer with no text block', [json(200, Object.assign(anthropicOk(PLAN), { content: [{ type: 'thinking', thinking: '' }] }))], 'no_text'],
+      ['stop_reason max_tokens', [json(200, Object.assign(anthropicOk(PLAN), { stop_reason: 'max_tokens' }))], 'max_tokens'],
+    ];
+    for (const [name, replies, why] of whys) {
+      const s2 = setup({ replies });
+      const before = logged.length;
+      await run(s2, post(ask(), ADMIN_JWT));
+      const line = logged.slice(before).find((l) => /^homework_ai: invalid /.test(l));
+      check(`${name}: the log line says why=${why}`, !!line && line.endsWith(` why=${why}`) && finishes(s2)[0].p_stop === 'invalid', logged.slice(before));
+    }
   }
 
   // ---- HTTP errors (§6.5), retries only after a 429 or 529
@@ -653,7 +677,7 @@ const keepAlive = setInterval(() => { /* waiting */ }, 1000);
     const all = logged.join('\n');
     check('no console line holds the teacher\'s text, the key, a token, an error body or a message from Anthropic',
       !all.includes(MARKER) && !all.includes(KEY) && !all.includes(PAT) && !/issue with your billing|credit balance|slow down|Overloaded|invalid x-api-key|connection reset|usage limits|internal|unavailable/.test(all), all.slice(0, 400));
-    check('... console lines are fixed codes and counts', logged.every((l) => /^homework_ai: [a-z_]+( [a-z_]+=\d+)*$|^homework_ai: finish failed$/.test(l)), logged.filter((l) => !/^homework_ai: /.test(l)));
+    check('... console lines are fixed codes and counts', logged.every((l) => /^homework_ai: [a-z_]+( [a-z_]+=\d+)*( why=[a-z_]+)?$|^homework_ai: finish failed$/.test(l)), logged.filter((l) => !/^homework_ai: /.test(l)));
   }
 
   // ---- No deps.background (an older index.ts): the work is done before the 202
