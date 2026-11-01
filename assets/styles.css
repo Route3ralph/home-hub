@@ -590,6 +590,10 @@ body { padding-left: env(safe-area-inset-left, 0px); padding-right: env(safe-are
 /* v2 (body.has-bottombar): 44px targets in the top bar too, for tablets wider than 640px. */
 body.has-bottombar .tabs a { display: inline-flex; align-items: center; min-height: 44px; }
 .topbar-end .btn { min-height: 44px; }
+/* v1.4: a project guest's name beside Sign out (they have no bottom bar, so this shows on phones too). On a phone their
+   one tab (Projects) goes, as the brand links there, so the header is one row. */
+@media (max-width: 640px) { body.guest-shell .topbar .tabs { display: none; } }
+.topbar-end .guest-name { color: var(--text-3); font-size: 14px; max-width: 40vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .topbar-end .btn svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; }
 .bottombar { display: none; }
 /* Tablets: the tabs get their own row under the brand and buttons, so none scroll out of sight; with

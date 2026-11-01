@@ -22,6 +22,7 @@
 
   let sb = null;
   let me = null;
+  let guest = null;         // v1.4 (schema 11): a project guest's guest_whoami() while one is signed in, else null
   let sessionEmail = null;
   let schemaVersion = null; // from hub_schema_version(); 1 for a database that doesn't have it
   const data = { projects: [], contractors: [], members: [] };
@@ -400,7 +401,8 @@
     wireFormDialog();
     if (detailDialog.open) detailDialog.close();
     const c = contractor;
-    const viaHub = !!(cfg.emailSending && c.email);
+    // A project guest isn't family: the hub's send-email answers them 403, so they get their own apps only.
+    const viaHub = !!(cfg.emailSending && c.email && !guest);
     const withShare = !!c.phone && canShare(); // beside WhatsApp
     formDialog.innerHTML = `<div class="form d-inner">
       <div class="d-top"><h3>Message ${esc(c.name)}</h3><button type="button" class="d-close" data-close aria-label="Close">×</button></div>
@@ -464,9 +466,10 @@
   }
 
   async function loadV2() {
+    // A project guest reads neither (row-level security would answer nothing): only the household's clock.
     const [people, households, clock] = await Promise.all([
-      q(sb.from('people').select('*').order('sort_order').order('name')),
-      q(sb.from('household').select('*').limit(1)),
+      guest ? [] : q(sb.from('people').select('*').order('sort_order').order('name')),
+      guest ? [] : q(sb.from('household').select('*').limit(1)),
       readClock(),
     ]);
     cache.people = people || [];
@@ -972,7 +975,7 @@
 
   // The signed-out screens replace the whole shell, so the v2 bottom bar and its sheet go too.
   function leaveShell() {
-    document.body.classList.remove('has-bottombar');
+    document.body.classList.remove('has-bottombar', 'guest-shell');
     closeSheet();
     clearActionToasts();
   }
@@ -1082,6 +1085,7 @@
   async function onSession(session, linkError) {
     if (!session) {
       me = null;
+      guest = null;
       sessionEmail = null;
       clearV2();
       renderLogin(linkError);   // closes the page on screen (its ctx.signal aborts)
@@ -1093,14 +1097,19 @@
     if (session.user.email === sessionEmail) return;
     sessionEmail = session.user.email;
     app.innerHTML = '<div class="loading">Loading…</div>';
+    guest = null;
     try {
       me = await api.whoami();
       // Which pages to show depends on the database's schema version.
       if (me) activate(await readSchemaVersion());
-      // v2: the people, household and clock every page uses.
+      // v1.4 (schema 11): not on the family list, but maybe a project guest (docs/v1.4-project-guests.md): then
+      // only the pages made for guests (Projects), and only the projects a parent gave them (row-level security).
+      else await signInGuest();
+      // v2: the people, household and clock every page uses (a guest: the clock only).
       if (me && isV2()) await loadV2();
     } catch (err) {
       me = null;
+      guest = null;
       sessionEmail = null;
       clearV2();
       renderMessage('Something went wrong', esc(friendly(err)));
@@ -1109,9 +1118,22 @@
     if (!me) { renderNotListed(session.user.email); return; }
     // v2: signing in with a code proves the email address, so it counts as confirmed for the morning
     // email. Best effort: a failure here must not get in the way.
-    if (isV2()) sb.rpc('mark_signed_in').then(() => {}, () => {});
+    if (isV2() && !guest) sb.rpc('mark_signed_in').then(() => {}, () => {});
     renderShell();
     route();
+  }
+
+  // A project guest (schema 11): guest_whoami() answers { email, name, projects } for a guest's address, and null for
+  // anyone else. me then stands for the guest (role 'guest'), and only the modules registered with guest: true show.
+  async function signInGuest() {
+    const version = await readSchemaVersion();
+    if (version < 11) return;
+    const g = await q(sb.rpc('guest_whoami'));
+    if (!g || !g.email) return;
+    guest = g;
+    me = { email: g.email, name: g.name, role: 'guest' };
+    activate(version);
+    active = active.filter((m) => m.guest === true);
   }
 
   // ============================================
@@ -1130,6 +1152,8 @@
   //             left (navigation or sign-out): tear down with signal.addEventListener('abort', …)
   //             or pass { signal } to addEventListener. stale() is true once the page is left.
   //   provides  optional functions other pages may use: HomeHub.core.use(name).
+  //   guest     optional, true: the page also shows to a project guest (schema 11; core.guest is set then), and is
+  //             then one of the only pages they get. It must check core.guest itself and show them only what is theirs.
   // ============================================
   function register(def) {
     const d = def || {};
@@ -1176,6 +1200,7 @@
   // SHELL & ROUTING
   // ============================================
   function renderShell() {
+    if (guest) { renderShellGuest(); return; }
     if (isV2()) { renderShellV2(); return; }
     const tabs = active.filter((m) => m.nav).map((m) =>
       `<a href="${esc(m.nav.href || `#/${m.name}`)}" data-tab="${esc(m.name)}">${esc(m.nav.label)}</a>`).join('\n          ');
@@ -1222,6 +1247,25 @@
     document.body.classList.add('has-bottombar');
   }
 
+  // A project guest: Projects only, their name and Sign out; no Add, no More, no bottom bar.
+  function renderShellGuest() {
+    app.innerHTML = `
+      <header class="topbar"><div class="topbar-inner">
+        <a class="brand" href="#/projects">Home Hub</a>
+        <nav class="tabs" aria-label="Sections">
+          ${active.filter((m) => m.nav).map((m) => `<a href="#/${esc(m.name)}" data-tab="${esc(m.name)}">${esc(m.nav.label)}</a>`).join('\n          ')}
+        </nav>
+        <span class="topbar-end">
+          <span class="guest-name">${esc(me.name)}</span>
+          <button type="button" class="btn btn-sm" data-shell="sign-out">Sign out</button>
+        </span>
+      </div></header>
+      <main class="page" id="main"></main>`;
+    app.querySelector('[data-shell="sign-out"]').addEventListener('click', signOut);
+    document.body.classList.remove('has-bottombar');
+    document.body.classList.add('guest-shell');
+  }
+
   // The page for the current address: the first module (in tab order) whose match() accepts it.
   // An address no page claims shows the first page ("#/"), as it always has.
   function parseRoute() {
@@ -1234,7 +1278,8 @@
       }
       return null;
     };
-    return find(parts) || find([]);
+    // A project guest has no home page ("#/" is Today's): any other address shows their first page (Projects).
+    return find(parts) || find([]) || (guest && active.length ? find([active[0].name]) : null);
   }
 
   // Leaving a page aborts its signal, so it can tear down what it set up (a Gantt view, listeners).
@@ -1319,6 +1364,8 @@
       G, esc, cfg, detailDialog, formDialog,
       get sb() { return sb; },
       get me() { return me; },
+      // v1.4: the signed-in project guest ({ email, name, projects }), or null for the family.
+      get guest() { return guest; },
       get schemaVersion() { return schemaVersion; },
       data, api, q,
       $, clone, firstName, slug, uniqueKey, allTasks, stamp, webHref, telHref, nextMonday, randomToken, toast, friendly,

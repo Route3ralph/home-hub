@@ -163,3 +163,5 @@ dialog:has(> .set-gform), dialog:has(> .set-gcheck) { width: min(620px, calc(100
   .set-dl dd { margin-bottom: 8px; }
   .set-preview { padding: 16px; }
 }
+/* v1.4: Project guests (the parents): one row per guest. */
+.set-guests { list-style: none; margin: 0; padding: 0; }

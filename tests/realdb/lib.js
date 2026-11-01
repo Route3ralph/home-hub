@@ -324,9 +324,11 @@ async function setup(name, opts = {}) {
   const port = env('REALDB_PORT');
   // The template: the full database (every migration), the v1 one (opts.v1), v2 without migration 0003
   // (opts.v2), v1.1 without migration 0004 (opts.v3), v1.2 without migration 0005 (opts.v4), v1.3 without
-  // migration 0006 (opts.v5), or everything up to 0009 without 0010 (opts.v9, Hearth people).
+  // migration 0006 (opts.v5), everything up to 0009 without 0010 (opts.v9, Hearth people), or everything up to 0010
+  // without 0011 (opts.v10, project guests).
   const template = opts.v1 ? env('REALDB_V1_TEMPLATE') : opts.v2 ? env('REALDB_V2_TEMPLATE') : opts.v3 ? env('REALDB_V3_TEMPLATE')
-    : opts.v4 ? env('REALDB_V4_TEMPLATE') : opts.v5 ? env('REALDB_V5_TEMPLATE') : opts.v9 ? env('REALDB_V9_TEMPLATE') : env('REALDB_TEMPLATE');
+    : opts.v4 ? env('REALDB_V4_TEMPLATE') : opts.v5 ? env('REALDB_V5_TEMPLATE') : opts.v9 ? env('REALDB_V9_TEMPLATE')
+    : opts.v10 ? env('REALDB_V10_TEMPLATE') : env('REALDB_TEMPLATE');
   const dbName = `rt_${name}`;
   const admin = await connect({ socketDir: socket, port, database: 'postgres' });
   await admin.query(`drop database if exists ${ident(dbName)}`);

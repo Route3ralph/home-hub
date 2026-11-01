@@ -11,6 +11,11 @@
    or put on the schedule as a Gantt task. v1 mode never reaches the v2
    code, so the v1 pages behave exactly as before. v2 styles are in
    assets/css/projects.css.
+   v1.4 (schema 11, docs/v1.4-project-guests.md): a Documents button (the
+   project's Google Drive folder, set in its settings), Guest access for the
+   parents, and the page a project guest gets: only their projects, the
+   contractors on each (guest_contacts; never account details), no Tasks
+   card, no owner, no calendar or sharing switches, no deleting.
    ===================================================================== */
 (function () {
   'use strict';
@@ -44,6 +49,11 @@
   // forms follow the household's calendar, never the device's. Nothing here runs in v1 mode.
   // ============================================
   const isV2 = () => core.schemaVersion >= 2;
+  // v1.4 (schema 11): the documents link and Guest access; core.guest is set while a project guest is signed in.
+  const isV11 = () => core.schemaVersion >= 11;
+  const isGuest = () => !!core.guest;
+  const isAdmin = () => !!(core.me && core.me.role === 'admin');
+  const DRIVE = /^https:\/\/drive\.google\.com\/[^\s<>"']*$/;
   const { v2, q } = core;
   const householdToday = () => v2.dates.today();
 
@@ -144,6 +154,7 @@
   // PROJECTS LIST
   // ============================================
   async function renderProjects(main, seq) {
+    if (isGuest()) { await renderGuestProjects(main, seq); return; }
     const [projects, contractors] = await Promise.all([api.projects(), api.contractors()]);
     if (stale(seq)) return;
     data.projects = projects;
@@ -162,6 +173,24 @@
       if (e.target.closest('[data-act="new-project"]')) newProjectForm();
     };
   }
+
+  // v1.4: a project guest's list: only the projects a parent gave them (row-level security), no New project. With
+  // just one, straight to it.
+  async function renderGuestProjects(main, seq) {
+    const projects = await api.projects();
+    if (stale(seq)) return;
+    data.projects = projects;
+    data.contractors = [];
+    if (projects.length === 1) { location.replace(`#/projects/${encodeURIComponent(projects[0].id)}`); return; }
+    main.innerHTML = `<div class="proj2">
+      <div class="page-head"><div><h1>Projects</h1><p class="meta">${plural(projects.length, 'project')} shared with you</p></div></div>
+      ${projects.length ? `<div class="grid">${projects.map((p) => projectCard(p, modelFor(p))).join('')}</div>`
+        : '<div class="card empty-state"><p>No projects are shared with you right now. The family can add you to one from its page.</p></div>'}
+    </div>`;
+  }
+
+  // v1.4: the contractors on one of a guest's projects (names, phones, emails; never account details).
+  const guestContacts = (id) => core.q(core.sb.rpc('guest_contacts', { p_project: id }));
 
   // v2: Today, unlike v1's Home, doesn't read the project list, so "Start from" reads it first.
   function newProjectForm() {
@@ -207,7 +236,9 @@
   // PROJECT PAGE
   // ============================================
   async function renderProject(main, seq, id, taskId) {
-    const [project, contractors] = await Promise.all([api.project(id), api.contractors()]);
+    const [project, contractors] = isGuest()
+      ? await api.project(id).then(async (row) => [row, row ? (await guestContacts(id)) || [] : []])
+      : await Promise.all([api.project(id), api.contractors()]);
     if (stale(seq)) return;
     data.contractors = contractors;
     if (!project) {
@@ -215,8 +246,8 @@
       return;
     }
     current = project;
-    // v2: the Tasks card sits between the heading and the schedule.
-    main.innerHTML = isV2()
+    // v2: the Tasks card sits between the heading and the schedule (not for a guest: its to-dos name the family).
+    main.innerHTML = isV2() && !isGuest()
       ? '<div class="proj2"><div data-ref="head"></div><div data-ref="ptasks"></div><div id="gv"></div></div>'
       : '<div data-ref="head"></div><div id="gv"></div>';
     renderProjectHead();
@@ -233,8 +264,9 @@
         <button class="btn btn-primary" data-act="add-task">+ Add the first schedule task</button></div>`,
     } : {}));
     view.setSchedule(resolvedSchedule(current));
-    const actions = { 'add-task': () => taskForm(null), trades: tradesForm, settings: settingsForm, share: shareDialog };
-    if (isV2()) {
+    const actions = { 'add-task': () => taskForm(null), trades: tradesForm, settings: settingsForm, share: shareDialog,
+      contacts: contactsDialog, guests: guestAccessDialog };
+    if (isV2() && !isGuest()) {
       Object.assign(actions, {
         'ptask-add': () => openTodoForm({ project_id: current.id, onSaved: () => drawTasksCard() }),
         'ptasks-retry': () => drawTasksCard(),
@@ -280,21 +312,29 @@
   // the core fills them in when the project is read; a schedule that can't be drawn explains itself).
   function renderProjectHeadV2() {
     const p = current;
-    const owner = p.owner_id ? v2.person(p.owner_id) : null;
+    const guest = isGuest();
+    const owner = p.owner_id && !guest ? v2.person(p.owner_id) : null;
     const staleDates = p.task_dates === null && !!modelFor(p);
+    // A guest with only this project has no list to go back to.
+    const back = guest && (core.guest.projects || []).length <= 1 ? '' : '<a class="back" href="#/projects">← All projects</a>';
+    const docs = isV11() && p.documents_url && DRIVE.test(p.documents_url)
+      ? `<a class="btn" data-ref="docs" href="${esc(p.documents_url)}" target="_blank" rel="noopener noreferrer">Documents</a>` : '';
     $('[data-ref="head"]').innerHTML = `
-      <a class="back" href="#/projects">← All projects</a>
+      ${back}
       <div class="page-head">
         <div>
           <div class="title-row"><h1>${esc(p.name)}</h1>
             <span class="pill st-${esc(p.status)}">${esc(STATUS_LABEL[p.status] || p.status)}</span>
             ${p.sharing_enabled ? '<span class="pill">Share link on</span>' : ''}
-            ${p.on_calendar === false ? '<span class="pill">Not on the calendar</span>' : ''}</div>
+            ${p.on_calendar === false && !guest ? '<span class="pill">Not on the calendar</span>' : ''}</div>
           <p class="meta">${[p.summary ? esc(p.summary) : '', `Updated ${esc(stampLocal(p.updated_at))}`, owner ? `Owner: ${esc(owner.name)}` : ''].filter(Boolean).join(' · ')}</p>
           ${staleDates ? '<p class="proj-stale" role="status">Dates are being refreshed for the calendar and the morning email.</p>' : ''}
         </div>
         <div class="page-actions">
+          ${docs}
           <button class="btn" data-act="trades">Trades &amp; contractors</button>
+          ${guest ? '<button class="btn" data-act="contacts">Contractors</button>' : ''}
+          ${isV11() && isAdmin() ? '<button class="btn" data-act="guests">Guest access</button>' : ''}
           <button class="btn" data-act="share">Share</button>
           <button class="btn" data-act="settings">Settings</button>
           <button class="btn btn-primary" data-act="add-task">+ Schedule task</button>
@@ -719,7 +759,9 @@
 
     formDialog.innerHTML = `<form class="form d-inner${isV2() ? ' proj-form' : ''}">
       <div class="d-top"><h3>Trades &amp; contractors</h3><button type="button" class="d-close" data-close aria-label="Close">×</button></div>
-      <p class="meta">Link each trade to someone in your <a href="${isV2() ? '#/directory' : '#/contractors'}">contractor directory</a>. The family sees their phone and email here; the shared link shows only their name and company.</p>
+      ${isGuest()
+        ? '<p class="meta">Link each trade to a contractor on this project. Add new ones, or fix their details, under Contractors. The shared link shows only their name and company.</p>'
+        : `<p class="meta">Link each trade to someone in your <a href="${isV2() ? '#/directory' : '#/contractors'}">contractor directory</a>. The family sees their phone and email here; the shared link shows only their name and company.</p>`}
       <div class="trade-rows">${Object.entries(s.trades || {}).map(([k, t]) => row(k, t)).join('')}</div>
       <div><button type="button" class="btn btn-sm" data-add>+ Add trade</button></div>
       <p class="form-error" hidden></p>
@@ -782,8 +824,14 @@
           { name: 'start', label: 'Start date', type: 'date', required: true, value: (s.project || {}).start },
         ] },
         { name: 'summary', label: 'Short description', type: 'textarea', value: p.summary },
+        // v1.4: the project's shared Google Drive folder (drawings, quotes, invoices, specs, photos). The parents and the
+        // project's guest change it (the database refuses an adult); everyone sees the Documents button.
+        ...(isV11() && (isAdmin() || isGuest()) ? [{ name: 'documents_url', label: 'Documents folder', type: 'url', value: p.documents_url || '',
+          placeholder: 'https://drive.google.com/drive/folders/…',
+          help: 'The Google Drive folder for this project. Share it in Drive with whoever needs it; the Documents button opens it.' }] : []),
         // v2: who gets the project's lines in the morning email, and whether its tasks show on the calendar.
-        ...(isV2() ? [
+        // Not for a guest: only the family changes those.
+        ...(isV2() && !isGuest() ? [
           { name: 'owner_id', label: 'Owner', type: 'select', options: ownerOptions(p.owner_id), value: p.owner_id || '',
             help: "Gets this project's lines in the morning email. With no owner, every parent gets them." },
           { name: 'on_calendar', label: 'Show in Home Hub calendar', type: 'checkbox', value: p.on_calendar !== false },
@@ -792,7 +840,7 @@
         { name: 'holidays', label: 'Days off (no work)', type: 'textarea', value: ((s.project || {}).holidays || []).join('\n'),
           help: 'One date per line, like 2026-12-25. Weekends are already skipped.' },
       ],
-      extraActions: [{
+      extraActions: isGuest() ? [] : [{
         label: 'Delete project',
         danger: true,
         async onClick() {
@@ -812,7 +860,12 @@
         (next.phases || []).forEach((ph, i) => { ph.name = v[`phase_${i}`]; });
         G.buildModel(next);
         const patch = { name: v.name, status: v.status, summary: v.summary || null, schedule: next };
-        if (isV2()) Object.assign(patch, { owner_id: v.owner_id || null, on_calendar: !!v.on_calendar });
+        if (isV11() && (isAdmin() || isGuest())) {
+          const url = String(v.documents_url || '').trim();
+          if (url && !DRIVE.test(url)) throw new Error('Use the folder\'s Google Drive address: it starts with https://drive.google.com/');
+          patch.documents_url = url || null;
+        }
+        if (isV2() && !isGuest()) Object.assign(patch, { owner_id: v.owner_id || null, on_calendar: !!v.on_calendar });
         try {
           current = await api.updateProject(p.id, patch, p.updated_at);
         } catch (err) {
@@ -832,6 +885,7 @@
     if (detailDialog.open) detailDialog.close();
     const p = current;
     const link = shareLink(p);
+    if (isGuest()) { guestShareDialog(p, link); return; }
     formDialog.innerHTML = `<div class="form d-inner${isV2() ? ' proj-form' : ''}">
       <div class="d-top"><h3>Share with contractors</h3><button type="button" class="d-close" data-close aria-label="Close">×</button></div>
       <p class="meta">Anyone with the link can see this project's schedule: dates, tasks, trades, and contractor names and companies. Phone numbers, emails and private notes are never shown.</p>
@@ -872,8 +926,144 @@
     if (!formDialog.open) formDialog.showModal();
   }
 
+  // v1.4: a guest copies the link while the family has sharing on; only the family turns it on, off or makes a new one.
+  function guestShareDialog(p, link) {
+    formDialog.innerHTML = `<div class="form d-inner proj-form">
+      <div class="d-top"><h3>Share with contractors</h3><button type="button" class="d-close" data-close aria-label="Close">×</button></div>
+      ${p.sharing_enabled ? `
+        <p class="meta">Anyone with the link can see this project's schedule: dates, tasks, trades, and contractor names and companies. Phone numbers, emails and private notes are never shown.</p>
+        <label class="field"><span>Share link</span>
+          <div class="sharebox"><input type="text" readonly value="${esc(link)}" aria-label="Share link"><button type="button" class="btn" data-share="copy">Copy</button></div></label>
+        <div class="form-actions"><button type="button" class="btn btn-primary" data-close>Done</button></div>` : `
+        <p class="meta">The share link is off. Ask the family to turn it on if you'd like to send contractors the live schedule.</p>
+        <div class="form-actions"><button type="button" class="btn btn-primary" data-close>OK</button></div>`}
+    </div>`;
+    const copy = formDialog.querySelector('[data-share="copy"]');
+    if (copy) {
+      copy.addEventListener('click', async () => {
+        try { await navigator.clipboard.writeText(link); toast('Link copied'); } catch (err) { window.prompt('Copy this link:', link); }
+      });
+    }
+    if (!formDialog.open) formDialog.showModal();
+  }
+
+  // ============================================
+  // CONTRACTORS (v1.4, a project guest)
+  // The contractors on this project: the ones its trades link, and the ones a guest added (guest_save_contact makes a
+  // directory entry and puts it on the project). A guest edits one unless it has account details saved.
+  // ============================================
+  function contactsDialog() {
+    if (!isGuest()) return;
+    wireFormDialog();
+    if (detailDialog.open) detailDialog.close();
+    const list = data.contractors;
+    formDialog.innerHTML = `<div class="form d-inner proj-form">
+      <div class="d-top"><h3>Contractors</h3><button type="button" class="d-close" data-close aria-label="Close">×</button></div>
+      <p class="meta">The contractors on ${esc(current.name)}. Link one to a trade under Trades &amp; contractors.</p>
+      ${list.length ? `<ul class="contact-list">${list.map((c) => `<li data-id="${esc(c.id)}">
+          <div><strong>${esc(c.name)}</strong>${c.company ? ` · ${esc(c.company)}` : ''}${c.trade ? ` <span class="meta">(${esc(c.trade)})</span>` : ''}
+            <div class="meta">${[c.phone, c.email].filter(Boolean).map(esc).join(' · ') || 'No phone or email yet'}</div></div>
+          ${c.editable ? `<button type="button" class="btn btn-sm" data-contact-edit="${esc(c.id)}">Edit</button>` : ''}
+        </li>`).join('')}</ul>` : '<p class="empty-line">No contractors on this project yet.</p>'}
+      <div class="form-actions"><button type="button" class="btn" data-close>Done</button><button type="button" class="btn btn-primary" data-contact-new>+ New contractor</button></div>
+    </div>`;
+    formDialog.querySelector('[data-contact-new]').addEventListener('click', () => contactForm(null));
+    formDialog.querySelectorAll('[data-contact-edit]').forEach((b) => b.addEventListener('click', () => contactForm(list.find((c) => c.id === b.dataset.contactEdit))));
+    if (!formDialog.open) formDialog.showModal();
+  }
+
+  function contactForm(c) {
+    const x = c || {};
+    openForm({
+      title: c ? `Edit ${x.name}` : 'New contractor',
+      fields: [
+        { name: 'name', label: 'Name', type: 'text', required: true, value: x.name, placeholder: 'Pat Lee' },
+        { type: 'row', fields: [
+          { name: 'company', label: 'Company', type: 'text', value: x.company },
+          { name: 'trade', label: 'Trade', type: 'text', value: x.trade, placeholder: 'Tile' },
+        ] },
+        { type: 'row', fields: [
+          { name: 'phone', label: 'Phone', type: 'tel', value: x.phone },
+          { name: 'email', label: 'Email', type: 'email', value: x.email },
+        ] },
+        { name: 'website', label: 'Website', type: 'text', value: x.website },
+      ],
+      submitLabel: c ? 'Save' : 'Add to this project',
+      async onSubmit(v) {
+        const row = Object.assign(c ? { id: c.id } : {}, { name: v.name, company: v.company, trade: v.trade, phone: v.phone, email: v.email, website: v.website });
+        const saved = await core.q(core.sb.rpc('guest_save_contact', { p_project: current.id, p_contact: row }));
+        data.contractors = (await guestContacts(current.id)) || [];
+        refreshProject();
+        toast(c ? 'Contractor saved' : `${saved.name} is on this project`);
+        setTimeout(contactsDialog, 0);
+      },
+    });
+    markForm();
+  }
+
+  // ============================================
+  // GUEST ACCESS (v1.4, the parents)
+  // Who else sees and manages this project: add a guest by name and email (add_project_guest), or take it away
+  // (remove_project_guest). Their sign-in is an emailed code, like the family's.
+  // ============================================
+  async function guestAccessDialog() {
+    if (!isAdmin() || !isV11()) return;
+    wireFormDialog();
+    if (detailDialog.open) detailDialog.close();
+    const p = current;
+    let rows = [];
+    let failed = '';
+    try {
+      const [links, guests] = await Promise.all([
+        core.q(core.sb.from('project_guests').select('guest_email').eq('project_id', p.id)),
+        core.q(core.sb.from('guests').select('email,name').order('name')),
+      ]);
+      const names = new Map((guests || []).map((g) => [g.email, g.name]));
+      rows = (links || []).map((l) => ({ email: l.guest_email, name: names.get(l.guest_email) || l.guest_email }));
+    } catch (err) { failed = friendly(err); }
+    formDialog.innerHTML = `<form class="form d-inner proj-form" data-form="guests">
+      <div class="d-top"><h3>Guest access</h3><button type="button" class="d-close" data-close aria-label="Close">×</button></div>
+      <p class="meta">A guest, like a designer, signs in with an emailed code and sees only the projects you give them: the schedule, the trades and the contractors on it (never account numbers), and nothing else in the Home Hub. Remove them when the job is done.</p>
+      ${failed ? `<p class="form-error" role="alert">${esc(failed)}</p>` : rows.length ? `<ul class="contact-list">${rows.map((g) => `<li>
+          <div><strong>${esc(g.name)}</strong><div class="meta">${esc(g.email)}</div></div>
+          <button type="button" class="btn btn-sm btn-danger" data-guest-remove="${esc(g.email)}">Remove</button></li>`).join('')}</ul>`
+        : '<p class="empty-line">Nobody outside the family sees this project.</p>'}
+      <div class="field-row">
+        <label class="field"><span>Name</span><input type="text" name="name" autocomplete="off" placeholder="Riley Designer"></label>
+        <label class="field"><span>Email</span><input type="email" name="email" required autocomplete="off" placeholder="riley@example.com"></label>
+      </div>
+      <p class="form-error" hidden></p>
+      <div class="form-actions"><button type="button" class="btn" data-close>Done</button><button type="submit" class="btn btn-primary">Give access</button></div>
+    </form>`;
+    const form = formDialog.querySelector('form');
+    const errBox = form.querySelector('.form-error');
+    const fail = (err) => { errBox.textContent = friendly(err); errBox.hidden = false; };
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      if (!form.reportValidity()) return;
+      errBox.hidden = true;
+      try {
+        const g = await core.q(core.sb.rpc('add_project_guest', { p_project: p.id, p_email: form.email.value.trim(), p_name: form.name.value.trim() || null }));
+        toast(`${g.name} can sign in and see ${p.name}`);
+        guestAccessDialog();
+      } catch (err) { fail(err); }
+    });
+    form.querySelectorAll('[data-guest-remove]').forEach((b) => b.addEventListener('click', async () => {
+      const g = rows.find((r) => r.email === b.dataset.guestRemove);
+      if (!window.confirm(`Remove ${g.name} from ${p.name}? They won't see it any more.`)) return;
+      try {
+        await core.q(core.sb.rpc('remove_project_guest', { p_project: p.id, p_email: g.email }));
+        toast(`${g.name} no longer sees ${p.name}`);
+        guestAccessDialog();
+      } catch (err) { fail(err); }
+    }));
+    if (!formDialog.open) formDialog.showModal();
+  }
+
   HomeHub.register({
     name: 'projects',
+    // v1.4: also a project guest's page (their only one).
+    guest: true,
     schema: { min: 1, max: 99 },
     // After Home in v1; after Today, Calendar and Tasks in v2. The core reads the order once it
     // knows the database's schema version.
