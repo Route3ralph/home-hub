@@ -1,7 +1,7 @@
 /* =====================================================================
    Home Hub v1.3: styles for homework's shared pieces (assets/plan.js):
-   the two bars, the week strip, the timer's ring, the plan editor and
-   Pat's link. Loaded by index.html (the Homework page) and day.html (My
+   the two bars, the week strip, the timelines (the overview, a plan's
+   chart, his path), the timer's ring, the plan editor and Pat's link. Loaded by index.html (the Homework page) and day.html (My
    day and Pat's link), so it uses only styles.css's tokens and shared
    pieces (buttons, fields, section heads), never a page's own. Light and
    dark come from the colour tokens. Every tap target is at least 44px,
@@ -71,6 +71,165 @@
   .plan-wday.is-today { border-color: var(--line); }
   .plan-wday-busy { grid-column: 3; }
 }
+
+/* ---------- The timelines: the overview and an assignment's chart (plan.js overview, chart) ----------
+   A column a day. The name of each row sits over its days in a narrow box and beside them from 540px of
+   box; a chart wider than its box scrolls inside it (never the page). */
+.plan-tl { width: 100%; min-width: 0; margin: 6px 0 0; container-type: inline-size; }
+.plan-tl-scroll { overflow-x: auto; overscroll-behavior-x: contain; }
+.plan-tl-scroll:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+/* A chart wider than its box: a shade on the edge where more days are (the box's own scroll shadows: the surface
+   covers scroll with the days, the shades stay put), and each row's name kept in view while it scrolls. */
+.plan-tl-chart .plan-tl-scroll {
+  --tl-shade: color-mix(in srgb, var(--text) 18%, transparent);
+  background:
+    linear-gradient(90deg, var(--surface) 40%, transparent) 0 0 / 24px 100% no-repeat local,
+    linear-gradient(270deg, var(--surface) 40%, transparent) 100% 0 / 24px 100% no-repeat local,
+    linear-gradient(90deg, var(--tl-shade), transparent) 0 0 / 12px 100% no-repeat scroll,
+    linear-gradient(270deg, var(--tl-shade), transparent) 100% 0 / 12px 100% no-repeat scroll;
+}
+.plan-tl-chart .plan-tl-name { position: sticky; left: 0; z-index: 3; justify-self: start; max-width: 100cqw; }
+.plan-tl-grid { --tl-name: 0px; min-width: calc(var(--tl-name) + var(--tl-days) * 15px); }
+.plan-tl-chart .plan-tl-grid { min-width: calc(var(--tl-name) + var(--tl-days) * 22px); }
+.plan-tl-head, .plan-tl-row { display: grid; grid-template-columns: minmax(0, 1fr); }
+.plan-tl-head { position: relative; }
+.plan-tl-corner { display: none; }
+.plan-tl-days, .plan-tl-track { display: grid; grid-template-columns: repeat(var(--tl-days), minmax(0, 1fr)); }
+.plan-tl-hday {
+  min-width: 0; display: grid; grid-template-rows: 13px auto auto; justify-items: center; padding: 0 0 4px;
+  color: var(--text-3); font-size: 11px; line-height: 1.25; font-variant-numeric: tabular-nums;
+}
+.plan-tl-month { grid-row: 1; justify-self: start; padding-left: 2px; color: var(--text-2); font-size: 10px; font-weight: 750; letter-spacing: 0.04em; text-transform: uppercase; white-space: nowrap; }
+.plan-tl-letter { grid-row: 2; font-weight: 700; }
+.plan-tl-date { grid-row: 3; min-width: 16px; padding: 0 1px; border-radius: 999px; text-align: center; }
+/* A narrow overview: smaller dates, so two digits never touch. */
+.plan-tl-overview .plan-tl-date { font-size: 10px; letter-spacing: -0.03em; }
+.plan-tl-hday.is-today { color: var(--accent); }
+.plan-tl-hday.is-today .plan-tl-date { background: var(--accent); color: var(--surface); font-weight: 700; }
+.plan-tl-hday.is-due .plan-tl-date { box-shadow: inset 0 0 0 1.5px var(--accent); font-weight: 700; color: var(--text); }
+.plan-tl-hday.is-today.is-due .plan-tl-date { color: var(--surface); }
+.plan-tl-hday.is-off { opacity: 0.7; }
+.plan-tl-hday.is-mon, .plan-tl-cell.is-mon { box-shadow: inset 1px 0 0 var(--border); }
+.plan-tl-head > .plan-tl-arrow { position: absolute; right: 0; bottom: 4px; }
+.plan-tl-rows { list-style: none; margin: 0; padding: 0; }
+.plan-tl-row { gap: 2px 12px; padding: 6px 0; border-top: 1px solid var(--line); }
+.plan-tl-name { min-width: 0; display: flex; flex-direction: column; justify-content: center; gap: 1px; color: var(--text); text-decoration: none; }
+a.plan-tl-name { min-height: 44px; }
+a.plan-tl-name:hover .plan-tl-title, a.plan-tl-name:focus-visible .plan-tl-title { color: var(--accent); text-decoration: underline; }
+.plan-tl-title { font-size: 15px; font-weight: 650; overflow-wrap: anywhere; }
+.plan-tl-sub { color: var(--text-3); font-size: 13px; overflow-wrap: anywhere; }
+/* The count and the due words kept whole; the class (the first part, up to 40 characters) wraps inside the name. */
+.plan-tl-sub > span:not(:first-child) { white-space: nowrap; }
+.plan-tl-row.is-late .plan-tl-sub { color: var(--warn); font-weight: 600; }
+.plan-tl-dia { display: inline-grid; place-items: center; margin-right: 6px; color: var(--accent); vertical-align: -1px; }
+.plan-tl-dia svg { width: 12px; height: 12px; fill: var(--surface); stroke: currentColor; stroke-width: 3; }
+.plan-tl-dia.is-done svg { fill: currentColor; }
+.plan-tl-track { grid-template-rows: minmax(28px, auto); align-items: center; min-width: 0; }
+.plan-tl-cell { position: relative; grid-row: 1; align-self: stretch; min-width: 0; }
+.plan-tl-cell.is-today { background: var(--accent-soft); }
+.plan-tl-cell.is-today::after { content: ""; position: absolute; top: 0; bottom: 0; left: 50%; width: 2px; margin-left: -1px; background: var(--accent); }
+.plan-tl-cell.is-off { background: repeating-linear-gradient(135deg, var(--surface-2) 0 3px, transparent 3px 7px); }
+.plan-tl-cell.is-today.is-off { background: repeating-linear-gradient(135deg, var(--accent-soft) 0 3px, transparent 3px 7px); }
+/* The overview's bar: from the first step day to the due date, the done share filled. */
+.plan-tl-bar {
+  position: relative; z-index: 1; grid-row: 1; height: 12px; margin: 0 3px; border-radius: 999px; overflow: hidden;
+  background: color-mix(in srgb, var(--accent) 28%, var(--surface-2));
+}
+.plan-tl-fill { position: absolute; inset: 0 auto 0 0; background: var(--accent); }
+.plan-tl-bar.is-past { margin-right: 0; border-radius: 999px 0 0 999px; }
+.plan-tl-bar.is-late { background: var(--warn-soft); box-shadow: inset 0 0 0 1.5px var(--warn); }
+.plan-tl-bar.is-late .plan-tl-fill { background: var(--warn); }
+.plan-tl-ms, .plan-tl-due, .plan-tl-track > .plan-tl-arrow { position: relative; z-index: 2; grid-row: 1; justify-self: center; display: grid; place-items: center; }
+.plan-tl-ms svg { width: 15px; height: 15px; fill: var(--surface); stroke: var(--accent); stroke-width: 3; stroke-linejoin: round; }
+.plan-tl-ms.is-done svg { fill: var(--accent); stroke: var(--surface); stroke-width: 2.5; }
+.plan-tl-ms.is-behind svg { stroke: var(--warn); }
+.plan-tl-due { color: var(--text); }
+.plan-tl svg { overflow: visible; }
+.plan-tl-due svg, .plan-tl-key .k-due svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+.plan-tl-due svg path { fill: none; }
+.plan-tl-track > .plan-tl-arrow { justify-self: end; color: var(--accent); }
+.plan-tl-arrow svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2.6; stroke-linecap: round; stroke-linejoin: round; }
+.plan-tl-head > .plan-tl-arrow { color: var(--accent); }
+/* The chart's blocks: a step on its day with its minutes; done filled; an earlier one not done dashed. */
+.plan-tl-slot { position: relative; z-index: 1; grid-row: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; padding: 4px 2px; }
+.plan-tl-step {
+  display: grid; place-items: center; min-width: 0; min-height: 22px; padding: 2px 0;
+  border: 1.5px solid var(--accent); border-radius: 6px; background: var(--surface); color: var(--text);
+  font-size: 11px; font-weight: 700; line-height: 1.1; font-variant-numeric: tabular-nums;
+}
+.plan-tl-min { display: inline-flex; flex-direction: column; align-items: center; gap: 1px; }
+.plan-tl-step svg { width: 11px; height: 11px; fill: currentColor; stroke: none; }
+.plan-tl-step.k-turn_in svg { fill: none; stroke: currentColor; stroke-width: 2.6; stroke-linecap: round; stroke-linejoin: round; }
+.plan-tl-step.k-milestone { border-width: 2px; }
+.plan-tl-step.k-milestone .plan-tl-min { color: var(--accent); }
+.plan-tl-step.is-done { background: var(--accent); border-color: var(--accent); color: var(--surface); }
+.plan-tl-step.is-done .plan-tl-min { color: var(--surface); }
+.plan-tl-step.is-behind { border-style: dashed; border-color: var(--warn); background: var(--warn-soft); color: var(--warn); }
+.plan-tl-foot { margin: 4px 0 0; color: var(--text-2); font-size: 13px; font-weight: 600; text-align: right; }
+.plan-tl-key { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 6px 0 0; color: var(--text-3); font-size: 12px; }
+.plan-tl-key span { display: inline-flex; align-items: center; gap: 5px; }
+.plan-tl-key svg { width: 12px; height: 12px; }
+.plan-tl-key .k-ms svg { fill: var(--surface); stroke: var(--accent); stroke-width: 3; }
+.plan-tl-key .k-due svg { width: 13px; height: 13px; }
+.plan-tl-key i { display: inline-block; width: 12px; height: 12px; border-radius: 3px; }
+.plan-tl-key .k-today i { width: 2px; border-radius: 0; background: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.plan-tl-key .k-done i { background: var(--accent); }
+.plan-tl-key .k-behind i { border: 1.5px dashed var(--warn); background: var(--warn-soft); }
+.plan-tl-key .k-off i { border: 1px solid var(--border); background: repeating-linear-gradient(135deg, var(--surface-2) 0 3px, transparent 3px 6px); }
+@container (min-width: 540px) {
+  .plan-tl-grid { --tl-name: 180px; }
+  .plan-tl-overview .plan-tl-date { font-size: 11px; letter-spacing: 0; }
+  .plan-tl-head, .plan-tl-row { grid-template-columns: var(--tl-name) minmax(0, 1fr); column-gap: 12px; }
+  .plan-tl-corner { display: block; }
+  .plan-tl-row { align-items: center; }
+  /* The chart's names (and the corner over them) stay beside the days while they scroll under; the shade moves past them. */
+  .plan-tl-chart .plan-tl-name, .plan-tl-chart .plan-tl-corner {
+    position: sticky; left: 0; z-index: 3; align-self: stretch; justify-self: stretch; max-width: none;
+    background: var(--surface); box-shadow: 12px 0 0 var(--surface);
+  }
+  .plan-tl-chart .plan-tl-scroll {
+    background:
+      linear-gradient(90deg, var(--surface) 40%, transparent) 192px 0 / 24px 100% no-repeat local,
+      linear-gradient(270deg, var(--surface) 40%, transparent) 100% 0 / 24px 100% no-repeat local,
+      linear-gradient(90deg, var(--tl-shade), transparent) 192px 0 / 12px 100% no-repeat scroll,
+      linear-gradient(270deg, var(--tl-shade), transparent) 100% 0 / 12px 100% no-repeat scroll;
+  }
+}
+
+/* ---------- His path (plan.js path): a dot a day to the due date, flags on milestones ---------- */
+.plan-path { margin: 10px 0 4px; padding: 12px 14px 10px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); min-width: 0; }
+.plan-path-line { margin: 0 0 8px; color: var(--text); font-size: 18px; font-weight: 650; line-height: 1.35; overflow-wrap: anywhere; }
+.plan-path-when, .plan-path-pts { white-space: nowrap; }
+.plan-path-pts { color: var(--accent); font-weight: 800; }
+.plan-path-cheer { color: var(--accent); font-weight: 800; }
+.plan-path-days { list-style: none; margin: 0; padding: 0; display: flex; align-items: stretch; min-width: 0; }
+.plan-path-day { position: relative; flex: 1 1 0; min-width: 0; display: grid; grid-template-rows: 22px 22px auto; justify-items: center; }
+.plan-path-day.is-today { flex-grow: 2; min-width: max-content; }   /* never narrower than "Today", whatever flags he won before it */
+/* The line between the dots, through their middles. */
+.plan-path-day::before { content: ""; position: absolute; top: 31.5px; left: 0; right: 0; height: 3px; background: var(--border); }
+.plan-path-day.is-today::before { left: 50%; }
+.plan-path-day.is-due::before { right: 50%; }
+.plan-path.is-folded .plan-path-day:last-child::before { background: repeating-linear-gradient(90deg, var(--border) 0 4px, transparent 4px 7px); }
+.plan-path-flag { grid-row: 1; align-self: end; display: grid; place-items: center; color: var(--accent); }
+.plan-path-flag svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+.plan-path-flag.is-done svg { fill: currentColor; }
+.plan-path-flag.is-earlier { color: var(--text-2); }
+.plan-path-dot {
+  position: relative; z-index: 1; grid-row: 2; align-self: center; display: grid; place-items: center;
+  width: 10px; height: 10px; border: 2px solid var(--text-3); border-radius: 50%; background: var(--surface);
+}
+.plan-path-day.has-work .plan-path-dot { width: 14px; height: 14px; border-color: var(--accent); }
+.plan-path-day.has-flag .plan-path-dot { border-color: var(--accent); background: var(--accent-soft); }
+.plan-path-day.is-today .plan-path-dot { width: 18px; height: 18px; border-color: var(--accent); background: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); }
+.plan-path-day.is-due .plan-path-dot { width: 22px; height: 22px; border: 0; background: var(--surface); color: var(--accent); box-shadow: none; }
+.plan-path-day.is-due .plan-path-dot svg { width: 22px; height: 22px; fill: currentColor; }
+.plan-path-name { grid-row: 3; margin-top: 4px; color: var(--text-3); font-size: 12px; font-weight: 650; white-space: nowrap; }
+.plan-path-day.is-today .plan-path-name { color: var(--accent); font-size: 13px; font-weight: 800; }
+/* Flags won before today, at the start of the path, level with the dots (25px down: the 22px flag row, then the dot row's middle). */
+.plan-path-won { flex: none; display: flex; align-items: flex-start; gap: 1px; padding: 25px 6px 0 0; color: var(--accent); }
+.plan-path-won .plan-path-flag { align-self: flex-start; }
+.plan-path-won .plan-path-flag svg { width: 16px; height: 16px; }
+.plan-path-fold { margin: 2px 0 0; color: var(--text-2); font-size: 14px; font-weight: 650; text-align: right; overflow-wrap: anywhere; }
 
 /* ---------- The timer's ring ---------- */
 .plan-ring { display: block; width: min(240px, 64vw); height: auto; }
@@ -195,6 +354,14 @@
 .plan-record li { padding: 10px 0; border-bottom: 1px solid var(--line); font-size: 14px; overflow-wrap: anywhere; }
 .plan-record li:last-child { border-bottom: 0; }
 .plan-pace { margin: 8px 0 0; color: var(--text-2); font-size: 14px; }
+/* Next 3 weeks at the top of Assignments, and an assignment's chart above its editor (§21): a card each; a timeline
+   wider than its card scrolls inside it. */
+.plan-tl-box, .plan-tl-card {
+  min-width: 0; padding: 6px 12px 10px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow);
+}
+.plan-tl-box { margin: 0 0 12px; }
+.plan-tl-card { margin-top: 18px; }
+.plan-tl-h { margin: 6px 0 0; color: var(--text-2); font-size: 14px; font-weight: 700; }
 .plan-tutor-a .back { display: inline-flex; align-items: center; min-height: 44px; font-weight: 600; }
 .plan-tutor-a .plan-head { margin-bottom: 12px; }
 .plan-ed { margin-top: 18px; }

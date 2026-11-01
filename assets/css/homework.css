@@ -1,11 +1,13 @@
 /* =====================================================================
    Home Hub v1.3: styles for the Homework page (assets/modules/homework.js):
    the kid line, the first visit, the sections (To approve, To check, To
-   talk about, Questions and notes, Assignments and lessons, This week,
-   Points and rewards, Switches) and one assignment's page. The bars, the
-   week strip and the plan editor are plan.css's. Colours come from
-   styles.css's variables, so light and dark both work. Every tap target
-   is at least 44px, and nothing scrolls the page sideways at 390px.
+   talk about, Questions and notes, Assignments and lessons, Next 3 weeks,
+   This week, Points and rewards, Switches) and one assignment's page. The
+   bars, the week strip, the timelines (the overview and an assignment's
+   chart: only their cards are here) and the plan editor are plan.css's.
+   Colours come from styles.css's variables, so light and dark both work.
+   Every tap target is at least 44px, and nothing scrolls the page sideways
+   at 390px.
    ===================================================================== */
 
 /* ---------- Head and the kid line ---------- */
@@ -78,6 +80,10 @@
   display: flex; align-items: center; min-height: 44px; color: var(--accent); font-size: 14px; font-weight: 650; cursor: pointer;
 }
 .hw-done > .hw-arows { margin-top: 4px; }
+
+/* ---------- Next 3 weeks, and an assignment's chart (plan.css draws them; a chart wider than its card scrolls inside it) ---------- */
+.hw-tl, .hw-chart { min-width: 0; padding: 6px 12px 10px; }
+.hw-chart { margin-bottom: 10px; }
 
 /* ---------- This week ---------- */
 .hw-focused { margin: 10px 0 8px; color: var(--text-2); font-size: 14px; }

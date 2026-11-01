@@ -18,7 +18,11 @@
 // sessions, his own calendar (next 14 days, last 7) and his daily tasks, private ones as "Private item", nothing of
 // the family; a note for the family (coach_note_by_token with the page's key, checked first, kept while typing
 // through a refresh, the button off while it is sent); gone at once when the parents turn it off; points off;
-// before 0007 nothing is asked; Spanish; 390px.
+// before 0007 nothing is asked; Spanish; 390px. The timelines (no migration, docs/v1.3-homework.md §21): Next 3 weeks at the
+// top of Assignments (from the list's counts: every bar from today, the next milestone, the due flag, late, past the 3 weeks;
+// links to #a/<id>; a hostile title as text; no other call) and an assignment's chart above its editor (his week shaded,
+// drawn again after a save; none for a plan on one day or none); none when nothing is open; Spanish; 390px and 1280px,
+// light and dark (screenshots to TIMELINE_SHOTS when it is set).
 // The browser runs in Pacific/Kiritimati with its clock a day ahead of the household's, as in day.test.js.
 // Run alone with: node tests/e2e/tutor.test.js
 const fs = require('fs');
@@ -523,6 +527,237 @@ async function tokenRpcs(page, db) {
     check('Spanish at 390px: no sideways scroll with the Coach section', await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth));
     await page.locator('[data-sec="coach"]').screenshot({ path: SHOTS + 'tutor-coach-es-phone.png' });
     await page.context().close();
+  }
+
+  // =====================================================================
+  // 4. The timelines (no migration; docs/v1.3-homework.md §21): Next 3 weeks at the top of Assignments, an
+  // assignment's chart above its editor, both from the answers the link already reads
+  // =====================================================================
+  // tlDb() is tutorDb() and four more of Jordan's: the two-week essay (given, due Mon Nov 16, two milestones, its
+  // first step done), the cell model (due Dec 4, past the 3 weeks; its plan not given), a hostile one with no plan,
+  // and the book list (due Fri Oct 30, still open: late). Pat's list carries counts and next_milestone only (no step
+  // days), so every bar starts today and only the next milestone is a diamond.
+  const T = { essay: hid(200), cell: hid(210), bad: hid(220), books: hid(230) };
+  const ESSAY_PLAN = [['start', 'Copy the requirements into your notes', 10, '2026-11-02', true], ['step', 'Find 3 sources', 20, '2026-11-03'],
+    ['milestone', 'Outline', 20, '2026-11-04'], ['step', 'Draft the first half', 20, '2026-11-09'], ['step', 'Draft the second half', 20, '2026-11-10'],
+    ['milestone', 'Full draft', 20, '2026-11-11'], ['check', 'Check it against the instructions', 15, '2026-11-12'], ['turn_in', 'Turn it in', 5, '2026-11-16']];
+  const BAD = '<img src=x onerror="window.__tlx=1">';
+  function tlDb(o) {
+    const d = tutorDb(o);
+    const fam = 'alex@example.com';
+    const A = (x) => d.assignments.push(assignmentRow(Object.assign({ kid_id: P.jordan, created_at: at('2026-11-01T12:00:00') }, x)));
+    const S = (aid, pos, [kind, title, minutes, day, done]) => d.homework_steps.push(stepRow({ assignment_id: aid, pos, kind, title, minutes, day,
+      done_at: done ? at(`${day}T21:40:00`) : null, done_by: done ? 'Jordan (My day)' : null }));
+    A({ id: T.essay, title: 'Essay: a river\'s journey', subject: 'English', due_date: '2026-11-16', given_at: at('2026-11-01T15:00:00'), given_by: fam, plan_rev: 2 });
+    ESSAY_PLAN.forEach((s, i) => S(T.essay, i + 1, s));
+    A({ id: T.cell, title: 'Model of a cell', subject: 'Science', due_date: '2026-12-04', plan_rev: 1 });
+    [['start', 'Read the instructions', 10, '2026-11-23'], ['milestone', 'Cell drawn', 20, '2026-11-30'], ['turn_in', 'Turn it in', 5, '2026-12-04']].forEach((s, i) => S(T.cell, i + 1, s));
+    A({ id: T.bad, title: BAD, subject: '<b>Art</b>', due_date: '2026-11-10' });
+    A({ id: T.books, title: 'Book list', subject: 'English', due_date: '2026-10-30', given_at: at('2026-10-28T15:00:00'), given_by: fam, plan_rev: 1 });
+    S(T.books, 1, ['step', 'Write down 5 books', 20, '2026-10-29']);
+    return d;
+  }
+  // What the page drew in a timeline (sel): its head of days and its rows (as tests/e2e/homework.test.js reads them).
+  const readTl = (pg, sel) => pg.evaluate((sel) => {
+    const root = document.querySelector(sel);
+    if (!root) return null;
+    const txt = (el, s) => { const x = el && (s ? el.querySelector(s) : el); return x ? x.textContent.replace(/\s+/g, ' ').trim() : null; };
+    const col = (el) => (el ? el.style.gridColumn || null : null);
+    const flags = (el) => ['is-done', 'is-behind', 'is-late', 'is-past'].filter((c) => el.classList.contains(c)).map((c) => ` ${c.slice(3)}`).join('');
+    const head = Array.from(root.querySelectorAll('.plan-tl-hday'));
+    const idx = (cls) => head.map((x, i) => (x.classList.contains(cls) ? i : -1)).filter((i) => i >= 0);
+    return {
+      label: root.getAttribute('aria-label'), days: head.map((x) => `${txt(x, '.plan-tl-letter')}${txt(x, '.plan-tl-date')}`),
+      today: idx('is-today'), mon: idx('is-mon'), off: idx('is-off'), due: idx('is-due'), key: txt(root, '.plan-tl-key'),
+      rows: Array.from(root.querySelectorAll('.plan-tl-row')).map((r) => {
+        const a = r.querySelector('a.plan-tl-name');
+        const bar = r.querySelector('.plan-tl-bar');
+        const fill = r.querySelector('.plan-tl-fill');
+        return {
+          id: r.dataset.id || null, late: r.classList.contains('is-late'), href: a ? a.getAttribute('href') : null, title: txt(r, '.plan-tl-title'), sub: txt(r, '.plan-tl-sub'),
+          sr: txt(r, '.plan-tl-name > .sr-only'), bar: bar ? `${col(bar)}${flags(bar)}` : null, fill: fill ? fill.style.width : null,
+          ms: Array.from(r.querySelectorAll('.plan-tl-ms')).map((m) => `${col(m)}${flags(m)}`), due: col(r.querySelector('.plan-tl-due')),
+          arrow: !!r.querySelector('.plan-tl-track > .plan-tl-arrow'), today: col(r.querySelector('.plan-tl-cell.is-today')),
+          steps: Array.from(r.querySelectorAll('.plan-tl-step')).map((x) => `${col(x.closest('.plan-tl-slot'))}:${txt(x, '.plan-tl-min')}${flags(x)}`),
+          stepSr: Array.from(r.querySelectorAll('.plan-tl-step .sr-only')).map((x) => txt(x)),
+        };
+      }),
+    };
+  }, sel);
+  const TL = '[data-sec="assignments"] .plan-tl-overview';
+  const CHART = '.plan-tutor-a [data-ref="chart"] .plan-tl-chart';
+  const TL_SHOTS = `${(process.env.TIMELINE_SHOTS || SHOTS).replace(/\/+$/, '')}/`;
+  fs.mkdirSync(TL_SHOTS, { recursive: true });
+  const sideOk = (pg) => pg.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth);
+  {
+    ({ page, db } = await open({ label: 'pat-timeline', path: `/day.html?h=${PAT}`, db: tlDb() }));
+    await page.waitForSelector('.plan-tutor');
+    check('timelines: the fixed sections as before (Next 3 weeks is inside Assignments, not a section of its own)',
+      same(await page.$$eval('.plan-sec', (ss) => ss.map((s) => s.dataset.sec)), ['check', 'talk', 'questions', 'plans', 'assignments', 'week', 'record']),
+      JSON.stringify(await page.$$eval('.plan-sec', (ss) => ss.map((s) => s.dataset.sec))));
+    check('Next 3 weeks at the top of Assignments, over the list, under its heading "Next 3 weeks"',
+      await page.evaluate(() => { const s = document.querySelector('[data-sec="assignments"]'); const b = s && s.querySelector(':scope > .plan-tl-box'); const l = s && s.querySelector(':scope > .plan-arows');
+        return !!(b && l && (b.compareDocumentPosition(l) & Node.DOCUMENT_POSITION_FOLLOWING) && s.firstElementChild.classList.contains('sec-head') && s.children[1] === b); })
+      && (await text(page, '[data-sec="assignments"] .plan-tl-box > .plan-tl-h')) === 'Next 3 weeks', await text(page, '[data-sec="assignments"]'));
+    const ov = await readTl(page, TL);
+    check('the overview: 21 days from today ("Open assignments, Mon Nov 2 to Sun Nov 22"), today first, each week from its Monday',
+      !!ov && ov.label === 'Open assignments, Mon Nov 2 to Sun Nov 22' && ov.days.length === 21 && ov.days[0] === 'M2' && ov.days[20] === 'S22'
+      && same(ov.today, [0]) && same(ov.mon, [0, 7, 14]) && ov.key === 'milestone due date today', JSON.stringify(ov && [ov.label, ov.days, ov.today, ov.mon, ov.key]));
+    const rows = ov ? ov.rows : [];
+    const row = (id) => rows.find((r) => r.id === id) || {};
+    check('a row per open assignment and lesson by due date (given or not, with a plan or not), each a link to its screen (#a/<id>)',
+      same(rows.map((r) => r.id), [T.books, I.math, I.frac, T.bad, I.sci, T.essay, T.cell]) && same(rows.map((r) => r.href), [T.books, I.math, I.frac, T.bad, I.sci, T.essay, T.cell].map((id) => `#a/${id}`))
+      && rows.every((r) => r.today === '1'), JSON.stringify(rows.map((r) => [r.title, r.href, r.today])));
+    const essay = row(T.essay);
+    check('the two-week essay: its bar from today (Pat\'s list has no step days) to Mon Nov 16, 1 of 8 done filled, its next milestone a diamond on its day, the due date a flag',
+      essay.bar === '1 / 16' && essay.fill === '12.5%' && same(essay.ms, ['3']) && essay.due === '15' && !essay.arrow && !essay.late
+      && essay.sub === 'English · 1 of 8 · due Mon Nov 16', JSON.stringify(essay));
+    check('... its label for screen readers: "Essay: a river\'s journey · milestone Outline Wed Nov 4 · due Mon Nov 16 · 1 of 8 steps done"',
+      essay.sr === 'Essay: a river\'s journey · milestone Outline Wed Nov 4 · due Mon Nov 16 · 1 of 8 steps done', essay.sr);
+    const sci = row(I.sci);
+    check('the science project: 2 of 5 done; its next milestone (Full draft, Sat, not done) behind on today\'s column',
+      sci.bar === '1 / 13' && sci.fill === '40%' && same(sci.ms, ['1 behind']) && sci.due === '12' && sci.sub === 'Science · 2 of 5 · due Fri Nov 13'
+      && sci.sr === 'Science project: river poster · milestone Full draft Sat Oct 31 · due Fri Nov 13 · 2 of 5 steps done', JSON.stringify(sci));
+    const books = row(T.books);
+    check('the book list, due Fri Oct 30 and still open: marked late on today\'s column, no flag', books.late && books.bar === '1 / 2 late' && books.due === null
+      && books.sub === 'English · 0 of 1 · late · due Fri Oct 30' && books.sr === 'Book list · late · due Fri Oct 30 · 0 of 1 steps done', JSON.stringify(books));
+    const cell = row(T.cell);
+    check('the cell model, due Dec 4 (past the 3 weeks, its plan not given yet): its bar to the edge, an arrow, "due Fri Dec 4"; its milestone past the days not drawn',
+      cell.bar === '1 / 22 past' && cell.arrow && cell.due === null && !cell.ms.length && cell.sub === 'Science · 0 of 3 · due Fri Dec 4', JSON.stringify(cell));
+    const les = row(I.frac);
+    const math = row(I.math);
+    check('the lesson ("do by Fri Nov 6") and the worksheet (due tomorrow), from today to their days',
+      les.bar === '1 / 6' && les.due === '5' && les.sub === 'Math · 0 of 1 · do by Fri Nov 6' && math.bar === '1 / 3' && math.due === '2' && math.sub === 'Math · 0 of 1 · due Tue Nov 3',
+      JSON.stringify([les, math]));
+    const bad = row(T.bad);
+    check('a hostile title and class in Next 3 weeks: as text ("no plan yet"), no element made from them', bad.title === BAD && bad.sub === '<b>Art</b> · no plan yet · due Tue Nov 10'
+      && bad.fill === null && bad.bar === '1 / 10' && !(await page.$('.plan-tl img, .plan-tl b')) && !(await page.evaluate(() => window.__tlx)), JSON.stringify(bad));
+    check('the overview is drawn from the list\'s one read: no other call', same(db.calls.map((c) => c.name), ['tutor_view_by_token']), db.calls.map((c) => c.name).join(','));
+    check('... and still nothing of points in it', !/points?\b/i.test(await text(page, '[data-sec="assignments"] .plan-tl-box')));
+    // A row's link opens the essay, with its chart above the editor.
+    await page.click(`${TL} .plan-tl-row[data-id="${T.essay}"] a.plan-tl-name`);
+    await until(async () => (await page.evaluate(() => location.hash)) === `#a/${T.essay}` && !!(await page.$(`${CHART}`)) && !!(await page.$('.plan-tutor-a .plan-editor')), 4000);
+    const ch = await readTl(page, CHART);
+    check('a row\'s link opens the assignment: its chart above the plan editor (under the fields)', !!ch
+      && await page.evaluate(() => { const c = document.querySelector('.plan-tutor-a [data-ref="chart"]'); const e = document.querySelector('.plan-tutor-a [data-ref="editor"]'); const f = document.querySelector('.plan-tutor-a [data-ref="fields"]');
+        return !!(c && e && f && (c.compareDocumentPosition(e) & Node.DOCUMENT_POSITION_FOLLOWING) && (f.compareDocumentPosition(c) & Node.DOCUMENT_POSITION_FOLLOWING)); }),
+      await page.evaluate(() => location.hash));
+    check('the essay\'s chart: Mon Nov 2 to Mon Nov 16 (15 days), today first, its Mondays, Fri and Sat without homework time shaded (his week on the link), the due day marked',
+      !!ch && ch.label === 'Plan by day, Mon Nov 2 to Mon Nov 16' && ch.days.length === 15 && same(ch.today, [0]) && same(ch.mon, [0, 7, 14]) && same(ch.off, [4, 5, 11, 12])
+      && same(ch.due, [14]) && ch.key === 'done from earlier milestone turn in no homework time', JSON.stringify(ch && [ch.label, ch.days.length, ch.today, ch.mon, ch.off, ch.due, ch.key]));
+    check('... a row per phase (Outline, Full draft, Check and turn in), each step a block on its day with its minutes, the done one filled',
+      !!ch && same(ch.rows.map((r) => [r.title, r.sub, r.steps]), [['Outline', '3 steps · 50 min', ['1:10 done', '2:20', '3:20']], ['Full draft', '3 steps · 1 h', ['8:20', '9:20', '10:20']],
+        ['Check and turn in', '2 steps · 20 min', ['11:15', '15:5']]]) && ch.rows.every((r) => r.today === '1'), JSON.stringify(ch && ch.rows.map((r) => [r.title, r.sub, r.steps, r.today])));
+    check('... each block says what it is for screen readers', !!ch && same(ch.rows[0].stepSr, ['Copy the requirements into your notes · start · Mon Nov 2 · 10 min · done',
+      'Find 3 sources · Tue Nov 3 · 20 min', 'Outline · milestone · Wed Nov 4 · 20 min']), JSON.stringify(ch && ch.rows[0].stepSr));
+    // A save in the editor draws the chart again: the second half moved to Sunday.
+    const i4 = await page.$$eval('.plan-tutor-a .plan-step[data-i]', (rs) => (rs.find((r) => /Draft the second half/.test(r.textContent)) || { dataset: {} }).dataset.i);
+    await page.selectOption(`.plan-tutor-a .plan-step[data-i="${i4}"] select[name="day"]`, '2026-11-08');
+    await page.click('.plan-tutor-a .plan-editor [data-act="save"]');
+    await until(() => calls(db, 'tutor_plan_by_token').length === 1);
+    await until(async () => { const m = await readTl(page, CHART); return !!m && same(m.rows[1].steps, ['7:20', '8:20', '10:20']); }, 4000);
+    const moved = await readTl(page, CHART);
+    check('a save moves the block: "Draft the second half" on Sunday, from the plan as saved', (calls(db, 'tutor_plan_by_token')[0].body.p_steps || [])[4].day === '2026-11-08'
+      && !!moved && same(moved.rows[1].steps, ['7:20', '8:20', '10:20']), JSON.stringify([calls(db, 'tutor_plan_by_token').map((c) => c.body.p_steps && c.body.p_steps[4]), moved && moved.rows[1].steps]));
+    // No chart for a plan on one day (the worksheet) or no plan (the hostile one). This goto changes only the hash, so
+    // the essay's screen (its chart and editor) stays until the worksheet's read answers: wait for the worksheet's own
+    // heading, never for an editor that may still be the essay's.
+    await page.goto(`${BASE}/day.html?h=${PAT}#a/${I.math}`);
+    await until(async () => (await text(page, '.plan-tutor-a .plan-head h1')) === 'Worksheet 4.2' && !!(await page.$('.plan-tutor-a .plan-editor')), 4000);
+    const oneDay = (await text(page, '.plan-tutor-a .plan-head h1')) === 'Worksheet 4.2' && !(await page.$(CHART));
+    await page.evaluate((id) => { location.hash = `#a/${id}`; }, T.bad);
+    await until(async () => (await text(page, '.plan-tutor-a .plan-head h1')) === BAD, 4000);
+    check('no chart for a plan on one day (the worksheet) or no plan; the hostile title as text', oneDay && !(await page.$(CHART)) && !(await page.$('.plan-tutor-a img')) && !(await page.evaluate(() => window.__tlx)));
+    check('timelines: every call was one of the four tutor functions', db.calls.every((c) => TUTOR_FNS.test(c.name)), [...new Set(db.calls.map((c) => c.name))].join(','));
+    await page.context().close();
+  }
+  {
+    // Nothing open: no Next 3 weeks, the Assignments section as before.
+    const none = tlDb();
+    none.assignments.forEach((a) => Object.assign(a, { status: 'done', done_at: at('2026-11-02T15:00:00') }));
+    ({ page, db } = await open({ label: 'pat-timeline-none', path: `/day.html?h=${PAT}`, db: none }));
+    await page.waitForSelector('[data-sec="assignments"]');
+    check('nothing open: no Next 3 weeks (the done ones folded under Assignments)', !(await page.$('.plan-tl, .plan-tl-box')) && !!(await page.$('[data-sec="assignments"] details.plan-done')));
+    await page.context().close();
+  }
+  {
+    // Spanish: the words of both.
+    ({ page, db } = await open({ label: 'pat-timeline-es', path: `/day.html?h=${PAT}`, db: tlDb({ lang: 'es' }) }));
+    await page.waitForSelector(TL);
+    const ov = await readTl(page, TL);
+    check('Spanish: "Las próximas 3 semanas", "Trabajos abiertos, del lun 2 nov al dom 22 nov", L M X J V S D, "hito … entrega … hoy"',
+      (await text(page, '.plan-tl-box > .plan-tl-h')) === 'Las próximas 3 semanas' && !!ov && ov.label === 'Trabajos abiertos, del lun 2 nov al dom 22 nov'
+      && same(ov.days.slice(0, 7), ['L2', 'M3', 'X4', 'J5', 'V6', 'S7', 'D8']) && ov.key === 'hito entrega hoy'
+      && (ov.rows.find((r) => r.id === T.essay) || {}).sub === 'English · 1 de 8 · para el lun 16 nov', JSON.stringify(ov && [ov.label, ov.days.slice(0, 7), ov.key, ov.rows.map((r) => r.sub)]));
+    await page.evaluate((id) => { location.hash = `#a/${id}`; }, T.essay);
+    await until(async () => !!(await page.$(CHART)), 4000);
+    const ch = await readTl(page, CHART);
+    check('Spanish: the chart "Plan por días, del lun 2 nov al lun 16 nov", "Revisar y entregar"', !!ch && ch.label === 'Plan por días, del lun 2 nov al lun 16 nov'
+      && ch.rows[2].title === 'Revisar y entregar' && ch.rows[0].sub === '3 pasos · 50 min', JSON.stringify(ch && [ch.label, ch.rows.map((r) => [r.title, r.sub])]));
+    await page.context().close();
+  }
+  {
+    // A class name of 38 characters (the school's feed and the form allow 40): at 1280px it wraps inside the name column,
+    // never into the days.
+    const long = tlDb();
+    long.assignments.find((a) => a.id === T.essay).subject = 'English Language Arts 7 Honors Section';
+    ({ page, db } = await open({ label: 'pat-timeline-long-class', path: `/day.html?h=${PAT}`, db: long }));
+    await page.waitForSelector(TL);
+    const spill = await page.evaluate((sel) => Array.from(document.querySelectorAll(`${sel} .plan-tl-row`)).map((r) => {
+      const right = r.querySelector('.plan-tl-name').getBoundingClientRect().right;
+      const ends = Array.from(r.querySelectorAll('.plan-tl-sub > span')).flatMap((x) => Array.from(x.getClientRects()).map((b) => b.right));
+      return { id: r.dataset.id, right, over: ends.filter((x) => x > right + 0.5) };
+    }), TL);
+    check('a class name of 38 characters at 1280px: it wraps inside the name column (no part of any row\'s line runs into the days)',
+      spill.length === 7 && spill.every((r) => !r.over.length) && (await text(page, `${TL} .plan-tl-row[data-id="${T.essay}"] .plan-tl-sub`)).startsWith('English Language Arts 7 Honors Section'),
+      JSON.stringify(spill.find((r) => r.id === T.essay)));
+    await page.context().close();
+  }
+  // Phones and desktops, light and dark: no sideways page scroll (a timeline wider than its box scrolls inside it).
+  for (const [w, ctxOpts] of [[390, { viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true }], [1280, { viewport: { width: 1280, height: 900 } }]]) {
+    for (const scheme of ['light', 'dark']) {
+      ({ page, db } = await open({ label: `pat-timeline-${w}-${scheme}`, path: `/day.html?h=${PAT}`, db: tlDb(), ctx: Object.assign({ colorScheme: scheme }, ctxOpts) }));
+      await page.waitForSelector(TL);
+      const lay = await page.evaluate((sel) => {
+        const box = document.querySelector(`${sel} .plan-tl-scroll`);
+        return { fits: box.scrollWidth <= box.clientWidth + 1, ox: getComputedStyle(box).overflowX,
+          links: Array.from(document.querySelectorAll(`${sel} a.plan-tl-name`)).every((a) => a.getBoundingClientRect().height >= 44) };
+      }, TL);
+      check(`Pat's link ${w}px (${scheme}): Next 3 weeks with no sideways page scroll, the 3 weeks inside the box, each link at least 44px tall`,
+        await sideOk(page) && lay.fits && lay.links, JSON.stringify(lay));
+      await page.evaluate(() => { if (document.activeElement) document.activeElement.blur(); window.scrollTo(0, 0); });
+      await page.locator('[data-sec="assignments"]').screenshot({ path: `${TL_SHOTS}tutor-next-3-weeks-${w}-${scheme}.png` });
+      await page.screenshot({ path: `${TL_SHOTS}tutor-list-${w}-${scheme}.png`, fullPage: true });
+      await page.evaluate((id) => { location.hash = `#a/${id}`; }, T.essay);
+      await until(async () => !!(await page.$(CHART)), 4000);
+      const box = await page.evaluate((sel) => { const b = document.querySelector(`${sel} .plan-tl-scroll`); return b ? { sw: b.scrollWidth, cw: b.clientWidth, ox: getComputedStyle(b).overflowX } : null; }, CHART);
+      check(`Pat's link ${w}px (${scheme}): the essay's chart with no sideways page scroll (it scrolls inside its own box when wider)`, await sideOk(page) && !!box
+        && (box.sw <= box.cw + 1 || box.ox === 'auto'), JSON.stringify(box));
+      await page.evaluate(() => { if (document.activeElement) document.activeElement.blur(); window.scrollTo(0, 0); });
+      await page.locator('.plan-tutor-a [data-ref="chart"]').screenshot({ path: `${TL_SHOTS}tutor-chart-${w}-${scheme}.png` });
+      await page.screenshot({ path: `${TL_SHOTS}tutor-assignment-${w}-${scheme}.png`, fullPage: true });
+      // The cell model: 33 days from today, its steps from Nov 23. The chart opens on them (the day before the first), its
+      // rows' names still in view, and its box scrolls by keyboard.
+      await page.evaluate((id) => { location.hash = `#a/${id}`; }, T.cell);
+      await until(async () => (await text(page, '.plan-tutor-a .plan-head h1')) === 'Model of a cell' && !!(await page.$(CHART)), 4000);
+      const cell = await page.evaluate((sel) => {
+        const b = document.querySelector(`${sel} .plan-tl-scroll`);
+        const r = b.getBoundingClientRect();
+        const names = Array.from(b.querySelectorAll('.plan-tl-row .plan-tl-name'));
+        const wide = names.length && names[0].getBoundingClientRect().bottom > b.querySelector('.plan-tl-row .plan-tl-track').getBoundingClientRect().top + 1;
+        const from = wide ? names[0].getBoundingClientRect().right : r.left;
+        const inside = (el) => { const x = el.getBoundingClientRect(); return x.left >= from - 0.5 && x.right <= r.right + 0.5; };
+        return { wider: b.scrollWidth > b.clientWidth, at: b.scrollLeft, steps: Array.from(b.querySelectorAll('.plan-tl-step')).map(inside), due: inside(b.querySelector('.plan-tl-hday.is-due')),
+          names: names.every((n) => { const x = n.getBoundingClientRect(); return x.left >= r.left - 0.5 && x.left < r.right; }), tab: b.getAttribute('tabindex'), role: b.getAttribute('role'),
+          label: b.getAttribute('aria-label') };
+      }, CHART);
+      check(`Pat's link ${w}px (${scheme}): the cell model's chart (Mon Nov 2 to Fri Dec 4) opens on its steps: all 3 and the due day in view, the rows' names too; its box scrolls by keyboard`,
+        cell.steps.length === 3 && cell.steps.every(Boolean) && cell.due && cell.names && cell.tab === '0' && cell.role === 'region' && cell.label === 'Plan by day, Mon Nov 2 to Fri Dec 4'
+        && (w > 540 || (cell.wider && cell.at > 0)) && await sideOk(page), JSON.stringify(cell));
+      await page.evaluate(() => { if (document.activeElement) document.activeElement.blur(); window.scrollTo(0, 0); });
+      await page.locator('.plan-tutor-a [data-ref="chart"]').screenshot({ path: `${TL_SHOTS}tutor-chart-cell-${w}-${scheme}.png` });
+      await page.context().close();
+    }
   }
 
   console.log(results.join('\n'));

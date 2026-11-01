@@ -21,7 +21,7 @@ const results = [];
 const check = (name, ok, detail) => results.push(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? `  (${String(detail).slice(0, 200)})` : ''}`);
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const CORS = { 'access-control-allow-origin': '*', 'access-control-allow-headers': '*', 'access-control-allow-methods': 'GET,POST,PATCH,DELETE,OPTIONS', 'access-control-expose-headers': '*' };
-const V = '20261101a';   // Hearth people (0010): Settings, Calendar and Today
+const V = '20261101a';   // Hearth people (0010): Settings, Calendar and Today, joined with the timelines (no migration)
 
 // ---- Fixtures (fictional people only)
 const T = '2026-10-24T16:00:00.000000+00:00';
