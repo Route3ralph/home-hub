@@ -44,7 +44,10 @@
 --   • One transaction. It refuses to run without 0009, twice, on a database set back to 9 (hearth_tags already there),
 --     or on a database that isn't as 0009 left it (the columns of calendars and google_events it reads, and no
 --     sort_by_guest or guests yet; calendar_read_due answering its 8 columns; the functions it replaces or calls with the
---     arguments their migrations gave them; none of its own three functions yet).
+--     arguments their migrations gave them; none of its own three functions yet). Then it locks calendar_sync, so no
+--     calendar run begins until it commits (calendar_begin waits, then the run uses the new functions), and refuses
+--     while a run holds the lease ("A calendar run is under way. Try again in a minute."): a store begun under 0003's
+--     body would otherwise skip every event of its calendar once this commits.
 --   • Row-level security on the new table; set search_path = '' on every function; revoke then grant on every new one.
 --     The only new SECURITY DEFINER function is set_hearth_tag.
 --
@@ -113,6 +116,22 @@ begin
                 where (p.pronamespace = to_regnamespace('public') and p.proname = 'set_hearth_tag')
                    or (p.pronamespace = to_regnamespace('private') and p.proname in ('hearth_whose', 'hearth_tag'))) then
     raise exception 'This database isn''t as migration 0009 left it. Nothing was changed.';
+  end if;
+end;
+$$;
+
+-- No calendar run while the columns are added and the functions replaced (Rules, above): a calendar_store_events call
+-- that began under 0003's body would, after this commit, build each row for 14 columns of 15, skip every event and
+-- empty that calendar's cache. calendar_sync first: calendar_begin writes it before a run does anything else, so a run
+-- that starts now waits for this commit, then reads and stores with the new functions; and a run that holds the lease
+-- (calendar_begin's rule: running_since in the last 10 minutes) stops this migration before anything changes. Plain
+-- reads (the pages, the status card) aren't held up.
+lock table public.calendar_sync in exclusive mode;
+
+do $$
+begin
+  if exists (select 1 from public.calendar_sync y where y.running_since >= private.now() - interval '10 minutes') then
+    raise exception 'A calendar run is under way. Try again in a minute. Nothing was changed.';
   end if;
 end;
 $$;

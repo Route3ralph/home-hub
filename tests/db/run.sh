@@ -15,8 +15,9 @@
 # its undo, and "same status card"); and that migration 0009 keys the school items by what they are, not by
 # Blackbaud's UIDs, and makes the copies a database at 0008 has one row an item (its refusals, its undo, the live
 # database's shape: 54 rows of 18 assignments and 570 of 285 classes, and "same views" where there were no copies); and that
-# migration 0010 (Hearth people) refuses what it should (twice, too early, set back to 9, a half-applied shape), leaves every
-# answer as 0009 made it while no calendar is sorted (step 5g), and can be undone (hub_09 is the database at 0009).
+# migration 0010 (Hearth people) refuses what it should (twice, too early, set back to 9, a half-applied shape, during a
+# calendar run), leaves every answer as 0009 made it while no calendar is sorted (step 5g), holds back a calendar run that
+# begins while it runs, and can be undone (hub_09 is the database at 0009).
 # Prints one "PASS  name" or "FAIL  name  (detail)" line per check, then the totals,
 # and exits non-zero if anything failed.
 # Needs the PostgreSQL 16 server binaries (PG_BIN overrides where they are); cluster.sh starts
@@ -868,6 +869,93 @@ if [[ $ok -eq 1 && $rows -gt 300 && $toggled == "5 6 0" ]] && grep -q 'Soccer' "
 else
   report "FAIL  5g: with no calendar sorted, 0010 leaves every answer as 0009's  ($rows results; toggled: $toggled; first difference: $(diff "$dir/g09_1.txt" "$dir/g10_1.txt" | head -n 3 | cut -c 1-300 | tr '\n' ' ') $(diff "$dir/g09_2.txt" "$dir/g10_2.txt" | head -n 3 | cut -c 1-300 | tr '\n' ' ') $(diff "$dir/g09_2.txt" "$dir/g10_3.txt" | head -n 3 | cut -c 1-300 | tr '\n' ' '))"
 fi
+
+# 0010 pasted while a calendar run is under way (the job runs every 5 minutes, and on Sync now): a calendar_store_events
+# call begun under 0003's body would, after 0010's commit, build each row for 14 columns of 15, skip every event and
+# empty the calendar's cache. 0010 locks calendar_sync before it changes anything, so (1) a run that holds the lease,
+# its store in flight, stops it ("A calendar run is under way. …", nothing changed) and keeps its events; and (2) a run
+# that begins while 0010 runs waits in calendar_begin for its commit, then reads (calendar_read_due, with sort_by_guest)
+# and stores with the new functions: both events kept, none skipped. Each on a copy of 5g's household at 0009
+# (hub_g09), as service_role (as hub-jobs), with a second session held open by pg_sleep, as 0009's race tests.
+race10_store() { # hub-jobs' store of the Family account calendar with two events; answers "kept skipped"
+  cat <<'SQL'
+select (r ->> 'kept') || ' ' || (r ->> 'skipped')
+from (select public.calendar_store_events(c.id, c.google_id, public.today_local() - 1, public.today_local() + 60, 'Family', 'reader', true,
+        '[{"id": "piano1", "status": "confirmed", "title": "Piano", "start": {"dateTime": "2026-10-28T20:30:00Z"}, "end": {"dateTime": "2026-10-28T21:15:00Z"},
+           "organizer_self": true, "updated": "2026-10-27T12:00:00Z"},
+          {"id": "visit1", "status": "confirmed", "title": "Visit", "start": {"dateTime": "2026-10-30T20:00:00Z"}, "end": {"dateTime": "2026-10-30T20:30:00Z"},
+           "organizer_self": true, "updated": "2026-10-27T12:00:00Z"}]'::jsonb, '[]') r
+      from public.calendars c where c.label = 'Family account') x;
+SQL
+}
+race10_state() { # schema version, hearth_tags there, the Family account calendar's cached events, and the lease held
+  quiet -d "$1" -A -t -c "select concat_ws(' ', public.hub_schema_version(), to_regclass('public.hearth_tags') is not null,
+                                  (select count(*) from public.google_events g join public.calendars c on c.id = g.calendar_id where c.label = 'Family account'),
+                                  (select running_since is not null from public.calendar_sync))"
+}
+wait_lock() { # until a session on database $1 waits for a lock in a statement naming $2 (at most 10 s)
+  local i
+  for ((i = 0; i < 100; i++)); do
+    [[ $(quiet -d postgres -A -t -c "select count(*) from pg_stat_activity where datname = '$1' and wait_event_type = 'Lock' and query like '%$2%'") -gt 0 ]] && return 0
+    sleep 0.1
+  done
+  return 1
+}
+# (1) The run holds the lease (taken on the real clock, as 0010 counts it), its store's transaction open, when 0010
+# is pasted.
+sql -d postgres -c 'create database hub_g09_race1 template hub_g09'
+before=$(catalog_of hub_g09_race1)
+{ cat <<'SQL'
+set role service_role;
+select public.calendar_begin() ->> 'run_id' as run \gset
+set hub.now = '2026-10-27 09:05 America/New_York';
+begin;
+SQL
+  race10_store
+  cat <<'SQL'
+select pg_sleep(3);
+commit;
+select count(*) from (select public.calendar_finish(:'run'::uuid, '{"read": 1}'::jsonb)) f;
+SQL
+} | quiet -d hub_g09_race1 -A -t >"$dir/race10_1.log" 2>&1 &
+race=$!
+if wait_sleep hub_g09_race1; then out=$(quiet -d hub_g09_race1 -f $m10 2>&1); else out='the run never started'; fi
+wait $race
+run1=$(tr '\n' ' ' <"$dir/race10_1.log")
+state1=$(race10_state hub_g09_race1)
+same1=$([[ $(catalog_of hub_g09_race1) == "$before" ]] && echo same)
+again=$(quiet -d hub_g09_race1 -f $m10 2>&1)
+if [[ $out == *"A calendar run is under way. Try again in a minute. Nothing was changed."* && $run1 == '2 0  1 ' && $state1 == '9 f 2 f' && $same1 == same
+      && -z $again && $(race10_state hub_g09_race1) == '10 t 2 f' ]]; then
+  report "PASS  0010 pasted during a calendar run (it holds the lease, its store in flight): \"A calendar run is under way. Try again in a minute.\", nothing changed, the run keeps its 2 events; once it has finished, 0010 runs"
+else report "FAIL  0010 pasted during a calendar run  (0010: ${out:0:150}; run: $run1; after: $state1 ${same1:-catalog changed}; again: ${again:0:150} $(race10_state hub_g09_race1))"; fi
+# (2) A run begins while 0010 runs (a copy of 0010 held open before its commit).
+sql -d postgres -c 'create database hub_g09_race2 template hub_g09'
+sed 's/^commit;$/select pg_sleep(3);\ncommit;/' $m10 >"$dir/0010_slow.sql"
+quiet -d hub_g09_race2 -A -t -f "$dir/0010_slow.sql" >"$dir/race10_2m.log" 2>&1 &   # (its pg_sleep prints an empty line)
+race=$!
+waited=no
+if wait_sleep hub_g09_race2; then
+  { cat <<'SQL'
+set role service_role;
+set hub.now = '2026-10-27 09:05 America/New_York';
+select public.calendar_begin() ->> 'run_id' as run \gset
+select count(*) || ' ' || count(*) filter (where d.sort_by_guest is false) from public.calendar_read_due(true, 10) d;
+SQL
+    race10_store
+    echo "select count(*) from (select public.calendar_finish(:'run'::uuid, '{\"read\": 1}'::jsonb)) f;"
+  } | quiet -d hub_g09_race2 -A -t >"$dir/race10_2.log" 2>&1 &
+  runner=$!
+  wait_lock hub_g09_race2 calendar_begin && waited=yes
+  wait $runner
+else echo '0010 never started' >"$dir/race10_2.log"; fi
+wait $race
+out=$(cat "$dir/race10_2m.log")
+run2=$(tr '\n' ' ' <"$dir/race10_2.log")
+if [[ -z $out && $waited == yes && $run2 =~ ^([0-9]+)\ ([0-9]+)\ 2\ 0\ 1\ $ && ${BASH_REMATCH[1]} -gt 0 && ${BASH_REMATCH[1]} == "${BASH_REMATCH[2]}" ]] \
+   && [[ $(race10_state hub_g09_race2) == '10 t 2 f' ]]; then
+  report "PASS  a calendar run that begins while 0010 runs waits in calendar_begin for its commit, then reads (sort_by_guest) and stores with the new functions: 2 kept, none skipped"
+else report "FAIL  a calendar run that begins while 0010 runs  (0010: ${out:0:150}; waited in calendar_begin: $waited; run: ${run2:0:200}; after: $(race10_state hub_g09_race2))"; fi
 
 # Undo, as docs/v1.1-google-calendar.md §11.9 and 0010's header say: every switch off; 0003's google_item, google_for,
 # calendars_tidy and calendar_store_events blocks again (create or replace); calendar_read_due dropped and made again from

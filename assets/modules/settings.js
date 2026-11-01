@@ -569,12 +569,18 @@
       label: mine.some((o) => o !== t && o.name === t.name) ? `${t.name} (…${String(t.tag).slice(-4)})` : String(t.name),
     }));
   }
+  // A person as the Hearth people's picker, toasts and lines name them: the first name, or the full name when someone
+  // else on the list has the same first name (the hub's rule, as the core's person chips and Food's).
+  function shortName(p) {
+    const first = firstName(p.name);
+    return v2.people().some((x) => x.id !== p.id && firstName(x.name) === first) ? p.name : first;
+  }
   // Whose a match makes a tag's events, as the toast and a member's line say it.
   function matchWords(t) {
     if (t.matched_to === 'family') return 'Family';
     if (t.matched_to === 'grown_ups') return 'the grown-ups';
     const p = t.person_id ? v2.person(t.person_id) : null;
-    return p ? firstName(p.name) : '';
+    return p ? shortName(p) : '';
   }
   // A refusal in set_hearth_tag's own words (friendly() would turn its 42501 into a general one).
   const hearthError = (err) => (err && (err.code === '22023' || err.code === '42501') && err.message ? err.message : friendly(err));
@@ -760,11 +766,16 @@
 
   // The card: draws itself into box, and answers its own buttons. Resolves once it has loaded.
   function googleCard(box, ctx, admin) {
-    const st = { d: null, failed: false, tests: new Map(), syncNote: null };
+    // tagSeq counts the matches and Forgets: a reload under way when one is made (Sync now's second round) keeps the
+    // Hearth people that one reads, not the older list it read itself.
+    const st = { d: null, failed: false, tests: new Map(), syncNote: null, tagSeq: 0 };
 
     async function reload() {
+      const seq = st.tagSeq;
       try {
-        st.d = await loadGoogle(admin);
+        const d = await loadGoogle(admin);
+        if (seq !== st.tagSeq && st.d) d.tags = st.d.tags;
+        st.d = d;
         st.failed = false;
       } catch (err) { st.failed = true; }
       if (!ctx.stale()) draw();
@@ -874,7 +885,7 @@
       const s = tagState(t);
       const p = t.person_id ? v2.person(t.person_id) : null;
       const to = s === 'new' ? 'not matched yet: the grown-ups' : s === 'removed' ? 'someone who was removed: the grown-ups'
-        : s === 'off' ? `${firstName(p.name)} (off the family list): the grown-ups` : matchWords(t);
+        : s === 'off' ? `${shortName(p)} (off the family list): the grown-ups` : matchWords(t);
       return `<li class="set-hp-row set-hp-text" data-tag="${esc(t.id)}">${esc(`${t.label} → ${to}`)}</li>`;
     }
     // An admin's line: the name, New (or what to do), when it was last seen, the picker and Forget.
@@ -885,7 +896,7 @@
       const opt = (v, words) => `<option value="${esc(v)}"${v === value ? ' selected' : ''}>${esc(words)}</option>`;
       const off = s === 'off' ? v2.person(t.person_id) : null;
       const options = [value ? '' : '<option value="" selected>Choose…</option>', opt('grown_ups', 'The grown-ups')]
-        .concat(people.map((p) => opt(`person:${p.id}`, firstName(p.name))), off ? [opt(`person:${off.id}`, `${firstName(off.name)} (off the family list)`)] : [], [opt('family', 'Family')]);
+        .concat(people.map((p) => opt(`person:${p.id}`, shortName(p))), off ? [opt(`person:${off.id}`, `${shortName(off)} (off the family list)`)] : [], [opt('family', 'Family')]);
       const note = s === 'removed' ? REMOVED : s === 'off' ? OFF_LIST : '';
       return `<li class="set-hp-row" data-tag="${esc(t.id)}">
         <div class="set-hp-who"><div class="set-hp-top"><b class="set-hp-name">${esc(t.label)}</b>${s === 'new' ? ' <span class="set-chip set-hp-new">New</span>' : ''}<small class="set-hp-seen">${esc(lastSeen(t.last_seen))}</small></div>
@@ -1319,7 +1330,7 @@
     // an error, never the success toast (the database refuses Show to kids on a sorted row, from a tab opened before).
     async function onChange(e) {
       const pick = e.target.closest('[data-hpick]');
-      if (pick) { await matchTag(pick); return; }
+      if (pick) { if (pick !== keyNow) await matchTag(pick); return; }
       const sort = e.target.closest('[data-gsort]');
       if (sort) { await setSort(sort); return; }
       const box2 = e.target.closest('[data-gkids]');
@@ -1360,17 +1371,40 @@
       catch (err) { st.d.tags = null; }
       if (!ctx.stale()) draw();
     }
+    // A Hearth person's picker: a pick with the mouse (or a phone's list) saves at once. A key that moves the choice (an
+    // arrow, a letter) only shows it; Enter, or leaving the picker, saves it, so a keyboard user going down the list
+    // doesn't save every option on the way. keyNow is the picker a key is changing, until that key's change has run.
+    let keyNow = null;
+    const pickMoved = (pick) => !pick.disabled && pick.isConnected && pick.value !== (pick.dataset.was || '');
+    function onKey(e) {
+      const pick = e.target.closest('[data-hpick]');
+      if (!pick) return;
+      if (e.key === 'Enter') { if (pickMoved(pick)) matchTag(pick); return; }
+      keyNow = pick;
+      setTimeout(() => { if (keyNow === pick) keyNow = null; }, 0);
+    }
+    function onLeave(e) {
+      const pick = e.target.closest('[data-hpick]');
+      if (pick && pickMoved(pick)) matchTag(pick);
+    }
+    // The card is drawn again after a match: back to that tag's picker, unless the focus has gone somewhere else.
+    function focusPick(id) {
+      const pick = box.querySelector(`[data-hpick="${id}"]`);
+      if (pick && !ctx.stale() && (!document.activeElement || document.activeElement === document.body)) pick.focus();
+    }
     const tagById = (id) => (Array.isArray(st.d.tags) ? st.d.tags.find((x) => x.id === id) : null);
     const labelOf = (t) => (tagsOf(st.d.tags, t.calendar_id).find((x) => x.id === t.id) || t).label || t.name;
     // A pick: set_hearth_tag(p_id, p_to, p_person). A refusal is the toast's error, in the function's words, and the
     // picker goes back.
     async function matchTag(pick) {
+      if (pick.disabled) return;   // its save is under way (Enter, then leaving it)
       const t = tagById(pick.dataset.hpick);
       const v = pick.value;
       if (!t || !v) { pick.value = pick.dataset.was || ''; return; }
       const person = v.startsWith('person:') ? v.slice(7) : null;
       const to = person ? 'person' : v;
       pick.disabled = true;
+      st.tagSeq += 1;
       try {
         if (person) await v2.call('set_hearth_tag', { p_id: t.id, p_to: 'person', p_person: person });
         else await v2.call('set_hearth_tag', { p_id: t.id, p_to: to });
@@ -1378,10 +1412,12 @@
       } catch (err) {
         pick.value = pick.dataset.was || '';
         pick.disabled = false;
+        if (document.activeElement === document.body) pick.focus();
         toast(hearthError(err), { error: true });
         return;
       }
       await reloadTags();
+      focusPick(t.id);
     }
     // Forget: asks first, then set_hearth_tag(p_id, 'forget').
     async function forgetTag(btn) {
@@ -1390,6 +1426,7 @@
       const label = labelOf(t);
       if (!window.confirm(forgetAsk(label))) return;
       btn.disabled = true;
+      st.tagSeq += 1;
       try {
         await v2.call('set_hearth_tag', { p_id: t.id, p_to: 'forget' });
         toast(`${label}: forgotten.`);
@@ -1403,6 +1440,8 @@
 
     box.addEventListener('click', onClick, { signal: ctx.signal });
     box.addEventListener('change', onChange, { signal: ctx.signal });
+    box.addEventListener('keydown', onKey, { signal: ctx.signal });
+    box.addEventListener('focusout', onLeave, { signal: ctx.signal });
     return reload();
   }
 

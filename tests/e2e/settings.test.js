@@ -1181,6 +1181,123 @@ const emailOf = (req) => {
     await page.waitForTimeout(500);
     check('Forget: set_hearth_tag(p_id, \'forget\'), "taylor: forgotten.", and the line goes', same(hearthCalls(db).slice(-1), [{ p_id: taylorId, p_to: 'forget' }])
       && (await lastToast(page)) === 'taylor: forgotten.' && (await rowOf(page, hdb.cal.hearth.id, 'taylor')).missing === true, await lastToast(page));
+    // Alex isn't a parent any more (changed from another tab): set_hearth_tag answers 42501, shown in its own words, not
+    // the hub's general "You don't have permission to do that."; the picker goes back.
+    db.members.find((m) => m.email === 'alex@example.com').role = 'member';
+    await page.selectOption(pickFor(page, tagId(db, 'jordan')), 'family');
+    await page.waitForTimeout(500);
+    check('a 42501 from set_hearth_tag: "Only a parent can match Hearth people." (not "You don\'t have permission to do that."), an error, and the picker goes back to Jordan',
+      (await lastToast(page)) === 'Only a parent can match Hearth people.' && await toastIsError(page) && (await page.inputValue(pickFor(page, tagId(db, 'jordan')))) === `person:${ID.jordan}`
+      && same(hearthCalls(db).slice(-1), [{ p_id: tagId(db, 'jordan'), p_to: 'family' }]) && db.hearth_tags.find((t) => t.tag === TAG('jordan')).matched_to === 'person', await lastToast(page));
+    db.members.find((m) => m.email === 'alex@example.com').role = 'admin';
+    await page.context().close();
+
+    // ---------- The picker from the keyboard: a key that moves the choice only shows it; Enter, or leaving the picker,
+    // saves it (one call); a pick with the mouse saves at once. After a match the redrawn picker has the focus.
+    hdb = hearthDb();
+    ({ page, db } = await open({ label: 'hearth-keys', db: hdb, rpc: v10Rpc, allowConsole: hAllowed }));
+    const gma = tagId(db, 'grandma');
+    await page.focus(pickFor(page, gma));
+    for (let i = 0; i < 6; i++) await page.keyboard.press('ArrowDown');
+    await page.waitForTimeout(400);
+    check('keyboard: six ArrowDowns on a New tag\'s picker (Choose… down to Family) send nothing; the picker shows Family, grandma still New',
+      !hearthCalls(db).length && (await page.inputValue(pickFor(page, gma))) === 'family' && (await rowOf(page, hdb.cal.hearth.id, 'grandma')).isNew,
+      JSON.stringify(hearthCalls(db)));
+    await page.keyboard.press('Enter');
+    await page.waitForTimeout(500);
+    check('… Enter sends one call, for Family ("grandma: Family\'s from now on."), and the redrawn picker has the focus', same(hearthCalls(db), [{ p_id: gma, p_to: 'family' }])
+      && (await lastToast(page)) === 'grandma: Family\'s from now on.' && !(await rowOf(page, hdb.cal.hearth.id, 'grandma')).isNew
+      && await page.$eval(pickFor(page, gma), (e) => e === document.activeElement), JSON.stringify(hearthCalls(db)));
+    const jid = tagId(db, 'jordan');
+    await page.focus(pickFor(page, jid));
+    await page.keyboard.press('ArrowUp');
+    await page.keyboard.press('ArrowUp');
+    await page.waitForTimeout(400);
+    check('… ArrowUp twice from Jordan (Sam, then Alex) sends nothing', hearthCalls(db).length === 1 && (await page.inputValue(pickFor(page, jid))) === `person:${ID.alex}`,
+      JSON.stringify(hearthCalls(db)));
+    await page.keyboard.press('Tab');
+    await page.waitForTimeout(500);
+    check('… leaving the picker (Tab) sends one call, for Alex: "jordan: Alex\'s from now on."', same(hearthCalls(db).slice(1), [{ p_id: jid, p_to: 'person', p_person: ID.alex }])
+      && (await lastToast(page)) === 'jordan: Alex\'s from now on.' && (await page.inputValue(pickFor(page, jid))) === `person:${ID.alex}`, JSON.stringify(hearthCalls(db)));
+    await page.focus(pickFor(page, jid));
+    await page.keyboard.press('ArrowDown');
+    await page.keyboard.press('ArrowUp');
+    await page.keyboard.press('Tab');
+    await page.waitForTimeout(400);
+    check('… arrows that end where it was, then Tab: nothing sent', hearthCalls(db).length === 2, JSON.stringify(hearthCalls(db)));
+    await page.selectOption(pickFor(page, tagId(db, 'dogs')), 'family');
+    await page.waitForTimeout(500);
+    check('a pick with the mouse still saves at once: one call, "dogs: Family\'s from now on."', same(hearthCalls(db).slice(2), [{ p_id: tagId(db, 'dogs'), p_to: 'family' }])
+      && (await lastToast(page)) === 'dogs: Family\'s from now on.', JSON.stringify(hearthCalls(db)));
+    await page.context().close();
+
+    // ---------- A card reload under way when a match is made (Sync now's second round, its calendar_links reads slow):
+    // it lands after the match and keeps the Hearth people the match read, not the older list it read itself.
+    hdb = hearthDb();
+    ({ page, db } = await open({ label: 'hearth-stale', db: hdb, rpc: v10Rpc, allowConsole: hAllowed }));
+    const slow = { on: false, seen: 0 };
+    await page.route((url) => url.host === 'test.supabase.co' && url.pathname === '/rest/v1/calendar_links', async (route) => {
+      if (!slow.on || route.request().method() !== 'GET') return route.fallback();
+      slow.seen += 1;
+      await new Promise((r) => setTimeout(r, 1500));
+      return route.fallback();
+    });
+    db.onSync = (d) => { d.cal.hearth.label = 'Hearth wall'; };
+    slow.on = true;
+    await page.click('[data-act="gsync"]');
+    for (let i = 0; i < 100 && !slow.seen; i++) await page.waitForTimeout(20);
+    await page.selectOption(pickFor(page, tagId(db, 'grandma')), 'grown_ups');
+    await page.waitForFunction((id) => { const e = document.querySelector(`[data-hpick="${id}"]`); return !!e && e.dataset.was === 'grown_ups'; }, tagId(db, 'grandma'));
+    const matchedFirst = slow.seen > 0 && !(await tc(page, hearthLi())).includes('Hearth wall');
+    await page.waitForFunction((li) => (document.querySelector(li) || { textContent: '' }).textContent.includes('Hearth wall'), hearthLi());
+    r1 = await rowOf(page, hdb.cal.hearth.id, 'grandma');
+    check('a reload under way when a match is made lands after it and keeps the match: grandma not New, The grown-ups selected, the top line names only grandpa',
+      matchedFirst && !r1.isNew && same(r1.options, PEOPLE_OPTS('grown_ups').concat([['family', 'Family', false]]))
+      && (await tc(page, '[data-ref="htodo"]')) === 'Hearth person to match: grandpa. See Calendars to read.' && db.hearth_tags.find((t) => t.tag === TAG('grandma')).matched_to === 'grown_ups',
+      JSON.stringify([matchedFirst, slow.seen, r1.isNew, await tc(page, '[data-ref="htodo"]')]));
+    slow.on = false;
+    await page.context().close();
+
+    // ---------- Two people with one first name (Sam Example and Sam Lee): full names in the picker, the toast and a
+    // member's lines, as the hub's person chips and Food's; everyone else by first name.
+    const SAM_LEE = '0f1e0000-0000-4000-8000-000000000006';
+    const twoSams = (samLee) => {
+      const d = hearthDb();
+      d.people.push(person(SAM_LEE, 'Sam Lee', 'adult', '#7c3aed', 5, samLee));
+      d.hearth_tags.push(hearthTagRow({ calendar_id: d.cal.hearth.id, tag: TAG('samlee'), last_seen: at('08:57'), matched_to: 'person', person_id: SAM_LEE }));
+      return d;
+    };
+    const SAMS_OPTS = (sel) => [['grown_ups', 'The grown-ups', sel === 'grown_ups'], [`person:${ID.alex}`, 'Alex', sel === ID.alex], [`person:${ID.sam}`, 'Sam Example', sel === ID.sam],
+      [`person:${ID.jordan}`, 'Jordan', sel === ID.jordan], [`person:${ID.taylor}`, 'Taylor', sel === ID.taylor], [`person:${SAM_LEE}`, 'Sam Lee', sel === SAM_LEE]];
+    ({ page, db } = await open({ label: 'hearth-two-sams', db: (hdb = twoSams()), rpc: v10Rpc, allowConsole: hAllowed }));
+    H = await hp(page, hdb.cal.hearth.id);
+    const sams = Object.fromEntries(H.rows.map((r) => [r.name, r.options]));
+    check('two Sams: the picker names them "Sam Example" and "Sam Lee" (everyone else by first name), in family-list order',
+      same(sams.grandma, [['', 'Choose…', true]].concat(SAMS_OPTS(), [['family', 'Family', false]])) && same(sams.samlee, SAMS_OPTS(SAM_LEE).concat([['family', 'Family', false]]))
+      && same(sams.sam, SAMS_OPTS(ID.sam).concat([['family', 'Family', false]])), JSON.stringify([sams.grandma, sams.samlee]));
+    await page.selectOption(pickFor(page, tagId(db, 'grandma')), `person:${SAM_LEE}`);
+    await page.waitForTimeout(500);
+    check('… the toast too: "grandma: Sam Lee\'s from now on."', (await lastToast(page)) === 'grandma: Sam Lee\'s from now on.', await lastToast(page));
+    await page.selectOption(pickFor(page, tagId(db, 'dogs')), `person:${ID.sam}`);
+    await page.waitForTimeout(500);
+    check('… and "dogs: Sam Example\'s from now on."', (await lastToast(page)) === 'dogs: Sam Example\'s from now on.', await lastToast(page));
+    await page.context().close();
+    ({ page } = await open({ label: 'hearth-two-sams-member', email: 'sam@example.com', db: (hdb = twoSams()), rpc: v10Rpc }));
+    H = await hp(page, hdb.cal.hearth.id);
+    check('two Sams, a member\'s lines: "sam → Sam Example", "samlee → Sam Lee", "jordan → Jordan"',
+      ['sam → Sam Example', 'samlee → Sam Lee', 'jordan → Jordan'].every((x) => H.rows.some((r) => r.text === x)), JSON.stringify(H.rows.map((r) => r.text)));
+    await page.context().close();
+    ({ page } = await open({ label: 'hearth-two-sams-off', email: 'sam@example.com', db: (hdb = twoSams({ active: false })), rpc: v10Rpc }));
+    H = await hp(page, hdb.cal.hearth.id);
+    check('… Sam Lee off the family list: "samlee → Sam Lee (off the family list): the grown-ups", and "sam → Sam Example"',
+      ['samlee → Sam Lee (off the family list): the grown-ups', 'sam → Sam Example'].every((x) => H.rows.some((r) => r.text === x)), JSON.stringify(H.rows.map((r) => r.text)));
+    await page.context().close();
+    ({ page } = await open({ label: 'hearth-two-sams-off-admin', db: (hdb = twoSams({ active: false })), rpc: v10Rpc }));
+    H = await hp(page, hdb.cal.hearth.id);
+    const samlee = H.rows.find((r) => r.name === 'samlee') || { options: [] };
+    check('… and an admin\'s picker: "Sam Lee (off the family list)", selected, after "Sam Example" and the others, before Family',
+      same(samlee.options, PEOPLE_OPTS().map((o) => (o[0] === `person:${ID.sam}` ? [o[0], 'Sam Example', o[2]] : o))
+        .concat([[`person:${SAM_LEE}`, 'Sam Lee (off the family list)', true], ['family', 'Family', false]])), JSON.stringify(samlee.options));
     await page.context().close();
 
     // ---------- The switch: off asks first (dismissed: nothing), off, on again with the matches kept, a stale tab's
@@ -1265,7 +1382,7 @@ const emailOf = (req) => {
       d.hearth_tags.push(hearthTagRow({ calendar_id: d.cal.main.id, tag: TAG('jordan', '0001'), last_seen: at('09:00') }));
     };
     await page.click('[data-act="gsync"]');
-    await page.waitForTimeout(800);
+    await page.waitForSelector(`[data-hearth="${hdb.cal.main.id}"] .set-hp-row`);
     H = await hp(page, hdb.cal.main.id);
     check('Sync now: the card reloads and lists what the read found, New; the top line names it', !H.missing && same(H.rows.map((r) => [r.name, r.isNew, r.seen]), [['jordan', true, 'last seen today']])
       && (await tc(page, '[data-ref="htodo"]')) === 'Hearth people to match: grandma, grandpa, jordan. See Calendars to read.', JSON.stringify([H, await tc(page, '[data-ref="htodo"]')]));
