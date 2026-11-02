@@ -28,7 +28,7 @@
 const fs = require('fs');
 const { chromium } = require('playwright');
 const { makeDb, install, withHomeworkTokens, homeworkTokenRpc: homeworkRpc, tkKidRow: hwKidRow, tkLinkRow: tutorLinkRow, tkAssignmentRow: assignmentRow,
-  tkStepRow: stepRow, tkSessionRow: sessionRow, tkRewardRow: rewardRow, tkLedgerRow: ledgerRow, withSchool, schoolFeedRow, schoolItemRow, withCoach } = require('./mock');
+  tkStepRow: stepRow, tkSessionRow: sessionRow, tkRewardRow: rewardRow, tkLedgerRow: ledgerRow, withSchool, schoolFeedRow, schoolItemRow, withCoach, withCoachRewards } = require('./mock');
 const { serve } = require('./server');
 
 let BASE = '';
@@ -514,6 +514,84 @@ async function tokenRpcs(page, db) {
     await page.waitForTimeout(300);
     check('schema 7, coach off: no Coach section and no coach call, even after a refresh', !(await page.$('[data-sec="coach"]:not([hidden])'))
       && db.calls.every((c) => TUTOR_FNS.test(c.name)), db.calls.map((c) => c.name).join(','));
+    await page.context().close();
+  }
+  {
+    // 0012 (docs/v1.3-homework.md §22.7): Run his rewards, for a link whose coach view and Can manage rewards are both on.
+    const d = withCoachRewards(coachDb());
+    ({ page, db } = await open({ label: 'coach-rewards-off', path: `/day.html?h=${PAT}`, db: d }));
+    await page.waitForSelector('[data-sec="coach"]');
+    check('schema 12, Can manage rewards off: no Run his rewards, the read-only lead, no coach_reward_by_token call',
+      !(await page.$('[data-part="manage"]')) && /Read-only\./.test(await text(page, '.coach-lead')) && !calls(db, 'coach_reward_by_token').length, await text(page, '.coach-lead'));
+    await page.context().close();
+  }
+  {
+    const d = withCoachRewards(coachDb());
+    d.tutor_links[0].rewards = true;
+    ({ page, db } = await open({ label: 'coach-rewards', path: `/day.html?h=${PAT}`, db: d, allowConsole: /status of 400/ }));
+    await page.waitForSelector('[data-part="manage"]');
+    const M = '[data-part="manage"]';
+    check('Can manage rewards on: Run his rewards, and the lead says so', (await text(page, `${M} h3`)) === 'Run his rewards'
+      && (await text(page, '.coach-lead')) === "Jordan's family lets you see his points, rewards, focus sessions, his own calendar and his daily tasks, and run his rewards.",
+    await text(page, '.coach-lead'));
+    check('Run his rewards: his ask waiting, his rewards, Give points and the lines to correct', same(await texts(page, `${M} .cm-asks li > span`), ["Choose Friday's dinner · 60 · asked today"])
+      && same(await texts(page, `${M} .cm-rewards li > span`), ['Extra game time · 15 · instant', "Choose Friday's dinner · 60"])
+      && !!(await page.$(`${M} form[data-mform="give"]`)) && (await texts(page, `${M} .cm-lines li`)).length >= 2, await text(page, M));
+    // Yes on his ask.
+    await page.click(`${M} .cm-asks [data-mact="yes"]`);
+    await until(async () => /Nothing waiting\./.test(await text(page, M)));
+    const yes = calls(db, 'coach_reward_by_token')[0];
+    check('Yes: coach_reward_by_token decide with approve true; the ask goes, the balance drops by 60',
+      yes && same(yes.body, { p_token: PAT, p_action: 'decide', p_key: d.reward_asks[0].id, p_fields: { approve: true } })
+      && (await text(page, '.coach-balance')) === '28 points' && d.reward_asks[0].decided_by === 'Pat Lee, tutor (tutor link)', JSON.stringify(yes && yes.body));
+    // + Reward.
+    await page.click(`${M} [data-mact="new"]`);
+    await page.fill(`${M} form[data-mform="reward"] [name="title"]`, 'Pizza night');
+    await page.fill(`${M} form[data-mform="reward"] [name="cost"]`, '150');
+    await page.click(`${M} form[data-mform="reward"] [type="submit"]`);
+    await until(async () => (await texts(page, `${M} .cm-rewards li > span`)).includes('Pizza night · 150'));
+    const add = calls(db, 'coach_reward_by_token').slice(-1)[0];
+    check('+ Reward: save_reward with the page\'s key, the name and the price; it is on his list',
+      add.body.p_action === 'save_reward' && /^[0-9a-f-]{36}$/.test(add.body.p_key) && same(add.body.p_fields, { title: 'Pizza night', cost: 150, instant: false, active: true })
+      && d.rewards.some((r) => r.id === add.body.p_key && r.created_by === 'Pat Lee, tutor (tutor link)'), JSON.stringify(add.body));
+    // Give points, then over the week's 200.
+    await page.fill(`${M} form[data-mform="give"] [name="points"]`, '20');
+    await page.fill(`${M} form[data-mform="give"] [name="note"]`, 'Great focus');
+    await page.click(`${M} form[data-mform="give"] [type="submit"]`);
+    await until(async () => (await text(page, '.coach-balance')) === '48 points');
+    const give = calls(db, 'coach_reward_by_token').slice(-1)[0];
+    check('Give points: give with 20 and the note; the balance goes up, the form empties',
+      give.body.p_action === 'give' && same(give.body.p_fields, { points: 20, note: 'Great focus' }) && (await page.inputValue(`${M} form[data-mform="give"] [name="points"]`)) === '', JSON.stringify(give.body));
+    await page.fill(`${M} form[data-mform="give"] [name="points"]`, '190');
+    await page.fill(`${M} form[data-mform="give"] [name="note"]`, 'Too many');
+    await page.click(`${M} form[data-mform="give"] [type="submit"]`);
+    await until(async () => !!(await page.$(`${M} .cm-error`)));
+    check('Give over 200 this week: the refusal in plain words, what was typed kept, the balance as it was',
+      (await text(page, `${M} .cm-error`)) === "That's more than 200 points this week from the tutor link. A parent can give more."
+      && (await page.inputValue(`${M} form[data-mform="give"] [name="points"]`)) === '190' && (await text(page, '.coach-balance')) === '48 points', await text(page, `${M} .cm-error`));
+    // Void the points just given.
+    const given = d.points_ledger.find((x) => x.note === 'Great focus');
+    await page.click(`${M} .cm-lines li[data-line="${given.id}"] [data-mact="void"]`);
+    await page.fill(`${M} form[data-mform="void"] [name="note"]`, 'Counted twice');
+    await page.click(`${M} form[data-mform="void"] [type="submit"]`);
+    await until(async () => (await text(page, '.coach-balance')) === '28 points');
+    check('Void: void with the reason; the line says voided', calls(db, 'coach_reward_by_token').slice(-1)[0].body.p_action === 'void'
+      && /voided/.test(await text(page, `${M} .cm-lines li[data-line="${given.id}"]`)), await text(page, `${M} .cm-lines`));
+    // Take a reward off his list.
+    const extra = d.rewards.find((r) => r.title === 'Extra game time');
+    await page.click(`${M} .cm-rewards li[data-reward="${extra.id}"] [data-mact="retire"]`);
+    await until(async () => !!(await page.$(`${M} .cm-rewards li[data-reward="${extra.id}"] [data-mact="restore"]`)));
+    check('Take off his list: save_reward active false; it says off his list, with Put back', !extra.active
+      && /· off his list/.test(await text(page, `${M} .cm-rewards li[data-reward="${extra.id}"]`)) && !!(await page.$(`${M} .cm-rewards li[data-reward="${extra.id}"] [data-mact="restore"]`)), await text(page, `${M} .cm-rewards`));
+    check('Run his rewards: nothing of the family on it (no other name, no email)', !/Alex|Morgan|Sam\b|Taylor|@/.test(await text(page, M)), await text(page, M));
+    await page.locator(M).screenshot({ path: SHOTS + 'tutor-coach-rewards.png' });
+    // The parents turn it off: on the next read Run his rewards goes (once nothing is typed in it: a read never redraws
+    // over what is being typed).
+    await page.fill(`${M} form[data-mform="give"] [name="points"]`, '');
+    await page.fill(`${M} form[data-mform="give"] [name="note"]`, '');
+    d.tutor_links[0].rewards = false;
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    check('the parents turn Can manage rewards off: on the next read Run his rewards goes', await until(async () => !(await page.$('[data-part="manage"]'))));
     await page.context().close();
   }
   {
