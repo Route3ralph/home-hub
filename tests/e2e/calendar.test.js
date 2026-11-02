@@ -154,6 +154,7 @@ function agenda(db, body) {
         contractor_id: e.contractor_id || null, contractor_name: k ? k.name : null, contractor_phone: k ? k.phone : null,
         location: e.location || null, notes: [c && c.note, e.notes].filter(Boolean).join('\n\n') || null,
         private: !!e.private, repeating: e.repeat !== 'none', changed: !!c, lead_days: null, milestone: false,
+        day_note: (c && c.note) || null,
       });
     });
   });
@@ -1350,6 +1351,78 @@ const emailOf = (req) => {
     check('details: a row with no people along and not the grown-ups\' reads as before: "Calendar: Family" (Visit), "Calendar: Jordan Example" (his own calendar)',
       same(d.visit.dl, ['Calendar', 'Family']) && same(d.dentist.dl, ['Calendar', 'Jordan Example']), JSON.stringify([d.visit, d.dentist]));
     check('details: the dot follows the one colour rule (Dinner neutral, Practice Sam\'s)', d.dinner.dot === 'var(--text-3)' && d.practice.dot === C.sam, JSON.stringify([d.dinner.dot, d.practice.dot]));
+    await page.context().close();
+  }
+
+  // =====================================================================
+  // 7b. Print: one person's week in their language, or the family's day, on paper only
+  // =====================================================================
+  {
+    const db = calDb();
+    db.people.find((p) => p.id === P.taylor).language = 'es';
+    ({ page } = await open({ label: 'print', db }));
+    await page.evaluate(() => { window.__printed = 0; window.print = () => { window.__printed += 1; }; });
+    await page.click('[data-view="week"]');
+    await page.waitForSelector('.cal-days');
+    await page.click('[data-act="print"]');
+    await page.waitForSelector('#formDialog[open] select[name="who"], dialog[open] select[name="who"]');
+    const form = await page.evaluate(() => {
+      const f = document.querySelector('dialog[open] form');
+      return { who: f.elements.who.value, range: f.elements.range.value, day: f.elements.day.value, layoutShown: !f.querySelector('[data-field="layout"]').hidden,
+        options: [...f.elements.who.options].map((o) => o.textContent) };
+    });
+    check('print: the form opens with Family, the week, the day shown and the seven-column layout; every active person to choose',
+      form.who === 'family' && form.range === 'week' && form.day === TODAY && form.layoutShown
+        && same(form.options, ['Family (everyone and the house)', 'Alex Example', 'Sam Example', 'Jordan Example', 'Taylor Example']), JSON.stringify(form));
+    await page.selectOption('dialog[open] select[name="who"]', P.taylor);
+    await page.click('dialog[open] button[type="submit"]');
+    await page.waitForFunction(() => window.__printed === 1);
+    const sheet = await page.evaluate(() => {
+      const s = document.getElementById('print-sheet');
+      return {
+        printing: document.body.classList.contains('printing'), lang: s.lang, cols: !!s.querySelector('.ps-cols'),
+        title: s.querySelector('h1').textContent, when: s.querySelector('.ps-head p').textContent,
+        days: [...s.querySelectorAll('.ps-day h2')].map((h) => h.textContent),
+        tue: [...s.querySelectorAll('.ps-day')][1].innerText.replace(/\s+/g, ' ').trim(),
+        page: document.getElementById('print-page').textContent,
+        dialogOpen: !!document.querySelector('dialog[open]'),
+      };
+    });
+    check('print: Taylor\'s week in Spanish (her language), seven columns on a page on its side, Monday to Sunday',
+      sheet.printing && sheet.lang === 'es' && sheet.cols && sheet.title === 'Horario de Taylor' && sheet.when === 'Semana del 26 de octubre'
+        && same(sheet.days, ['Lunes 26 de octubre', 'Martes 27 de octubre', 'Miércoles 28 de octubre', 'Jueves 29 de octubre', 'Viernes 30 de octubre', 'Sábado 31 de octubre', 'Domingo 1 de noviembre'])
+        && /landscape/.test(sheet.page) && !sheet.dialogOpen, JSON.stringify(sheet));
+    check('print: her Tuesday has Piano at 16:00–17:00 (24-hour clock), where, and who\'s with her ("con Jordan"); nothing that isn\'t hers',
+      /16:00–17:00 Piano Music school · con Jordan/.test(sheet.tue) && !/School pickup|Change furnace filter/.test(sheet.tue), sheet.tue);
+    await page.emulateMedia({ media: 'print' });
+    const paper = await page.evaluate(() => ({
+      main: document.getElementById('main').checkVisibility(),
+      sheet: document.getElementById('print-sheet').checkVisibility(),
+    }));
+    check('print: on paper only the sheet shows', !paper.main && paper.sheet, JSON.stringify(paper));
+    await page.emulateMedia({ media: 'screen' });
+    await page.evaluate(() => window.dispatchEvent(new Event('afterprint')));
+    const after = await page.evaluate(() => ({ printing: document.body.classList.contains('printing'), sheet: getComputedStyle(document.getElementById('print-sheet')).display }));
+    check('print: after printing the page is back, and the sheet never shows on screen', !after.printing && after.sheet === 'none', JSON.stringify(after));
+
+    // The family's Wednesday, one day, in English: everyone's, the day's own note, open tasks with a box, done ones left out.
+    await page.click('[data-act="print"]');
+    await page.waitForSelector('dialog[open] select[name="who"]');
+    await page.selectOption('dialog[open] select[name="range"]', 'day');
+    const layoutHidden = await page.evaluate(() => document.querySelector('dialog[open] [data-field="layout"]').hidden);
+    await page.fill('dialog[open] input[name="day"]', '2026-10-28');
+    await page.click('dialog[open] button[type="submit"]');
+    await page.waitForFunction(() => window.__printed === 2);
+    const fam = await page.evaluate(() => {
+      const s = document.getElementById('print-sheet');
+      return { lang: s.lang, list: !!s.querySelector('.ps-list'), title: s.querySelector('h1').textContent, when: s.querySelector('.ps-head p').textContent,
+        text: s.innerText.replace(/\s+/g, ' '), page: document.getElementById('print-page').textContent };
+    });
+    check('print: the week layout hides for one day; the family\'s day prints in English, as a list, upright',
+      layoutHidden && fam.lang === 'en' && fam.list && fam.title === 'Family schedule' && fam.when === 'Wednesday, October 28' && !/landscape/.test(fam.page), JSON.stringify(fam));
+    check('print: the family\'s day has the changed School pickup at 2:00pm with Sam in charge, Jordan along and the day\'s note; the all-day visit',
+      /2:00pm School pickup Sam · with Jordan\s*Early dismissal/.test(fam.text) && /All day Grandparents visit Sam/.test(fam.text), fam.text);
+    check('print: a done task (Call plumber) is left out', !/Call plumber/.test(fam.text), fam.text);
     await page.context().close();
   }
 
