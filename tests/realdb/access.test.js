@@ -1,6 +1,6 @@
 // What the API gives someone signed out (anon) and someone signed in who isn't on the family list,
 // through the PostgREST stand-in on the real database: every public table and every public function.
-// Signed out, only get_shared_project and the twenty-two token functions (TOKEN_FNS) may answer; a
+// Signed out, only get_shared_project and the twenty-three token functions (TOKEN_FNS) may answer; a
 // stranger gets nothing from any table, and from the functions only the harmless HARMLESS ones (and
 // empty lists). The Google Calendar tables and functions (migration 0003), the dinners and the
 // shopping list (migration 0004), and homework (migration 0005) are checked again with rows in their
@@ -13,12 +13,12 @@ const { setup, HOMEWORK_TABLES, HOMEWORK_FNS } = require('./lib');
 
 // The only public functions anon may run: v1's get_shared_project, 0002's five My day functions,
 // 0004's three for the helper's list, 0005's seven for Jordan's homework and four for the tutor link, 0006's
-// one for his New from school, and 0007's two for the tutor link's coach view.
+// one for his New from school, 0007's two for the tutor link's coach view, and 0012's one for the coach's rewards.
 const TOKEN_FNS = ['get_person_day', 'complete_by_token', 'undo_by_token', 'confirm_digest', 'stop_digest', 'get_shared_project',
   'get_list_by_token', 'add_to_list_by_token', 'buy_item_by_token',
   'homework_by_token', 'step_by_token', 'plan_by_token', 'focus_by_token', 'reward_by_token', 'assignment_by_token', 'homework_prefs_by_token',
   'tutor_view_by_token', 'tutor_assignment_by_token', 'tutor_plan_by_token', 'tutor_step_by_token', 'school_item_by_token',
-  'coach_view_by_token', 'coach_note_by_token'];
+  'coach_view_by_token', 'coach_note_by_token', 'coach_reward_by_token'];
 // What any signed-in account may learn, by design: its own email, the household's date, clock and
 // time zone, and the schema version (sign-up is limited to the family list by the auth hook).
 const HARMLESS = ['current_email', 'clock', 'today_local', 'hub_schema_version'];
@@ -666,6 +666,43 @@ const emptyLists = (b) => !!b && typeof b === 'object' && !Array.isArray(b)
       await fn('coach_note_by_token', null, { p_token: jordan.day_token, p_key: 'e0000000-0000-4000-8000-000000000074', p_note: 'From his link' })];
     check('Jordan\'s My day token opens no coach function (null), and keeps no note', kidCoach.every((r) => r.status === 200 && r.body === null)
       && (await sql('select count(*) as n from coach_notes'))[0].n === '1', kidCoach.map((r) => [r.status, r.body]));
+
+    // The coach's rewards (0012): off, nothing; only a parent turns it on; then, signed out with Pat's token, give, the week's
+    // cap, a new reward and a void, each written as the link's; Jordan's token opens none of it; and off again, nothing.
+    const R = { give: 'e0000000-0000-4000-8000-000000000081', over: 'e0000000-0000-4000-8000-000000000082', reward: 'e0000000-0000-4000-8000-000000000083' };
+    const ledgerN = async () => (await sql('select count(*) as n from points_ledger'))[0].n;
+    const before = await ledgerN();
+    const offR = await fn('coach_reward_by_token', null, { p_token: PAT, p_action: 'give', p_key: R.give, p_fields: { points: 15, note: 'Great focus' } });
+    check('the coach\'s rewards off (as 0012 leaves every link): coach_reward_by_token answers null and writes nothing',
+      offR.status === 200 && offR.body === null && (await ledgerN()) === before, [offR.status, offR.body]);
+    const rSam = await fn('set_tutor_rewards', member, { p_link: LINK, p_on: true });
+    const rAnon = await fn('set_tutor_rewards', null, { p_link: LINK, p_on: true });
+    const rAlex = await fn('set_tutor_rewards', admin, { p_link: LINK, p_on: true });
+    const rPatch = (await ask(`/rest/v1/tutor_links?id=eq.${LINK}`, admin, { rewards: false }, 'PATCH')).status;
+    check('Can manage rewards: Sam refused (403), signed out refused, Alex turns it on; nobody sets the column directly (403)',
+      rSam.status === 403 && rAnon.status >= 400 && rAlex.status < 300 && rPatch === 403
+      && (await sql(`select rewards from tutor_links where id = '${LINK}'`))[0].rewards === 't', [rSam.status, rAnon.status, rAlex.status, rPatch]);
+    const cvR = await fn('coach_view_by_token', null, { p_token: PAT });
+    check('... the coach view then has manage, with ids, and still nothing of anyone else', cvR.status === 200 && !!cvR.body.manage
+      && cvR.body.manage.rewards.every((r) => /^[0-9a-f-]{36}$/.test(r.id)) && !leaks(JSON.stringify(cvR.body.manage), ['Jordan']).length,
+    leaks(JSON.stringify(cvR.body && cvR.body.manage), ['Jordan']));
+    const gave = await fn('coach_reward_by_token', null, { p_token: PAT, p_action: 'give', p_key: R.give, p_fields: { points: 15, note: 'Great focus' } });
+    const over = await fn('coach_reward_by_token', null, { p_token: PAT, p_action: 'give', p_key: R.over, p_fields: { points: 190, note: 'Too many' } });
+    const added = await fn('coach_reward_by_token', null, { p_token: PAT, p_action: 'save_reward', p_key: R.reward, p_fields: { title: 'Pizza night', cost: 150, instant: false } });
+    const voided = await fn('coach_reward_by_token', null, { p_token: PAT, p_action: 'void', p_key: R.give, p_fields: { note: 'Counted twice' } });
+    const rows = await sql(`select kind, delta, who from points_ledger where id = '${R.give}' or void_of = '${R.give}' order by delta desc`);
+    check('signed out with Pat\'s token: give 15, then 190 more refused (the week\'s 200), a new reward, a void; each written as the link\'s',
+      gave.status === 200 && gave.body.changed === true && over.status >= 400 && /200 points this week/.test((over.body && over.body.message) || '')
+      && added.status === 200 && voided.status === 200
+      && JSON.stringify(rows) === JSON.stringify([{ kind: 'given', delta: '15', who: 'Pat Lee, tutor (tutor link)' }, { kind: 'void', delta: '-15', who: 'Pat Lee, tutor (tutor link)' }])
+      && (await sql(`select created_by from rewards where id = '${R.reward}'`))[0].created_by === 'Pat Lee, tutor (tutor link)',
+    [gave.status, over.status, over.body, added.status, voided.status, rows]);
+    const kidR = await fn('coach_reward_by_token', null, { p_token: jordan.day_token, p_action: 'give', p_key: 'e0000000-0000-4000-8000-000000000084', p_fields: { points: 5, note: 'x' } });
+    check('Jordan\'s My day token opens no coach_reward_by_token (null)', kidR.status === 200 && kidR.body === null, [kidR.status, kidR.body]);
+    await fn('set_tutor_rewards', admin, { p_link: LINK, p_on: false });
+    const offR2 = await fn('coach_reward_by_token', null, { p_token: PAT, p_action: 'give', p_key: 'e0000000-0000-4000-8000-000000000085', p_fields: { points: 5, note: 'x' } });
+    check('Can manage rewards off again: null, and the coach view has no manage', offR2.status === 200 && offR2.body === null
+      && !('manage' in (await fn('coach_view_by_token', null, { p_token: PAT })).body), [offR2.status, offR2.body]);
 
     // Off again: as before.
     await fn('set_tutor_coach', admin, { p_link: LINK, p_coach: false });

@@ -188,6 +188,20 @@
       coach_note_label: "A note for {kid}'s family", coach_note_hint: 'Only his parents see it, on their Homework page. For example: "suggest lowering the on-time bonus".',
       coach_send: 'Send to the family', coach_sent: 'Sent to the family.', coach_note_empty: 'Write a note first.', coach_note_long: 'At most 500 characters.',
       coach_note_limit: "That's a lot of notes for one day. Try again tomorrow.", coach_your_notes: 'Your notes to the family (30 days)',
+      // 0012: the coach's rewards (a parent turned on Can manage rewards for this link).
+      coach_lead_manage: "{kid}'s family lets you see his points, rewards, focus sessions, his own calendar and his daily tasks, and run his rewards.",
+      cm_title: 'Run his rewards', cm_lead: 'Each change shows to {kid} and his family as yours.',
+      cm_asks: 'Waiting for a yes', cm_no_asks: 'Nothing waiting.', cm_yes: 'Yes', cm_not_now: 'Not now', cm_note_opt: 'A word for him (optional)', cm_send: 'Send',
+      cm_rewards: 'His rewards', cm_no_rewards: 'No rewards yet.', cm_add: '+ Reward', cm_edit: 'Change', cm_retire: 'Take off his list', cm_restore: 'Put back',
+      cm_remove: 'Delete', cm_suggestion: 'his suggestion', cm_off_list: 'off his list', cm_no_price: 'no price yet',
+      cm_title_label: 'Reward', cm_cost_label: 'Points', cm_instant_label: 'Instant (he gets it on the spot)', cm_save: 'Save', cm_cancel: 'Cancel',
+      cm_give: 'Give points', cm_give_points: 'Points (1 to 200)', cm_give_note: 'What for (he sees it)', cm_give_btn: 'Give',
+      cm_give_hint: 'At most 200 points a week from tutor links.', cm_points_off: 'Points are off for {kid}, so none can be given.',
+      cm_lines: 'Correct points (30 days)', cm_no_lines: 'No points to correct.', cm_void: 'Void', cm_voided: 'voided', cm_void_note: 'Why (he sees it)',
+      cm_saved: 'Saved.', cm_e_name: 'A reward needs a name.', cm_e_cost: 'A reward costs 1 to 10000 points.', cm_e_price: 'A reward on his list needs a price.',
+      cm_e_points: 'Give 1 to 200 points.', cm_e_note: 'Say what the points are for.', cm_e_why: 'Say why.', cm_e_not_enough: 'Not enough points yet.',
+      cm_e_week: "That's more than 200 points this week from the tutor link. A parent can give more.", cm_e_points_off: 'Points are off.',
+      cm_e_spent: 'Those points are already spent.', cm_e_day: "That's a lot for one day. Try again tomorrow.", cm_e_long: "That's too long.",
     },
     es: {
       my_day: 'Mi día', hi: 'Hola, {name}', today: 'Hoy', tomorrow: 'Mañana', yesterday: 'Ayer', late: 'Atrasado',
@@ -291,6 +305,19 @@
       coach_note_label: 'Una nota para la familia de {kid}', coach_note_hint: 'Solo la ven sus padres, en su página de Tarea. Por ejemplo: "propongo bajar el extra por empezar a tiempo".',
       coach_send: 'Enviar a la familia', coach_sent: 'Enviado a la familia.', coach_note_empty: 'Escribe una nota primero.', coach_note_long: 'Como mucho 500 caracteres.',
       coach_note_limit: 'Son muchas notas para un día. Vuelve a intentarlo mañana.', coach_your_notes: 'Tus notas a la familia (30 días)',
+      coach_lead_manage: 'La familia de {kid} te deja ver sus puntos, premios, sesiones de concentración, su propio calendario y sus tareas diarias, y llevar sus premios.',
+      cm_title: 'Llevar sus premios', cm_lead: '{kid} y su familia ven cada cambio como tuyo.',
+      cm_asks: 'Esperando un sí', cm_no_asks: 'Nada esperando.', cm_yes: 'Sí', cm_not_now: 'Ahora no', cm_note_opt: 'Unas palabras para él (opcional)', cm_send: 'Enviar',
+      cm_rewards: 'Sus premios', cm_no_rewards: 'Todavía no hay premios.', cm_add: '+ Premio', cm_edit: 'Cambiar', cm_retire: 'Quitar de su lista', cm_restore: 'Volver a poner',
+      cm_remove: 'Borrar', cm_suggestion: 'su sugerencia', cm_off_list: 'fuera de su lista', cm_no_price: 'sin precio todavía',
+      cm_title_label: 'Premio', cm_cost_label: 'Puntos', cm_instant_label: 'Al momento (lo recibe en el acto)', cm_save: 'Guardar', cm_cancel: 'Cancelar',
+      cm_give: 'Dar puntos', cm_give_points: 'Puntos (1 a 200)', cm_give_note: 'Por qué (él lo ve)', cm_give_btn: 'Dar',
+      cm_give_hint: 'Como mucho 200 puntos a la semana desde los enlaces del tutor.', cm_points_off: 'Los puntos están desactivados para {kid}; no se pueden dar.',
+      cm_lines: 'Corregir puntos (30 días)', cm_no_lines: 'No hay puntos que corregir.', cm_void: 'Anular', cm_voided: 'anulado', cm_void_note: 'Por qué (él lo ve)',
+      cm_saved: 'Guardado.', cm_e_name: 'Un premio necesita un nombre.', cm_e_cost: 'Un premio cuesta de 1 a 10000 puntos.', cm_e_price: 'Un premio de su lista necesita un precio.',
+      cm_e_points: 'Da de 1 a 200 puntos.', cm_e_note: 'Di por qué son los puntos.', cm_e_why: 'Di por qué.', cm_e_not_enough: 'Todavía no tiene puntos suficientes.',
+      cm_e_week: 'Son más de 200 puntos esta semana desde el enlace del tutor. Un padre puede dar más.', cm_e_points_off: 'Los puntos están desactivados.',
+      cm_e_spent: 'Esos puntos ya están gastados.', cm_e_day: 'Es mucho para un día. Vuelve a intentarlo mañana.', cm_e_long: 'Es demasiado largo.',
     },
   };
   // Until the person is known (or when the link doesn't work), the device's language is a guess.
@@ -2959,6 +2986,13 @@
     let keyFor = null;        // the words that key was made for: other words are another note, with a key of their own
     let sending = false;
     let error = '';
+    // 0012 (§22.7): the coach's rewards, when the view has manage.
+    let mEdit = null;         // the open form: { kind: 'reward' | 'decline' | 'void', id, isNew }
+    let mBusy = false;        // a change on its way
+    let mError = '';
+    let give = { points: '', note: '' };
+    let giveKey = null;       // the given points' key, until its answer (a resend finds them)
+    let giveFor = null;
     const kid = () => (cv && cv.kid) || '';
     const w = (k, vars) => t(k, Object.assign({ kid: kid() }, vars));
     const low = (x) => (/^(Yesterday|Today|Tomorrow|Ayer|Hoy|Mañana)$/.test(x) ? x.toLowerCase() : x);
@@ -2969,7 +3003,8 @@
       if (!on || !list || !cv) { hide(); return; }
       const v = cv;
       const out = [];
-      out.push(`<h2 class="sec-head">${esc(w('coach_title'))}</h2><p class="coach-lead">${esc(w('coach_lead'))}</p>`);
+      out.push(`<h2 class="sec-head">${esc(w('coach_title'))}</h2><p class="coach-lead">${esc(w(v.manage ? 'coach_lead_manage' : 'coach_lead'))}</p>`);
+      if (v.manage && typeof v.manage === 'object') out.push(manageHTML(v.manage));
       // Points: the balance, the two weeks by kind, the last 30 days' lines.
       if (v.points) {
         const kinds = ['focus', 'on_time', 'milestones', 'given', 'voided', 'trades'];
@@ -3041,6 +3076,131 @@
       el.innerHTML = `<section class="plan-sec coach" data-sec="coach">${out.join('')}</section>`;
       el.hidden = false;
     }
+    // Run his rewards (0012): his asks waiting (Yes, Not now with a word), his rewards (change, take off his list, put back,
+    // delete his unpriced suggestion, + Reward), Give points, and Void on the last 30 days' earned or given lines.
+    function manageHTML(m) {
+      const asks = Array.isArray(m.asks) ? m.asks : [];
+      const rewards = Array.isArray(m.rewards) ? m.rewards : [];
+      const lines = (Array.isArray(m.lines) ? m.lines : []).filter((l) => ['focus', 'on_time', 'milestone_done', 'milestone', 'given'].includes(l.kind));
+      const dis = mBusy ? ' disabled' : '';
+      const btn = (act, id, label, cls) => `<button type="button" class="btn btn-sm cm-btn${cls ? ` ${cls}` : ''}" data-mact="${act}" data-id="${esc(id)}"${dis}>${esc(label)}</button>`;
+      const editing = (kind, id) => mEdit && mEdit.kind === kind && mEdit.id === id;
+      const rewardForm = (r0) => { const r = mEdit && mEdit.typed && mEdit.id === r0.id ? Object.assign({}, r0, mEdit.typed) : r0; return `<form class="cm-form" data-mform="reward" data-id="${esc(r.id)}" novalidate autocomplete="off">`
+        + `<label class="field"><span>${esc(w('cm_title_label'))}</span><input name="title" maxlength="60" value="${esc(r.title || '')}"></label>`
+        + `<label class="field"><span>${esc(w('cm_cost_label'))}</span><input name="cost" type="number" inputmode="numeric" min="1" max="10000" value="${esc(r.cost == null ? '' : r.cost)}"></label>`
+        + `<label class="check"><input type="checkbox" name="instant"${r.instant ? ' checked' : ''}> ${esc(w('cm_instant_label'))}</label>`
+        + `<div class="form-actions"><button type="submit" class="btn btn-primary"${dis}>${esc(w('cm_save'))}</button>${btn('cancel', '', w('cm_cancel'))}</div></form>`; };
+      const out = [`<div class="coach-part coach-manage" data-part="manage"><h3>${esc(w('cm_title'))}</h3><p class="coach-lead">${esc(w('cm_lead'))}</p>`];
+      if (mError) out.push(`<p class="form-error cm-error" role="alert">${esc(mError)}</p>`);
+      out.push(`<h4>${esc(w('cm_asks'))}</h4>`);
+      out.push(asks.length ? `<ul class="coach-list cm-asks">${asks.map((q) => `<li data-ask="${esc(q.id)}"><span>${esc([q.title, q.cost, w('coach_asked', { day: low(rel(q.asked_on)) })].join(' · '))}</span> `
+        + btn('yes', q.id, w('cm_yes'), 'btn-primary') + ' ' + btn('decline', q.id, w('cm_not_now'))
+        + (editing('decline', q.id) ? `<form class="cm-form" data-mform="decline" data-id="${esc(q.id)}" novalidate autocomplete="off"><label class="field"><span>${esc(w('cm_note_opt'))}</span>`
+          + `<input name="note" maxlength="120"></label><div class="form-actions"><button type="submit" class="btn btn-primary"${dis}>${esc(w('cm_send'))}</button>${btn('cancel', '', w('cm_cancel'))}</div></form>` : '')
+        + '</li>').join('')}</ul>` : `<p class="empty-line">${esc(w('cm_no_asks'))}</p>`);
+      out.push(`<h4>${esc(w('cm_rewards'))}</h4>`);
+      out.push(rewards.length ? `<ul class="coach-list cm-rewards">${rewards.map((r) => {
+        const unpriced = r.suggested && r.cost == null;
+        const label = [r.title, r.cost == null ? w('cm_no_price') : r.cost, r.instant ? w('coach_instant') : '',
+          r.active ? '' : (unpriced ? w('cm_suggestion') : w('cm_off_list'))].filter((x) => x != null && x !== '').join(' · ');
+        return `<li data-reward="${esc(r.id)}" class="${r.active ? '' : 'is-off'}"><span>${esc(label)}</span> ${btn('edit', r.id, w('cm_edit'))}`
+          + (r.active ? ` ${btn('retire', r.id, w('cm_retire'))}` : (r.cost != null ? ` ${btn('restore', r.id, w('cm_restore'))}` : ''))
+          + (unpriced ? ` ${btn('remove', r.id, w('cm_remove'))}` : '')
+          + (editing('reward', r.id) ? rewardForm(r) : '') + '</li>';
+      }).join('')}</ul>` : `<p class="empty-line">${esc(w('cm_no_rewards'))}</p>`);
+      out.push(mEdit && mEdit.kind === 'reward' && mEdit.isNew ? rewardForm({ id: mEdit.id, title: '', cost: null, instant: false })
+        : `<p>${btn('new', '', w('cm_add'))}</p>`);
+      out.push(`<h4>${esc(w('cm_give'))}</h4>`);
+      out.push(m.points_on ? `<form class="cm-form cm-give" data-mform="give" novalidate autocomplete="off">`
+        + `<label class="field"><span>${esc(w('cm_give_points'))}</span><input name="points" type="number" inputmode="numeric" min="1" max="200" value="${esc(give.points)}"></label>`
+        + `<label class="field"><span>${esc(w('cm_give_note'))}</span><input name="note" maxlength="120" value="${esc(give.note)}"></label>`
+        + `<small>${esc(w('cm_give_hint'))}</small><div class="form-actions"><button type="submit" class="btn btn-primary"${dis}>${esc(w('cm_give_btn'))}</button></div></form>`
+        : `<p class="empty-line">${esc(w('cm_points_off'))}</p>`);
+      out.push(`<h4>${esc(w('cm_lines'))}</h4>`);
+      out.push(lines.length ? `<ul class="coach-list cm-lines">${lines.map((l) => `<li data-line="${esc(l.id)}"><span>${esc([rel(l.day), signed(l.delta), w(`coach_l_${l.kind}`), l.note].filter((x) => x != null && x !== '').join(' · '))}</span> `
+        + (l.voided ? `<small>${esc(w('cm_voided'))}</small>` : btn('void', l.id, w('cm_void')))
+        + (editing('void', l.id) ? `<form class="cm-form" data-mform="void" data-id="${esc(l.id)}" novalidate autocomplete="off"><label class="field"><span>${esc(w('cm_void_note'))}</span>`
+          + `<input name="note" maxlength="120"></label><div class="form-actions"><button type="submit" class="btn btn-primary"${dis}>${esc(w('cm_void'))}</button>${btn('cancel', '', w('cm_cancel'))}</div></form>` : '')
+        + '</li>').join('')}</ul>` : `<p class="empty-line">${esc(w('cm_no_lines'))}</p>`);
+      out.push('</div>');
+      return out.join('');
+    }
+    // One change through coach_reward_by_token. Its answer is the coach view (drawn, with a toast); null: the switch or
+    // the link was turned off; a refusal is shown in the box, in the link's language.
+    async function act(action, key, fields, done) {
+      if (mBusy) return;
+      mBusy = true;
+      mError = '';
+      el.querySelectorAll('.coach-manage button').forEach((b) => { b.disabled = true; });   // the forms keep what was typed
+      let r;
+      try { r = await one(() => sb.rpc('coach_reward_by_token', { p_token: tutorToken, p_action: action, p_key: key, p_fields: fields || {} })); } catch (err) { r = { error: err }; }
+      mBusy = false;
+      if (r && !r.error && r.data && typeof r.data === 'object') {
+        mEdit = null;
+        if (done) done();
+        cv = r.data;
+        draw();
+        toast(w('cm_saved'));
+        return;
+      }
+      if (r && !r.error) { cv = null; hide(); read(); return; }   // null: turned off a moment ago
+      const msg = String((r.error && r.error.message) || '');
+      const known = [[/needs a name/, 'cm_e_name'], [/costs 1 to 10000/, 'cm_e_cost'], [/needs a price/, 'cm_e_price'], [/Give 1 to 200/, 'cm_e_points'],
+        [/what the points are for/, 'cm_e_note'], [/^Say why/, 'cm_e_why'], [/Not enough points/, 'cm_e_not_enough'], [/200 points this week/, 'cm_e_week'],
+        [/Points are off/, 'cm_e_points_off'], [/already spent/, 'cm_e_spent'], [/a lot for one day/, 'cm_e_day'], [/too long/, 'cm_e_long']].find(([re]) => re.test(msg));
+      mError = known ? w(known[1]) : friendly(r.error);
+      if (action === 'give' && r.error && r.error.code) giveKey = null;   // a refusal is final; no answer keeps the key
+      draw();
+    }
+    function manageClick(b) {
+      const id = b.dataset.id;
+      const m = cv && cv.manage;
+      if (!m) return;
+      const reward = (m.rewards || []).find((r) => r.id === id);
+      mError = '';
+      switch (b.dataset.mact) {
+        case 'cancel': mEdit = null; draw(); return;
+        case 'new': mEdit = { kind: 'reward', id: plan.newId(), isNew: true }; draw(); return;
+        case 'edit': mEdit = { kind: 'reward', id }; draw(); return;
+        case 'decline': mEdit = { kind: 'decline', id }; draw(); return;
+        case 'void': mEdit = { kind: 'void', id }; draw(); return;
+        case 'yes': act('decide', id, { approve: true }); return;
+        case 'retire': act('save_reward', id, { active: false }); return;
+        case 'restore': if (reward) act('save_reward', id, { active: true }); return;
+        case 'remove': act('remove_reward', id, {}); return;
+        default:
+      }
+    }
+    function manageSubmit(form) {
+      const id = form.dataset.id;
+      const val = (n) => (form.elements[n] ? String(form.elements[n].value || '') : '');
+      const num = (n) => (val(n).trim() === '' ? null : Number(val(n)));
+      mError = '';
+      switch (form.dataset.mform) {
+        case 'reward': {
+          const fields = { title: val('title').trim(), cost: num('cost'), instant: !!(form.elements.instant && form.elements.instant.checked) };
+          if (mEdit) mEdit.typed = { title: val('title'), cost: val('cost'), instant: fields.instant };
+          if (mEdit && mEdit.isNew) fields.active = true;
+          act('save_reward', id, fields);
+          return;
+        }
+        case 'decline': act('decide', id, { approve: false, note: val('note').trim() || null }); return;
+        case 'void': act('void', id, { note: val('note').trim() }); return;
+        case 'give': {
+          give = { points: val('points'), note: val('note') };
+          const fields = { points: num('points'), note: give.note.trim() };
+          const words = JSON.stringify(fields);
+          if (!giveKey || giveFor !== words) { giveKey = plan.newId(); giveFor = words; }
+          act('give', giveKey, fields, () => { give = { points: '', note: '' }; giveKey = null; giveFor = null; });
+          return;
+        }
+        default:
+      }
+    }
+    el.addEventListener('click', (e) => {
+      const b = e.target.closest && e.target.closest('[data-mact]');
+      if (b && el.contains(b)) { e.preventDefault(); manageClick(b); }
+    });
     function read() {
       return one(() => sb.rpc('coach_view_by_token', { p_token: tutorToken })).then((r) => {
         if (!on || !list) return;
@@ -3049,10 +3209,14 @@
       }, () => {});
     }
     el.addEventListener('input', (e) => {
-      if (e.target.name === 'note') { draft = e.target.value; if (error) { error = ''; const p = el.querySelector('.form-error'); if (p) p.hidden = true; } }
+      const f = e.target.form;
+      if (f && f.dataset.mform === 'give') { give = { points: f.elements.points.value, note: f.elements.note.value }; return; }
+      if (f && f.dataset.mform) return;
+      if (e.target.name === 'note') { draft = e.target.value; if (error) { error = ''; const p = el.querySelector('.coach-note .form-error'); if (p) p.hidden = true; } }
     });
     el.addEventListener('submit', async (e) => {
       e.preventDefault();
+      if (e.target.dataset && e.target.dataset.mform) { manageSubmit(e.target); return; }
       if (sending) return;
       const text = String(draft || '').trim();
       if (!text) { error = w('coach_note_empty'); draw(); return; }
@@ -3092,7 +3256,7 @@
       // After a read of the list: read the coach view (a refresh doesn't while a note is being typed or sent).
       sync(quiet) {
         if (!on || !list) { hide(); return Promise.resolve(); }
-        if (quiet && (draft || sending)) return Promise.resolve();
+        if (quiet && (draft || sending || mEdit || mBusy || give.points || give.note)) return Promise.resolve();
         return read();
       },
     };

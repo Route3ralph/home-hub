@@ -45,7 +45,7 @@
 const { chromium } = require('playwright');
 const { createHash } = require('crypto');
 const { makeDb, install, signIn, SUPA, withHomework, homeworkRpc, foodRpc, hwKidRow, tutorLinkRow, assignmentRow, stepRow, sessionRow,
-  rewardRow, askRow, ledgerRow, withSchool, withSchoolCheck, schoolRpc, schoolFeedRow, schoolItemRow, schoolUrlOf, withCoach, coachRpc, coachNoteRow } = require('./mock');
+  rewardRow, askRow, ledgerRow, withSchool, withSchoolCheck, schoolRpc, schoolFeedRow, schoolItemRow, schoolUrlOf, withCoach, coachRpc, coachNoteRow, withCoachRewards } = require('./mock');
 const { serve } = require('./server');
 
 let BASE = '';
@@ -1412,6 +1412,34 @@ const emailOf = (req) => {
     await settle(page);
     check('turning it off: set_tutor_coach with false; "Coach view off for Pat Lee, tutor"', same(lastCall(db, 'set_tutor_coach').body, { p_link: LINK1, p_coach: false })
       && db.tutor_links[0].coach === false && (await lastToast(page)) === 'Coach view off for Pat Lee, tutor', await lastToast(page));
+    await page.context().close();
+  }
+  {
+    // 0012 (docs/v1.3-homework.md §22.5): Can manage rewards, under a link whose coach view is on, only on schema 12.
+    const d7 = coachDb();
+    d7.tutor_links[0].coach = true;
+    ({ page, db } = await open({ label: 'rewards-7', db: d7, rpc: RPC7 }));
+    check('schema 7, coach view on: no Can manage rewards', !(await page.$('[data-act="link-rewards"]')) && !!(await page.$('[data-act="link-coach"]')));
+    await page.context().close();
+    const RPC12 = Object.assign({}, RPC7, { hub_schema_version: () => 12 });
+    ({ page, db } = await open({ label: 'rewards-12', db: withCoachRewards(coachDb()), rpc: RPC12 }));
+    check('schema 12, coach view off: no Can manage rewards', !(await page.$('[data-act="link-rewards"]')));
+    await page.click('.hw-link [data-act="link-coach"]');
+    await settle(page);
+    check('coach view on: Can manage rewards appears under it, off, with what it allows in plain words',
+      !!(await page.$('.hw-link [data-act="link-rewards"]')) && (await page.$eval('.hw-link [data-act="link-rewards"]', (x) => x.checked === false))
+      && (await page.$$eval('.hw-link .hw-link-coach .hw-switch-line', (xs) => xs.map((x) => x.textContent.replace(/\s+/g, ' ').trim())))[1]
+        === "Lets Pat say Yes or Not now to Jordan's asks, add, change, price and take rewards off his list, give points with a note (at most 200 a week from tutor links) "
+        + "and void points with a reason, as you can. Each change shows as Pat's.", await tc(page, '.hw-link .hw-link-coach'));
+    await page.click('.hw-link [data-act="link-rewards"]');
+    await settle(page);
+    check('turning it on: set_tutor_rewards with the link and true; the switch on; a toast', same(lastCall(db, 'set_tutor_rewards').body, { p_link: LINK1, p_on: true })
+      && db.tutor_links[0].rewards === true && (await page.$eval('.hw-link [data-act="link-rewards"]', (x) => x.checked))
+      && (await lastToast(page)) === 'Can manage rewards on for Pat Lee, tutor', `${JSON.stringify(lastCall(db, 'set_tutor_rewards').body)} ${await lastToast(page)}`);
+    await page.click('.hw-link [data-act="link-rewards"]');
+    await settle(page);
+    check('turning it off: set_tutor_rewards with false', same(lastCall(db, 'set_tutor_rewards').body, { p_link: LINK1, p_on: false }) && db.tutor_links[0].rewards === false
+      && (await lastToast(page)) === 'Can manage rewards off for Pat Lee, tutor', await lastToast(page));
     await page.context().close();
   }
   {

@@ -842,7 +842,12 @@
         <small class="hw-switch-line">${esc(`Also shows ${tutor} ${kid}'s points and rewards (this week's and last week's points, and the last 30 days), his focus sessions, `
           + `his own calendar (the next 14 days and the last 7) and his daily tasks, read-only, and lets ${tutor} leave you a note here. `
           + 'Private items and health tasks show as “Private item”. Never the rest of the family: '
-          + "no one else's events, tasks or names, no dinners, shopping list or contacts.")}</small></div>`
+          + "no one else's events, tasks or names, no dinners, shopping list or contacts.")}</small>`
+      // 0012 (§22.5): the coach's rewards, only with the coach view on.
+      + (core.schemaVersion >= 12 && l.coach ? `<label class="hw-switch"><input type="checkbox" data-act="link-rewards" data-link="${esc(l.id)}"${l.rewards ? ' checked' : ''}><span>Can manage rewards</span></label>
+        <small class="hw-switch-line">${esc(`Lets ${tutor} say Yes or Not now to ${kid}'s asks, add, change, price and take rewards off his list, `
+          + `give points with a note (at most 200 a week from tutor links) and void points with a reason, as you can. Each change shows as ${tutor}'s.`)}</small>` : '')
+      + '</div>'
       + (st.coachFailed ? `<p class="hw-switch-line">${esc(`${tutor}'s notes couldn't be loaded.`)}</p>` : '')
       + (open.length || done.length ? `<div class="hw-coach-notes"><p class="hw-coach-head">${esc(`Notes from ${l.label} (${open.length})`)}</p>`
         + (open.length ? `<ul>${open.map((n) => `<li><span class="hw-coach-note">${esc(line(n))}</span>${btn('coach-done', 'Done', ` data-note="${esc(n.id)}"`)}</li>`).join('')}</ul>` : '')
@@ -1918,6 +1923,12 @@
         const l = st.links.find((y) => y.id === x.dataset.link);
         const on = x.checked;
         if (l) write(st, () => run(sb().rpc('set_tutor_coach', { p_link: l.id, p_coach: on })), () => toast(`Coach view ${on ? 'on' : 'off'} for ${l.label}`));
+        return;
+      }
+      if (x.dataset.act === 'link-rewards') {
+        const l = st.links.find((y) => y.id === x.dataset.link);
+        const on = x.checked;
+        if (l) write(st, () => run(sb().rpc('set_tutor_rewards', { p_link: l.id, p_on: on })), () => toast(`Can manage rewards ${on ? 'on' : 'off'} for ${l.label}`));
         return;
       }
       // The AI planner's switch: the database refuses it with no word never to send, in its own words.

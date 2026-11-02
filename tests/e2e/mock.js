@@ -1612,6 +1612,18 @@ function withCoach(db) {
   db.coachTasks = db.coachTasks || {};
   return db;
 }
+// ---- Schema 12 (0012_coach_rewards.sql, docs/v1.3-homework.md §22): the coach's rewards. withCoachRewards(db) is for a
+// schema-12 database (after withCoach): every tutor link gets its rewards column (false unless set). coachRpc's
+// set_tutor_rewards(p_link, p_on) is the parents' switch; homeworkTokenRpc's coach_reward_by_token is the link's, and
+// the coach view gains manage while a link's coach view and rewards switch are both on. Every coach_reward_by_token
+// call is kept in db.coachRewardCalls. Without withCoachRewards both answer 404, as on schema 11.
+function withCoachRewards(db) {
+  withCoach(db);
+  db.coachRewards = true;
+  db.coachRewardCalls = db.coachRewardCalls || [];
+  (db.tutor_links || []).forEach((l) => { if (l.rewards === undefined) l.rewards = false; });
+  return db;
+}
 const coachNoteRow = (o) => Object.assign({ id: uuid(), link_id: null, note: '', written_by: 'Pat Lee, tutor (tutor link)', created_at: now(), done_at: null, done_by: null }, o);
 const coachCall = (name, args, run) => {
   const call = hwCall(name, args, [], run);
@@ -1627,6 +1639,15 @@ const coachRpc = {
     if (l.coach !== !!b.p_coach) Object.assign(l, { coach: !!b.p_coach, updated_at: foodStamp(db), updated_by: email });
     return null;
   }),
+  set_tutor_rewards: (db, b, email) => (db.coachRewards ? hwCall('set_tutor_rewards', ['p_link', 'p_on'], [], (d, x, e) => {
+    parentOnly(d, e);
+    if (x.p_on == null) throw new Raise('22023', 'Choose on or off.');
+    const l = d.tutor_links.find((y) => y.id === x.p_link);
+    if (!l) throw new Raise('22023', 'That link is gone.');
+    if (l.rewards !== !!x.p_on) Object.assign(l, { rewards: !!x.p_on, updated_at: foodStamp(d), updated_by: e });
+    return null;
+  })(db, b, email)
+    : { __status: 404, body: { code: 'PGRST202', message: `Could not find the function public.set_tutor_rewards(${Object.keys(b || {}).sort().join(', ')}) in the schema cache`, details: null, hint: null } }),
   coach_note_done: coachCall('coach_note_done', ['p_note'], (db, b, email) => {
     parentOnly(db, email);
     const n = db.coach_notes.find((x) => x.id === b.p_note);
@@ -3456,6 +3477,115 @@ function tkCoachView(db, l) {
     notes: (db.coach_notes || []).filter((n) => n.link_id === l.id && db.hwNow - tkMs(n.created_at) <= 30 * 86400000)
       .sort((x, y) => (tkMs(x.created_at) > tkMs(y.created_at) ? -1 : tkMs(x.created_at) < tkMs(y.created_at) ? 1 : x.id > y.id ? -1 : 1))
       .map((n) => ({ id: n.id, note: n.note, day: tkDayOf(db, n.created_at) })),
+    ...(db.coachRewards && l.rewards ? { manage: tkCoachManage(db, l) } : {}),
+  };
+}
+const tkCoachReward = tkCall('coach_reward_by_token', ['p_token', 'p_action', 'p_key'], ['p_fields'], (db, b) => {
+  const l = tkLinkByToken(db, b.p_token);
+  if (!l || !l.coach || !l.rewards) return null;
+  const who = `${l.label} (tutor link)`;
+  const f = b.p_fields == null ? {} : b.p_fields;
+  const kid = l.kid_id;
+  const today = tkToday(db);
+  if (!['save_reward', 'remove_reward', 'decide', 'give', 'void'].includes(b.p_action)) throw new Raise('22023', "That can't be done here.");
+  if (!b.p_key) throw new Raise('22023', 'That needs its id.');
+  if (typeof f !== 'object' || Array.isArray(f)) throw new Raise('22023', "That can't be saved.");
+  if (tkLen(f.title) > 60 || tkLen(f.note) > 120) throw tkTooLong();
+  let changed = false;
+  if (b.p_action === 'save_reward' || b.p_action === 'remove_reward') {
+    const r = db.rewards.find((x) => x.id === b.p_key);
+    if (r && r.kid_id !== kid) throw new Raise('42501', "That reward isn't on this link.");
+    if (b.p_action === 'remove_reward') {
+      if (r) {
+        if (!r.suggested || r.cost != null) throw new Raise('22023', 'Only his suggestion can be deleted. Take a reward off his list instead.');
+        tkCount(db, l.id, 'writes', 200);
+        db.rewards = db.rewards.filter((x) => x.id !== r.id);
+        changed = true;
+      }
+    } else {
+      const title = cleanText('title' in f ? f.title : r ? r.title : '', 60);
+      if (!title) throw new Raise('22023', 'A reward needs a name.');
+      if ('cost' in f && f.cost != null && typeof f.cost !== 'number') throw new Raise('22023', 'A reward costs 1 to 10000 points.');
+      const cost = 'cost' in f ? (f.cost == null ? null : Math.round(f.cost)) : r ? r.cost : null;
+      if (cost != null && (cost < 1 || cost > 10000)) throw new Raise('22023', 'A reward costs 1 to 10000 points.');
+      const active = 'active' in f ? !!f.active : r ? r.active : true;
+      if (active && cost == null) throw new Raise('22023', 'A reward on his list needs a price.');
+      const instant = 'instant' in f ? !!f.instant : r ? !!r.instant : false;
+      tkCount(db, l.id, 'writes', 200);
+      if (!r) {
+        const next = Math.max(-1, ...db.rewards.filter((x) => x.kid_id === kid).map((x) => x.sort_order || 0)) + 1;
+        db.rewards.push(tkRewardRow({ id: b.p_key, kid_id: kid, title, cost, active, instant, sort_order: next, created_by: who, updated_by: who }));
+        changed = true;
+      } else if (r.title !== title || r.cost !== cost || r.active !== active || !!r.instant !== instant) {
+        Object.assign(r, { title, cost, active, instant, updated_by: who });
+        changed = true;
+      }
+    }
+  } else if (b.p_action === 'decide') {
+    if (typeof f.approve !== 'boolean') throw new Raise('22023', 'Choose Yes or Not now.');
+    const q = db.reward_asks.find((x) => x.id === b.p_key);
+    if (!q) throw new Raise('22023', 'That ask is gone.');
+    if (q.kid_id !== kid) throw new Raise('42501', "That ask isn't on this link.");
+    if (q.status === 'waiting') {
+      tkCount(db, l.id, 'writes', 200);
+      const bal = tkBalance(db, kid);
+      if (f.approve) {
+        if (bal.balance - (bal.held - q.cost) < q.cost) throw new Raise('42501', 'Not enough points yet.');
+        db.points_ledger.push(tkLedgerRow({ kid_id: kid, at: tkStamp(db.hwNow), day: today, kind: 'trade', delta: -q.cost, ask_id: q.id, note: q.title, who }));
+        Object.assign(q, { status: 'approved', decided_at: tkStamp(db.hwNow), decided_by: who });
+      } else {
+        Object.assign(q, { status: 'declined', decided_at: tkStamp(db.hwNow), decided_by: who, note: cleanText(f.note, 120) || null });
+      }
+      changed = true;
+    }
+  } else if (b.p_action === 'give') {
+    const old = db.points_ledger.find((x) => x.id === b.p_key);
+    if (old) {
+      if (old.kid_id !== kid || old.kind !== 'given') throw new Raise('22023', 'That id is taken.');
+    } else {
+      if (!Number.isInteger(f.points) || f.points < 1 || f.points > 200) throw new Raise('22023', 'Give 1 to 200 points.');
+      const note = cleanText(f.note, 120);
+      if (!note) throw new Raise('22023', 'Say what the points are for.');
+      const k = tkKidOf(db, kid);
+      if (!k || !k.points_on) throw new Raise('42501', 'Points are off.');
+      const mon = tkMonday(today);
+      const used = db.points_ledger.filter((x) => x.kid_id === kid && x.kind === 'given' && / \(tutor link\)$/.test(x.who || '') && x.day >= mon && x.day <= tkAdd(mon, 6))
+        .reduce((n, x) => n + x.delta, 0);
+      if (used + f.points > 200) throw new Raise('P0001', "That's more than 200 points this week from the tutor link. A parent can give more.");
+      tkCount(db, l.id, 'writes', 200);
+      db.points_ledger.push(tkLedgerRow({ id: b.p_key, kid_id: kid, at: tkStamp(db.hwNow), day: today, kind: 'given', delta: f.points, note, who }));
+      changed = true;
+    }
+  } else {
+    const note = cleanText(f.note, 120);
+    if (!note) throw new Raise('22023', 'Say why.');
+    const e = db.points_ledger.find((x) => x.id === b.p_key);
+    if (e && e.kid_id !== kid) throw new Raise('42501', "Those points aren't on this link.");
+    if (!e || !['focus', 'on_time', 'milestone_done', 'milestone', 'given'].includes(e.kind)) throw new Raise('22023', 'Only earned or given points can be voided.');
+    if (!db.points_ledger.some((x) => x.kind === 'void' && x.void_of === e.id)) {
+      if (tkBalance(db, kid).balance - e.delta < 0) throw new Raise('P0001', 'Those points are already spent.');
+      tkCount(db, l.id, 'writes', 200);
+      db.points_ledger.push(tkLedgerRow({ kid_id: kid, at: tkStamp(db.hwNow), day: today, kind: 'void', delta: -e.delta, void_of: e.id, note, who }));
+      changed = true;
+    }
+  }
+  return Object.assign({ action: b.p_action, key: b.p_key, changed }, tkCoachView(db, l));
+});
+// 0012 (§22.3): what the coach manages, with ids.
+function tkCoachManage(db, l) {
+  const kid = l.kid_id;
+  const k = tkKidOf(db, kid);
+  const today = tkToday(db);
+  const desc = (x, y) => (tkMs(x.at) > tkMs(y.at) ? -1 : tkMs(x.at) < tkMs(y.at) ? 1 : x.id < y.id ? -1 : 1);
+  return {
+    points_on: !!(k && k.points_on), instant_day: k ? k.instant_day : null,
+    rewards: db.rewards.filter((r) => r.kid_id === kid)
+      .sort((x, y) => (y.active - x.active) || (x.sort_order - y.sort_order) || ((x.cost == null ? -1 : x.cost) - (y.cost == null ? -1 : y.cost)) || (x.title < y.title ? -1 : 1))
+      .map((r) => ({ id: r.id, title: r.title, cost: r.cost, instant: !!r.instant, active: !!r.active, suggested: !!r.suggested })),
+    asks: db.reward_asks.filter((q) => q.kid_id === kid && q.status === 'waiting').sort((x, y) => tkMs(x.asked_at) - tkMs(y.asked_at))
+      .map((q) => ({ id: q.id, title: q.title, cost: q.cost, asked_on: tkDayOf(db, q.asked_at) })),
+    lines: db.points_ledger.filter((x) => x.kid_id === kid && x.day >= tkAdd(today, -29) && x.day <= today).sort(desc)
+      .map((x) => ({ id: x.id, day: x.day, kind: x.kind, delta: x.delta, note: x.note, voided: db.points_ledger.some((z) => z.kind === 'void' && z.void_of === x.id) })),
   };
 }
 // Before 0007 the coach's functions aren't there (PostgREST's PGRST202), whatever is sent.
@@ -3740,6 +3870,15 @@ const homeworkTokenRpc = {
     db.coach_notes.push({ id: b.p_key, link_id: l.id, note, written_by: `${l.label} (tutor link)`, created_at: tkStamp(db.hwNow), done_at: null, done_by: null });
     return Object.assign({ note_id: b.p_key, changed: true }, tkCoachView(db, l));
   }),
+  // 0012 (§22.4): the coach's changes to the kid's rewards and points, by the parents' rules; null unless the link works
+  // and its coach view and rewards switch are both on.
+  coach_reward_by_token: (db, b) => {
+    if (!db.coachRewards) {
+      return { __status: 404, body: { code: 'PGRST202', message: `Could not find the function public.coach_reward_by_token(${Object.keys(b || {}).sort().join(', ')}) in the schema cache`, details: null, hint: null } };
+    }
+    db.coachRewardCalls.push(JSON.parse(JSON.stringify(b || {})));
+    return tkCoachReward(db, b);
+  },
 };
 
 // Web Share for the Share buttons. Chromium on Linux has no navigator.share, so a page has none unless
@@ -3774,4 +3913,4 @@ module.exports = { makeDb, install, signIn, expectedConsoleError, SUPA, withCale
   withFood, mealRow, shopItem, foodRpc, personDayFood, foodStamp,
   withHomework, homeworkRpc, homePlan, hwKidRow, tutorLinkRow, assignmentRow, stepRow, sessionRow, rewardRow, askRow, ledgerRow,
   withHomeworkTokens, homeworkTokenRpc, personDayHomework, tkKidRow, tkLinkRow, tkAssignmentRow, tkStepRow, tkSessionRow, tkRewardRow, tkLedgerRow, stubShare,
-  withSchool, withSchoolCheck, schoolRpc, schoolFeedRow, schoolItemRow, schoolUrlOf, withCoach, coachRpc, coachNoteRow, aiRpc, aiJob, aiMessage, aiComplete };
+  withSchool, withSchoolCheck, schoolRpc, schoolFeedRow, schoolItemRow, schoolUrlOf, withCoach, coachRpc, coachNoteRow, withCoachRewards, aiRpc, aiJob, aiMessage, aiComplete };

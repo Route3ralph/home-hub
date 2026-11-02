@@ -363,3 +363,12 @@
 .coach-note textarea { width: 100%; min-height: 88px; }
 .coach-note .form-actions .btn { min-height: 44px; }
 .coach-note-text { white-space: pre-line; }
+/* 0012: the coach's rewards */
+.coach-manage .cm-btn { min-height: 36px; margin: 4px 4px 0 0; }
+.coach-manage li > span { display: block; }
+.coach-manage li.is-off > span { color: var(--text-2); }
+.cm-form { margin: 8px 0 4px; display: grid; gap: 8px; max-width: 420px; }
+.cm-form input:not([type="checkbox"]) { width: 100%; }
+.cm-form .form-actions .btn { min-height: 44px; }
+.cm-give small { color: var(--text-3); }
+.cm-error { margin: 8px 0; }

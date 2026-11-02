@@ -211,6 +211,23 @@ Never the rest of the family: no one else's events, tasks or names, no dinners, 
 
 To stop it for one link, untick **Coach view**: it stops at once, and Pat's link is as before. **Off** and **New link** stop the whole link, as always. If the hub can't be reached: `update public.tutor_links set coach = false;` in the SQL editor.
 
+### The coach's rewards (v1.3, migration 0012)
+
+With the coach view on, a second switch on Pat's link, **Can manage rewards** (off by default), lets Pat run Jordan's rewards as you can, from **Run his rewards** in the Coach section:
+- **Yes** or **Not now** (with an optional word) on his asks;
+- his rewards: add one, change one, price his suggestion, take one off his list or put it back, delete his suggestion nobody priced;
+- **Give points** with a note he sees: at most 200 points a week through tutor links (your own Give doesn't count);
+- **Void** an earned or given line, with a reason he sees.
+
+Each change shows as Pat's ("Pat Lee, tutor (tutor link)"), on the Homework page and on his screen, and only ever Jordan's: never another kid's rewards or points.
+
+**Turning it on** (no Edge Function and no `cron.sql` change):
+1. `tests/run.sh` ends with `0 failed`; merge. Nothing changes until step 2: the switch shows only on schema 12.
+2. **About 2 minutes:** run [`supabase/migrations/0012_coach_rewards.sql`](supabase/migrations/0012_coach_rewards.sql) in the Supabase SQL editor, after 0011. "isn't installed" means 0011 is missing; "already installed" means it's done; either way nothing was changed. Every link's switch starts **off**.
+3. **About 1 minute:** Homework → **Switches** → **Tutor links** → Pat Lee, tutor → **Coach view** on (if it isn't) → tick **Can manage rewards**. Tell Pat (Run his rewards shows the next time the link is opened).
+
+To stop it, untick **Can manage rewards**: it stops at once. If the hub can't be reached: `update public.tutor_links set rewards = false;` in the SQL editor.
+
 ### The first-import check when nothing is due yet (v1.3, migration 0008)
 
 The school links' first-import check (**Check the dates**) used to show only assignments still to come. A link added over a weekend or a holiday may hold only past ones (the hub keeps those due in the last 14 days), so the card had nothing to ask, and nothing from the link could reach Jordan or Pat until the school posted something new. From 0008 the card shows the next five, or, when nothing is due yet, the five latest, each marked "was due …" (with fewer than five to come, the latest past ones fill it), and says so; answer it as before. When it is still empty it says why: not read yet, read with nothing in it, or everything on it already past; and, for a link that is paused or whose last read needs **Replace**, to do that first. A link removed and added again shows as not read until its first read.
@@ -541,7 +558,7 @@ Never commit the token. The rules for changing the repo (tests, migrations, depl
 | `manifest.webmanifest`, `assets/icons/` | The Home Screen app: name, colours and icons |
 | `config.js` | Database connection settings |
 | `supabase/schema.sql` | The v1 tables, security rules and functions (the baseline) |
-| `supabase/migrations/` | Every database change since, in order: `0002_home_hub_v2.sql` is v2, `0003_google_calendar.sql` is v1.1 (Google Calendar), `0004_meals_and_shopping.sql` is v1.2 (Food), `0005_homework.sql` is v1.3 (Homework), `0006_homework_school.sql` its school feed, `0007_homework_coach.sql` its coach view, `0008_school_check.sql` its first-import check when nothing is due yet and `0009_school_keys.sql` its school items' keys; `0010_hearth_people.sql` sorts the wall's own calendar by Hearth person (v1.1); `0011_project_guests.sql` is v1.4 (project guests) |
+| `supabase/migrations/` | Every database change since, in order: `0002_home_hub_v2.sql` is v2, `0003_google_calendar.sql` is v1.1 (Google Calendar), `0004_meals_and_shopping.sql` is v1.2 (Food), `0005_homework.sql` is v1.3 (Homework), `0006_homework_school.sql` its school feed, `0007_homework_coach.sql` its coach view, `0008_school_check.sql` its first-import check when nothing is due yet and `0009_school_keys.sql` its school items' keys; `0010_hearth_people.sql` sorts the wall's own calendar by Hearth person (v1.1); `0011_project_guests.sql` is v1.4 (project guests); `0012_coach_rewards.sql` is v1.3's coach's rewards |
 | `supabase/preflight.sql` | Read-only checks to run before applying the v2 migration (0002 only) |
 | `supabase/cron.sql` | Schedules the morning email and the Google Calendar job (pg_cron) once hub-jobs is deployed |
 | `supabase/config.toml` | Supabase CLI settings: both Edge Functions deploy with JWT verification off |
