@@ -24,7 +24,7 @@ v2 turns on by itself once the database is upgraded (see [Upgrading to v2](#upgr
 
 **Event or task?** The ＋ button asks first. *Piano, pickups, appointments → Event. Pills, filters, chores, calls → Task.* With v1.2 it also offers **Shopping**, for something to buy.
 
-**My day.** A kid or helper opens their link (no password, nothing to install) and sees their today and tomorrow in their language. They can tick off their own tasks, with Undo. "Add to Home Screen" keeps it one tap away. If the link ever gets passed around, **New link** on the Family page stops the old one at once.
+**My day.** A kid or helper opens their link (no password, nothing to install) and sees their today and tomorrow in their language. They can tick off their own tasks, with Undo, and flip **English | Español** on My day at the top of the page (it changes their language everywhere: My day, their morning email and their printed schedule; from migration 0014). "Add to Home Screen" keeps it one tap away. If the link ever gets passed around, **New link** on the Family page stops the old one at once.
 
 **Morning email.** Anyone with an email address can get their day before breakfast (or tomorrow's plan in the evening). Parents also get a block per kid or helper with Send buttons, what nobody is on, and the project lines. The first email asks the person to confirm their address; signing in to the hub confirms it too. Every email has a link to stop them.
 

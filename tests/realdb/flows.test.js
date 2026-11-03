@@ -16,7 +16,7 @@ const TODAY = '2026-10-27';
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 // What My day may call: the anon token functions (v1.2 adds the shopping list's three, v1.3 Jordan's
 // seven and the tutor link's four).
-const MY_DAY_FNS = new RegExp(`^/rest/v1/rpc/(get_person_day|complete_by_token|undo_by_token|confirm_digest|stop_digest|get_list_by_token|add_to_list_by_token|buy_item_by_token|${
+const MY_DAY_FNS = new RegExp(`^/rest/v1/rpc/(get_person_day|complete_by_token|undo_by_token|confirm_digest|stop_digest|set_language_by_token|get_list_by_token|add_to_list_by_token|buy_item_by_token|${
   ['homework_by_token', 'step_by_token', 'plan_by_token', 'focus_by_token', 'reward_by_token', 'assignment_by_token', 'homework_prefs_by_token',
     'tutor_view_by_token', 'tutor_assignment_by_token', 'tutor_plan_by_token', 'tutor_step_by_token'].join('|')})$`);
 
@@ -53,8 +53,8 @@ const MY_DAY_FNS = new RegExp(`^/rest/v1/rpc/(get_person_day|complete_by_token|u
     await settle(page, 600);
     // Schema 13 since migration 0013 (recipes): the template has every migration, so the version this check reads
     // moves with each release, on purpose (it was 4 with v1.2, 5 with 0005, … 11 with 0011, 12 with 0012).
-    check('sign-in: the code signs Alex in and the v2 Today page shows (schema version 13 from the real database: migration 0013)',
-      (await page.evaluate(() => HomeHub.core.schemaVersion)) === 13 && /Good morning, Alex/.test(await tc(page, '#main h1')), await tc(page, '#main h1'));
+    check('sign-in: the code signs Alex in and the v2 Today page shows (schema version 14 from the real database: migration 0014)',
+      (await page.evaluate(() => HomeHub.core.schemaVersion)) === 14 && /Good morning, Alex/.test(await tc(page, '#main h1')), await tc(page, '#main h1'));
     check('sign-in: Today shows the household\'s date (Tuesday, October 27)', /Tuesday, October 27/.test(await tc(page, '.today-head .eyebrow')), await tc(page, '.today-head .eyebrow'));
     const alex = await one(`select email_verified_at is not null as ok, (select token from people_confirm c where c.person_id = p.id) as secret from people p where email = 'alex@example.com'`);
     const again = alex.secret ? await h.api('/rest/v1/rpc/confirm_digest', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ p_confirm: alex.secret }) }) : null;
@@ -529,6 +529,26 @@ const MY_DAY_FNS = new RegExp(`^/rest/v1/rpc/(get_person_day|complete_by_token|u
     await page.click('.toast-action .toast-btn:not(.toast-x)');
     await until(async () => (await pillRow()).due_date === TODAY);
     check('my day: Undo (undo_by_token) puts it back', (await pillRow()).due_date === TODAY && !(await sql(`select 1 from task_log where task_id = '${pill.id}' and done_by like '%(My day)'`)).length);
+    // English | Español (0014): Taylor flips her own language, through set_language_by_token and the real RLS, and back.
+    const langOf = async () => (await one(`select language from people where id = '${P.taylor}'`)).language;
+    const othersLang = async () => JSON.stringify(await sql(`select id, language from people where id <> '${P.taylor}' order by id`));
+    const others = await othersLang();
+    const changesNow = async () => Number(((await one(`select changes from my_day_use where person_id = '${P.taylor}' and day = '${TODAY}'`)) || { changes: 0 }).changes);
+    const changes0 = await changesNow();
+    check('my day: the English | Español switch, Español pressed (her language)', await page.$eval('.day-langs [data-lang="es"]', (b) => b.getAttribute('aria-pressed')).catch(() => '') === 'true'
+      && (await langOf()) === 'es');
+    await page.click('.day-langs [data-lang="en"]');
+    await until(async () => /^Hi, Taylor/.test(await tc(page, '.day-head h1')));
+    check('my day: English: the page redraws in English and her people.language is en, nobody else\'s changed',
+      /^Hi, Taylor/.test(await tc(page, '.day-head h1')) && (await langOf()) === 'en' && (await othersLang()) === others
+      && (await page.evaluate(() => document.documentElement.lang)) === 'en', await tc(page, '.day-head h1'));
+    check('my day: the change counts as one of her link\'s My day changes', (await changesNow()) === changes0 + 1, [changes0, await changesNow()]);
+    await page.click('.day-langs [data-lang="es"]');
+    await until(async () => /^Hola, Taylor/.test(await tc(page, '.day-head h1')));
+    check('my day: and back to Español (a second change counted)', /^Hola, Taylor/.test(await tc(page, '.day-head h1')) && (await langOf()) === 'es'
+      && (await changesNow()) === changes0 + 2, await tc(page, '.day-head h1'));
+    // The list flows below count her day's changes from where they were: take these two back out.
+    await sql(`update my_day_use set changes = ${changes0} where person_id = '${P.taylor}' and day = '${TODAY}'`);
     await context.close();
 
     // A My day link can't confirm anything: confirm_digest takes only the confirmation secret.
