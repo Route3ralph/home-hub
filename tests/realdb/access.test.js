@@ -710,6 +710,66 @@ const emptyLists = (b) => !!b && typeof b === 'object' && !Array.isArray(b)
     check('turned off again: no coach view, and Pat\'s view has no coach key', offAgain[0].status === 200 && offAgain[0].body === null && !('coach' in offAgain[1].body));
   });
 
+  // Recipes (migration 0013, docs/v1.2-kitchen.md §19), with a row in the table and a Recipes folder set: signed out,
+  // refused (401); a stranger and a project guest get no rows and can't add, change or delete one, nor see the folder;
+  // Sam (a member, not a parent) reads, adds, changes and deletes recipes but can't set the folder or write the stamps;
+  // Alex sets the folder (a Drive address only).
+  await flow('recipes', async () => {
+    const FOLDER = 'https://drive.google.com/drive/folders/EXAMPLE-folder-id';
+    await sql(`insert into recipes (title, url, label, note) values ('Lentil soup', 'https://cooking.example.com/lentil-soup', 'dinner', 'Freezes well');
+      update household set recipes_folder_url = '${FOLDER}';
+      insert into guests (email, name) values ('riley@example.com', 'Riley Designer');`);
+    const soup = (await sql("select id from recipes where title = 'Lentil soup'"))[0].id;
+    const ask = (p, auth, body, method = 'POST') => h.api(p, body === undefined ? { headers: auth ? { authorization: `Bearer ${auth}` } : {} }
+      : { method, headers: Object.assign({ 'content-type': 'application/json', prefer: 'return=representation' }, auth ? { authorization: `Bearer ${auth}` } : {}), body: JSON.stringify(body) });
+    const del = (p, auth) => h.api(p, { method: 'DELETE', headers: Object.assign({ prefer: 'return=representation' }, auth ? { authorization: `Bearer ${auth}` } : {}) });
+    const member = (await h.sessionFor('sam@example.com')).access_token;
+    const admin = (await h.sessionFor('alex@example.com')).access_token;
+    const guest = (await h.sessionFor('riley@example.com')).access_token;
+    let stranger = (await h.sessionFor('casey@example.com').catch(() => null));
+    stranger = stranger && stranger.access_token;
+    if (!stranger) {
+      await sql("insert into members (email, name) values ('casey@example.com', 'Casey')");
+      stranger = (await h.sessionFor('casey@example.com')).access_token;
+      await sql("delete from members where email = 'casey@example.com'");
+    }
+    const count = async () => (await sql('select count(*) as n from recipes'))[0].n;
+    const anon = [(await ask('/rest/v1/recipes?select=*', null)).status, (await ask('/rest/v1/recipes', null, { title: 'Toast' })).status,
+      (await ask(`/rest/v1/recipes?id=eq.${soup}`, null, { note: 'x' }, 'PATCH')).status, (await del(`/rest/v1/recipes?id=eq.${soup}`, null)).status];
+    check('recipes, signed out: read, add, change and delete are refused (401)', anon.every((x) => x === 401), anon);
+    for (const [who, auth] of [['a stranger', stranger], ['a project guest', guest]]) {
+      const r = await ask('/rest/v1/recipes?select=*', auth);
+      const ins = await ask('/rest/v1/recipes', auth, { title: 'Toast' });
+      const upd = await ask(`/rest/v1/recipes?id=eq.${soup}`, auth, { note: 'x' }, 'PATCH');
+      const d = await del(`/rest/v1/recipes?id=eq.${soup}`, auth);
+      const hh = await ask('/rest/v1/household?select=recipes_folder_url', auth);
+      check(`recipes, ${who}: no rows; can't add (403), change or delete (no row); no folder`, r.status === 200 && Array.isArray(r.body) && !r.body.length
+        && ins.status === 403 && Array.isArray(upd.body) && !upd.body.length && Array.isArray(d.body) && !d.body.length
+        && hh.status === 200 && Array.isArray(hh.body) && !hh.body.length && (await count()) === '1', [r.status, ins.status, upd.status, upd.body, d.status, hh.body]);
+    }
+    const mRead = await ask('/rest/v1/recipes?select=title,url,label,note', member);
+    const mIns = await ask('/rest/v1/recipes', member, { title: '  Chickpea   lunch bowls ', url: 'https://www.example.com/chickpea-bowls', label: 'lunch' });
+    const mUpd = await ask(`/rest/v1/recipes?id=eq.${soup}`, member, { note: 'Double it' }, 'PATCH');
+    const mStamp = await ask(`/rest/v1/recipes?id=eq.${soup}`, member, { created_by: 'x' }, 'PATCH');
+    const mBad = await ask('/rest/v1/recipes', member, { title: 'Soup', url: 'javascript:alert(1)' });
+    const mFolder = await ask('/rest/v1/household?id=eq.true', member, { recipes_folder_url: null }, 'PATCH');
+    const mHh = await ask('/rest/v1/household?select=recipes_folder_url', member);
+    check('recipes, a member (Sam): reads; adds (cleaned, stamped) and changes one; can\'t write the stamps (403) or a javascript: link; sees the folder but can\'t change it',
+      mRead.status === 200 && JSON.stringify(mRead.body) === JSON.stringify([{ title: 'Lentil soup', url: 'https://cooking.example.com/lentil-soup', label: 'dinner', note: 'Freezes well' }])
+      && mIns.status === 201 && mIns.body[0].title === 'Chickpea lunch bowls' && mIns.body[0].created_by === 'sam@example.com'
+      && mUpd.status === 200 && mUpd.body[0].note === 'Double it' && mUpd.body[0].updated_by === 'sam@example.com'
+      && mStamp.status === 403 && mBad.status >= 400 && Array.isArray(mFolder.body) && !mFolder.body.length
+      && JSON.stringify(mHh.body) === JSON.stringify([{ recipes_folder_url: FOLDER }]),
+      [mRead.body, mIns.status, mIns.body, mUpd.status, mStamp.status, mBad.status, mFolder.status, mFolder.body, mHh.body]);
+    const mDel = await del(`/rest/v1/recipes?id=eq.${soup}`, member);
+    check('recipes, a member deletes one', mDel.status === 200 && mDel.body.length === 1 && (await count()) === '1', [mDel.status, mDel.body]);
+    const aBad = await ask('/rest/v1/household?id=eq.true', admin, { recipes_folder_url: 'https://evil.example.com/drive.google.com/' }, 'PATCH');
+    const aOk = await ask('/rest/v1/household?id=eq.true', admin, { recipes_folder_url: null }, 'PATCH');
+    check('recipes, a parent (Alex): the folder only takes a Drive address; clears it', aBad.status >= 400 && aOk.status === 200 && aOk.body.length === 1 && aOk.body[0].recipes_folder_url === null,
+      [aBad.status, aOk.status]);
+    await sql("delete from recipes; delete from guests where email = 'riley@example.com';");
+  });
+
   // The stand-in's logical filters (PostgREST's or=, and=, nested and(…)/or(…), not.or=, a quoted in.(…)), which
   // Today's homework read uses: the same rows as the SQL they stand for, read as Alex.
   await flow('logical filters', async () => {

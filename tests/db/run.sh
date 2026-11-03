@@ -234,9 +234,9 @@ else report "FAIL  migration 0007 stamps the tasks and events already there  (${
 
 # 0008 (the first-import check's past items) refuses to run twice, on a v1 database, and without 0007 (at 0005 and
 # at 0006): each says why, and changes nothing.
-# (hub_again is a copy of a fresh install, at 12 since 0012.)
+# (hub_again is a copy of a fresh install, at 13 since 0013.)
 out=$(quiet -d hub_again -f supabase/migrations/0008_school_check.sql 2>&1)
-if [[ $out == *"already installed"* ]] && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 12 ]]; then
+if [[ $out == *"already installed"* ]] && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 13 ]]; then
   report "PASS  migration 0008 refuses to run twice"
 else report "FAIL  migration 0008 refuses to run twice  (${out:0:200})"; fi
 out=$(quiet -d hub_v1_again -f supabase/migrations/0008_school_check.sql 2>&1)
@@ -393,7 +393,7 @@ else report "FAIL  same status card: 0008 changes only the check  (${out:0:150};
 # without 0008 (at 0006 and at 0007), and on a database at 0008 that isn't as 0008 left it: each says why, and
 # changes nothing.
 out=$(quiet -d hub_again -f supabase/migrations/0009_school_keys.sql 2>&1)
-if [[ $out == *"already installed"* ]] && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 12 ]]; then
+if [[ $out == *"already installed"* ]] && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 13 ]]; then
   report "PASS  migration 0009 refuses to run twice"
 else report "FAIL  migration 0009 refuses to run twice  (${out:0:200})"; fi
 out=$(quiet -d hub_v1_again -f supabase/migrations/0009_school_keys.sql 2>&1)
@@ -698,8 +698,8 @@ else report "FAIL  0009 pasted while he taps Plan with Pat on a copy  (0009: ${o
 # included): each says why, and changes nothing.
 m10=supabase/migrations/0010_hearth_people.sql
 out=$(quiet -d hub_again -f $m10 2>&1)
-if [[ $out == *"Hearth people (migration 0010) is already installed (hub_schema_version() is 12)"* ]] \
-   && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 12 ]]; then
+if [[ $out == *"Hearth people (migration 0010) is already installed (hub_schema_version() is 13)"* ]] \
+   && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 13 ]]; then
   report "PASS  migration 0010 refuses to run twice"
 else report "FAIL  migration 0010 refuses to run twice  (${out:0:200})"; fi
 out=$(quiet -d hub_v1_again -f $m10 2>&1)
@@ -1018,8 +1018,8 @@ else report "FAIL  migration 0010's undo  (undo: ${undo:0:150} ${undo_g:0:150}; 
 # a database set back to 10, and on a database at 0010 that isn't as 0010 left it: each says why, and changes nothing.
 m11=supabase/migrations/0011_project_guests.sql
 out=$(quiet -d hub_again -f $m11 2>&1)
-if [[ $out == *"Project guests (migration 0011) is already installed (hub_schema_version() is 12). Nothing was changed."* ]] \
-   && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 12 ]]; then
+if [[ $out == *"Project guests (migration 0011) is already installed (hub_schema_version() is 13). Nothing was changed."* ]] \
+   && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 13 ]]; then
   report "PASS  migration 0011 refuses to run twice"
 else report "FAIL  migration 0011 refuses to run twice  (${out:0:200})"; fi
 out=$(quiet -d hub_v1_again -f $m11 2>&1)
@@ -1036,6 +1036,10 @@ if [[ $out == *"Hearth people (migration 0010) isn't installed (hub_schema_versi
 else report "FAIL  migration 0011 refuses to run without 0010  (${out:0:200})"; fi
 sql -d postgres -c 'create database hub_11 template hub_10'
 if ! quiet -d hub_11 -f $m11 >"$dir/load.log" 2>&1; then report "FAIL  migration 0011 applies to hub_11  ($(tail -n 1 "$dir/load.log"))"; fi
+# A database at 0012 (hub_11 with 0012): a fresh install is at 13 since 0013, so 0012's undo starts from it, and 0013's
+# refusals are checked on copies of it.
+sql -d postgres -c 'create database hub_12 template hub_11'
+if ! quiet -d hub_12 -f supabase/migrations/0012_coach_rewards.sql >"$dir/load.log" 2>&1; then report "FAIL  migration 0012 applies to hub_12  ($(tail -n 1 "$dir/load.log"))"; fi
 sql -d postgres -c 'create database hub_set_back_10 template hub_11'
 quiet -d hub_set_back_10 -c "create or replace function public.hub_schema_version() returns int language sql immutable set search_path = '' as \$\$ select 10 \$\$" >/dev/null
 before=$(catalog_of hub_set_back_10)
@@ -1093,8 +1097,8 @@ else report "FAIL  migration 0011's undo  (undo: ${undo:0:200}; then: $got_undo;
 # on a database set back to 11, and on a database at 0011 that isn't as 0011 left it: each says why, and changes nothing.
 m12=supabase/migrations/0012_coach_rewards.sql
 out=$(quiet -d hub_again -f $m12 2>&1)
-if [[ $out == *"The coach's rewards (migration 0012) is already installed (hub_schema_version() is 12). Nothing was changed."* ]] \
-   && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 12 ]]; then
+if [[ $out == *"The coach's rewards (migration 0012) is already installed (hub_schema_version() is 13). Nothing was changed."* ]] \
+   && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 13 ]]; then
   report "PASS  migration 0012 refuses to run twice"
 else report "FAIL  migration 0012 refuses to run twice  (${out:0:200})"; fi
 out=$(quiet -d hub_v1_again -f $m12 2>&1)
@@ -1132,9 +1136,9 @@ for broken in 'alter function private.coach_view(uuid) rename to coach_view_v7' 
     report "PASS  migration 0012 refuses a database at 0011 not as 0011 left it (${broken:0:90}), and changes nothing"
   else report "FAIL  migration 0012 refuses a database at 0011 not as 0011 left it (${broken:0:90})  (${out:0:200})"; fi
 done
-# Undo, as 0012's header says, on a copy of a fresh install with the switch on for a link: every function and column is
-# then 11's (hub_11's, coach_view's grants too); and 0012 runs again, leaving them as on a fresh install.
-sql -d postgres -c 'create database hub_undo_12 template hub'
+# Undo, as 0012's header says, on a copy of a database at 0012 (hub_12) with the switch on for a link: every function and
+# column is then 11's (hub_11's, coach_view's grants too); and 0012 runs again, leaving them as at 0012 (hub_12).
+sql -d postgres -c 'create database hub_undo_12 template hub_12'
 quiet -d hub_undo_12 >/dev/null 2>&1 <<'SQL'
 insert into public.people (name, role, sort_order) values ('Jordan', 'kid', 9);
 insert into public.homework_kids (kid_id) select id from public.people where name = 'Jordan';
@@ -1148,10 +1152,66 @@ grants_12() { quiet -d "$1" -A -t -c "select string_agg(p.oid::regprocedure::tex
 undo=$(quiet -d hub_undo_12 -f "$dir/undo_0012.sql" 2>&1)
 got_undo="$(quiet -d hub_undo_12 -A -t -c "select public.hub_schema_version() || ' ' || (select count(*) from public.tutor_links where coach)") $([[ $(others_11 hub_undo_12) == "$(others_11 hub_11)" && $(columns_of hub_undo_12) == "$(columns_of hub_11)" && $(grants_12 hub_undo_12) == "$(grants_12 hub_11)" ]] && echo same-as-0011)"
 out=$(quiet -d hub_undo_12 -f $m12 2>&1)
-got_again="$(quiet -d hub_undo_12 -A -t -c "select public.hub_schema_version()") $([[ $(catalog_of hub_undo_12) == "$(catalog_of hub)" && $(columns_of hub_undo_12) == "$(columns_of hub)" && $(grants_12 hub_undo_12) == "$(grants_12 hub)" ]] && echo same-as-fresh)"
+got_again="$(quiet -d hub_undo_12 -A -t -c "select public.hub_schema_version()") $([[ $(catalog_of hub_undo_12) == "$(catalog_of hub_12)" && $(columns_of hub_undo_12) == "$(columns_of hub_12)" && $(grants_12 hub_undo_12) == "$(grants_12 hub_12)" ]] && echo same-as-fresh)"
 if [[ $(grep -c '' "$dir/undo_0012.sql") -ge 5 && -z $undo && $got_undo == "11 1 same-as-0011" && -z $out && $got_again == "12 same-as-fresh" ]]; then
-  report "PASS  migration 0012's undo: the switch, the two functions and the wrapper gone, 0007's coach view back under its name, schema 11, the link kept; then 0012 runs again, as on a fresh install"
+  report "PASS  migration 0012's undo: the switch, the two functions and the wrapper gone, 0007's coach view back under its name, schema 11, the link kept; then 0012 runs again, as at 0012 (hub_12)"
 else report "FAIL  migration 0012's undo  (undo: ${undo:0:200}; then: $got_undo; again: ${out:0:150} $got_again)"; fi
+
+# 0013 (recipes, docs/v1.2-kitchen.md §19) refuses to run twice, on a v1 database, without 0012 (at 0011), on a database set
+# back to 12, and on a database at 0012 that isn't as 0012 left it: each says why, and changes nothing. Its undo leaves
+# a database as at 0012 (hub_12), and 0013 then runs again, as on a fresh install.
+m13=supabase/migrations/0013_recipes.sql
+out=$(quiet -d hub_again -f $m13 2>&1)
+if [[ $out == *"Recipes (migration 0013) is already installed (hub_schema_version() is 13). Nothing was changed."* ]] \
+   && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 13 ]]; then
+  report "PASS  migration 0013 refuses to run twice"
+else report "FAIL  migration 0013 refuses to run twice  (${out:0:200})"; fi
+out=$(quiet -d hub_v1_again -f $m13 2>&1)
+if [[ $out == *"Home Hub v2 (migration 0002) isn't installed. Run 0002 to 0012 first. Nothing was changed."* ]] \
+   && [[ -z $(quiet -d hub_v1_again -A -t -c "select to_regclass('public.recipes')") ]]; then
+  report "PASS  migration 0013 refuses to run on a v1 database (0002 isn't installed), and changes nothing"
+else report "FAIL  migration 0013 refuses to run on a v1 database  (${out:0:200})"; fi
+sql -d postgres -c 'create database hub_11_again13 template hub_11'
+before="$(catalog_of hub_11_again13) $(columns_of hub_11_again13)"
+out=$(quiet -d hub_11_again13 -f $m13 2>&1)
+if [[ $out == *"The coach's rewards (migration 0012) isn't installed (hub_schema_version() is 11). Run 0012_coach_rewards.sql first. Nothing was changed."* ]] \
+   && [[ "$(catalog_of hub_11_again13) $(columns_of hub_11_again13)" == "$before" && $(quiet -d hub_11_again13 -A -t -c "select public.hub_schema_version()") == 11 ]]; then
+  report "PASS  migration 0013 refuses to run without 0012 (a database at 0011), and changes nothing"
+else report "FAIL  migration 0013 refuses to run without 0012  (${out:0:200})"; fi
+sql -d postgres -c 'create database hub_set_back_12 template hub'
+quiet -d hub_set_back_12 -c "create or replace function public.hub_schema_version() returns int language sql immutable set search_path = '' as \$\$ select 12 \$\$" >/dev/null
+before="$(catalog_of hub_set_back_12) $(columns_of hub_set_back_12)"
+out=$(quiet -d hub_set_back_12 -f $m13 2>&1)
+if [[ $out == *"Recipes (migration 0013) is already installed, but hub_schema_version() was set back to 12. To switch it on again, make hub_schema_version() return 13 (docs/v1.2-kitchen.md §19.5). Nothing was changed."* ]] \
+   && [[ "$(catalog_of hub_set_back_12) $(columns_of hub_set_back_12)" == "$before" && $(quiet -d hub_set_back_12 -A -t -c "select public.hub_schema_version()") == 12 ]]; then
+  report "PASS  migration 0013 on a database set back to 12: says so (\"set back to 12\"), and changes nothing"
+else report "FAIL  migration 0013 on a database set back to 12  (${out:0:200})"; fi
+n=0
+for broken in 'alter table public.household add column recipes_folder_url text' \
+              'alter table public.tutor_links drop column rewards' \
+              'create function private.recipes_tidy() returns trigger language plpgsql as $$ begin return new; end $$'; do
+  n=$((n + 1))
+  sql -d postgres -c "create database hub_12_shape$n template hub_12"
+  quiet -d "hub_12_shape$n" -c "$broken" >/dev/null
+  before="$(catalog_of "hub_12_shape$n") $(columns_of "hub_12_shape$n")"
+  out=$(quiet -d "hub_12_shape$n" -f $m13 2>&1)
+  if [[ $out == *"This database isn't as migration 0012 left it. Nothing was changed."* ]] && [[ "$(catalog_of "hub_12_shape$n") $(columns_of "hub_12_shape$n")" == "$before" ]] \
+     && [[ -z $(quiet -d "hub_12_shape$n" -A -t -c "select to_regclass('public.recipes')") ]]; then
+    report "PASS  migration 0013 refuses a database at 0012 not as 0012 left it (${broken:0:90}), and changes nothing"
+  else report "FAIL  migration 0013 refuses a database at 0012 not as 0012 left it (${broken:0:90})  (${out:0:200})"; fi
+done
+sql -d postgres -c 'create database hub_undo_13 template hub'
+quiet -d hub_undo_13 -c "insert into public.recipes (title, url) values ('Chickpea bowls', 'https://cooking.example.com/chickpeas')" >/dev/null
+{ sed -n '/^-- Undo (not needed/,/^-- 0013 can then run again/p' $m13 | sed -n '/^--   /p' | sed 's/^--   //' | tr '\n' ' ' | sed 's/; /;\n/g'
+  echo
+} >"$dir/undo_0013.sql"
+undo=$(quiet -d hub_undo_13 -f "$dir/undo_0013.sql" 2>&1)
+got_undo="$(quiet -d hub_undo_13 -A -t -c "select public.hub_schema_version()") $([[ $(others_11 hub_undo_13) == "$(others_11 hub_12)" && $(columns_of hub_undo_13) == "$(columns_of hub_12)" && $(policies_of hub_undo_13) == "$(policies_of hub_12)" ]] && echo same-as-0012)"
+out=$(quiet -d hub_undo_13 -f $m13 2>&1)
+got_again="$(quiet -d hub_undo_13 -A -t -c "select public.hub_schema_version()") $([[ $(catalog_of hub_undo_13) == "$(catalog_of hub)" && $(columns_of hub_undo_13) == "$(columns_of hub)" && $(policies_of hub_undo_13) == "$(policies_of hub)" ]] && echo same-as-fresh)"
+if [[ $(grep -c '' "$dir/undo_0013.sql") -ge 3 && -z $undo && $got_undo == "12 same-as-0012" && -z $out && $got_again == "13 same-as-fresh" ]]; then
+  report "PASS  migration 0013's undo: the table, its trigger function and the folder column gone, schema 12; then 0013 runs again, as on a fresh install"
+else report "FAIL  migration 0013's undo  (undo: ${undo:0:200}; then: $got_undo; again: ${out:0:150} $got_again)"; fi
 
 # 5. preflight.sql's promise, "nothing migration 0002 creates exists yet", covers everything the
 #    migration creates that a live database could already have under the same name (which would

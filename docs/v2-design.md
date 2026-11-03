@@ -56,6 +56,10 @@ This is the build contract for Home Hub v2. It replaces the first draft after fo
 - A tutor who is also the kid's coach may run his rewards from the tutor link, link by link: a second per-link switch, **Can manage rewards**, off by default, set only by the parents and counting only while the link's coach view is on. With it on the link also says Yes or Not now to his asks, adds, changes, prices and takes rewards off his list, gives points with a note (at most 200 a household week through tutor links) and voids them with a reason, each as the parents can and written as the link's.
 - The build contract is `docs/v1.3-homework.md` §22. Its database part is migration `0012_coach_rewards.sql`, summarised in §17 below.
 
+**v1.2 — recipes (the site goes live first, then the migration, after 0012; no Edge Function or `cron.sql` change)**
+- The family's saved recipes on the Food page: a name, an optional https link (a web page, or a file in the family's shared Google Drive "Recipes" folder), a label and a note; every member reads and changes them, a project guest never. The files themselves stay in Drive: the hub stores links only.
+- The build contract is `docs/v1.2-kitchen.md` §19. Its database part is migration `0013_recipes.sql`, summarised in §18 below.
+
 Later: web push, Twilio SMS.
 
 ## 1. Item model — two kinds
@@ -273,7 +277,7 @@ Tokens and secrets are 32 hex characters; `rotate_day_token(p_person uuid)` (adm
 - `digest_for(p_person uuid, p_local_date date) returns jsonb` — everything the email needs, computed in SQL (see §5): subject, today, late, heads_up, projects; for parents also people, nobody and, on Mondays, inbox_count; `empty` = a non-parent with nothing to say (send nothing). Null for an inactive person. (v1.2 wraps it to add the day's meals: §9.)
 
 ### Schema version, whoami and sign-in
-`hub_schema_version()` returns 2 (authenticated); migration 0003 makes it 3 (§8), migration 0004 makes it 4 (§9), migration 0005 makes it 5 (§10), migration 0006 makes it 6 (§11), migration 0007 makes it 7 (§12), migration 0008 makes it 8 (§13), migration 0009 makes it 9 (§14), migration 0010 makes it 10 (§15), migration 0011 makes it 11 (§16), and migration 0012 makes it 12 (§17). `whoami()` gains `person` (id, name, role, language, color) when a person row matches the caller's email; existing keys unchanged. `mark_signed_in()` (authenticated; the core calls it after every sign-in): signing in with a code sent to an address proves it works, so the caller's own person row gets email_verified_at (the first time only). The confirmation secret stays, so the button in a confirmation email sent earlier says "confirmed" too. Does nothing for anyone who isn't a member.
+`hub_schema_version()` returns 2 (authenticated); migration 0003 makes it 3 (§8), migration 0004 makes it 4 (§9), migration 0005 makes it 5 (§10), migration 0006 makes it 6 (§11), migration 0007 makes it 7 (§12), migration 0008 makes it 8 (§13), migration 0009 makes it 9 (§14), migration 0010 makes it 10 (§15), migration 0011 makes it 11 (§16), migration 0012 makes it 12 (§17), and migration 0013 makes it 13 (§18). `whoami()` gains `person` (id, name, role, language, color) when a person row matches the caller's email; existing keys unchanged. `mark_signed_in()` (authenticated; the core calls it after every sign-in): signing in with a code sent to an address proves it works, so the caller's own person row gets email_verified_at (the first time only). The confirmation secret stays, so the button in a confirmation email sent earlier says "confirmed" too. Does nothing for anyone who isn't a member.
 
 ## 4. Client
 
@@ -1242,3 +1246,38 @@ Renamed and replaced:
 - `hub_schema_version()` returns 12. The site shows the parents Can manage rewards only on 12.
 
 Undoing it isn't needed (with the switch off on every link every answer is 11's). If wanted, in one go, as the migration's header writes it out: drop `coach_reward_by_token`, `set_tutor_rewards` and the new `private.coach_view`; rename `private.coach_view_v7` back to `coach_view`; drop `tutor_links.rewards`; `hub_schema_version()` returning 11. 0012 can then run again.
+
+## 18. v1.2: recipes
+
+The build contract is `docs/v1.2-kitchen.md` §19; this section lists what its migration, `supabase/migrations/0013_recipes.sql`, adds to the database, so the docs check can hold the two together. Fresh install = `schema.sql`, then `0002` to `0013`. It is one transaction and additive, and every rule in §3 applies. It refuses to run without 0012 (`hub_schema_version() < 12`: "The coach's rewards (migration 0012) isn't installed"), twice ("Recipes (migration 0013) is already installed"), on a database set back to 12 (`recipes` already there: "… was set back to 12"), or on a database that isn't as 0012 left it (`household` and `meals` there, no `household.recipes_folder_url`, `tutor_links.rewards` there, `private.is_member()`, `private.stamp()` and `private.clean_text(p_text, p_max)` there, no `private.recipes_tidy()`). With no recipes and no folder, every page, view, email and text answers exactly as on 12. No new function for anon; nothing about recipes reaches My day, an email, the wall, Google, a tutor link or a project guest.
+
+### Tables
+```sql
+-- One saved recipe: a name, an optional link (a web page, or a file in the family's Drive), what meal it's for,
+-- and a note. Kept until someone deletes it.
+create table public.recipes (
+  id         uuid primary key default gen_random_uuid(),
+  title      text not null check (char_length(title) between 1 and 80),
+  url        text check (url is null or (url ~ '^https://[!#-;=?-~]{4,}$' and char_length(url) <= 508)),
+  label      text not null default 'dinner' check (label in ('dinner', 'lunch', 'breakfast', 'snack', 'other')),
+  note       text check (note is null or char_length(note) between 1 and 300),
+  created_at timestamptz not null default now(),
+  created_by text,
+  updated_at timestamptz not null default now(),
+  updated_by text
+);
+
+-- The family's shared Drive "Recipes" folder (Food page → Recipes folder), as projects.documents_url.
+alter table public.household
+  add column recipes_folder_url text
+    check (recipes_folder_url is null or (length(recipes_folder_url) <= 500 and recipes_folder_url ~ '^https://drive\.google\.com/[^\s<>"'']*$'));
+```
+- `recipes`: the link check is `meals.link`'s (https only, printable ASCII only, so no spaces, quotes, angle brackets, control, bidi or zero-width characters; 4 to 500 after "https://"); the page saves `new URL(typed).href`. The index `recipes_title` on `lower(title)`. Triggers `recipes_stamp` (`private.stamp()`) and `recipes_tidy` (`private.recipes_tidy()`: the title and note on one line, at most 80 and 300 characters, a blank note becomes null; same-event triggers fire in name order, so the stamp runs first). RLS: one policy, "Family manages recipes", for all, `private.is_member()` in using and with check: every member, parents and other grown-ups alike; a project guest, a removed member and a stranger see no rows and can add none.
+- Grants: `revoke all … from public, anon, authenticated, service_role`; then authenticated gets select and delete, insert of `id, title, url, label, note` and update of `title, url, label, note` (never the stamps). Anon and service_role have nothing (no job reads recipes).
+- `household.recipes_folder_url`: a `https://drive.google.com/` address only, with no spaces, quotes or angle brackets, at most 500 characters, or null. The household's update policy ("Admins change the household") already lets only the parents change it; every member reads it, as the rest of the row.
+
+### Functions
+- `private.recipes_tidy()` returns trigger (`set search_path = ''`; revoked from public, anon and authenticated): the tidy trigger above. No public function is added.
+- `hub_schema_version()` returns 13. The Food page shows the Recipes section and the Recipes folder setting only on 13.
+
+Undoing it isn't needed (with no recipes every page is as on 12). If wanted, in one go, as the migration's header writes it out: drop the table `recipes` and `private.recipes_tidy()`; drop `household.recipes_folder_url`; `hub_schema_version()` returning 12. 0013 can then run again.
