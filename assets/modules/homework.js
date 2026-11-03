@@ -745,9 +745,14 @@
     const m = w.months[Number(iso.slice(5, 7)) - 1];
     return lang === 'es' ? `${wd} ${d} ${m}` : `${wd} ${m} ${d}`;
   }
-  // The assignments a sheet lists: open ones, due within two weeks (and the late ones) unless all, by due date.
+  // The print form's ranges: due in the next 3 days, week, 2 weeks ('soon', the default) or 3 weeks, each with the
+  // late ones, or everything open. The value is how many days from today a sheet reaches.
+  const PRINT_RANGES = [['d3', 3, 'Due in the next 3 days (and any late)'], ['w1', 7, 'Due in the next week (and any late)'],
+    ['soon', 14, 'Due in the next 2 weeks (and any late)'], ['w3', 21, 'Due in the next 3 weeks (and any late)']];
+  const printDays = (range) => { const r = PRINT_RANGES.find((x) => x[0] === range); return r ? r[1] : 14; };
+  // The assignments a sheet lists: open ones, due within the range (and the late ones) unless all, by due date.
   function printList(st, range) {
-    const last = dates.addDays(st.today, 13);
+    const last = dates.addDays(st.today, printDays(range) - 1);
     return st.assignments.filter((a) => a.status === 'open' && (range === 'all' || a.due_date <= last))
       .sort((a, b) => (a.due_date < b.due_date ? -1 : a.due_date > b.due_date ? 1 : String(a.title).localeCompare(String(b.title))));
   }
@@ -766,7 +771,7 @@
         + `${opts.details && a.details ? `<p class="ps-details">${esc(a.details)}</p>` : ''}`
         + `${steps.length ? `<ul>${steps.map(stepLine).join('')}</ul>` : `<p class="ps-empty">${esc(w.planning)}</p>`}</section>`;
     };
-    const when = opts.range === 'all' ? w.all : w.soon(printDay(opts.lang, dates.addDays(st.today, 13)));
+    const when = opts.range === 'all' ? w.all : w.soon(printDay(opts.lang, dates.addDays(st.today, printDays(opts.range) - 1)));
     return `<header class="ps-head"><h1>${esc(w.title(kidName(st)))}</h1><p>${esc(when)}</p></header>
       <div class="ps-list">${list.length ? list.map(block).join('') : `<p class="ps-empty">${esc(w.none)}</p>`}</div>
       <p class="ps-foot">${esc(w.printed(printDay(opts.lang, st.today)))}</p>`;
@@ -777,14 +782,15 @@
       title: `Print ${kidName(st)}'s homework`,
       intro: 'His open assignments and lessons by due date, with their steps to tick.',
       fields: [
-        { name: 'range', label: 'Which', type: 'select', value: 'soon', options: [['soon', 'Due in the next 2 weeks (and any late)'], ['all', 'Everything open']] },
+        { name: 'range', label: 'Which', type: 'select', value: 'soon', options: PRINT_RANGES.map(([v, , label]) => [v, label]).concat([['all', 'Everything open']]) },
         { name: 'lang', label: 'Language', type: 'select', value: kid && kid.language === 'es' ? 'es' : 'en', options: [['en', 'English'], ['es', 'Español']] },
         { name: 'details', label: 'Include the teacher\'s text', type: 'checkbox', value: false },
       ],
       submitLabel: 'Print',
       onSubmit: (v) => {
         const lang = v.lang === 'es' ? 'es' : 'en';
-        core.printSheet(printHTML(st, { range: v.range === 'all' ? 'all' : 'soon', lang, details: !!v.details }), { lang });
+        const range = v.range === 'all' || PRINT_RANGES.some((r) => r[0] === v.range) ? v.range : 'soon';
+        core.printSheet(printHTML(st, { range, lang, details: !!v.details }), { lang });
       },
     });
   }
@@ -805,10 +811,27 @@
   // Next 3 weeks (plan.js overview, docs/v1.3-homework.md §21): his open assignments and lessons as bars over the
   // 21 days from today, from the rows the page already read (the plan given or not), each a link to its page. ''
   // (no section) when none is open.
+  // A parent chooses how far it reaches (3 days, a week, 2 or 3 weeks; 3 weeks unless chosen), remembered on this
+  // device; the other grown-ups see 3 weeks.
+  const TL_RANGES = [[3, 'Next 3 days'], [7, 'Next week'], [14, 'Next 2 weeks'], [21, 'Next 3 weeks']];
+  const TL_KEY = 'hh.hw.tl_days';
+  const tlStore = {
+    get: () => { try { const n = Number(localStorage.getItem(TL_KEY)); return TL_RANGES.some((r) => r[0] === n) ? n : null; } catch (e) { return null; } },
+    set: (n) => { try { localStorage.setItem(TL_KEY, String(n)); } catch (e) { /* no storage: this visit only */ } },
+  };
+  function tlDays(st) {
+    if (!isAdmin()) return 21;
+    if (st.tlDays == null) st.tlDays = tlStore.get() || 21;
+    return st.tlDays;
+  }
   function timelineHTML(st) {
     const items = st.assignments.filter((a) => a.status === 'open').map((a) => P.fromRows(a, stepsOf(st, a.id)));
-    const html = P.overview(items, { today: st.today, days: 21, lang: 'en', link: (id) => `#/homework/${id}` });
-    return html ? section('timeline', P.t('tl_next_weeks', { n: 3 }, 'en'), `<div class="hw-card hw-tl">${html}</div>`) : '';
+    const days = tlDays(st);
+    const html = P.overview(items, { today: st.today, days, lang: 'en', link: (id) => `#/homework/${id}` });
+    const title = (TL_RANGES.find((r) => r[0] === days) || TL_RANGES[3])[1];
+    const pick = isAdmin() ? `<span class="hw-adds"><select class="hw-tl-range" name="tl-range" data-act="tl-range" aria-label="How far ahead">${TL_RANGES.map(([n, label]) =>
+      `<option value="${n}"${n === days ? ' selected' : ''}>${esc(label)}</option>`).join('')}</select></span>` : '';
+    return html ? section('timeline', title, `<div class="hw-card hw-tl">${html}</div>`, null, pick) : '';
   }
 
   function weekHTML(st) {
@@ -2047,6 +2070,11 @@
       if (x.closest('[data-ref="editor"]')) return;
       if (x.name === 'kid' && x.tagName === 'SELECT') { chosen = x.value; st.form = null; reload(st); return; }
       if (x.dataset.act === 'kid-on') { write(st, () => run(sb().rpc('save_homework_kid', { p_kid: st.kid, p_active: x.checked })), () => toast(x.checked ? `Homework is on for ${kidName(st)}` : `Homework is off for ${kidName(st)}`)); return; }
+      if (x.dataset.act === 'tl-range') {
+        const n = Number(x.value);
+        if (TL_RANGES.some((r) => r[0] === n)) { st.tlDays = n; tlStore.set(n); draw(st); }
+        return;
+      }
       if (x.dataset.act === 'points-on') { write(st, () => saveKid(st, { points_on: x.checked }), () => toast(x.checked ? 'Points are on' : 'Points are off')); return; }
       if (x.dataset.act === 'link-coach') {
         const l = st.links.find((y) => y.id === x.dataset.link);

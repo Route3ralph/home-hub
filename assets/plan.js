@@ -1278,7 +1278,7 @@
     const l = langOf(x.lang);
     const today = x.today;
     if (!isDay(today)) return '';
-    const n = Math.max(7, Math.min(TL_MAX, Math.round(Number(x.days)) || TL_DAYS));
+    const n = Math.max(3, Math.min(TL_MAX, Math.round(Number(x.days)) || TL_DAYS));
     const end = addDays(today, n - 1);
     const open = (Array.isArray(items) ? items : []).map((a, i) => ({ a, i }))
       .filter(({ a }) => isOpen(a) && isDay(a.due_date))
