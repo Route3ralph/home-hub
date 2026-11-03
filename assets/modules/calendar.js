@@ -380,7 +380,7 @@
     main.innerHTML = `
       <div class="page-head cal-head">
         <div><p class="eyebrow">Calendar</p><h1>${esc(title)}</h1></div>
-        <div class="page-actions"><button type="button" class="btn btn-primary cal-btn" data-act="add">+ Event</button></div>
+        <div class="page-actions"><button type="button" class="btn cal-btn" data-act="print">Print</button><button type="button" class="btn btn-primary cal-btn" data-act="add">+ Event</button></div>
       </div>
       <div class="cal-toolbar">
         <div class="cal-nav">
@@ -677,6 +677,7 @@
         if (location.hash === '#/calendar') core.route();
         else location.hash = '#/calendar';
       } else if (a === 'add') openForm({ date: addDay(st), responsible_id: onlyChosen(st) });
+      else if (a === 'print') openPrintForm(st);
       return;
     }
     const view = t.closest('[data-view]');
@@ -1285,6 +1286,155 @@
       repeat_weekdays: weekdays,
       repeat_until: until || null,
     };
+  }
+
+  // ============================================
+  // PRINT: one person's (or the whole family's) day or week, on paper
+  // ============================================
+  // A sheet for the fridge or the car: who (a person, or Family: everyone and the house), a day or a week
+  // (Monday to Sunday), a week as seven columns or one section per day, in English or Spanish (a person's
+  // own language first). Each line: the time, the title, where, who else, and the day's own note. Open
+  // tasks get a box to tick; cancelled days, done tasks and project days between a job's start and finish
+  // are left out. Built from agenda() and google_items(), like the calendar; printed with the browser's
+  // own print, from a sheet that only shows on paper (styles.css hides the rest of the page).
+  const PRINT_WORDS = {
+    en: {
+      days: WD_LONG, months: MONTHS, allDay: 'All day', with: 'with', family: 'Family', nothing: 'Nothing planned.',
+      sched: (who) => `${who}'s schedule`, famSched: 'Family schedule', weekOf: (d) => `Week of ${d}`,
+      date: (wd, d, m, y) => `${wd}, ${m} ${d}${y ? `, ${y}` : ''}`, printed: (d) => `Printed ${d}`, private: 'Private item',
+    },
+    es: {
+      days: ['lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado', 'domingo'],
+      months: ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'],
+      allDay: 'Todo el día', with: 'con', family: 'Familia', nothing: 'Nada planeado.',
+      sched: (who) => `Horario de ${who}`, famSched: 'Horario de la familia', weekOf: (d) => `Semana del ${d}`,
+      date: (wd, d, m, y) => `${wd} ${d} de ${m}${y ? ` de ${y}` : ''}`, printed: (d) => `Impreso el ${d}`, private: 'Asunto privado',
+    },
+  };
+  const firstName = (p) => String((p && p.name) || '').trim().split(/\s+/)[0] || '';
+
+  function printDate(lang, iso, withWeekday) {
+    const w = PRINT_WORDS[lang];
+    const d = Number(iso.slice(8, 10));
+    const m = w.months[Number(iso.slice(5, 7)) - 1];
+    const y = iso.slice(0, 4) === dates.today().slice(0, 4) ? '' : iso.slice(0, 4);
+    const wd = withWeekday ? w.days[dates.isoWeekday(iso) - 1] : '';
+    if (!withWeekday) return lang === 'es' ? `${d} de ${m}${y ? ` de ${y}` : ''}` : `${m} ${d}${y ? `, ${y}` : ''}`;
+    const s = w.date(wd, d, m, y);
+    return s.charAt(0).toUpperCase() + s.slice(1);
+  }
+  // English keeps the calendar's '4:00–5:00pm'; Spanish reads the 24-hour clock ('16:00–17:00').
+  function printTime(lang, it) {
+    if (!it.local_start) return it.kind === 'task' ? '' : PRINT_WORDS[lang].allDay;
+    if (lang !== 'es') return fmt.range(Object.assign({}, it, { end_day: it.day }));
+    const t = (x) => { const [h, m] = String(x).split(':'); return `${Number(h) % 24}:${m}`; };
+    return it.local_end ? `${t(it.local_start)}–${t(it.local_end)}` : t(it.local_start);
+  }
+  // Who else, from the reader's side: on Lorena's sheet "con Max" (she's in charge) or "Ralph" (she's along);
+  // on the family's, "Lorena · con Max".
+  function printWho(lang, it, personId) {
+    const w = PRINT_WORDS[lang];
+    const resp = v2.person(it.responsible_id);
+    const along = others(it.responsible_id, it.participant_ids).filter((id) => id !== personId).map((id) => firstName(v2.person(id))).filter(Boolean);
+    const withText = along.length ? `${w.with} ${along.join(', ')}` : '';
+    if (!personId || !resp) return [resp ? firstName(resp) : '', withText].filter(Boolean).join(' · ');
+    if (resp.id === personId) return withText;
+    return [firstName(resp), withText].filter(Boolean).join(' · ');
+  }
+  // The items for one day of the sheet, in the calendar's order.
+  function printDayItems(items, day) {
+    return items.filter((it) => {
+      if (it.status === 'cancelled' || it.status === 'done' || it.status === 'skipped') return false;
+      if (it.kind === 'project') return it.day === day;
+      return it.all_day && !it.local_start ? covers(it, day) : it.day === day;
+    }).sort(byTime);
+  }
+  function printLine(lang, it, personId) {
+    const w = PRINT_WORDS[lang];
+    const title = it.private ? w.private : it.kind === 'project' ? barLabel(it) : String(it.title || '').trim();
+    const extra = [it.location, printWho(lang, it, personId)].filter(Boolean).join(' · ');
+    return `<li class="ps-item${it.kind === 'task' ? ' ps-task' : ''}">
+      <span class="ps-time">${it.kind === 'task' ? '<span class="ps-box" aria-hidden="true"></span>' : ''}${esc(printTime(lang, it))}</span>
+      <span class="ps-what"><b>${esc(title)}</b>${extra ? ` <span class="ps-extra">${esc(extra)}</span>` : ''}${it.day_note ? `<span class="ps-note">${esc(it.day_note)}</span>` : ''}</span>
+    </li>`;
+  }
+
+  // The sheet's HTML. opts: { who: person id or 'family', lang, range: 'day'|'week', layout: 'columns'|'days', day, items }.
+  function printSheetHTML(opts) {
+    const w = PRINT_WORDS[opts.lang];
+    const person = opts.who === 'family' ? null : v2.person(opts.who);
+    const personId = person ? person.id : null;
+    const mine = person ? opts.items.filter((it) => matches(it, new Set([personId]))) : opts.items;
+    const days = opts.range === 'day' ? [opts.day] : Array.from({ length: 7 }, (x, i) => dates.addDays(dates.mondayOf(opts.day), i));
+    const title = person ? w.sched(firstName(person)) : w.famSched;
+    const when = opts.range === 'day' ? printDate(opts.lang, opts.day, true) : w.weekOf(printDate(opts.lang, days[0], false));
+    const dayBlock = (day) => {
+      const list = printDayItems(mine, day);
+      return `<section class="ps-day"><h2>${esc(printDate(opts.lang, day, true))}</h2>${list.length
+        ? `<ul>${list.map((it) => printLine(opts.lang, it, personId)).join('')}</ul>` : `<p class="ps-empty">${esc(w.nothing)}</p>`}</section>`;
+    };
+    const columns = opts.range === 'week' && opts.layout === 'columns';
+    return `<header class="ps-head"><h1>${esc(title)}</h1><p>${esc(when)}</p></header>
+      <div class="${columns ? 'ps-cols' : 'ps-list'}">${days.map(dayBlock).join('')}</div>
+      <p class="ps-foot">${esc(w.printed(printDate(opts.lang, dates.today(), false)))}</p>`;
+  }
+
+  function openPrintForm(st) {
+    const people = v2.people().filter((p) => p.active !== false);
+    const only = onlyChosen(st);
+    const day = st.view === 'month' ? st.selected : (st.anchor >= st.range.from && st.anchor <= st.range.to ? st.anchor : st.range.from);
+    core.openForm({
+      title: 'Print a schedule',
+      intro: 'A day or a week on paper, for one person or the whole family.',
+      fields: [
+        { name: 'who', label: 'Whose', type: 'select', value: only || 'family',
+          options: [['family', 'Family (everyone and the house)']].concat(people.map((p) => [p.id, p.name])) },
+        { type: 'row', fields: [
+          { name: 'range', label: 'How much', type: 'select', value: 'week', options: [['day', 'One day'], ['week', 'The week (Mon–Sun)']] },
+          { name: 'day', label: 'Day (or any day of the week)', type: 'date', value: day, required: true },
+        ] },
+        { name: 'layout', label: 'Week layout', type: 'select', value: 'columns',
+          options: [['columns', 'Seven columns (one page)'], ['days', 'One section per day (bigger)']], showIf: (v) => v.range === 'week' },
+        { name: 'lang', label: 'Language', type: 'select', value: '', help: 'Blank: the person\'s own language (English for Family).',
+          options: [['', 'Their language'], ['en', 'English'], ['es', 'Español']] },
+      ],
+      submitLabel: 'Print',
+      onSubmit: (v) => printSchedule(v),
+    });
+  }
+
+  async function printSchedule(v) {
+    if (!isIso(v.day)) throw new Error('Choose a day.');
+    const person = v.who === 'family' ? null : v2.person(v.who);
+    if (v.who !== 'family' && !person) throw new Error('Choose whose schedule.');
+    const lang = v.lang === 'es' || v.lang === 'en' ? v.lang : (person && person.language === 'es' ? 'es' : 'en');
+    const range = v.range === 'day' ? { from: v.day, to: v.day } : { from: dates.mondayOf(v.day), to: dates.addDays(dates.mondayOf(v.day), 6) };
+    const google = loadGoogle(range);
+    const rows = await v2.call('agenda', { p_from: range.from, p_to: range.to });
+    const g = await google;
+    const items = (Array.isArray(rows) ? rows : []).concat(g.items);
+    let sheet = document.getElementById('print-sheet');
+    if (!sheet) {
+      sheet = document.createElement('div');
+      sheet.id = 'print-sheet';
+      document.body.appendChild(sheet);
+    }
+    sheet.lang = lang;
+    sheet.innerHTML = printSheetHTML({ who: person ? person.id : 'family', lang, range: v.range === 'day' ? 'day' : 'week',
+      layout: v.layout === 'days' ? 'days' : 'columns', day: v.day, items });
+    // Seven columns fit a page on its side; the browser's dialog can still change it.
+    let pageSize = document.getElementById('print-page');
+    if (!pageSize) {
+      pageSize = document.createElement('style');
+      pageSize.id = 'print-page';
+      document.head.appendChild(pageSize);
+    }
+    pageSize.textContent = v.range !== 'day' && v.layout !== 'days' ? '@page { size: landscape; margin: 10mm; }' : '@page { margin: 12mm; }';
+    document.body.classList.add('printing');
+    const done = () => document.body.classList.remove('printing');
+    window.addEventListener('afterprint', done, { once: true });
+    // The form closes first, so the dialog isn't on the paper.
+    setTimeout(() => { try { window.print(); } finally { if (!('onafterprint' in window)) done(); } }, 50);
   }
 
   // ============================================
