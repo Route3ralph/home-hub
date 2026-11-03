@@ -27,6 +27,10 @@
 //   New UIDs           On 0009, the link removed and added again, every read with new UIDs: the parents' check shows
 //                      each assignment once; Looks right, and their New from school for Jordan each once; Check now
 //                      again adds nothing; Jordan's New from school each once.
+//   0015 on a hub      The owner pastes 0010 to 0015 while the hub runs. The school's feed dates each item the day it
+//                      was assigned: Alex's Change dates → The day it was assigned; New from school holds what was assigned
+//                      in the last 10 days, each "assigned …"; Add asks for the due date; Jordan's Plan with Pat too; a
+//                      later read that moves an item's day moves no due date.
 // Run through tests/realdb/run.sh (its own copy of the v5 template database).
 const { setup, SCHOOL_CALLS, COACH_CALLS } = require('./lib');
 
@@ -436,6 +440,74 @@ const SOON_LINES = ['History · Read chapter 9', 'Math · Homework', 'Science ·
     check('Jordan\'s New from school (4): each once', (await tc(jordan.page, '#hw-school-h')) === 'New from school (4)' && same(his, SOON_SORTED),
       { head: await tc(jordan.page, '#hw-school-h'), his });
     await jordan.context.close();
+  });
+
+  await flow('0015: the day each was assigned', async () => {
+    for (const m of ['0010_hearth_people', '0011_project_guests', '0012_coach_rewards', '0013_recipes', '0014_day_language', '0015_school_assigned_dates']) {
+      const r = await h.migrate(`supabase/migrations/${m}.sql`);
+      check(`the owner pastes ${m} while the hub runs: it applies`, !r.error, r.error);
+    }
+    check('... the schema version is 15', (await one('select public.hub_schema_version() as v')).v === '15');
+    // Wed Dec 2, 4:00pm in New York. The feed puts each item on the day it was assigned (one-day events).
+    const given = ics([
+      { uid: 'g-1', summary: 'History - 7 (B): Letter to the teacher', lines: ['DTSTART;VALUE=DATE:20261201', 'DTEND;VALUE=DATE:20261202'] },
+      { uid: 'g-2', summary: 'Math - 7 (A): Equations worksheet', lines: ['DTSTART;VALUE=DATE:20261124', 'DTEND;VALUE=DATE:20261125'] },
+      { uid: 'g-3', summary: 'Geography - 7: Map of the rivers', lines: ['DTSTART;VALUE=DATE:20261119', 'DTEND;VALUE=DATE:20261120'] },
+    ]);
+    h.school.serve(SECRET, given);
+    await h.setClock('2026-12-02T21:00:00Z');
+    await h.mark();
+    const { page, context } = await open({ email: 'alex@example.com', path: '/#/homework', label: 'school-assigned-alex' });
+    await until(async () => !!(await page.$(`${FEED('assignments')} [data-act="school-redate"]`)), 8000);
+    check('on 15, the checked Assignments link says how its dates are read, with Change dates', (await tc(page, `${FEED('assignments')} .hw-feed-dates`)) === 'Due dates: each item\'s last day.',
+      await tc(page, FEED('assignments')));
+    await page.click('[data-row="school"] [data-act="school-now"]');
+    await toastIs(page, /^Checked/);
+    await page.click(`${FEED('assignments')} [data-act="school-redate"]`);
+    await page.click('[data-ref="school-check"] [data-act="school-dates"][data-rule="assigned"]');
+    await toastIs(page, /^Dates checked: the day each was assigned/);
+    const fc = await one(`select date_rule, date_shift, checked from school_feeds where id = '${feedId}'`);
+    check('The day it was assigned: check_school_feed(the link, assigned, 0) in the real database', same(fc, { date_rule: 'assigned', date_shift: '0', checked: 't' }), fc);
+    const NEW = '[data-row="school"] details[data-keep="new"]';
+    await until(async () => !!(await page.$(NEW)), 6000);
+    await page.click(`${NEW} summary`);
+    const rows = await texts(page, `${NEW} .hw-school-row > span:first-child`);
+    check('New from school: what was assigned in the last 10 days (not the map, 13 days ago), each "assigned …"',
+      same(rows, ['Math · Equations worksheet · assigned Tue Nov 24', 'History · Letter to the teacher · assigned Tue Dec 1']), rows);
+    const row = (t) => `${NEW} .hw-school-row:has-text("${t}")`;
+    await page.click(`${row('Equations worksheet')} [data-do="add"]`);
+    await page.fill(`${row('Equations worksheet')} form[data-form="schooldue"] input[name="due"]`, '2026-12-04');
+    await page.click(`${row('Equations worksheet')} form[data-form="schooldue"] button[type="submit"]`);
+    await toastIs(page, /^On Jordan's homework, due/);
+    const eq = await one(`select a.added_by, a.due_date::text as due, i.applied ->> 'due_date' as applied from assignments a join school_items i on i.assignment_id = a.id where a.title = 'Equations worksheet'`);
+    check('Add with Fri Dec 4: an assignment from school due that day; the feed keeps no due date it wrote', same(eq, { added_by: 'school', due: '2026-12-04', applied: null }), eq);
+    let f = await failures();
+    check('0015, the parents\' page: no API request failed', !f.length, f);
+    await context.close();
+
+    const jordan = await open({ phone: true, path: `/day.html?t=${P.jordan.day_token}#homework`, label: 'school-assigned-jordan' });
+    await until(async () => !!(await jordan.page.$('.hw-school input[name="school-due"]')), 8000);
+    const his = await texts(jordan.page, '.hw-school .hw-school-line');
+    check('Jordan\'s New from school: the letter, "assigned …", with a Due box', his.length === 1 && /^History · Letter to the teacher · assigned /.test(his[0]), his);
+    await jordan.page.fill('.hw-school input[name="school-due"]', '2026-12-08');
+    await jordan.page.click('.hw-school [data-act="hw-school-pat"]');
+    await until(async () => !(await jordan.page.$('.hw-school')), 8000);
+    const letter = await one("select added_by, due_date::text as due from assignments where title = 'Letter to the teacher'");
+    check('Plan with Pat with Tue Dec 8: school_item_by_token with p_due, in the real database', same(letter, { added_by: 'school', due: '2026-12-08' }), letter);
+    await jordan.context.close();
+
+    // The school moves the letter's day: its due date doesn't move.
+    h.school.serve(SECRET, ics([
+      { uid: 'g-4', summary: 'History - 7 (B): Letter to the teacher', lines: ['DTSTART;VALUE=DATE:20261202', 'DTEND;VALUE=DATE:20261203'] },
+      { uid: 'g-5', summary: 'Math - 7 (A): Equations worksheet', lines: ['DTSTART;VALUE=DATE:20261124', 'DTEND;VALUE=DATE:20261125'] },
+    ]));
+    const r = await checkNowAt('2026-12-02T21:05:00Z');
+    const moved = await one("select due_date::text as due from assignments where title = 'Letter to the teacher'");
+    const st = await rpcAs('alex@example.com', 'school_feed_status', { p_kid: P.jordan.id });
+    check('a later read moves the letter\'s day: its due date stays Dec 8, and nothing is "moved"', r.status === 200 && moved.due === '2026-12-08' && ok(st) && same(st.body.moved, []),
+      { r: r.body, moved, st: st.body && st.body.moved });
+    f = await failures();
+    check('0015: no API request failed', !f.length, f);
   });
 
   await h.finish();
