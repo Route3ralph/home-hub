@@ -472,8 +472,9 @@ const SOON_LINES = ['History · Read chapter 9', 'Math · Homework', 'Science ·
     await until(async () => !!(await page.$(NEW)), 6000);
     await page.click(`${NEW} summary`);
     const rows = await texts(page, `${NEW} .hw-school-row > span:first-child`);
-    check('New from school: what was assigned in the last 10 days (not the map, 13 days ago), each "assigned …"',
-      same(rows, ['Math · Equations worksheet · assigned Tue Nov 24', 'History · Letter to the teacher · assigned Tue Dec 1']), rows);
+    check('New from school: what was assigned in the last 10 days (not the map, 13 days ago), each "assigned …" (the four still to come from before too)',
+      same(rows.slice(0, 2), ['Math · Equations worksheet · assigned Tue Nov 24', 'History · Letter to the teacher · assigned Tue Dec 1'])
+      && !rows.some((x) => /Map of the rivers/.test(x)) && rows.every((x) => / · assigned /.test(x)), rows);
     const row = (t) => `${NEW} .hw-school-row:has-text("${t}")`;
     await page.click(`${row('Equations worksheet')} [data-do="add"]`);
     await page.fill(`${row('Equations worksheet')} form[data-form="schooldue"] input[name="due"]`, '2026-12-04');
@@ -488,10 +489,12 @@ const SOON_LINES = ['History · Read chapter 9', 'Math · Homework', 'Science ·
     const jordan = await open({ phone: true, path: `/day.html?t=${P.jordan.day_token}#homework`, label: 'school-assigned-jordan' });
     await until(async () => !!(await jordan.page.$('.hw-school input[name="school-due"]')), 8000);
     const his = await texts(jordan.page, '.hw-school .hw-school-line');
-    check('Jordan\'s New from school: the letter, "assigned …", with a Due box', his.length === 1 && /^History · Letter to the teacher · assigned /.test(his[0]), his);
-    await jordan.page.fill('.hw-school input[name="school-due"]', '2026-12-08');
-    await jordan.page.click('.hw-school [data-act="hw-school-pat"]');
-    await until(async () => !(await jordan.page.$('.hw-school')), 8000);
+    const LETTER = '.hw-school .hw-school-item:has-text("Letter to the teacher")';
+    check('Jordan\'s New from school: the letter, "assigned yesterday", with a Due box (not the worksheet, made homework)', his.includes('History · Letter to the teacher · assigned yesterday')
+      && !his.some((x) => /Equations/.test(x)) && !!(await jordan.page.$(`${LETTER} input[name="school-due"]`)), his);
+    await jordan.page.fill(`${LETTER} input[name="school-due"]`, '2026-12-08');
+    await jordan.page.click(`${LETTER} [data-act="hw-school-pat"]`);
+    await until(async () => !(await jordan.page.$(LETTER)), 8000);
     const letter = await one("select added_by, due_date::text as due from assignments where title = 'Letter to the teacher'");
     check('Plan with Pat with Tue Dec 8: school_item_by_token with p_due, in the real database', same(letter, { added_by: 'school', due: '2026-12-08' }), letter);
     await jordan.context.close();
