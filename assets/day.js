@@ -110,6 +110,7 @@
       see_day: 'See my day',
       email_title: 'Morning email',
       switch_lang: 'En español',
+      lang_label: 'Language', lang_too_many: "That's a lot of changes for one day. Try again tomorrow.",
       hint_label: 'Tip',
       hint_ios: 'Keep this page handy: tap the Share button, then "Add to Home Screen".',
       hint_android: 'Keep this page handy: tap the ⋮ menu, then "Add to Home screen".',
@@ -236,6 +237,7 @@
       see_day: 'Ver mi día',
       email_title: 'Correo de la mañana',
       switch_lang: 'In English',
+      lang_label: 'Idioma', lang_too_many: 'Son muchos cambios para un día. Inténtalo de nuevo mañana.',
       hint_label: 'Consejo',
       hint_ios: 'Tenla a mano: toca el botón Compartir y luego "Agregar a inicio".',
       hint_android: 'Tenla a mano: toca el menú ⋮ y luego "Agregar a la pantalla principal".',
@@ -634,15 +636,69 @@
   // ============================================
   // VIEWS
   // ============================================
-  function headerHTML() {
+  // withLangs: the day view's header, with English | Español at its foot (from 0014).
+  function headerHTML(withLangs) {
     const person = state.person || {};
     return `<header class="day-head">
       <p class="eyebrow">${esc(t('my_day'))}</p>
       <h1>${esc(t('hi', { name: firstName(person.name) }))}</h1>
       <p class="meta">${esc(fmt.long(state.today))}</p>
+      ${withLangs ? langHTML() : ''}
     </header>`;
   }
   const footerHTML = () => `<p class="footer">${esc(t('footer'))}</p>`;
+
+  // ============================================
+  // ENGLISH | ESPAÑOL (from 0014, docs/v2-design.md §19): the person's own language, on the day view only.
+  // set_language_by_token(p_token, p_lang) sets their people.language (their My day, morning email and
+  // printed schedule) and answers get_person_day, so the page redraws from that answer. A database
+  // before 0014 has no such function: the switch goes for this visit, with no message. Any other
+  // failure: the usual red toast, and the language stays as it was.
+  // ============================================
+  let langSwitch = true;   // false once set_language_by_token turned out to be missing
+  let langBusy = false;    // a set_language_by_token request is on its way
+  const missingFn = (err) => {
+    const code = String((err && err.code) || '');
+    return code === 'PGRST202' || code === '42883'
+      || /could not find the function|function .*does not exist/i.test(String((err && err.message) || ''));
+  };
+  function langHTML() {
+    if (!langSwitch) return '';
+    // Each word in its own language, so it reads the same whichever is on.
+    const b = (l, word) => `<button type="button" class="btn day-lang-opt" data-act="set-lang" data-lang="${l}" lang="${l}"
+        aria-pressed="${lang === l ? 'true' : 'false'}"${langBusy ? ' disabled' : ''}>${word}</button>`;
+    return `<div class="day-langs" role="group" aria-label="${esc(t('lang_label'))}">${b('en', 'English')}${b('es', 'Español')}</div>`;
+  }
+  async function setLang(l) {
+    if (langBusy || !state || view !== 'day' || (l !== 'en' && l !== 'es') || l === lang) return;
+    langBusy = true;
+    busy += 1;
+    root.querySelectorAll('[data-act="set-lang"]').forEach((b) => { b.disabled = true; });
+    let day;
+    try {
+      day = await rpc(one(() => sb.rpc('set_language_by_token', { p_token: token, p_lang: l })));
+    } catch (err) {
+      if (missingFn(err)) langSwitch = false;
+      else toast(/Too many changes/i.test(String((err && err.message) || '')) ? t('lang_too_many') : friendly(err), { error: true });
+      day = undefined;
+    } finally {
+      langBusy = false;
+      busy -= 1;
+    }
+    if (day === undefined) {
+      if (view === 'day') { renderDay(true); focusLang(lang); }
+      return;
+    }
+    if (!day || typeof day !== 'object') { linkGone(); return; }
+    lastLoad = Date.now();
+    accept(day);
+    if (view === 'day') { renderDay(true); focusLang(lang); }
+    afterDay(day);
+  }
+  function focusLang(l) {
+    const b = root.querySelector(`[data-act="set-lang"][data-lang="${l}"]`);
+    if (b) b.focus();
+  }
 
   // One item as a row (the shared .irow styles): time, a box to tick for their own open tasks,
   // the title with place and contact, and a call button for a linked contact with a phone.
@@ -750,7 +806,7 @@
     // v1.2: a helper with the list on her My day gets its button under the greeting.
     const listButton = count == null ? ''
       : `<p class="day-actions day-shop"><a class="btn day-big day-list-btn" href="#list">${esc(t('shopping_list'))} · ${count} ›</a></p>`;
-    root.innerHTML = `${headerHTML()}${cardHTML()}${listButton}${hintHTML()}
+    root.innerHTML = `${headerHTML(true)}${cardHTML()}${listButton}${hintHTML()}
       ${notice ? `<p class="banner banner-warn day-notice" role="status">${esc(notice)}</p>` : ''}
       ${parts.join('')}
       ${footerHTML()}`;
@@ -3329,6 +3385,7 @@
     if (act.dataset.act === 'hint-off') dismissHint();
     else if (act.dataset.act === 'retry') start();
     else if (act.dataset.act === 'confirm' || act.dataset.act === 'stop') answerAsk(act);
+    else if (act.dataset.act === 'set-lang') setLang(act.dataset.lang);
     else if (act.dataset.act === 'lang') { lang = lang === 'es' ? 'en' : 'es'; renderConfirmOnly(); }
     else if (act.dataset.act === 'back') { e.preventDefault(); backToDay(); }
     else if (act.dataset.act === 'list-retry') { if (outbox) outbox.kick(); pollList(); }

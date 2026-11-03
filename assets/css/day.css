@@ -46,6 +46,16 @@
 
 .day-notice { margin: 14px 0 0; }
 
+/* ---------- English | Español (from 0014) ---------- */
+.day-langs { display: inline-flex; margin: 8px 0 0; border: 1px solid var(--border); border-radius: 999px; overflow: hidden; }
+.btn.day-lang-opt {
+  min-height: 44px; min-width: 44px; padding: 8px 16px; border: 0; border-radius: 0;
+  background: var(--surface); color: var(--text-2); font-size: 15px;
+}
+.btn.day-lang-opt + .btn.day-lang-opt { border-left: 1px solid var(--border); }
+.btn.day-lang-opt[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent); font-weight: 700; }
+.btn.day-lang-opt:disabled { opacity: 0.7; }
+
 /* ---------- #confirm and #stop ---------- */
 .day-panel {
   margin-top: 20px; padding: 18px;

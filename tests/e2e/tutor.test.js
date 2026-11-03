@@ -179,6 +179,7 @@ async function tokenRpcs(page, db) {
     db.calls.every((c) => TUTOR_FNS.test(c.name)) && !requests.some((u) => /\/auth\/v1\/|\/rest\/v1\/(?!rpc\/tutor_)/.test(u)),
     requests.filter((u) => /test\.supabase\.co/.test(u)).join(' | '));
   check('?h=: the link\'s token is never sent as a signed-in user', db.calls.every((c) => !/^Bearer eyJ/.test(c.auth)));
+  check('?h=: no English | Español switch (My day\'s only, from 0014)', !(await page.$('.day-langs')) && !(await page.$('[data-act="set-lang"]')));
   check('?h=: the title and the page\'s language come from the link', (await page.title()) === 'Homework · Jordan' && (await page.evaluate(() => document.documentElement.lang)) === 'en', await page.title());
   check('?h=: "Homework · Jordan", "Hi Pat Lee, tutor · Link ends Apr 30", and the first coaching line',
     (await text(page, '.plan-head h1')) === 'Homework · Jordan' && (await text(page, '.plan-head .meta')) === 'Hi Pat Lee, tutor · Link ends Apr 30'

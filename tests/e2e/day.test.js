@@ -280,6 +280,18 @@ const FAKES = {
     who.person.digest_enabled = false;
     return true;
   },
+  // From 0014 (docs/v2-design.md §19): the person's language, then get_person_day's answer. db.noLangFn: a
+  // database before 0014 (PostgREST's 404 PGRST202); db.langError refuses the next one with [status, code, message].
+  set_language_by_token: (db, b) => {
+    if (db.noLangFn) return fail(404, 'PGRST202', 'Could not find the function public.set_language_by_token(p_lang, p_token) in the schema cache');
+    if (JSON.stringify(Object.keys(b).sort()) !== '["p_lang","p_token"]') return fail(404, 'PGRST202', 'Could not find the function');
+    const who = db.my[b.p_token];
+    if (!who) return null;
+    if (db.langError) { const e = db.langError; db.langError = null; return fail(...e); }
+    if (b.p_lang !== 'en' && b.p_lang !== 'es') return fail(400, '22023', 'Choose English or Español.');
+    who.person.language = b.p_lang;
+    return FAKES.get_person_day(db, { p_token: b.p_token });
+  },
 };
 // v1.3: Jordan's seven homework functions and the tutor link's four, through mock.js's homeworkTokenRpc (the
 // migration's rules and shapes). db.hwError refuses the next homework write with [status, code, message].
@@ -853,6 +865,7 @@ const HW_AUDIO_DROP = `(${HW_STUBS})(); (${HW_CLOCKED})(); (${HW_WAKE_DROP})();`
     && (await text(page, '[data-act="confirm"]')) === 'Yes, send me the morning email' && !(await page.$('.day-sec')));
   check('#confirm: nothing is confirmed on load (email scanners open links)', calls(db, 'confirm_digest').length === 0 && calls(db, 'stop_digest').length === 0
     && db.my[TAYLOR].person.email_confirmed === false, db.calls.map((c) => c.name).join(','));
+  check('#confirm: no English | Español switch (the day view\'s only)', !(await page.$('.day-langs')));
   await page.click('[data-act="confirm"]');
   check('#confirm (an older email\'s link, with t= too): the button sends confirm_digest with the code only', await until(async () => calls(db, 'confirm_digest').length === 1)
     && same(calls(db, 'confirm_digest')[0].body, { p_confirm: CONFIRM }), JSON.stringify(calls(db, 'confirm_digest').map((c) => c.body)));
@@ -883,6 +896,66 @@ const HW_AUDIO_DROP = `(${HW_STUBS})(); (${HW_CLOCKED})(); (${HW_WAKE_DROP})();`
     && !(await page.$eval('[data-act="confirm"]', (b) => b.disabled)) && (await text(page, '[data-act="confirm"]')) === 'Yes, send me the morning email');
   await page.context().close();
 
+  // =====================================================================
+  // English | Español (from 0014, docs/v2-design.md §19): the person flips their own language
+  // =====================================================================
+  {
+    ({ page, db } = await open({ label: 'lang', path: `/day.html?t=${TAYLOR}`, ctx: phone(), allowConsole: /status of 400|ERR_INTERNET_DISCONNECTED/ }));
+    const langs = () => page.$$eval('.day-langs button', (bs) => bs.map((b) => ({ text: b.textContent.trim(), lang: b.getAttribute('lang'), pressed: b.getAttribute('aria-pressed') })));
+    check('language: an English | Español switch at the foot of the header, English pressed',
+      same(await langs(), [{ text: 'English', lang: 'en', pressed: 'true' }, { text: 'Español', lang: 'es', pressed: 'false' }])
+      && (await page.$eval('.day-langs', (g) => g.getAttribute('role') === 'group' && g.getAttribute('aria-label') === 'Language'))
+      && !!(await page.$('.day-head > .day-langs')), JSON.stringify(await langs()));
+    const sizes = await page.$$eval('.day-langs button', (bs) => bs.map((b) => { const r = b.getBoundingClientRect(); return [r.width, r.height]; }));
+    check('language: both buttons are at least 44px to tap', sizes.length === 2 && sizes.every(([w, h]) => w >= 44 && h >= 44), JSON.stringify(sizes));
+    check('language 390px: no sideways page scroll', await noSideScroll(page));
+    await page.screenshot({ path: SHOTS + 'day-lang-390.png' });
+    await page.click('.day-langs [data-lang="es"]');
+    await until(async () => (await text(page, '.day-head h1')) === 'Hola, Taylor');
+    check('language: Español sends set_language_by_token({ p_token, p_lang: "es" })',
+      same(calls(db, 'set_language_by_token').map((c) => c.body), [{ p_token: TAYLOR, p_lang: 'es' }]), JSON.stringify(calls(db, 'set_language_by_token').map((c) => c.body)));
+    check('language: the page redraws in Spanish from the answer (greeting, sections, html lang, title, Español pressed)',
+      (await text(page, '.day-head h1')) === 'Hola, Taylor' && same((await texts(page, '.day-sec .sec-head > span:first-child')).slice(0, 1), ['Hoy'])
+      && (await page.evaluate(() => document.documentElement.lang)) === 'es' && (await page.title()) === 'Taylor · Mi día'
+      && same((await langs()).map((b) => b.pressed), ['false', 'true']) && (await page.$eval('.day-langs', (g) => g.getAttribute('aria-label'))) === 'Idioma',
+      `${await text(page, '.day-head h1')} / ${await page.title()} / ${JSON.stringify(await langs())}`);
+    check('language: the person\'s language is saved (the fake\'s people.language)', db.my[TAYLOR].person.language === 'es');
+    check('language: the button keeps the focus after the redraw', await page.evaluate(() => document.activeElement && document.activeElement.dataset.lang === 'es'));
+    await page.click('.day-langs [data-lang="es"]');
+    await page.waitForTimeout(200);
+    check('language: tapping the language already on sends nothing', calls(db, 'set_language_by_token').length === 1);
+    await page.click('.day-langs [data-lang="en"]');
+    await until(async () => (await text(page, '.day-head h1')) === 'Hi, Taylor');
+    check('language: and back to English', (await text(page, '.day-head h1')) === 'Hi, Taylor' && db.my[TAYLOR].person.language === 'en'
+      && same(calls(db, 'set_language_by_token').map((c) => c.body.p_lang), ['es', 'en']) && same((await langs()).map((b) => b.pressed), ['true', 'false']));
+    // A refusal (too many changes today): the red toast, and the language stays.
+    db.langError = [400, 'P0001', 'Too many changes today. Try again tomorrow.'];
+    await page.click('.day-langs [data-lang="es"]');
+    await page.waitForSelector('.toast-error');
+    check('language refused: the usual red toast, and the page stays in English',
+      (await text(page, '.toast-error')) === "That's a lot of changes for one day. Try again tomorrow." && (await text(page, '.day-head h1')) === 'Hi, Taylor'
+      && db.my[TAYLOR].person.language === 'en' && same((await langs()).map((b) => b.pressed), ['true', 'false'])
+      && (await page.$$eval('.day-langs button', (bs) => bs.every((b) => !b.disabled))), `${await text(page, '.toast-error')} / ${JSON.stringify(await langs())}`);
+    await page.evaluate(() => document.querySelectorAll('.toast').forEach((x) => x.remove()));
+    db.offline = true;
+    await page.click('.day-langs [data-lang="es"]');
+    await page.waitForSelector('.toast-error');
+    check('language with no connection: says so, the page stays in English', /Can't reach Home Hub/.test(await text(page, '.toast-error')) && (await text(page, '.day-head h1')) === 'Hi, Taylor');
+    db.offline = false;
+    await page.context().close();
+
+    // A database before 0014: the switch shows, a tap finds no function, and the switch goes with no message.
+    const old = dayDb();
+    old.noLangFn = true;
+    ({ page, db } = await open({ label: 'lang-before-0014', path: `/day.html?t=${JORDAN}`, db: old, allowConsole: /status of 404/ }));
+    check('language before 0014: Español pressed for a Spanish speaker', same((await langs()).map((b) => b.pressed), ['false', 'true']));
+    await page.click('.day-langs [data-lang="en"]');
+    await until(async () => !(await page.$('.day-langs')));
+    check('language before 0014: the switch goes, with no error toast, and the page stays in Spanish',
+      !(await page.$('.day-langs')) && !(await page.$('.toast-error')) && (await text(page, '.day-head h1')) === 'Hola, Jordan' && db.my[JORDAN].person.language === 'es');
+    await page.context().close();
+  }
+
   // ---- The confirmation email's link: day.html?c=<secret>#confirm, with no My day token. The page
   // shows only the question: it knows nobody's day, and loads none.
   ({ page, db } = await open({ label: 'confirm-code-only', path: `/day.html?c=${CONFIRM}#confirm` }));
@@ -894,6 +967,7 @@ const HW_AUDIO_DROP = `(${HW_STUBS})(); (${HW_CLOCKED})(); (${HW_WAKE_DROP})();`
   check('?c= only: no name, no My day link and no "See my day" (the page doesn\'t know whose it is)',
     !/Taylor/.test(await text(page, 'main')) && !(await page.$('.day-link')) && !(await page.$('a[href*="t="]')), await text(page, 'main'));
   check('?c= only: the page\'s title', (await page.title()) === 'Morning email · Home Hub', await page.title());
+  check('?c= only: no English | Español switch (only the page\'s own In English / En español)', !(await page.$('.day-langs')) && !(await page.$('[data-act="set-lang"]')));
   await page.click('[data-act="confirm"]');
   check('?c= only: the button sends confirm_digest({ p_confirm }) and says it worked',
     await until(async () => (await text(page, '.day-result')) === "You're all set. Your morning email starts with the next one.")

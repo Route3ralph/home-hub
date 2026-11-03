@@ -1,6 +1,6 @@
 // What the API gives someone signed out (anon) and someone signed in who isn't on the family list,
 // through the PostgREST stand-in on the real database: every public table and every public function.
-// Signed out, only get_shared_project and the twenty-three token functions (TOKEN_FNS) may answer; a
+// Signed out, only get_shared_project and the twenty-four token functions (TOKEN_FNS) may answer; a
 // stranger gets nothing from any table, and from the functions only the harmless HARMLESS ones (and
 // empty lists). The Google Calendar tables and functions (migration 0003), the dinners and the
 // shopping list (migration 0004), and homework (migration 0005) are checked again with rows in their
@@ -13,8 +13,9 @@ const { setup, HOMEWORK_TABLES, HOMEWORK_FNS } = require('./lib');
 
 // The only public functions anon may run: v1's get_shared_project, 0002's five My day functions,
 // 0004's three for the helper's list, 0005's seven for Jordan's homework and four for the tutor link, 0006's
-// one for his New from school, 0007's two for the tutor link's coach view, and 0012's one for the coach's rewards.
-const TOKEN_FNS = ['get_person_day', 'complete_by_token', 'undo_by_token', 'confirm_digest', 'stop_digest', 'get_shared_project',
+// one for his New from school, 0007's two for the tutor link's coach view, 0012's one for the coach's rewards, and 0014's
+// one for My day's English | Español.
+const TOKEN_FNS = ['get_person_day', 'complete_by_token', 'undo_by_token', 'confirm_digest', 'stop_digest', 'set_language_by_token', 'get_shared_project',
   'get_list_by_token', 'add_to_list_by_token', 'buy_item_by_token',
   'homework_by_token', 'step_by_token', 'plan_by_token', 'focus_by_token', 'reward_by_token', 'assignment_by_token', 'homework_prefs_by_token',
   'tutor_view_by_token', 'tutor_assignment_by_token', 'tutor_plan_by_token', 'tutor_step_by_token', 'school_item_by_token',
@@ -455,7 +456,7 @@ const emptyLists = (b) => !!b && typeof b === 'object' && !Array.isArray(b)
     // Pat's token in every other anonymous function: nothing answers it, and nothing changes.
     const elsewhere = {
       get_person_day: { p_token: PAT }, complete_by_token: { p_token: PAT, p_task_id: I.fresh, p_occurrence: '2026-10-27' }, undo_by_token: { p_token: PAT, p_log_id: I.fresh },
-      confirm_digest: { p_confirm: PAT }, stop_digest: { p_token: PAT }, get_shared_project: { share: PAT },
+      confirm_digest: { p_confirm: PAT }, stop_digest: { p_token: PAT }, set_language_by_token: { p_token: PAT, p_lang: 'es' }, get_shared_project: { share: PAT },
       get_list_by_token: { p_token: PAT }, add_to_list_by_token: { p_token: PAT, p_name: 'Bread' }, buy_item_by_token: { p_token: PAT, p_item: I.fresh, p_bought: true, p_seen: '2026-10-27T13:00:00Z' },
     };
     Object.assign(elsewhere, KID(PAT));
@@ -463,7 +464,7 @@ const emptyLists = (b) => !!b && typeof b === 'object' && !Array.isArray(b)
     for (const [f, args] of Object.entries(elsewhere)) { const r = await fn(f, null, args); patElse.push([f, r.status, r.body]); }
     const nothing = ([, st, b]) => (st === 200 && (b === null || b === false)) || st === 204 || (st >= 400 && st < 500 && !!b && !!b.code);
     check('homework, Pat\'s link: its token opens nothing else (every other anonymous function answers null, false or a refusal)',
-      Object.keys(elsewhere).length === 16 && patElse.every(nothing), patElse.filter((x) => !nothing(x)));
+      Object.keys(elsewhere).length === 17 && patElse.every(nothing), patElse.filter((x) => !nothing(x)));
     const unknown = [];
     for (const [f, args] of Object.entries(Object.assign({}, KID('0123456789abcdef0123456789abcdef'), TUTOR('0123456789abcdef0123456789abcdef')))) {
       const r = await fn(f, null, args);
@@ -649,7 +650,7 @@ const emptyLists = (b) => !!b && typeof b === 'object' && !Array.isArray(b)
       reward: 'e0000000-0000-4000-8000-000000000058' };
     const elsewhere = {
       get_person_day: { p_token: PAT }, complete_by_token: { p_token: PAT, p_task_id: I.fresh, p_occurrence: '2026-10-27' }, undo_by_token: { p_token: PAT, p_log_id: I.fresh },
-      confirm_digest: { p_confirm: PAT }, stop_digest: { p_token: PAT }, get_shared_project: { share: PAT },
+      confirm_digest: { p_confirm: PAT }, stop_digest: { p_token: PAT }, set_language_by_token: { p_token: PAT, p_lang: 'es' }, get_shared_project: { share: PAT },
       get_list_by_token: { p_token: PAT }, add_to_list_by_token: { p_token: PAT, p_name: 'Bread' }, buy_item_by_token: { p_token: PAT, p_item: I.fresh, p_bought: true, p_seen: '2026-10-27T13:00:00Z' },
       homework_by_token: { p_token: PAT }, step_by_token: { p_token: PAT, p_step: I.s2, p_action: 'done' }, plan_by_token: { p_token: PAT, p_assignment: I.asg, p_steps: null, p_rev: 1 },
       focus_by_token: { p_token: PAT, p_action: 'start', p_session: I.fresh, p_minutes: 20, p_step: I.s2, p_with: 'alone' },

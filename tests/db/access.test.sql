@@ -43,7 +43,7 @@ select test.is((whoami() -> 'person' ->> 'id')::uuid, test.person('Alex'), 'whoa
 -- people under Calendars to read, and asks for hearth_tags and calendars.sort_by_guest, only on 10.
 -- Migration 0011 (project guests) changes it on purpose again: the client shows a guest their projects, and the parents
 -- Guest access, the Guests card and the Documents link, only on 11 (guests.test.sql).
-select test.is(hub_schema_version(), 13, 'hub_schema_version is 13');
+select test.is(hub_schema_version(), 14, 'hub_schema_version is 14');
 -- 0009 replaces private.school_rows with the same signature: still not a definer function, stable, search_path = '',
 -- and no API role may call it (as 0006 revoked it; 0009 revokes it again). Its private.school_rekey (run once by 0009,
 -- again only by the owner) runs as the owner too, and no API role may call it either.
@@ -106,10 +106,11 @@ select test.is((select string_agg(p.proname, ', ' order by p.proname) from pg_pr
                'add_to_list_by_token, assignment_by_token, buy_item_by_token, coach_note_by_token, coach_reward_by_token, coach_view_by_token, complete_by_token, '
                'confirm_digest, focus_by_token, '
                'get_list_by_token, get_person_day, get_shared_project, homework_by_token, homework_prefs_by_token, plan_by_token, '
-               'reward_by_token, school_item_by_token, step_by_token, stop_digest, tutor_assignment_by_token, tutor_plan_by_token, tutor_step_by_token, '
+               'reward_by_token, school_item_by_token, set_language_by_token, step_by_token, stop_digest, tutor_assignment_by_token, tutor_plan_by_token, tutor_step_by_token, '
                'tutor_view_by_token, undo_by_token',
-               'anon can execute only get_shared_project and the twenty-three token functions (0004 adds the three for the list, 0005 '
-               'Jordan''s seven and the tutor link''s four, 0006 his New from school, 0007 the coach view''s two, 0012 the coach''s rewards)');
+               'anon can execute only get_shared_project and the twenty-four token functions (0004 adds the three for the list, 0005 '
+               'Jordan''s seven and the tutor link''s four, 0006 his New from school, 0007 the coach view''s two, 0012 the coach''s rewards, '
+               '0014 My day''s language switch)');
 select test.is(has_schema_privilege('anon', 'private', 'usage'), false, 'anon cannot use the private schema');
 select test.is((select string_agg(n.nspname || '.' || p.proname, ', ') from pg_proc p join pg_namespace n on n.oid = p.pronamespace
                 where n.nspname in ('public', 'private') and not coalesce(p.proconfig, '{}') @> '{"search_path=\"\""}'),
@@ -123,14 +124,15 @@ select test.is((select string_agg(p.proname, ', ' order by p.proname) from pg_pr
                'homework_step, hook_family_only_signup, mark_signed_in, new_tutor_token, pause_school_feed, plan_by_token, remove_guest, remove_person, '
                'remove_project_guest, reward_by_token, '
                'rotate_day_token, save_homework_kid, save_homework_plan, save_person, save_tutor_link, school_begin, school_feed_status, '
-               'school_finish, school_item_action, school_item_by_token, school_store, set_hearth_tag, set_school_feed, set_tutor_coach, set_tutor_rewards, skip_task, step_by_token, '
+               'school_finish, school_item_action, school_item_by_token, school_store, set_hearth_tag, set_language_by_token, set_school_feed, set_tutor_coach, set_tutor_rewards, skip_task, step_by_token, '
                'stop_digest, tutor_assignment_by_token, tutor_plan_by_token, tutor_step_by_token, tutor_view_by_token, undo_by_token, '
                'undo_task, void_points',
                'the only definer functions in public are the RPCs that check membership, admin, a token or the service key '
                '(0005: the parents'' homework actions, the eleven token functions and hub-jobs'' two AI functions; add_homework_time '
                'and homework_week run as the caller; 0006: the parents'' school links, the status card, his New from school and hub-jobs'' '
                'three school functions; 0007: the coach view''s two token functions and the parents'' switch and Done; 0010: the parents'' '
-               'Hearth matches; 0011: the guests'' and the parents'' guest functions; 0012: the coach''s rewards and the parents'' switch)');
+               'Hearth matches; 0011: the guests'' and the parents'' guest functions; 0012: the coach''s rewards and the parents'' switch; '
+               '0014: My day''s language switch)');
 select test.is((select string_agg(p.proname, ', ' order by p.proname) from pg_proc p
                 where p.pronamespace = 'private'::regnamespace and has_function_privilege('authenticated', p.oid, 'execute')
                   and p.proname in ('complete_task', 'undo_task', 'roll_task', 'person_by_token', 'my_day_item', 'digest_item', 'people_confirm_sync',
@@ -641,6 +643,8 @@ insert into rpc values
   ('undo_by_token',      $$select undo_by_token(repeat('0', 32), gen_random_uuid())$$,                      'ok',     'ok',     'ok',     'ok',     'ok',     'denied'),
   ('confirm_digest',     $$select confirm_digest(test.confirm_token('Morgan'))$$,                          'ok',     'ok',     'ok',     'ok',     'ok',     'denied'),
   ('stop_digest',        $$select stop_digest(test.token('Morgan'))$$,                                      'ok',     'ok',     'ok',     'ok',     'ok',     'denied'),
+  -- Migration 0014: My day's language switch (the language it already has: nothing changes).
+  ('set_language_by_token', $$select set_language_by_token(test.token('Taylor'), 'en')$$,                    'ok',     'ok',     'ok',     'ok',     'ok',     'denied'),
   ('roll_missed_tasks',  'select roll_missed_tasks()',                                                      'denied', 'denied', 'denied', 'denied', 'denied', 'ok'),
   ('email_budget_left',  'select email_budget_left()',                                                      'denied', 'denied', 'denied', 'denied', 'denied', 'ok'),
   ('digest_due',         'select * from digest_due(10)',                                                    'denied', 'denied', 'denied', 'denied', 'denied', 'ok'),
