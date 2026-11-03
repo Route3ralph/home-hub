@@ -45,7 +45,7 @@
 const { chromium } = require('playwright');
 const { createHash } = require('crypto');
 const { makeDb, install, signIn, SUPA, withHomework, homeworkRpc, foodRpc, hwKidRow, tutorLinkRow, assignmentRow, stepRow, sessionRow,
-  rewardRow, askRow, ledgerRow, withSchool, withSchoolCheck, schoolRpc, schoolFeedRow, schoolItemRow, schoolUrlOf, withCoach, coachRpc, coachNoteRow, withCoachRewards } = require('./mock');
+  rewardRow, askRow, ledgerRow, withSchool, withSchoolCheck, withSchoolAssigned, schoolRpc, schoolFeedRow, schoolItemRow, schoolUrlOf, withCoach, coachRpc, coachNoteRow, withCoachRewards } = require('./mock');
 const { serve } = require('./server');
 
 let BASE = '';
@@ -1969,6 +1969,95 @@ const emailOf = (req) => {
     await page.context().close();
     ({ page, db, log } = await open({ label: 'print-sam', email: 'sam@example.com' }));
     check('print: not for Sam (the page has no buttons for the other grown-ups)', !(await page.$('[data-act="print"]')));
+    await page.context().close();
+  }
+
+  // =====================================================================
+  // 14. The school's assigned dates (schema 15, 0015; docs/v1.3-homework.md §23): "The day it was assigned" on the
+  // check and on Change dates; New from school's items dated the day each was assigned; Add asks for the due date
+  // =====================================================================
+  {
+    const RPC14 = Object.assign({}, RPC8, { hub_schema_version: () => 14 });
+    const RPC15 = Object.assign({}, RPC8, { hub_schema_version: () => 15 });
+    const GIVEN = [['2026-10-24', 'Map of the rivers', 'Geography'], ['2026-10-29', 'Equations worksheet', 'Math'], ['2026-11-03', 'Letter to the teacher', 'History'],
+      ['2026-11-05', 'Character slides', 'English']];
+    const givenDb = (v15, checked) => {
+      const d = checkDb(true, GIVEN);
+      if (v15) withSchoolAssigned(d);
+      if (checked) Object.assign(d.school_feeds[0], { checked: true, date_rule: checked });
+      return d;
+    };
+    // Schema 14: the check and a checked link as before (no third answer, no Change dates).
+    ({ page, db } = await open({ label: 'assigned-14', db: givenDb(false, null), rpc: RPC14 }));
+    check('schema 14: the check offers Looks right, Use the first date and One day off (no "The day it was assigned")',
+      same(await texts(page, `${CHK} button`), ['Looks right', 'Use the first date', 'One day off']), JSON.stringify(await texts(page, `${CHK} button`)));
+    await page.context().close();
+    ({ page, db } = await open({ label: 'assigned-14-checked', db: givenDb(false, 'end'), rpc: RPC14 }));
+    check('schema 14: a checked link has no Change dates, and no dates line', !(await page.$('[data-act="school-redate"]')) && !(await page.$('.hw-feed-dates')),
+      await tc(page, FEED('assignments')));
+    await page.context().close();
+
+    // Schema 15: "The day it was assigned".
+    ({ page, db } = await open({ label: 'assigned-15', db: givenDb(true, null), rpc: RPC15, allowConsole: /status of 400/ }));
+    check('schema 15: the check offers "The day it was assigned" too', same(await texts(page, `${CHK} button`), ['Looks right', 'Use the first date', 'The day it was assigned', 'One day off']),
+      JSON.stringify(await texts(page, `${CHK} button`)));
+    await page.click(`${CHK} [data-act="school-dates"][data-rule="assigned"]`);
+    await settle(page);
+    check('The day it was assigned: check_school_feed(the link, assigned, 0); the box goes; the toast says to add each with its due date',
+      same(lastCall(db, 'check_school_feed').body, { p_feed: FA, p_date_rule: 'assigned', p_date_shift: 0 }) && !(await page.$(CHK))
+      && (await lastToast(page)) === 'Dates checked: the day each was assigned. Add one to Jordan\'s homework with its due date.',
+      `${JSON.stringify(lastCall(db, 'check_school_feed').body)} | ${await lastToast(page)}`);
+    check('... the Assignments link says how its dates are read, with Change dates',
+      (await tc(page, `${FEED('assignments')} .hw-feed-dates`)) === 'Dates: the day each was assigned. You give the due date when you add one.'
+      && !!(await page.$(`${FEED('assignments')} [data-act="school-redate"]`)), await tc(page, FEED('assignments')));
+    await page.click('[data-keep="new"] summary');
+    check('New from school: what was assigned from 10 days ago on (not the map, 12 days ago), each "assigned …"',
+      same(await texts(page, '[data-keep="new"] .hw-school-row > span:first-child'),
+        ['Math · Equations worksheet · assigned Thu Oct 29', 'History · Letter to the teacher · assigned Tue Nov 3', 'English · Character slides · assigned Thu Nov 5']),
+      JSON.stringify(await texts(page, '[data-keep="new"] .hw-school-row > span:first-child')));
+    const row = (t) => `[data-keep="new"] .hw-school-row:has-text("${t}")`;
+    await page.click(`${row('Letter to the teacher')} [data-do="add"]`);
+    const due = `${row('Letter to the teacher')} form[data-form="schooldue"] input[name="due"]`;
+    const box = await page.$eval(due, (i) => ({ type: i.type, min: i.min, max: i.max, focus: document.activeElement === i, label: i.closest('label').querySelector('span').textContent })).catch(() => null);
+    check('Add on one dated the day it was assigned: a due-date box (from that day to 4 months on), focused, and nothing sent yet',
+      !!box && box.type === 'date' && box.min === '2026-11-03' && box.max === '2027-03-05' && box.focus && box.label === 'Due date (assigned Tue Nov 3)'
+      && !calls(db, 'school_item_action').length, JSON.stringify(box));
+    const err = `${row('Letter to the teacher')} form[data-form="schooldue"] .form-error`;
+    await page.click(`${row('Letter to the teacher')} form[data-form="schooldue"] button[type="submit"]`);
+    await sleep(150);
+    check('... empty: "Choose the due date." and nothing sent', (await tc(page, err)) === 'Choose the due date.' && !calls(db, 'school_item_action').length, await tc(page, err));
+    await page.fill(due, '2026-11-02');
+    await page.click(`${row('Letter to the teacher')} form[data-form="schooldue"] button[type="submit"]`);
+    await sleep(150);
+    check('... before the day it was assigned: said, and nothing sent', (await tc(page, err)) === 'Choose a due date from the day it was assigned to 4 months from today.'
+      && !calls(db, 'school_item_action').length, await tc(page, err));
+    await page.fill(due, '2026-11-10');
+    await page.click(`${row('Letter to the teacher')} form[data-form="schooldue"] button[type="submit"]`);
+    await settle(page);
+    const made = db.assignments.find((a) => a.title === 'Letter to the teacher');
+    check('... a week on: school_item_action(the item, add, p_due 2026-11-10); on his homework, due Tue Nov 10; it leaves New from school',
+      same(lastCall(db, 'school_item_action').body, { p_item: db.school_items.find((i) => i.title === 'Letter to the teacher').id, p_action: 'add', p_due: '2026-11-10' })
+      && !!made && made.due_date === '2026-11-10' && made.added_by === 'school' && (await lastToast(page)) === 'On Jordan\'s homework, due Tue Nov 10: Letter to the teacher'
+      && !(await page.$(row('Letter to the teacher'))), `${JSON.stringify(lastCall(db, 'school_item_action').body)} | ${await lastToast(page)}`);
+    // Hide needs no date.
+    await page.click(`${row('Character slides')} [data-do="hide"]`);
+    await settle(page);
+    check('Hide: school_item_action(the item, hide), no due date', same(lastCall(db, 'school_item_action').body, { p_item: db.school_items.find((i) => i.title === 'Character slides').id, p_action: 'hide' }),
+      JSON.stringify(lastCall(db, 'school_item_action').body));
+    // Change dates: the same answers, without the items; Cancel; then Looks right (end).
+    await page.click(`${FEED('assignments')} [data-act="school-redate"]`);
+    check('Change dates: the answers again (with "The day it was assigned"), what it reads now, and Cancel',
+      same(await texts(page, `${CHK} button`), ['Looks right', 'Use the first date', 'The day it was assigned', 'One day off', 'Cancel'])
+      && /^Dates: the day each was assigned\. You give the due date when you add one\. If Blackbaud's Assignment Center shows other due dates/.test(await checkLine(page))
+      && !(await page.$(`${CHK} .hw-school-items`)) && !(await page.$(`${FEED('assignments')} [data-act="school-redate"]`)), `${await tc(page, CHK)}`);
+    await page.click(`${CHK} [data-act="school-redate"]`);
+    check('... Cancel closes it, nothing sent', !(await page.$(CHK)) && calls(db, 'check_school_feed').length === 1);
+    await page.click(`${FEED('assignments')} [data-act="school-redate"]`);
+    await page.click(`${CHK} [data-act="school-dates"][data-rule="end"][data-shift="0"]`);
+    await settle(page);
+    check('... Looks right: check_school_feed(the link, end, 0); his homework added keeps its due date',
+      same(lastCall(db, 'check_school_feed').body, { p_feed: FA, p_date_rule: 'end', p_date_shift: 0 }) && db.assignments.find((a) => a.title === 'Letter to the teacher').due_date === '2026-11-10'
+      && (await tc(page, `${FEED('assignments')} .hw-feed-dates`)) === 'Due dates: each item\'s last day.', `${JSON.stringify(lastCall(db, 'check_school_feed').body)} | ${await tc(page, FEED('assignments'))}`);
     await page.context().close();
   }
 
