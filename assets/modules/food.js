@@ -519,6 +519,7 @@
     st.drawn = html;
     st.dirty = false;
     st.draws++;
+    drawSend(st);   // a grown-up's message carries the list itself
     if (window.scrollY !== y) window.scrollTo(window.scrollX, y);
     if (focusKey) {
       const [where, id, act] = focusKey.split(':');
@@ -842,16 +843,43 @@
       : `Hi ${name}, here's the household's shopping list on Home Hub. Tap to see it and tick off what you buy:\n${link}`;
   }
 
+  // A grown-up who signs in (role 'adult') with a phone gets the list itself in the message: what is to buy now
+  // (never a locked line: a text leaves the hub), at most 30 names, then the Food page, where they sign in.
+  // Never the signed-in person.
+  const SEND_MAX = 30;
+  const isMe = (p) => {
+    const me = core.me;
+    if (!me) return false;
+    if (me.person && me.person.id) return me.person.id === p.id;
+    return !!(me.email && p.email && String(me.email).toLowerCase() === String(p.email).toLowerCase());
+  };
+  const adultsToSend = () => v2.people().filter((p) => p.active !== false && p.role === 'adult' && textable(p.phone) && !isMe(p));
+  const foodLink = () => new URL('#/food', location.href).href;
+  function adultMessage(st, p) {
+    const name = firstName(p.name);
+    const es = p.language === 'es';
+    const v = (st.box && st.box.view()) || {};
+    const names = (v.to_buy || []).filter((r) => !r.private).map((r) => String(r.name || '').trim()).filter(Boolean);
+    const shown = names.slice(0, SEND_MAX).map((n) => `• ${n}`);
+    if (names.length > SEND_MAX) shown.push(es ? `y ${names.length - SEND_MAX} más` : `and ${names.length - SEND_MAX} more`);
+    const head = es ? `Hola ${name}: esta es la lista de compras de la casa.` : `Hi ${name}, here's the household's shopping list.`;
+    const items = shown.length ? shown.join('\n') : (es ? 'Ahora no hay nada que comprar.' : 'Nothing to buy right now.');
+    const tail = es ? `Ábrela en Home Hub para verla al día y marcar lo que compres:\n${foodLink()}`
+                    : `Open it on Home Hub to see it as it changes and tick off what you buy:\n${foodLink()}`;
+    return `${head}\n${items}\n${tail}`;
+  }
+
   // WhatsApp, Share (where the browser has it; it carries the same message) and Text.
   function drawSend(st) {
     const box = st.main.querySelector('[data-ref="send"]');
     if (!box) return;
     const hh = v2.household;
-    const who = hh && hh.helper_list !== 'off' ? helpers().filter((p) => textable(p.phone) && p.day_token) : [];
+    const helperList = hh && hh.helper_list !== 'off' ? helpers().filter((p) => textable(p.phone) && p.day_token) : [];
+    const who = helperList.concat(adultsToSend());
     const html = who.length ? `${ui.sectionHeading(who.length === 1 ? `Send ${firstName(who[0].name)} the list` : 'Send the list')}
       <ul class="food-card food-send">${who.map((p) => {
         const name = firstName(p.name);
-        const msg = listMessage(p);
+        const msg = p.role === 'helper' ? listMessage(p) : adultMessage(st, p);
         return `<li data-send="${esc(p.id)}"><div class="food-send-who">${ui.personDot(p)}<b>Send ${esc(name)} the list</b></div>
           <div class="food-send-btns">
             <a class="btn" data-via="whatsapp" href="${esc(whatsappHref(p.phone, msg))}" target="_blank" rel="noopener" aria-label="Send ${esc(name)} the list by WhatsApp">WhatsApp</a>
