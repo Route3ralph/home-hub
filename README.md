@@ -53,7 +53,7 @@ Each schedule task has two kinds of notes. **Notes** appear on the shared link. 
 
 ## Food: dinners and the shopping list (v1.2)
 
-The **Food** page has this week's dinners at the top and the family's one shopping list below: groceries, and household things too (batteries, detergent). It turns on by itself once the database is upgraded to v1.2 (see [Turning on Food](#turning-on-food)). The design, with every rule, is [`docs/v1.2-kitchen.md`](docs/v1.2-kitchen.md).
+The **Food** page has this week's dinners at the top (and from schema 13 the family's recipes) and the family's one shopping list below: groceries, and household things too (batteries, detergent). It turns on by itself once the database is upgraded to v1.2 (see [Turning on Food](#turning-on-food)). The design, with every rule, is [`docs/v1.2-kitchen.md`](docs/v1.2-kitchen.md).
 
 **The shopping list**
 - **Add:** **Food →** type **→ Enter** (the box stays ready for the next one), or **＋ → Shopping** from any page. "2 milk", "2 lb ground beef" or "Milk: 2 gallons" put the amount in a small note. Something already on the list isn't added twice ("Already on the list"), and "Leche" joins "Milk".
@@ -70,6 +70,14 @@ The **Food** page has this week's dinners at the top and the family's one shoppi
 - **Keep the title private** (under More) locks a dinner: the wall, other people's My day and every email subject say "Private item". Grown-ups who sign in still see it.
 - **Add a prep reminder…** on a saved dinner makes an ordinary task for the day before ("Prep: Tacos"). It doesn't move if the dinner moves. On a locked dinner it starts as a private task (Private is ticked under More), so the wall, My day and email subjects say "Private item".
 - Dinner shows on **Today**, on everyone's **My day**, at the end of Today in the morning email, in the cook's **Send their day** text, and on the wall's **Family column** as "Dinner: Tacos (Sam)", all day, once [Google Calendar and Hearth](#google-calendar-and-hearth) has a Family calendar. A parent can turn the wall copy off at the foot of the Food page.
+
+**Recipes** (from schema 13: migration 0013, the design's §19)
+- The family's saved recipes, between the dinners and the list: a name, an optional link (a recipe web page, or a file in the family's Google Drive **Recipes** folder), what it's for (Dinner, Lunch, Breakfast, Snack, Other) and a note. Search by name or note, or tap a label.
+- **+ Recipe** adds one; **Edit** changes it or deletes it (it asks first). Every grown-up who signs in can add and change them.
+- **Use for dinner** picks a day this week (the first free one) and opens the dinner with the recipe in it; it asks before replacing a dinner already planned.
+- **Recipes folder** opens the family's Drive folder for recipe files and photos. A parent sets it at the foot of the Food page; share the folder in Drive with the grown-ups. The hub stores links only, never the files.
+- Recipes stay on the Food page: not on My day, in an email, on the wall, or for a project guest.
+- To turn it on: merge, then the owner runs [`supabase/migrations/0013_recipes.sql`](supabase/migrations/0013_recipes.sql) after 0012 (no Edge Function or `cron.sql` change).
 
 **Hearth's Meals and Groceries.** Use Home Hub's, not Hearth's Meals or Groceries: anything added there won't reach Taylor, the email or the hub. Home Hub can't read or fill them, and using both puts every dinner on the wall twice.
 

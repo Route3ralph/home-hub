@@ -487,7 +487,10 @@ function calendarJob(db, body, email) {
 // time, else Tue 2026-10-27 09:42 in New York) is "now"; every write is stamped a little after it, with
 // microseconds, as Postgres keeps them (to_jsonb writes them as text: a page that turns seen into a
 // Date loses them, and its ticks no longer match). Move the clock with db.foodNow += 16 * 60e3.
-const FOOD_TABLES = ['meals', 'shopping_items'];
+const FOOD_TABLES = ['meals', 'shopping_items', 'recipes'];
+// 0013: recipes, the columns a member writes, and the labels.
+const RECIPE_COLUMNS = ['id', 'title', 'url', 'label', 'note'];
+const RECIPE_LABELS = ['dinner', 'lunch', 'breakfast', 'snack', 'other'];
 const AISLE_KEYS = ['produce', 'bakery', 'pantry', 'drinks', 'household', 'personal', 'meat', 'dairy', 'frozen', 'other'];
 const MEAL_COLUMNS = ['day', 'slot', 'kind', 'title', 'cook_id', 'note', 'link', 'private'];
 const ITEM_COLUMNS = ['name', 'note', 'aisle', 'private'];
@@ -589,6 +592,17 @@ function withFood(db, opts) {
   if (!db.calendars) withCalendars(db);
   return Object.assign(db, { meals: [], shopping_items: [], my_day_use: [], list_done: [] });
 }
+// 0013 (schema 13): the recipes table and the household's Recipes folder. Use after withFood.
+function withRecipes(db, opts) {
+  const o = opts || {};
+  const hh = (db.household && db.household[0]) || null;
+  if (hh) hh.recipes_folder_url = o.folder || null;
+  db.recipes = (o.recipes || []).map((r) => recipeRow(r));
+  return db;
+}
+const recipeRow = (o) => Object.assign({
+  id: uuid(), title: '', url: null, label: 'dinner', note: null, created_at: now(), created_by: null, updated_at: now(), updated_by: null,
+}, o);
 // A meals row and a shopping_items row with the tables' defaults.
 const mealRow = (o) => Object.assign({
   id: uuid(), day: null, slot: 'dinner', kind: 'cook', title: null, cook_id: null, note: null, link: null, private: false,
@@ -648,6 +662,9 @@ function foodTables(db, table, method, body, member, rows, req) {
   if (table === 'household' && db.shopping_items && method === 'PATCH') {
     if (member.role !== 'admin') return { status: 200, rows: [] };
     if ('helper_list' in (body || {}) && !['off', 'see', 'add'].includes(body.helper_list)) return tableErr(foodCheck('household', 'household_helper_list_check'));
+    if ((body || {}).recipes_folder_url != null && !/^https:\/\/drive\.google\.com\/[^\s<>"']*$/.test(body.recipes_folder_url)) {
+      return tableErr(foodCheck('household', 'household_recipes_folder_url_check'));
+    }
     return null;
   }
   if (!FOOD_TABLES.includes(table) || !db[table]) return null;
@@ -659,6 +676,30 @@ function foodTables(db, table, method, body, member, rows, req) {
       const gone = new Set(rows.map((r) => r.id));
       db[table].splice(0, db[table].length, ...db[table].filter((r) => !gone.has(r.id)));
       return { status: 204, rows };
+    }
+    if (table === 'recipes') {
+      // 0013: members only (a project guest isn't one); the stamps by the trigger; title and note cleaned; the checks.
+      if (method === 'POST' || method === 'PATCH') {
+        const items = Array.isArray(body) ? body : [body];
+        if (items.some((r) => Object.keys(r || {}).some((k) => !RECIPE_COLUMNS.includes(k) || (method === 'PATCH' && k === 'id')))) return denied;
+        const tidy = (r) => {
+          const t = Object.assign({}, r);
+          if ('title' in t) t.title = cleanText(t.title, 80) || '';
+          if ('note' in t) t.note = cleanText(t.note, 300) || null;
+          return t;
+        };
+        const bad = (r) => (!r.title ? foodCheck('recipes', 'recipes_title_check')
+          : r.url != null && !(/^https:\/\/[!#-;=?-~]{4,}$/.test(r.url) && r.url.length <= 508) ? foodCheck('recipes', 'recipes_url_check')
+            : !RECIPE_LABELS.includes(r.label) ? foodCheck('recipes', 'recipes_label_check') : null);
+        const next = method === 'POST'
+          ? items.map((r) => Object.assign(recipeRow({ created_at: foodStamp(db), created_by: email }), tidy(r), { updated_at: foodStamp(db), updated_by: email }))
+          : rows.map((r) => Object.assign({}, r, tidy(body), { updated_at: foodStamp(db), updated_by: email }));
+        for (const n of next) { const b = bad(n); if (b) throw b; }
+        if (method === 'POST') { db.recipes.push(...next); return { status: 201, rows: next }; }
+        rows.forEach((r, i) => Object.assign(r, next[i]));
+        return { status: 200, rows };
+      }
+      return denied;
     }
     if (table === 'shopping_items') {
       if (method !== 'PATCH' || Object.keys(body || {}).some((k) => !ITEM_COLUMNS.includes(k))) return denied;
@@ -3910,7 +3951,7 @@ function stubShare(page) {
 module.exports = { makeDb, install, signIn, expectedConsoleError, SUPA, withCalendars, calendarRow, linkRow, googleEventRow, calendarRpc, md5uuid,
   withGuests, guestRpc,
   withHearth, hearthTagRow, hearthRpc,
-  withFood, mealRow, shopItem, foodRpc, personDayFood, foodStamp,
+  withFood, mealRow, shopItem, foodRpc, personDayFood, foodStamp, withRecipes, recipeRow,
   withHomework, homeworkRpc, homePlan, hwKidRow, tutorLinkRow, assignmentRow, stepRow, sessionRow, rewardRow, askRow, ledgerRow,
   withHomeworkTokens, homeworkTokenRpc, personDayHomework, tkKidRow, tkLinkRow, tkAssignmentRow, tkStepRow, tkSessionRow, tkRewardRow, tkLedgerRow, stubShare,
   withSchool, withSchoolCheck, schoolRpc, schoolFeedRow, schoolItemRow, schoolUrlOf, withCoach, coachRpc, coachNoteRow, withCoachRewards, aiRpc, aiJob, aiMessage, aiComplete };

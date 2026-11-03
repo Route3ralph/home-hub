@@ -19,6 +19,9 @@
      (window.HomeShop), so a tap shows at once, waits on the phone when there
      is no signal ("Not sent yet"), and is saved on this device for whoever is
      signed in. When the list can't be read, the saved one is drawn.
+   - Recipes (schema 13, §19): the family's saved recipe links (a web page or
+     a file in the Drive Recipes folder), searched and filtered by label;
+     + Recipe, Edit, Delete, Use for dinner; the parents' Recipes folder.
    provides: { openListAdd } for the Add sheet's Shopping choice (§6.3).
    Dates are the household's (core.v2), never the device's.
    ===================================================================== */
@@ -164,15 +167,16 @@
   // dinner already saved, also Clear this day and Add a prep reminder… (the task form takes over the
   // dialog, so it is offered only on a saved dinner, and saves what was changed here first, as Save
   // does: nothing in the dialog is lost, and the reminder is made from the dinner as saved).
-  async function openDinner(st, day) {
+  async function openDinner(st, day, prefill) {
     let m = mealOn(st, day);
     if (!m && (day < dates.addDays(st.today, -14) || day > dates.addDays(st.today, 6))) {
       // A day outside the week (an old link): read it on its own.
       m = ((await q(core.sb.from('meals').select('id,day,slot,kind,title,cook_id,note,link,private,updated_at').eq('day', day).eq('slot', 'dinner'))) || [])[0] || null;
       if (st.ctx.stale()) return;
     }
-    const x = m || {};
-    const state = { kind: m ? m.kind : 'cook', cook: m && !NOBODY.includes(m.kind) ? x.cook_id || null : null };
+    // From a recipe's Use for dinner: its name and link in place of what is there (the dialog still needs a Save).
+    const x = prefill ? Object.assign({}, m || {}, { kind: 'cook', title: prefill.title, link: prefill.url || null }) : m || {};
+    const state = { kind: prefill ? 'cook' : m ? m.kind : 'cook', cook: m && !NOBODY.includes(m.kind) ? x.cook_id || null : null };
     const people = v2.people().filter((p) => p.active !== false || p.id === state.cook);
     const moreOpen = !!(x.note || x.link || x.private);
 
@@ -881,6 +885,11 @@
           <label class="food-switch"><input type="checkbox" role="switch" data-act="wall"${hh.meals_on_wall ? ' checked' : ''}${off}><span>Dinners on the kitchen wall (Hub – Family)</span></label>
           ${st.familyCalendar === false ? '<small class="food-set-hint">Needs Google Calendar & Hearth with a Family calendar</small>' : ''}
         </div>
+        ${hasRecipes() ? `<div class="food-set-row">
+          <p class="food-set-title">Recipes folder (Google Drive)</p>
+          <span class="food-set-hint">${hh.recipes_folder_url ? 'Set' : 'Not set'}</span>
+          ${admin ? `<button type="button" class="btn btn-sm" data-act="recipe-folder">${hh.recipes_folder_url ? 'Change' : 'Set'}</button>` : ''}
+        </div>` : ''}
         ${admin ? '' : '<p class="food-set-note">Only parents can change these.</p>'}
       </div>`;
   }
@@ -912,6 +921,146 @@
   }
 
   // ============================================
+  // RECIPES (schema 13, docs/v1.2-kitchen.md §19)
+  // ============================================
+  // The family's saved recipes: a name, an optional link (a web page, or a file in the family's Drive "Recipes"
+  // folder), a label and a note. Search and label chips filter what was read; + Recipe, Edit (with Delete) and
+  // Use for dinner (a day of this week, then the dinner dialog with the recipe's name and link in, after asking
+  // when that day has a dinner). Every grown-up who signs in can change them. Only on 13; on 12 the page is as before.
+  const LABELS = [['dinner', 'Dinner'], ['lunch', 'Lunch'], ['breakfast', 'Breakfast'], ['snack', 'Snack'], ['other', 'Other']];
+  const labelWord = (k) => (LABELS.find(([key]) => key === k) || [null, 'Other'])[1];
+  const hasRecipes = () => core.schemaVersion >= 13;
+
+  async function loadRecipes(st) {
+    if (!hasRecipes()) return;
+    try {
+      st.recipes = { rows: (await q(core.sb.from('recipes').select('id,title,url,label,note,updated_at').order('title'))) || [], loaded: true, failed: false };
+    } catch (err) {
+      st.recipes = { rows: st.recipes.rows, loaded: true, failed: true };
+    }
+  }
+
+  function shownRecipes(st) {
+    const words = S.nameKey(st.rq || '').split(/\s+/).filter(Boolean);
+    return st.recipes.rows.filter((r) => (st.rlabel === 'all' || r.label === st.rlabel)
+      && words.every((w) => S.nameKey(`${r.title} ${r.note || ''}`).includes(w)));
+  }
+
+  function recipeRowHTML(r) {
+    const host = r.url ? hostOf(r.url) : '';
+    const name = r.url ? `<a class="food-recipe-name" href="${esc(r.url)}" target="_blank" rel="noopener noreferrer">${esc(r.title)}</a>`
+      : `<span class="food-recipe-name">${esc(r.title)}</span>`;
+    return `<li class="food-recipe" data-id="${esc(r.id)}">
+      <div class="food-recipe-main">${name}<small class="food-recipe-sub">${esc([labelWord(r.label), host].filter(Boolean).join(' · '))}</small>${r.note ? `<p class="food-recipe-note">${esc(r.note)}</p>` : ''}</div>
+      <div class="food-recipe-acts"><button type="button" class="btn btn-sm" data-act="recipe-use" data-id="${esc(r.id)}">Use for dinner</button><button type="button" class="btn btn-sm" data-act="recipe-edit" data-id="${esc(r.id)}">Edit</button></div>
+    </li>`;
+  }
+
+  function drawRecipeList(st) {
+    const box = st.main.querySelector('[data-ref="recipelist"]');
+    if (!box) return;
+    const rows = shownRecipes(st);
+    box.innerHTML = rows.length ? `<ul class="food-card food-recipes" role="list">${rows.map(recipeRowHTML).join('')}</ul>`
+      : `<p class="empty-line">${st.recipes.rows.length ? 'No recipe matches.' : 'No recipes yet. Add a link, or a file from the Recipes folder.'}</p>`;
+  }
+
+  function drawRecipes(st) {
+    const box = st.main.querySelector('[data-ref="recipes"]');
+    if (!box) return;
+    if (!hasRecipes()) { box.hidden = true; box.innerHTML = ''; return; }
+    box.hidden = false;
+    const hh = v2.household || {};
+    const folder = hh.recipes_folder_url
+      ? `<a class="btn btn-sm" href="${esc(hh.recipes_folder_url)}" target="_blank" rel="noopener noreferrer" data-ref="recipefolder">Recipes folder</a>` : '';
+    const head = `<div class="food-recipes-head">${ui.sectionHeading('Recipes')}<span class="food-recipes-btns">${folder}<button type="button" class="btn btn-sm" data-act="recipe-add">+ Recipe</button></span></div>`;
+    if (!st.recipes.loaded) { box.innerHTML = `${head}<p class="empty-line">Loading recipes…</p>`; return; }
+    if (st.recipes.failed && !st.recipes.rows.length) {
+      box.innerHTML = `${head}<p class="food-fail" role="status">Recipes couldn't be loaded. <button type="button" class="linkbtn food-retry" data-act="recipes-retry">Try again</button></p>`;
+      return;
+    }
+    box.innerHTML = `${head}
+      <div class="food-recipes-tools">
+        <input type="search" class="food-recipes-search" data-ref="rsearch" placeholder="Search recipes" aria-label="Search recipes" value="${esc(st.rq || '')}">
+        <div class="food-chips" role="group" aria-label="Show">${[['all', 'All']].concat(LABELS).map(([k, l]) =>
+          `<button type="button" class="food-chip" data-act="recipe-label" data-label="${k}" aria-pressed="${st.rlabel === k}">${esc(l)}</button>`).join('')}</div>
+      </div>
+      <div data-ref="recipelist"></div>`;
+    drawRecipeList(st);
+  }
+
+  const reloadRecipes = async (st) => { await loadRecipes(st); if (!st.ctx.stale()) drawRecipes(st); };
+
+  function openRecipe(st, r) {
+    core.openForm({
+      title: r ? 'Edit recipe' : 'Add a recipe',
+      fields: [
+        { name: 'title', label: 'Name', required: true, value: r ? r.title : '', placeholder: 'Chickpea lunch bowls' },
+        { name: 'url', label: 'Link (optional)', type: 'url', value: r && r.url ? r.url : '', placeholder: 'https://cooking.example.com/…',
+          help: 'A web page, or a file in the Recipes folder (in Drive: Share → Copy link).' },
+        { name: 'label', label: 'For', type: 'select', value: r ? r.label : 'dinner', options: LABELS },
+        { name: 'note', label: 'Note (optional)', type: 'textarea', value: r && r.note ? r.note : '', placeholder: 'Double the chickpeas' },
+      ],
+      submitLabel: r ? 'Save' : 'Add',
+      extraActions: r ? [{ label: 'Delete', danger: true, onClick: async () => {
+        if (!window.confirm(`Delete the recipe "${r.title}"?`)) return false;
+        await q(core.sb.from('recipes').delete().eq('id', r.id));
+        toast(`Deleted ${r.title}`);
+        await reloadRecipes(st);
+        return true;
+      } }] : [],
+      onSubmit: async (v) => {
+        const title = S.clean(v.title, 80);
+        if (!title) throw new Error('A recipe needs a name.');
+        const url = recipeLink(v.url);
+        if (url === null) throw new Error('The link has to be a web address starting with https://.');
+        const row = { title, url: url || null, label: LABELS.some(([k]) => k === v.label) ? v.label : 'dinner', note: S.clean(v.note, 300) || null };
+        if (r) await q(core.sb.from('recipes').update(row).eq('id', r.id).select('id'));
+        else await q(core.sb.from('recipes').insert(row).select('id'));
+        toast(r ? 'Saved' : `Added ${title}`);
+        await reloadRecipes(st);
+      },
+    });
+  }
+
+  // Use for dinner: which day this week (the first one with no dinner, else today), then the dinner dialog with
+  // the recipe in it. A day that has a dinner asks first; nothing is saved until the dinner dialog's Save.
+  function useRecipe(st, r) {
+    const days = Array.from({ length: 7 }, (x, i) => dates.addDays(st.today, i));
+    const free = days.find((d) => !mealOn(st, d)) || days[0];
+    core.openForm({
+      title: `Use "${r.title}" for dinner`,
+      fields: [{ name: 'day', label: 'Which day', type: 'select', value: free, options: days.map((d, i) => {
+        const m = mealOn(st, d);
+        return [d, `${i === 0 ? 'Today' : fmt.day(d)}${m ? ` · ${mealTitle(m)}` : ''}`];
+      }) }],
+      submitLabel: 'Next',
+      onSubmit: async (v) => {
+        const day = days.includes(v.day) ? v.day : free;
+        const m = mealOn(st, day);
+        if (m && !window.confirm(`${day === st.today ? 'Tonight' : fmt.day(day)} already has ${mealTitle(m)}. Replace it with ${r.title}?`)) return;
+        setTimeout(() => openDinner(st, day, r).catch((err) => toast(friendly(err), { error: true })), 0);
+      },
+    });
+  }
+
+  // The parents' Recipes folder (household.recipes_folder_url): a Google Drive folder's address, or blank.
+  function openFolder(st) {
+    const hh = v2.household || {};
+    core.openForm({
+      title: 'Recipes folder',
+      intro: 'The family\'s shared Google Drive folder for recipe files and photos. Share it in Drive with the grown-ups; the hub only opens it.',
+      fields: [{ name: 'url', label: 'Folder address', type: 'url', value: hh.recipes_folder_url || '', placeholder: 'https://drive.google.com/drive/folders/…',
+        help: 'It must start with https://drive.google.com/. Leave it blank to take the button away.' }],
+      onSubmit: async (v) => {
+        const url = String(v.url || '').trim();
+        if (url && !/^https:\/\/drive\.google\.com\/[^\s<>"']*$/.test(url)) throw new Error('That has to be a Google Drive address, starting with https://drive.google.com/.');
+        await saveHousehold(st, { recipes_folder_url: url || null });
+        drawRecipes(st);
+      },
+    });
+  }
+
+  // ============================================
   // THE PAGE
   // ============================================
   async function renderFood(main, ctx) {
@@ -920,6 +1069,7 @@
       main, ctx, today: dates.today(), meals: { rows: [], loaded: false, failed: false }, suggest: [], unfold: false,
       items: null, listFailed: false, reading: false, readAgain: false, pollTimer: null, drawn: null, dirty: false, draws: 0,
       rowData: new Map(), tapped: new Set(), aislePick: null, againOpen: againOpen(), familyCalendar: null, me: me ? me.id : null,
+      recipes: { rows: [], loaded: false, failed: false }, rq: '', rlabel: 'all',
     };
     st.hold = S.hold(S.HOLD_MS, () => drawList(st));
     st.box = S.outbox({
@@ -962,6 +1112,7 @@
     main.innerHTML = `
       <div class="page-head food-head"><div><h1>Food</h1><p class="meta">Dinners and the shopping list</p></div></div>
       <section class="food-sec food-week-sec" data-ref="week" aria-label="This week's dinners"></section>
+      <section class="food-sec food-recipes-sec" data-ref="recipes" aria-label="Recipes" hidden></section>
       <section class="food-sec food-list-sec" aria-label="Shopping list">
         <form class="food-add" data-ref="add" autocomplete="off" novalidate>
           <div class="food-add-row">
@@ -977,6 +1128,7 @@
       <section class="food-sec" data-ref="send" aria-label="Send the list"></section>
       <section class="food-sec" data-ref="switches" aria-label="Settings"></section>`;
     drawWeek(st);
+    drawRecipes(st);
     drawList(st);   // the list saved on this device, if any, while the database is asked
     drawSend(st);
     drawSwitches(st);
@@ -1002,11 +1154,21 @@
         case 'unfold': st.unfold = true; drawWeek(st); { const first = main.querySelector('.food-day'); if (first) first.focus(); } break;
         case 'day': openDinner(st, act.dataset.day).catch((err) => toast(friendly(err), { error: true })); break;
         case 'meals-retry': loadMeals(st).then(() => { if (!ctx.stale()) drawWeek(st); }); break;
+        case 'recipe-add': openRecipe(st, null); break;
+        case 'recipe-edit': { const r = st.recipes.rows.find((x) => x.id === act.dataset.id); if (r) openRecipe(st, r); break; }
+        case 'recipe-use': { const r = st.recipes.rows.find((x) => x.id === act.dataset.id); if (r) useRecipe(st, r); break; }
+        case 'recipe-label': st.rlabel = act.dataset.label; drawRecipes(st); break;
+        case 'recipes-retry': reloadRecipes(st); break;
+        case 'recipe-folder': openFolder(st); break;
         case 'helper-list':
           if (act.getAttribute('aria-checked') !== 'true') saveHousehold(st, { helper_list: act.dataset.value }, act);
           break;
         default: break;
       }
+    }, { signal: ctx.signal });
+    main.addEventListener('input', (e) => {
+      const box = e.target.closest('[data-ref="rsearch"]');
+      if (box) { st.rq = box.value; drawRecipeList(st); }
     }, { signal: ctx.signal });
     main.addEventListener('change', (e) => {
       const sw = e.target.closest('[data-act="wall"]');
@@ -1033,6 +1195,7 @@
       loadItems(st),
       poll(st),
       loadFamilyCalendar(st),
+      loadRecipes(st).then(() => { if (!ctx.stale()) drawRecipes(st); }),
     ]);
     if (ctx.stale()) return;
     st.dirty = true;

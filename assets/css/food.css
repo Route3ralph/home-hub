@@ -225,3 +225,21 @@ dialog:has(> .food-dinner), dialog:has(> .food-edit), dialog:has(> .food-quick) 
   .food-tick { gap: 10px; }
   .food-aisle-pick { padding-left: 4px; }
 }
+
+/* Recipes (schema 13): the saved recipe links. */
+.food-recipes-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.food-recipes-btns { display: inline-flex; gap: 8px; flex-wrap: wrap; }
+.food-recipes-tools { display: grid; gap: 8px; margin: 4px 0 10px; }
+.food-recipes-search { min-height: 44px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); color: var(--text); font-size: 16px; }
+.food-recipes { list-style: none; margin: 0; padding: 0; }
+.food-recipe { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 12px; border-top: 1px solid var(--border); }
+.food-recipe:first-child { border-top: 0; }
+.food-recipe-main { min-width: 0; display: grid; gap: 2px; }
+.food-recipe-name { font-weight: 650; overflow-wrap: anywhere; }
+.food-recipe-sub { color: var(--text-3); }
+.food-recipe-note { margin: 2px 0 0; color: var(--text-2); font-size: 14px; overflow-wrap: anywhere; }
+.food-recipe-acts { display: flex; gap: 6px; flex: none; }
+@media (max-width: 640px) {
+  .food-recipe { flex-direction: column; align-items: stretch; }
+  .food-recipe-acts { justify-content: flex-start; }
+}

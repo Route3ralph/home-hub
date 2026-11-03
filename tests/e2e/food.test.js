@@ -27,7 +27,7 @@
 // Run alone with: node tests/e2e/food.test.js
 const { chromium } = require('playwright');
 const { createHash } = require('crypto');
-const { makeDb, install, signIn, SUPA, withFood, mealRow, shopItem, foodRpc, calendarRow, stubShare } = require('./mock');
+const { makeDb, install, signIn, SUPA, withFood, mealRow, shopItem, foodRpc, calendarRow, stubShare, withRecipes } = require('./mock');
 const { serve } = require('./server');
 
 let BASE = '';
@@ -144,6 +144,9 @@ const RPC = Object.assign({
   clock: (db) => Object.assign({}, db.clock),
   mark_signed_in: () => null,
 }, foodRpc);
+// Schema 12 (the coach's rewards, before recipes) and 13 (recipes, §19): the same page otherwise.
+const RPC12 = Object.assign({}, RPC, { hub_schema_version: () => 12 });
+const RPC13 = Object.assign({}, RPC, { hub_schema_version: () => 13 });
 
 const emailOf = (req) => {
   const tok = (req.headers()['authorization'] || '').replace(/^Bearer\s+/i, '');
@@ -178,7 +181,7 @@ const emailOf = (req) => {
       return db.confirm === false ? d.dismiss() : d.accept();
     });
     const log = [];
-    await install(page, db, log, { rpc: RPC });
+    await install(page, db, log, { rpc: opts.rpc || RPC });
     if (opts.before) await opts.before(page);
     // Web Share: this Chromium has none; opts.share gives the page stubShare's fake.
     if (opts.share) await stubShare(page);
@@ -193,7 +196,7 @@ const emailOf = (req) => {
     });
     // Writes to the food tables and the household, then the mock answers.
     db.writes = db.writes || [];
-    await page.route((url) => url.host === 'test.supabase.co' && /^\/rest\/v1\/(meals|shopping_items|household)$/.test(url.pathname), (route) => {
+    await page.route((url) => url.host === 'test.supabase.co' && /^\/rest\/v1\/(meals|shopping_items|household|recipes)$/.test(url.pathname), (route) => {
       const req = route.request();
       if (['PATCH', 'POST', 'DELETE'].includes(req.method())) {
         const url = new URL(req.url());
@@ -1325,6 +1328,211 @@ const emailOf = (req) => {
   await page.reload();
   await until(page, () => !!document.querySelector('.food-week-sec .food-fail'), 6000);
   check('dinners can\'t be read: one line says so; the list is there', (await tc(page, '.food-week-sec .food-fail')) === 'Dinners couldn\'t be loaded. Try again' && (await names(page, 'buy')).length === 13);
+  await page.context().close();
+
+  // =====================================================================
+  // 11b. Recipes (schema 13, docs/v1.2-kitchen.md §19)
+  // =====================================================================
+  const DRIVE_FOLDER = 'https://drive.google.com/drive/folders/EXAMPLE-folder-id';
+  const recipeDb = (folder) => withRecipes(foodDb(), { folder, recipes: [
+    { title: 'Chickpea lunch bowls', url: 'https://www.example.com/chickpea-bowls', label: 'lunch', note: 'Double the chickpeas' },
+    { title: 'Grandma\'s stew', label: 'dinner' },
+    { title: 'Lentil soup', url: 'https://cooking.example.com/lentil-soup', label: 'dinner', note: 'Freezes well' },
+    { title: 'Pancakes', url: 'https://drive.google.com/file/d/EXAMPLE-file-id/view', label: 'breakfast' },
+  ] });
+  const recipeNames = (page) => texts(page, '[data-ref="recipes"] .food-recipe-name');
+  const recipeRowOf = (page, name) => page.locator('[data-ref="recipes"] .food-recipe', { has: page.locator('.food-recipe-name', { hasText: name }) }).first();
+  const dialogOpen = (page) => page.evaluate(() => document.getElementById('formDialog').open);
+
+  // Schema 4 and 12: no section, no read, no setting; the page is as before.
+  for (const [v, rpc] of [[4, RPC], [12, RPC12]]) {
+    ({ page, db, log } = await open({ label: `recipes-${v}`, db: recipeDb(DRIVE_FOLDER), rpc }));
+    check(`schema ${v}: no Recipes section, no read of recipes, no Recipes folder setting`,
+      (await page.$eval('[data-ref="recipes"]', (e) => e.hidden && !e.innerHTML.trim())) && !log.some((l) => /\/rest\/v1\/recipes/.test(l))
+      && !(await tc(page, '[data-ref="switches"]')).includes('Recipes folder') && !(await page.$('[data-ref="recipefolder"]')));
+    await page.context().close();
+  }
+
+  // Schema 13: the section, its rows and the folder button.
+  ({ page, db, log } = await open({ label: 'recipes', db: recipeDb(DRIVE_FOLDER), rpc: RPC13 }));
+  check('schema 13: a Recipes section after the week, before the list', (await page.$eval('[data-ref="recipes"]', (e) => !e.hidden
+    && e.previousElementSibling.dataset.ref === 'week' && e.nextElementSibling.classList.contains('food-list-sec'))) && (await tc(page, '[data-ref="recipes"] h2')) === 'Recipes',
+    JSON.stringify(await page.$eval('[data-ref="recipes"]', (e) => [e.hidden, e.previousElementSibling && e.previousElementSibling.outerHTML.slice(0, 80), e.nextElementSibling && e.nextElementSibling.className])));
+  check('reads recipes: id, title, url, label, note, updated_at, by title', log.some((l) => l.startsWith('GET /rest/v1/recipes?') && l.includes('select=id%2Ctitle%2Curl%2Clabel%2Cnote%2Cupdated_at') && l.includes('order=title')),
+    JSON.stringify(log.filter((l) => /recipes/.test(l))));
+  check('the rows: all four, by name', same(await recipeNames(page), ['Chickpea lunch bowls', 'Grandma\'s stew', 'Lentil soup', 'Pancakes']), JSON.stringify(await recipeNames(page)));
+  const soup = await recipeRowOf(page, 'Lentil soup').evaluate((r) => {
+    const a = r.querySelector('a.food-recipe-name');
+    return [a && a.getAttribute('href'), a && a.target, a && a.rel, r.querySelector('.food-recipe-sub').textContent, (r.querySelector('.food-recipe-note') || {}).textContent];
+  });
+  check('a row: the name links to the page in a new tab (noopener), "Dinner · its host", the note', same(soup, ['https://cooking.example.com/lentil-soup', '_blank', 'noopener noreferrer', 'Dinner · cooking.example.com', 'Freezes well']), JSON.stringify(soup));
+  const stew = await recipeRowOf(page, 'Grandma').evaluate((r) => [!!r.querySelector('a'), r.querySelector('.food-recipe-sub').textContent, !!r.querySelector('.food-recipe-note')]);
+  check('a recipe with no link: the name is plain text, just its label, no note', same(stew, [false, 'Dinner', false]), JSON.stringify(stew));
+  check('a Drive file shows its host', (await recipeRowOf(page, 'Pancakes').locator('.food-recipe-sub').textContent()) === 'Breakfast · drive.google.com');
+  const folderBtn = await page.$eval('[data-ref="recipefolder"]', (a) => [a.textContent.trim(), a.getAttribute('href'), a.target, a.rel]).catch(() => null);
+  check('the Recipes folder button opens the parents\' Drive folder in a new tab', same(folderBtn, ['Recipes folder', DRIVE_FOLDER, '_blank', 'noopener noreferrer']), JSON.stringify(folderBtn));
+
+  // Search and the label chips.
+  await page.fill('[data-ref="rsearch"]', 'chick');
+  await sleep(80);
+  check('search: "chick" finds the chickpea bowls', same(await recipeNames(page), ['Chickpea lunch bowls']));
+  await page.fill('[data-ref="rsearch"]', 'freezes');
+  await sleep(80);
+  check('search reads the note too', same(await recipeNames(page), ['Lentil soup']));
+  await page.fill('[data-ref="rsearch"]', 'zzz');
+  await sleep(80);
+  check('no match: "No recipe matches."', (await tc(page, '[data-ref="recipelist"]')) === 'No recipe matches.');
+  await page.fill('[data-ref="rsearch"]', '');
+  await page.click('[data-act="recipe-label"][data-label="dinner"]');
+  await sleep(80);
+  check('the Dinner chip: only dinners, the chip pressed', same(await recipeNames(page), ['Grandma\'s stew', 'Lentil soup'])
+    && (await page.getAttribute('[data-act="recipe-label"][data-label="dinner"]', 'aria-pressed')) === 'true', JSON.stringify(await recipeNames(page)));
+  await page.fill('[data-ref="rsearch"]', 'lentil');
+  await sleep(80);
+  check('the chip and the search together', same(await recipeNames(page), ['Lentil soup']));
+  await page.fill('[data-ref="rsearch"]', '');
+  await page.click('[data-act="recipe-label"][data-label="all"]');
+  await sleep(80);
+  check('All: the four again', (await recipeNames(page)).length === 4);
+
+  // + Recipe.
+  await page.click('[data-act="recipe-add"]');
+  await sleep(100);
+  check('+ Recipe opens "Add a recipe": name, link, for, note', (await dlg(page, 'h3')) === 'Add a recipe'
+    && !!(await page.$('#formDialog input[name="title"]')) && !!(await page.$('#formDialog input[name="url"]')) && (await page.inputValue('#formDialog select[name="label"]')) === 'dinner'
+    && !!(await page.$('#formDialog textarea[name="note"]')));
+  await page.fill('#formDialog input[name="title"]', 'Tofu stir-fry');
+  await page.fill('#formDialog input[name="url"]', 'ftp://cooking.example.com/tofu');
+  await page.click('#formDialog button[type="submit"]');
+  await sleep(150);
+  check('a link that isn\'t https is refused in the dialog; nothing saved', (await dlg(page, '.form-error')) === 'The link has to be a web address starting with https://.' && !writes(db, 'recipes', 'POST').length,
+    await dlg(page, '.form-error'));
+  await page.fill('#formDialog input[name="url"]', 'https://cooking.example.com/tofu');
+  await page.selectOption('#formDialog select[name="label"]', 'lunch');
+  await page.fill('#formDialog textarea[name="note"]', '  Use   the\nfirm tofu ');
+  await page.click('#formDialog button[type="submit"]');
+  await sleep(300);
+  w = writes(db, 'recipes', 'POST').slice(-1)[0] || {};
+  check('Add inserts the name, the link, the label and the cleaned note', same(w.body, { title: 'Tofu stir-fry', url: 'https://cooking.example.com/tofu', label: 'lunch', note: 'Use the firm tofu' }), JSON.stringify([w.body, await dlg(page, '.form-error')]));
+  check('the new recipe shows; the dialog closed; "Added Tofu stir-fry"', (await recipeNames(page)).includes('Tofu stir-fry') && !(await dialogOpen(page)) && (await lastToast(page)) === 'Added Tofu stir-fry');
+  check('stamped with who added it', (db.recipes.find((r) => r.title === 'Tofu stir-fry') || {}).created_by === 'alex@example.com');
+
+  // Edit.
+  await recipeRowOf(page, 'Lentil soup').locator('[data-act="recipe-edit"]').click();
+  await sleep(100);
+  check('Edit opens "Edit recipe" filled in', (await dlg(page, 'h3')) === 'Edit recipe' && (await page.inputValue('#formDialog input[name="title"]')) === 'Lentil soup'
+    && (await page.inputValue('#formDialog input[name="url"]')) === 'https://cooking.example.com/lentil-soup' && (await page.inputValue('#formDialog textarea[name="note"]')) === 'Freezes well');
+  await page.fill('#formDialog input[name="title"]', 'Red lentil soup');
+  await page.fill('#formDialog input[name="url"]', '');
+  await page.click('#formDialog button[type="submit"]');
+  await sleep(300);
+  w = writes(db, 'recipes', 'PATCH').slice(-1)[0] || {};
+  const soupId = (db.recipes.find((r) => r.title === 'Red lentil soup') || {}).id;
+  check('Save updates that row: the new name, no link', !!soupId && w.query.includes(`id=eq.${soupId}`) && w.body.title === 'Red lentil soup' && w.body.url === null, JSON.stringify(w));
+  check('the row shows the new name, as plain text', (await recipeNames(page)).includes('Red lentil soup') && !(await recipeRowOf(page, 'Red lentil soup').locator('a').count()));
+
+  // Delete, with a confirm: No keeps it; Yes deletes it.
+  db.confirm = false;
+  db.dialogs = [];
+  await recipeRowOf(page, 'Pancakes').locator('[data-act="recipe-edit"]').click();
+  await sleep(100);
+  await page.click('#formDialog button:has-text("Delete")');
+  await sleep(150);
+  check('Delete asks first; No keeps it and the dialog stays', same(db.dialogs, ['Delete the recipe "Pancakes"?']) && !writes(db, 'recipes', 'DELETE').length && (await dialogOpen(page)), JSON.stringify(db.dialogs));
+  db.confirm = true;
+  await page.click('#formDialog button:has-text("Delete")');
+  await sleep(300);
+  check('Yes deletes it: the row goes, "Deleted Pancakes"', writes(db, 'recipes', 'DELETE').length === 1 && !(await recipeNames(page)).includes('Pancakes') && !db.recipes.some((r) => r.title === 'Pancakes')
+    && (await lastToast(page)) === 'Deleted Pancakes' && !(await dialogOpen(page)));
+
+  // Use for dinner: the first free day, then the dinner dialog filled in; Save saves the dinner.
+  await recipeRowOf(page, 'Chickpea lunch bowls').locator('[data-act="recipe-use"]').click();
+  await sleep(100);
+  const dayOpts = await page.$$eval('#formDialog select[name="day"] option', (os) => os.map((o) => o.textContent));
+  check('Use for dinner: the next 7 days, today first, the first with no dinner picked', dayOpts.length === 7 && dayOpts[0] === 'Today'
+    && (await page.inputValue('#formDialog select[name="day"]')) === TODAY, JSON.stringify([dayOpts, await page.inputValue('#formDialog select[name="day"]')]));
+  db.dialogs = [];
+  await page.click('#formDialog button[type="submit"]');
+  await sleep(300);
+  check('an empty day asks nothing; the dinner dialog opens with the recipe\'s name and link', !db.dialogs.length && (await dlg(page, 'h3')) === 'Dinner · Today'
+    && (await page.inputValue('#formDialog input[name="title"]')) === 'Chickpea lunch bowls' && (await page.inputValue('#formDialog input[name="link"]')) === 'https://www.example.com/chickpea-bowls',
+    JSON.stringify([db.dialogs, await dlg(page, 'h3')]));
+  check('nothing is saved before the dinner dialog\'s Save', !writes(db, 'meals', 'POST').length);
+  await page.click('#formDialog button[type="submit"]');
+  await sleep(300);
+  w = writes(db, 'meals', 'POST').slice(-1)[0] || {};
+  check('Save saves tonight\'s dinner from the recipe', w.body && w.body.day === TODAY && w.body.title === 'Chickpea lunch bowls' && w.body.link === 'https://www.example.com/chickpea-bowls' && w.body.kind === 'cook',
+    JSON.stringify(w.body));
+  // Now today has a dinner: the next free day is picked; choosing today asks before replacing.
+  await recipeRowOf(page, 'Red lentil soup').locator('[data-act="recipe-use"]').click();
+  await sleep(100);
+  const opts2 = await page.$$eval('#formDialog select[name="day"] option', (os) => os.map((o) => o.textContent));
+  check('a day with a dinner shows it; the first free day is picked', opts2[0] === 'Today · Chickpea lunch bowls' && (await page.inputValue('#formDialog select[name="day"]')) === addDays(TODAY, 1), JSON.stringify(opts2));
+  await page.selectOption('#formDialog select[name="day"]', TODAY);
+  db.confirm = false;
+  db.dialogs = [];
+  const postsBefore = writes(db, 'meals', 'POST').length;
+  await page.click('#formDialog button[type="submit"]');
+  await sleep(300);
+  check('a day with a dinner asks before replacing; No changes nothing', same(db.dialogs, ['Tonight already has Chickpea lunch bowls. Replace it with Red lentil soup?'])
+    && writes(db, 'meals', 'POST').length === postsBefore && !(await page.$('#formDialog input[name="link"]')), JSON.stringify(db.dialogs));
+  db.confirm = true;
+  await recipeRowOf(page, 'Red lentil soup').locator('[data-act="recipe-use"]').click();
+  await sleep(100);
+  await page.selectOption('#formDialog select[name="day"]', TODAY);
+  await page.click('#formDialog button[type="submit"]');
+  await sleep(300);
+  check('Yes: the dinner dialog with the new recipe in place of the old', (await page.inputValue('#formDialog input[name="title"]')) === 'Red lentil soup' && (await page.inputValue('#formDialog input[name="link"]')) === '');
+  await page.evaluate(() => document.getElementById('formDialog').close());
+
+  // The parents' setting: Change, a non-Drive address refused, a Drive one saved, blank takes it away.
+  check('the settings show "Recipes folder (Google Drive)" set, with Change for a parent', (await tc(page, '[data-ref="switches"]')).includes('Recipes folder (Google Drive) Set Change'), await tc(page, '[data-ref="switches"]'));
+  await page.click('[data-act="recipe-folder"]');
+  await sleep(100);
+  check('Change opens the folder\'s address', (await dlg(page, 'h3')) === 'Recipes folder' && (await page.inputValue('#formDialog input[name="url"]')) === DRIVE_FOLDER);
+  await page.fill('#formDialog input[name="url"]', 'https://evil.example.com/drive.google.com/');
+  await page.click('#formDialog button[type="submit"]');
+  await sleep(150);
+  check('only a Google Drive address', (await dlg(page, '.form-error')).startsWith('That has to be a Google Drive address') && !writes(db, 'household', 'PATCH').some((x) => 'recipes_folder_url' in (x.body || {})));
+  await page.fill('#formDialog input[name="url"]', '');
+  await page.click('#formDialog button[type="submit"]');
+  await sleep(300);
+  w = writes(db, 'household', 'PATCH').slice(-1)[0] || {};
+  check('blank saves no folder; the button goes', same(w.body, { recipes_folder_url: null }) && !(await page.$('[data-ref="recipefolder"]')) && (await tc(page, '[data-ref="switches"]')).includes('Recipes folder (Google Drive) Not set Set'),
+    JSON.stringify(w.body));
+  await page.click('[data-act="recipe-folder"]');
+  await sleep(100);
+  await page.fill('#formDialog input[name="url"]', DRIVE_FOLDER);
+  await page.click('#formDialog button[type="submit"]');
+  await sleep(300);
+  check('a Drive folder saves and the button comes back', (db.household[0] || {}).recipes_folder_url === DRIVE_FOLDER && (await page.getAttribute('[data-ref="recipefolder"]', 'href')) === DRIVE_FOLDER);
+  await page.context().close();
+
+  // An adult who isn't a parent: adds a recipe; sees the folder but can't change it.
+  ({ page, db } = await open({ label: 'recipes-sam', db: recipeDb(DRIVE_FOLDER), rpc: RPC13, email: 'sam@example.com' }));
+  check('an adult sees the recipes and the folder button', (await recipeNames(page)).length === 4 && !!(await page.$('[data-ref="recipefolder"]')));
+  check('an adult has no Change for the folder', (await tc(page, '[data-ref="switches"]')).includes('Recipes folder (Google Drive) Set') && !(await page.$('[data-act="recipe-folder"]')));
+  await page.click('[data-act="recipe-add"]');
+  await sleep(100);
+  await page.fill('#formDialog input[name="title"]', 'Banana bread');
+  await page.selectOption('#formDialog select[name="label"]', 'snack');
+  await page.click('#formDialog button[type="submit"]');
+  await sleep(300);
+  check('an adult adds a recipe: saved and stamped with them', (await recipeNames(page)).includes('Banana bread') && (db.recipes.find((r) => r.title === 'Banana bread') || {}).created_by === 'sam@example.com');
+  await page.context().close();
+
+  // No recipes and no folder: one line, no button. Hostile text is drawn as text.
+  const emptyDb = withRecipes(foodDb(), { recipes: [] });
+  ({ page } = await open({ label: 'recipes-none', db: emptyDb, rpc: RPC13 }));
+  check('no recipes: one line; no folder: no button', (await tc(page, '[data-ref="recipelist"]')) === 'No recipes yet. Add a link, or a file from the Recipes folder.' && !(await page.$('[data-ref="recipefolder"]')));
+  await page.context().close();
+  const evil = '<img src=x onerror="window.__pwned=1">';
+  const hostileDb = withRecipes(foodDb(), { recipes: [{ title: evil, note: `<b>${evil}</b>`, url: 'https://cooking.example.com/a"onmouseover="window.__pwned=1' }] });
+  ({ page } = await open({ label: 'recipes-hostile', db: hostileDb, rpc: RPC13 }));
+  await page.hover('[data-ref="recipes"] .food-recipe-name').catch(() => {});
+  const hostile = await page.evaluate(() => [window.__pwned || 0, document.querySelectorAll('[data-ref="recipes"] img, [data-ref="recipes"] b').length,
+    document.querySelector('[data-ref="recipes"] .food-recipe-name').textContent]);
+  check('hostile text is drawn as text: no element, nothing runs', same(hostile, [0, 0, evil]), JSON.stringify(hostile));
   await page.context().close();
 
   // =====================================================================
