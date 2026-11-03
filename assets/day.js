@@ -162,6 +162,9 @@
       hw_school_for_pat_none: 'On your homework, to plan with your parents: {title}', hw_school_hidden: 'Hidden: {title}. A parent can bring it back.',
       hw_school_more: '{n} more', hw_school_gone: 'No longer on the school site', hw_school_moved: 'The school moved it to {day}',
       hw_school_not_yours: "That isn't on your list from school any more.", hw_school_already: 'That one is on your homework already.',
+      // 0015: an item whose school date is the day it was assigned asks for its due date.
+      hw_school_assigned: 'assigned {day}', hw_school_due: 'Due', hw_school_need_due: 'Choose the due date first.',
+      hw_school_bad_due: 'Choose a due date from the day it was assigned to 4 months from today.',
       hw_cash_btn: 'Get it now', hw_cash_sure: 'Yes, get it · −{n}', hw_cashed_toast: 'Got it: {title}. Tell a parent.', hw_instant: 'instant',
       hw_got: 'Got it', hw_k_milestone_done: 'Milestone done', hw_cash_none: 'No more instant rewards today: ask a parent.',
       // 0007: his screen when a tutor link of his has the coach view on ({coach}: its label's first word).
@@ -284,6 +287,8 @@
       hw_school_for_pat_none: 'En tu tarea, para planear con tus padres: {title}', hw_school_hidden: 'Oculta: {title}. Tus padres pueden recuperarla.',
       hw_school_more: '{n} más', hw_school_gone: 'Ya no está en el sitio de la escuela', hw_school_moved: 'La escuela la pasó a {day}',
       hw_school_not_yours: 'Eso ya no está en tu lista de la escuela.', hw_school_already: 'Esa ya está en tu tarea.',
+      hw_school_assigned: 'asignada {day}', hw_school_due: 'Para', hw_school_need_due: 'Elige primero la fecha de entrega.',
+      hw_school_bad_due: 'Elige una fecha de entrega desde el día en que se asignó hasta dentro de 4 meses.',
       hw_cash_btn: 'Conseguir ya', hw_cash_sure: 'Sí, conseguirlo · −{n}', hw_cashed_toast: 'Conseguido: {title}. Avisa a tus padres.', hw_instant: 'al momento',
       hw_got: 'Conseguido', hw_k_milestone_done: 'Hito hecho', hw_cash_none: 'Hoy no quedan premios al momento: pídeselo a tus padres.',
       hw_who_sees_coach: '{tutor} y los adultos de tu familia ven tu plan y tus notas. Los adultos y {coach} ven tus puntos y premios, tus sesiones de concentración, tu propio calendario y tus tareas diarias.',
@@ -1377,6 +1382,7 @@
   let schoolMoreOpen = false;   // New from school's folded rest unfolded (0006)
   let pathsMoreOpen = false;    // Your path's folded rest unfolded (§21)
   const schoolBusy = new Set(); // New from school: the items with a Quick, Plan with Pat or Hide on its way
+  const schoolDue = new Map();  // 0015: the due date he chose for an item assigned on a day (item id → YYYY-MM-DD)
   let schoolScroll = false;     // the card's "New from school" line was tapped: #homework opens at the list
   let sheet = null;         // { kind: 'stuck' | 'smaller' | 'ask' | 'cue' | 'ifstuck', step, text }
   let withPick = 'alone';
@@ -1437,6 +1443,9 @@
     // 0006: New from school's refusals (school_item_by_token).
     if (/That isn't on your list from school/i.test(msg)) return hw('hw_school_not_yours');
     if (/That one is on your homework already/i.test(msg)) return hw('hw_school_already');
+    // 0015: an item assigned on a day needs its due date.
+    if (/Choose the due date/i.test(msg)) return hw('hw_school_need_due');
+    if (/Choose a due date from/i.test(msg)) return hw('hw_school_bad_due');
     return friendly(err);
   }
 
@@ -1542,9 +1551,10 @@
     p_token: token, p_action: action, p_assignment: o.assignment, p_title: o.title, p_subject: o.subject, p_due_date: o.due, p_minutes: o.minutes,
   }));
   // 0006: an item of New from school ('quick' with his minutes, 'with_tutor', 'hide'); its answer is {assignment_id} and his view.
-  const schoolCall = (action, item, minutes) => hwWrite(() => sb.rpc('school_item_by_token', {
+  // 0015: due, the due date he chose for an item assigned on a day (sent only then: a database before 0015 has none).
+  const schoolCall = (action, item, minutes, due) => hwWrite(() => sb.rpc('school_item_by_token', Object.assign({
     p_token: token, p_item: item, p_action: action, p_minutes: minutes,
-  }));
+  }, due ? { p_due: due } : {})));
   const prefsCall = (cue, ifStuck) => hwWrite(() => sb.rpc('homework_prefs_by_token', { p_token: token, p_cue: cue, p_if_stuck: ifStuck, p_minutes: null }));
 
   // ---------- The view's steps ----------
@@ -1913,10 +1923,21 @@
   const schoolList = () => (hv && Array.isArray(hv.from_school) ? hv.from_school.filter((x) => x && typeof x.id === 'string') : []);
   const schoolItem = (id) => schoolList().find((x) => x.id === id) || null;
   const schoolMinutes = () => Math.min(60, Math.max(5, Number(lengthOf()) || 20));
+  // 0015: an item with assigned: true is dated the day it was assigned, not its due date; he gives the due date (from
+  // that day to 4 months on) before Quick or Plan with Pat, and Quick is offered beside Plan with Pat.
+  const isAssigned = (x) => x.assigned === true;
   function schoolRowHTML(x) {
-    const line = [x.subject, x.title, plan.t('due_on', { day: hwRel(x.due_date) }, lang)].filter(Boolean).join(' · ');
+    const given = isAssigned(x);
+    const line = [x.subject, x.title, given ? hw('hw_school_assigned', { day: hwRel(x.due_date) }) : plan.t('due_on', { day: hwRel(x.due_date) }, lang)].filter(Boolean).join(' · ');
     const off = schoolBusy.has(x.id) ? ' disabled' : '';
     const b = (act, label, cls) => `<button type="button" class="btn${cls ? ` ${cls}` : ''}" data-act="${act}" data-item="${esc(x.id)}"${off}>${esc(label)}</button>`;
+    if (given) {
+      return `<div class="hw-school-item" data-item="${esc(x.id)}">
+      <p class="hw-school-line">${esc(line)}</p>
+      <label class="field hw-school-due"><span>${esc(hw('hw_school_due'))}</span><input type="date" name="school-due" data-item="${esc(x.id)}" min="${esc(x.due_date)}" max="${esc(plan.addDays(hv.today, 120))}" value="${esc(schoolDue.get(x.id) || '')}"${off}></label>
+      <p class="hw-school-acts">${b('hw-school-pat', hw('hw_school_pat'), 'btn-primary')}${b('hw-school-quick', hw('hw_school_quick', { n: schoolMinutes() }))}${b('hw-school-hide', hw('hw_school_hide'))}</p>
+    </div>`;
+    }
     return `<div class="hw-school-item" data-item="${esc(x.id)}">
       <p class="hw-school-line">${esc(line)}</p>
       <p class="hw-school-acts">${x.quick === true ? b('hw-school-quick', hw('hw_school_quick', { n: schoolMinutes() }), 'btn-primary') : ''}${b('hw-school-pat', hw('hw_school_pat'), x.quick === true ? '' : 'btn-primary')}${b('hw-school-hide', hw('hw_school_hide'))}</p>
@@ -2660,9 +2681,17 @@
   }
   async function schoolAct(id, action) {
     const x = schoolItem(id);
-    if (!x || schoolBusy.has(id) || (action === 'quick' && x.quick !== true)) return;
+    if (!x || schoolBusy.has(id) || (action === 'quick' && x.quick !== true && !isAssigned(x))) return;
+    // 0015: Quick and Plan with Pat on an item assigned on a day need the due date he chose.
+    let due;
+    if (isAssigned(x) && action !== 'hide') {
+      const box = root.querySelector(`input[name="school-due"][data-item="${CSS.escape(id)}"]`);
+      due = String((box && box.value) || schoolDue.get(id) || '');
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(due)) { toast(hw('hw_school_need_due'), { error: true }); if (box) box.focus(); return; }
+      if (due < x.due_date || due > plan.addDays(hv.today, 120)) { toast(hw('hw_school_bad_due'), { error: true }); if (box) box.focus(); return; }
+    }
     schoolHold(id, true);
-    const r = await schoolCall(action, id, action === 'quick' ? schoolMinutes() : undefined);
+    const r = await schoolCall(action, id, action === 'quick' ? schoolMinutes() : undefined, due);
     schoolHold(id, false);
     if (r.gone) return;   // homework went off, or the link: hwNull shows the day
     if (r.data) {
@@ -2948,6 +2977,7 @@
   });
   root.addEventListener('change', (e) => {
     if (e.target.name === 'with' && e.target.closest('.hw-now-card')) withPick = e.target.value;
+    else if (e.target.name === 'school-due' && e.target.dataset.item) schoolDue.set(e.target.dataset.item, e.target.value);
     else if (e.target.name === 'silent') { try { localStorage.setItem(SILENT_KEY, e.target.checked ? '1' : '0'); } catch (err) { /* this visit only */ } }
   });
   root.addEventListener('input', (e) => { if (sheet && e.target.closest('.hw-sheet') && e.target.name === 'text') sheet.text = e.target.value; });
