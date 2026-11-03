@@ -1290,6 +1290,57 @@ const emailOf = (req) => {
   await page.context().close();
 
   // =====================================================================
+  // 9b. Send the list to a grown-up: the items themselves and the Food page
+  // =====================================================================
+  db = stockList(foodDb());
+  db.people.find((p) => p.id === ID.sam).phone = '(201) 555-0103';
+  db.people.find((p) => p.id === ID.morgan).phone = '(201) 555-0102';
+  db.people.find((p) => p.id === ID.morgan).role = 'adult';
+  db.people.find((p) => p.id === ID.morgan).language = 'es';
+  ({ page } = await open({ label: 'send-adult', db }));
+  const sendRows = () => page.$$eval('[data-ref="send"] li', (lis) => lis.map((li) => [li.dataset.send, li.querySelector('b').textContent,
+    ...[...li.querySelectorAll('a')].map((a) => a.getAttribute('href'))]));
+  let rows = await sendRows();
+  const msgOf = (row) => decodeURIComponent(row[2].split('text=')[1]);
+  const samRow = rows.find((r) => r[0] === ID.sam) || [];
+  const morganRow = rows.find((r) => r[0] === ID.morgan) || [];
+  const foodUrl = `${BASE}/#/food`;
+  check('Send the list: a grown-up with a phone gets a row after the helper\'s, under "Send the list"', rows.length === 3 && rows[0][0] === ID.taylor
+    && samRow[1] === 'Send Sam the list' && (await page.$eval('[data-ref="send"] .sec-head', (h) => h.textContent.trim()).catch(() => '')) === 'Send the list', JSON.stringify(rows));
+  const samMsg = samRow.length ? msgOf(samRow) : '';
+  check('a grown-up\'s message: hello, the items to buy, and the Food page; never the helper\'s My day link',
+    /^Hi Sam, here's the household's shopping list\./.test(samMsg) && samMsg.includes('• Milk') && samMsg.includes('• Light bulbs') && samMsg.includes(foodUrl)
+    && !samMsg.includes('day.html') && samRow[2].startsWith('https://wa.me/12015550103?text=') && samRow[3].startsWith('sms:+12015550103?&body='), samMsg);
+  check('a grown-up\'s message leaves out locked lines (a text leaves the hub) and what was bought', !samMsg.includes('Pregnancy test') && !samMsg.includes('Eggs') && !samMsg.includes('Apples'), samMsg);
+  const morganMsg = morganRow.length ? msgOf(morganRow) : '';
+  check('a grown-up\'s message in Spanish for a Spanish speaker', /^Hola Morgan: esta es la lista de compras de la casa\./.test(morganMsg) && morganMsg.includes('• Milk')
+    && morganMsg.includes(foodUrl) && /Ábrela en Home Hub/.test(morganMsg), morganMsg);
+  check('never a row for the signed-in person, nor for a grown-up without a phone', !rows.some((r) => r[0] === ID.alex) && rows.every((r) => r[0] !== ID.jordan), JSON.stringify(rows));
+  await page.click('.food-seg-btn[data-value="off"]');
+  await sleep(400);
+  rows = await sendRows();
+  check('Off takes away only the helper\'s row: grown-ups don\'t use the My day list', rows.length === 2 && !rows.some((r) => r[0] === ID.taylor), JSON.stringify(rows));
+  const typed = page.locator('[data-ref="add"] input[name="what"]');
+  await typed.fill('Oat milk');
+  await typed.press('Enter');
+  await sleep(500);
+  rows = await sendRows();
+  check('a line added shows in the grown-up\'s message at once', msgOf(rows.find((r) => r[0] === ID.sam) || ['', '', 'text=']).includes('• Oat milk'), JSON.stringify(rows));
+  await page.context().close();
+  ({ page } = await open({ label: 'send-adult-sam', db, email: 'sam@example.com' }));
+  rows = await sendRows();
+  check('signed in as Sam: no "Send Sam the list", Morgan\'s is there', !rows.some((r) => r[0] === ID.sam) && rows.some((r) => r[0] === ID.morgan), JSON.stringify(rows));
+  await page.context().close();
+  db = stockList(foodDb());
+  for (let i = 0; i < 25; i++) db.shopping_items.push(shopItem({ name: `Extra ${i + 1}`, aisle: 'other', added_at: at(addDays(TODAY, -1), '19:00'), added_by: ID.alex }));
+  db.people.find((p) => p.id === ID.sam).phone = '(201) 555-0103';
+  ({ page } = await open({ label: 'send-adult-long', db }));
+  rows = await sendRows();
+  const longMsg = msgOf(rows.find((r) => r[0] === ID.sam) || ['', '', 'text=']);
+  check('a long list: the first 30 names, then "and N more"', (longMsg.match(/^• /gm) || []).length === 30 && /\nand 7 more\n/.test(longMsg), longMsg);
+  await page.context().close();
+
+  // =====================================================================
   // 10. The Add sheet's Shopping (openListAdd): two items in a row
   // =====================================================================
   db = stockList(foodDb());
