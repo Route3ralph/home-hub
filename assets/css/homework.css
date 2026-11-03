@@ -142,6 +142,10 @@
 .hw-schoolform { display: grid; gap: 8px; padding: 10px 12px; border-radius: 12px; background: var(--surface-2); }
 .hw-schoolform input { min-height: 44px; font-size: 16px; }
 .hw-schoolform .form-actions { margin: 0; }
+/* 0015: Add for an item dated the day it was assigned: its due date */
+.hw-schooldue { display: grid; gap: 8px; width: 100%; padding: 10px 12px; border-radius: 12px; background: var(--surface-2); }
+.hw-schooldue input { min-height: 44px; font-size: 16px; }
+.hw-schooldue .form-actions { margin: 0; }
 .hw-school-how > summary {
   display: flex; align-items: center; min-height: 44px; color: var(--accent); font-size: 14px; font-weight: 650; cursor: pointer;
 }

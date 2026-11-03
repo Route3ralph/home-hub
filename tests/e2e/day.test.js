@@ -63,7 +63,7 @@ const crypto = require('crypto');
 const { chromium } = require('playwright');
 const { makeDb, install, signIn, SUPA, withFood, foodRpc, personDayFood, shopItem, mealRow, withHomeworkTokens, homeworkTokenRpc: homeworkRpc,
   personDayHomework, tkKidRow: hwKidRow, tkLinkRow: tutorLinkRow, tkAssignmentRow: assignmentRow, tkStepRow: stepRow, tkSessionRow: sessionRow,
-  tkRewardRow: rewardRow, tkLedgerRow: ledgerRow, withSchool, schoolFeedRow, schoolItemRow, withCoach } = require('./mock');
+  tkRewardRow: rewardRow, tkLedgerRow: ledgerRow, withSchool, withSchoolAssigned, schoolFeedRow, schoolItemRow, withCoach } = require('./mock');
 const { serve, ROOT } = require('./server');
 
 let BASE = '';
@@ -3246,6 +3246,84 @@ const HW_AUDIO_DROP = `(${HW_STUBS})(); (${HW_CLOCKED})(); (${HW_WAKE_DROP})();`
     await hwClear(page);
     await page.click(`${SCH(hid(100))} [data-act="hw-school-quick"]`);
     check('Spanish: "Planeado para mañana: Read chapter 5"', (await hwToast(page)) === 'Planeado para mañana: Read chapter 5', await text(page, '.toasts'));
+    await page.context().close();
+  }
+
+  // =====================================================================
+  // 22b. New from school dated the day each was assigned (schema 15, 0015; docs/v1.3-homework.md §23): he gives the due
+  // date before Quick or Plan with Pat (school_item_by_token's p_due); Hide needs none
+  // =====================================================================
+  {
+    const givenDb = (o) => {
+      const d = withSchoolAssigned(withSchool(hwDb(o)));
+      const feed = schoolFeedRow({ id: hid(299), kid_id: P.jordan, kind: 'assignments', checked: true, date_rule: 'assigned', last_ok_at: '2026-11-02T20:23:00.000000+00:00', last_count: 3 });
+      d.school_feeds.push(feed);
+      const I = (x) => d.school_items.push(schoolItemRow(Object.assign({ feed_id: feed.id }, x)));
+      I({ id: hid(300), title: 'Letter to the teacher', subject: 'History', due_date: '2026-10-30' });
+      I({ id: hid(301), title: 'Equations worksheet', subject: 'Math', due_date: '2026-11-02' });
+      I({ id: hid(302), title: 'Old map', subject: 'Geography', due_date: '2026-10-20' });
+      return d;
+    };
+    const SCH = (id) => `.hw-school .hw-school-item[data-item="${id}"]`;
+    ({ page, db } = await open({ label: 'hw-school-given', path: `/day.html?t=${JORDAN}#homework`, db: givenDb(), device: HW_DEVICE, init: HW_STUBS, ctx: phone(), allowConsole: /status of 400/ }));
+    await page.waitForSelector('.hw-school');
+    const lines = await hwTexts(page, '.hw-school .hw-school-line');
+    check('assigned items: "New from school (2)" (what was assigned from 10 days ago on), each "assigned …", not "due"', (await hwText(page, '#hw-school-h')) === 'New from school (2)'
+      && lines.length === 2 && /^History · Letter to the teacher · assigned /.test(lines[0]) && /^Math · Equations worksheet · assigned /.test(lines[1]) && !lines.some((x) => / due /.test(x)),
+      JSON.stringify(lines));
+    const box = await page.$eval(`${SCH(hid(300))} input[name="school-due"]`, (i) => ({ type: i.type, min: i.min, max: i.max, label: i.closest('label').querySelector('span').textContent })).catch(() => null);
+    check('... each with a Due box (from the day it was assigned to 4 months on), then Plan with Pat, Quick and Hide',
+      !!box && box.type === 'date' && box.min === '2026-10-30' && box.max === '2027-03-02' && box.label === 'Due'
+      && same(await hwTexts(page, `${SCH(hid(300))} button`), ['Plan with Pat', 'Quick · 20 min', 'Hide']), JSON.stringify([box, await hwTexts(page, `${SCH(hid(300))} button`)]));
+    check('phone: no sideways scroll; the buttons and the box at least 44px tall', await noSideScroll(page)
+      && (await page.$$eval('.hw-school button, .hw-school input[name="school-due"]', (bs) => bs.every((b) => b.getBoundingClientRect().height >= 44))));
+    await page.locator('.hw-school').screenshot({ path: SHOTS + 'day-hw-school-assigned.png' });
+    await page.click(`${SCH(hid(300))} [data-act="hw-school-pat"]`);
+    check('Plan with Pat with no due date: "Choose the due date first." and nothing sent', (await hwToast(page)) === 'Choose the due date first.' && !calls(db, 'school_item_by_token').length,
+      await text(page, '.toasts'));
+    await hwClear(page);
+    await page.fill(`${SCH(hid(300))} input[name="school-due"]`, '2026-10-29');
+    await page.click(`${SCH(hid(300))} [data-act="hw-school-pat"]`);
+    check('... before the day it was assigned: said, nothing sent', (await hwToast(page)) === 'Choose a due date from the day it was assigned to 4 months from today.'
+      && !calls(db, 'school_item_by_token').length, await text(page, '.toasts'));
+    await hwClear(page);
+    // A refusal from the database in his words.
+    db.hwError = [400, '22023', 'Choose the due date.'];
+    await page.fill(`${SCH(hid(300))} input[name="school-due"]`, '2026-11-09');
+    await page.click(`${SCH(hid(300))} [data-act="hw-school-pat"]`);
+    check('the database\'s "Choose the due date.": "Choose the due date first.", the item stays', (await hwToast(page)) === 'Choose the due date first.'
+      && await until(async () => !!(await page.$(`${SCH(hid(300))} [data-act="hw-school-pat"]:not([disabled])`))), await text(page, '.toasts'));
+    await hwClear(page);
+    check('... the date he chose stays in the box', (await page.$eval(`${SCH(hid(300))} input[name="school-due"]`, (i) => i.value)) === '2026-11-09');
+    await page.click(`${SCH(hid(300))} [data-act="hw-school-pat"]`);
+    await until(async () => !(await page.$(SCH(hid(300)))));
+    const letter = db.assignments.find((a) => a.title === 'Letter to the teacher');
+    check('Plan with Pat with Mon Nov 9: school_item_by_token with_tutor and p_due; an assignment from school due that day, no plan',
+      same(calls(db, 'school_item_by_token').slice(-1)[0].body, { p_token: JORDAN, p_item: hid(300), p_action: 'with_tutor', p_due: '2026-11-09' })
+      && !!letter && letter.due_date === '2026-11-09' && letter.added_by === 'school' && !db.homework_steps.some((x) => x.assignment_id === letter.id),
+      JSON.stringify(calls(db, 'school_item_by_token').slice(-1)[0].body));
+    await hwClear(page);
+    await page.fill(`${SCH(hid(301))} input[name="school-due"]`, '2026-11-04');
+    await page.click(`${SCH(hid(301))} [data-act="hw-school-quick"]`);
+    await until(async () => !(await page.$('.hw-school')));
+    const eq = db.assignments.find((a) => a.title === 'Equations worksheet');
+    check('Quick with Wed Nov 4: school_item_by_token quick, his length and p_due; due that day, with one step; the section goes with its last item',
+      same(calls(db, 'school_item_by_token').slice(-1)[0].body, { p_token: JORDAN, p_item: hid(301), p_action: 'quick', p_minutes: 20, p_due: '2026-11-04' })
+      && !!eq && eq.due_date === '2026-11-04' && db.homework_steps.some((x) => x.assignment_id === eq.id) && !(await page.$('.hw-school')),
+      JSON.stringify(calls(db, 'school_item_by_token').slice(-1)[0].body));
+    await page.context().close();
+    // Hide needs no date; Spanish words.
+    ({ page, db } = await open({ label: 'hw-school-given-es', path: `/day.html?t=${JORDAN}#homework`, db: givenDb({ lang: 'es' }), device: HW_DEVICE, init: HW_STUBS }));
+    await page.waitForSelector('.hw-school');
+    check('Spanish: "asignada …" and "Para"', /· asignada /.test((await hwTexts(page, '.hw-school .hw-school-line'))[0] || '')
+      && (await hwText(page, `${SCH(hid(300))} .hw-school-due span`)) === 'Para', JSON.stringify(await hwTexts(page, '.hw-school .hw-school-line')));
+    await page.click(`${SCH(hid(300))} [data-act="hw-school-quick"]`);
+    check('Spanish: Quick with no date: "Elige primero la fecha de entrega."', (await hwToast(page)) === 'Elige primero la fecha de entrega.', await text(page, '.toasts'));
+    await hwClear(page);
+    await page.click(`${SCH(hid(300))} [data-act="hw-school-hide"]`);
+    await until(async () => !(await page.$(SCH(hid(300)))));
+    check('Hide: school_item_by_token hide, no due date', same(calls(db, 'school_item_by_token').slice(-1)[0].body, { p_token: JORDAN, p_item: hid(300), p_action: 'hide' }),
+      JSON.stringify(calls(db, 'school_item_by_token').slice(-1)[0].body));
     await page.context().close();
   }
 

@@ -252,6 +252,10 @@
 .hw-school-line { margin: 0; font-weight: 600; overflow-wrap: anywhere; }
 .hw-school-acts { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 0; }
 .hw-school-acts .btn { min-height: 44px; padding: 8px 14px; font-size: 15px; }
+/* 0015: an item dated the day it was assigned: its due date first */
+.hw-school-due { display: flex; align-items: center; gap: 8px; margin: 8px 0 0; }
+.hw-school-due span { font-size: 15px; color: var(--text-2); }
+.hw-school-due input { min-height: 44px; max-width: 100%; font-size: 16px; }
 .hw-school-more { border-top: 1px solid var(--line); }
 .hw-school-more > summary {
   display: flex; align-items: center; min-height: 48px; color: var(--text-2); font-weight: 650; cursor: pointer; list-style: none;

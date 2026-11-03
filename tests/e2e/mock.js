@@ -1744,6 +1744,7 @@ function withSchoolCheck(db) {
 function withSchoolAssigned(db) {
   withSchoolCheck(db);
   db.schoolAssigned15 = true;
+  return db;
 }
 const schoolUrlOf = (db, feedId) => (SCHOOL_URLS.get(db) || new Map()).get(feedId) || null;
 const schoolFeedRow = (o) => Object.assign({
