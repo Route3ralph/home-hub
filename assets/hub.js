@@ -1357,6 +1357,33 @@
     window.addEventListener('hashchange', () => { clearActionToasts(); route(); });
   }
 
+  // A printed sheet (the Calendar's and the Homework page's Print): html into #print-sheet, which only shows on
+  // paper (styles.css hides the rest of the page while body.printing), then the browser's own print. The page is
+  // back once printing ends. opts: { lang, landscape }.
+  function printSheet(html, opts) {
+    const o = opts || {};
+    let sheet = document.getElementById('print-sheet');
+    if (!sheet) {
+      sheet = document.createElement('div');
+      sheet.id = 'print-sheet';
+      document.body.appendChild(sheet);
+    }
+    sheet.lang = o.lang || 'en';
+    sheet.innerHTML = html;
+    let pageSize = document.getElementById('print-page');
+    if (!pageSize) {
+      pageSize = document.createElement('style');
+      pageSize.id = 'print-page';
+      document.head.appendChild(pageSize);
+    }
+    pageSize.textContent = o.landscape ? '@page { size: landscape; margin: 10mm; }' : '@page { margin: 12mm; }';
+    document.body.classList.add('printing');
+    const done = () => document.body.classList.remove('printing');
+    window.addEventListener('afterprint', done, { once: true });
+    // The form that asked closes first, so the dialog isn't on the paper.
+    setTimeout(() => { try { window.print(); } finally { if (!('onafterprint' in window)) done(); } }, 50);
+  }
+
   // What page modules get. See MODULES & SCHEMA VERSION above for register().
   window.HomeHub = Object.freeze({
     register,
@@ -1370,7 +1397,7 @@
       data, api, q,
       $, clone, firstName, slug, uniqueKey, allTasks, stamp, webHref, telHref, nextMonday, randomToken, toast, friendly,
       resolvedSchedule, contractorFor, reachable, contactFor, shareLink, safeModel,
-      openForm, wireFormDialog,
+      openForm, wireFormDialog, printSheet,
       phoneDigits, smsHref, whatsappHref, mailtoHref, canShare, shareText, signOff, messageDialog,
       route, stale, use,
       // v2 (schemaVersion >= 2): caches, formatting, dates and shared pieces; the Add sheet.

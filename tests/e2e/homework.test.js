@@ -1920,6 +1920,58 @@ const emailOf = (req) => {
     }
   }
 
+  // =====================================================================
+  // 13. Print (no migration): his open assignments by due date, their steps to tick; English or Spanish; parents only
+  // =====================================================================
+  {
+    ({ page, db, log } = await open({ label: 'print' }));
+    await page.evaluate(() => { window.__printed = 0; window.print = () => { window.__printed += 1; }; });
+    await page.click('[data-sec="assignments"] [data-act="print"]');
+    await page.waitForSelector('#formDialog[open] select[name="range"]');
+    const form = await page.evaluate(() => { const f = document.querySelector('#formDialog form'); return { range: f.elements.range.value, lang: f.elements.lang.value, details: f.elements.details.checked }; });
+    check('print: the form opens on the next 2 weeks, in his language (English), without the teacher\'s text', same(form, { range: 'soon', lang: 'en', details: false }), JSON.stringify(form));
+    await page.click('#formDialog button[type="submit"]');
+    await page.waitForFunction(() => window.__printed === 1);
+    const en = await page.evaluate(() => {
+      const s = document.getElementById('print-sheet');
+      return { printing: document.body.classList.contains('printing'), lang: s.lang, title: s.querySelector('h1').textContent, when: s.querySelector('.ps-head p').textContent,
+        names: [...s.querySelectorAll('.ps-assign h2')].map((h) => h.textContent), subs: [...s.querySelectorAll('.ps-sub')].map((p) => p.textContent),
+        sciSteps: [...s.querySelectorAll('.ps-assign')][3].querySelectorAll('.ps-item').length, sciDone: [...s.querySelectorAll('.ps-assign')][3].querySelectorAll('.ps-done').length,
+        lesson: [...s.querySelectorAll('.ps-assign')][1].querySelector('.ps-empty') ? [...s.querySelectorAll('.ps-assign')][1].querySelector('.ps-empty').textContent : '',
+        text: s.innerText.replace(/\s+/g, ' '), page: document.getElementById('print-page').textContent };
+    });
+    check('print: Jordan\'s open work due by Wed Nov 18, by due date: Worksheet 5.1, Fractions practice (a lesson), History timeline, the river poster; nothing done',
+      en.printing && en.lang === 'en' && en.title === 'Jordan\'s homework' && en.when === 'Due by Wed Nov 18'
+        && same(en.names, ['Worksheet 5.1', 'Fractions practice', 'History timeline', 'Science project: river poster']) && !/Spelling list|Book report/.test(en.text)
+        && !/landscape/.test(en.page), JSON.stringify(en));
+    check('print: each with its class and due day ("Math · Do by Mon Nov 9 · Lesson" for the lesson)',
+      same(en.subs, ['Math · Due Fri Nov 6', 'Math · Do by Mon Nov 9 · Lesson', 'History · Due Wed Nov 11', 'Science · Due Fri Nov 13']), JSON.stringify(en.subs));
+    check('print: a given plan\'s steps as boxes with their days (8 for the poster, 3 ticked); a plan not given reads "Being planned"; the teacher\'s text left out',
+      en.sciSteps === 8 && en.sciDone === 3 && en.lesson === 'Being planned: no steps yet.' && !/Make a poster about a river/.test(en.text)
+        && /Thu Nov 5 Draft the first half 20 min/.test(en.text), en.text);
+    await page.evaluate(() => window.dispatchEvent(new Event('afterprint')));
+
+    await page.click('[data-sec="assignments"] [data-act="print"]');
+    await page.waitForSelector('#formDialog[open] select[name="range"]');
+    await page.selectOption('#formDialog select[name="range"]', 'all');
+    await page.selectOption('#formDialog select[name="lang"]', 'es');
+    await page.check('#formDialog input[name="details"]');
+    await page.click('#formDialog button[type="submit"]');
+    await page.waitForFunction(() => window.__printed === 2);
+    const es = await page.evaluate(() => {
+      const s = document.getElementById('print-sheet');
+      return { lang: s.lang, title: s.querySelector('h1').textContent, when: s.querySelector('.ps-head p').textContent,
+        details: [...s.querySelectorAll('.ps-details')].map((p) => p.textContent), subs: [...s.querySelectorAll('.ps-sub')].map((p) => p.textContent) };
+    });
+    check('print: in Spanish, everything open, with the teacher\'s text and its lines',
+      es.lang === 'es' && es.title === 'Tareas de Jordan' && es.when === 'Todo lo pendiente' && es.subs[0] === 'Math · Entrega: vie 6 nov'
+        && es.details.some((d) => d.startsWith('Make a poster about a river.\nShow its source')), JSON.stringify(es));
+    await page.context().close();
+    ({ page, db, log } = await open({ label: 'print-sam', email: 'sam@example.com' }));
+    check('print: not for Sam (the page has no buttons for the other grown-ups)', !(await page.$('[data-act="print"]')));
+    await page.context().close();
+  }
+
   console.log(results.join('\n'));
   console.log(`\n${results.filter((r) => r.startsWith('PASS')).length}/${results.length} passed`);
   console.log('PAGE ERRORS:', errors.length ? '\n' + errors.join('\n') : 'none');
