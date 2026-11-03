@@ -1025,18 +1025,34 @@
     if (f) state = [f.paused ? 'Paused' : null, read || (f.paused ? null : f.last_stop ? 'Added · not read yet' : 'Added · first read within the hour')].filter(Boolean).join(' · ');
     const open = !!(st.form && st.form.key === `school:${kind}`);
     const at = ` data-feed="${esc(kind)}"`;
-    const acts = open ? '' : f ? `${btn('school-replace', 'Replace', at)}${btn(f.paused ? 'school-resume' : 'school-pause', f.paused ? 'Resume' : 'Pause', at)}${btn('school-remove', 'Remove', at)}`
+    const acts = open ? '' : f ? `${btn('school-replace', 'Replace', at)}${btn(f.paused ? 'school-resume' : 'school-pause', f.paused ? 'Resume' : 'Pause', at)}${btn('school-remove', 'Remove', at)}${f.kind === 'assignments' && f.checked && core.schemaVersion >= 15 && !st.schoolRedate ? btn('school-redate', 'Change dates', at) : ''}`
       : btn('school-add', 'Add link', at, 'btn-primary');
     const repeats = f ? Number(f.last_repeats) || 0 : 0;
+    // 0015: a checked Assignments link says how its dates are read, and Change dates answers the check again.
+    const redate = kind === 'assignments' && f && f.checked && core.schemaVersion >= 15 && !open;
+    const datesLine = redate ? `<small class="hw-feed-what hw-feed-dates">${esc(`${ruleWords(f)}.`)}</small>` : '';
     return `<li class="hw-feed" data-feed="${esc(kind)}"><div class="hw-feed-head"><b class="hw-feed-name">${esc(label)}</b><span class="hw-feed-state">${esc(state)}</span></div>
       <small class="hw-feed-what">${esc(what)}</small>
       ${f ? `<small class="hw-feed-link">${esc(`${f.host} …${f.url_end}`)}</small>` : ''}
       ${f && f.last_stop ? `<p class="hw-feed-error" role="status">${esc(stopWords(f.last_stop))}</p>` : ''}
       ${f && f.stale ? `<p class="hw-feed-error hw-feed-stale" role="status">${esc(STALE)}</p>` : ''}
-      ${repeats ? `<small class="hw-feed-what hw-feed-repeats">${esc(`${plural(repeats, 'repeating event')}: Home Hub uses only the first date of each.`)}</small>` : ''}
+      ${datesLine}${repeats ? `<small class="hw-feed-what hw-feed-repeats">${esc(`${plural(repeats, 'repeating event')}: Home Hub uses only the first date of each.`)}</small>` : ''}
       ${acts ? `<div class="hw-feed-acts">${acts}</div>` : ''}${open ? schoolFormHTML(kind, label, !!f) : ''}</li>`;
   }
-  const itemLine = (x) => [x.subject, x.title, `due ${fmt.day(x.due_date)}`].filter(Boolean).join(' · ');
+  // From 0015 (schema 15) an item of an Assignments link whose dates are the day each was assigned has assigned: true:
+  // its date is that day, not a due date, and Add asks for the due date.
+  const isAssigned = (x) => x.assigned === true;
+  const itemLine = (x) => [x.subject, x.title, `${isAssigned(x) ? 'assigned' : 'due'} ${fmt.day(x.due_date)}`].filter(Boolean).join(' · ');
+  // The Assignments link's date rule, in words (Change dates, schema 15).
+  const DATE_RULE = {
+    end: 'Due dates: each item\'s last day', start: 'Due dates: each item\'s first day',
+    assigned: 'Dates: the day each was assigned. You give the due date when you add one',
+  };
+  const ruleWords = (f) => {
+    const base = DATE_RULE[f.date_rule] || DATE_RULE.end;
+    const shift = Number(f.date_shift) || 0;
+    return shift ? `${base}, ${shift < 0 ? 'a day earlier' : 'a day later'}` : base;
+  };
   // A first-import check's item: from 0008 (schema 8) the check fills up with past items (past: true) when fewer than 5
   // are to come; those read "was due". On 6 and 7 there is no past key, and nothing past on the check.
   const isPast = (x) => x.past === true;
@@ -1064,15 +1080,26 @@
   // it reaches him or the tutor; the answer sets the due date as an item's last ('end') or first ('start') day, moved -1 to 1.
   function schoolCheckHTML(st) {
     const f = feedOf(st, 'assignments');
-    if (!f || f.checked) return '';
+    const v15 = core.schemaVersion >= 15;
+    if (!f || (f.checked && !(v15 && st.schoolRedate))) return '';
     const kid = kidName(st);
     const tutor = tutorFirst(st) || 'the tutor';
+    const at = (rule, shift) => ` data-id="${esc(f.id)}" data-rule="${rule}" data-shift="${shift}"`;
+    // 0015: "The day it was assigned": the school's date is when it was given, and Add asks for the due date.
+    const given = v15 ? btn('school-dates', 'The day it was assigned', at('assigned', 0)) : '';
+    const choices = `<div class="hw-feed-acts">${btn('school-dates', 'Looks right', at('end', 0), 'btn-primary')}${btn('school-dates', 'Use the first date', at('start', 0))}${given}${st.schoolOff ? '' : btn('school-off', 'One day off')}</div>
+      ${st.schoolOff ? `<p class="hw-switch-line">Blackbaud shows each one:</p><div class="hw-feed-acts">${btn('school-dates', 'A day earlier', at('end', -1))}${btn('school-dates', 'A day later', at('end', 1))}</div>` : ''}`;
+    if (f.checked) {
+      // Change dates (schema 15), on a checked link: the same answers, without the items (the check is answered).
+      return `<div class="hw-school-check" data-ref="school-check"><p class="hw-switch-title">Change the dates</p>
+        <p class="hw-switch-line">${esc(`${ruleWords(f)}. If Blackbaud's Assignment Center shows other due dates, choose again. If each date is the day it was assigned, choose The day it was assigned. ${kid}'s homework already added keeps its due dates.`)}</p>
+        ${choices}<div class="hw-feed-acts">${btn('school-redate', 'Cancel')}</div></div>`;
+    }
     const head = '<p class="hw-switch-title">Check the dates</p>';
     const items = st.school.check;
     if (!items.length) {
       return `<div class="hw-school-check" data-ref="school-check">${head}<p class="hw-switch-line">${esc(`${emptyCheckWords(st, f)} Until you answer, nothing from it reaches ${kid} or ${tutor}.`)}</p></div>`;
     }
-    const at = (rule, shift) => ` data-id="${esc(f.id)}" data-rule="${rule}" data-shift="${shift}"`;
     // With past items: nothing (or too little) is due yet, so these are the latest ones; Blackbaud still lists those.
     const toCome = items.filter((x) => !isPast(x)).length;
     const lead = toCome === items.length ? 'Is this what Blackbaud shows?'
@@ -1080,8 +1107,7 @@
     return `<div class="hw-school-check" data-ref="school-check">${head}
       <p class="hw-switch-line">${esc(`${lead} Until you answer, nothing from the Assignments link reaches ${kid} or ${tutor}.`)}</p>
       <ul class="hw-school-items">${items.map((x) => `<li${isPast(x) ? ' class="hw-school-past"' : ''}>${esc(checkLine(x))}</li>`).join('')}</ul>
-      <div class="hw-feed-acts">${btn('school-dates', 'Looks right', at('end', 0), 'btn-primary')}${btn('school-dates', 'Use the first date', at('start', 0))}${st.schoolOff ? '' : btn('school-off', 'One day off')}</div>
-      ${st.schoolOff ? `<p class="hw-switch-line">Blackbaud shows each one:</p><div class="hw-feed-acts">${btn('school-dates', 'A day earlier', at('end', -1))}${btn('school-dates', 'A day later', at('end', 1))}</div>` : ''}</div>`;
+      ${choices}</div>`;
   }
   // What is new for him (Add to homework, Hide), what he hid (Show), and the assignments the school moved or took off its site.
   function schoolItemsHTML(st) {
@@ -1093,10 +1119,20 @@
     if (marks.length) out.push(`<ul class="hw-school-marks">${marks.map(([id, text]) => `<li><a href="#/homework/${esc(id)}">${esc(text)}</a></li>`).join('')}</ul>`);
     const list = (key, title, rows, acts) => `<details class="hw-school-list" data-keep="${key}"${st.schoolOpen[key] ? ' open' : ''}><summary>${esc(title)}</summary>
       <ul class="hw-school-items">${rows.map((x) => `<li class="hw-school-row" data-item="${esc(x.id)}"><span>${esc(itemLine(x))}</span>
-        <span class="hw-feed-acts">${acts.map(([act, label]) => btn('school-item', label, ` data-item="${esc(x.id)}" data-do="${act}"`)).join('')}</span></li>`).join('')}</ul></details>`;
+        <span class="hw-feed-acts">${acts.map(([act, label]) => btn('school-item', label, ` data-item="${esc(x.id)}" data-do="${act}"`)).join('')}</span>
+        ${st.form && st.form.key === `schooldue:${x.id}` ? schoolDueHTML(st, x) : ''}</li>`).join('')}</ul></details>`;
     if (s.new.length) out.push(list('new', `New from school for ${kid} (${s.new.length})`, s.new, [['add', 'Add to homework'], ['hide', 'Hide']]));
     if (s.hidden.length) out.push(list('hidden', `Hidden from ${kid}'s list (${s.hidden.length})`, s.hidden, [['show', 'Show']]));
     return out.join('');
+  }
+  // Add, for an item whose date is the day it was assigned (0015): its due date, from that day to 4 months on.
+  function schoolDueHTML(st, x) {
+    const most = dates.addDays(st.today, 120);
+    return `<form class="hw-schooldue" data-form="schooldue" data-item="${esc(x.id)}" novalidate autocomplete="off">
+      <label class="field"><span>${esc(`Due date (assigned ${fmt.day(x.due_date)})`)}</span>
+        <input type="date" name="due" min="${esc(x.due_date)}" max="${esc(most)}" required></label>
+      <p class="form-error" role="alert" hidden></p>
+      <div class="form-actions"><button type="button" class="btn" data-act="cancel-note">Cancel</button><button type="submit" class="btn btn-primary">Add to homework</button></div></form>`;
   }
   function schoolHTML(st) {
     const kid = kidName(st);
@@ -1175,7 +1211,7 @@
     main.innerHTML = `<div class="hw-page">${head}${kidLine(st)}${st.failed ? '' : setupHTML(st)}${body}</div>`;
     st.typing = false;   // the homework time, rewards, points values and link forms are drawn afresh from what was read
     if (window.scrollY !== y) window.scrollTo(window.scrollX, y);
-    const input = st.form && main.querySelector(`form[data-key="${CSS.escape(st.form.key)}"] input, form[data-link] input[name="label"], form[data-form="school"] input[name="url"]`);
+    const input = st.form && main.querySelector(`form[data-key="${CSS.escape(st.form.key)}"] input, form[data-link] input[name="label"], form[data-form="school"] input[name="url"], form[data-form="schooldue"] input[name="due"]`);
     if (input && st.form.focus) { input.focus(); st.form.focus = false; }
   }
 
@@ -1723,6 +1759,7 @@
   // The first-import check's answer: the due date is an item's last ('end') or first ('start') day, moved by shift.
   function checkDates(st, id, rule, shift) {
     st.schoolOff = false;
+    st.schoolRedate = false;
     // The toast says what his New from school holds after the answer, which re-dates every item (an item due yesterday
     // is due today after "A day later"; one due today is past after "A day earlier"): check_school_feed answers the
     // status card, and st.school (read again after it) stands in if that answer is missing.
@@ -1730,15 +1767,33 @@
     write(st, async () => { after = await run(sb().rpc('check_school_feed', { p_feed: id, p_date_rule: rule, p_date_shift: shift })); },
       () => {
         const s = after && typeof after === 'object' ? schoolStatus(after) : st.school;
-        toast(`Dates checked. ${kidName(st)}'s New from school shows ${s && s.new.length ? 'them now' : 'the next ones once the school posts them'}.`);
+        toast(rule === 'assigned' ? `Dates checked: the day each was assigned. Add one to ${kidName(st)}'s homework with its due date.`
+          : `Dates checked. ${kidName(st)}'s New from school shows ${s && s.new.length ? 'them now' : 'the next ones once the school posts them'}.`);
       });
   }
   function schoolItemAct(st, id, action) {
     const x = st.school && [].concat(st.school.new, st.school.hidden).find((y) => y.id === id);
     if (!x || !['add', 'hide', 'show'].includes(action)) return;
     const kid = kidName(st);
+    // 0015: an item whose date is the day it was assigned asks for its due date first.
+    if (action === 'add' && isAssigned(x)) { st.form = { key: `schooldue:${id}`, action: 'schooldue', id, text: '', focus: true }; draw(st); return; }
     write(st, () => run(sb().rpc('school_item_action', { p_item: id, p_action: action })),
       () => toast(action === 'add' ? `On ${kid}'s homework: ${x.title}` : action === 'hide' ? `Hidden from ${kid}'s list: ${x.title}` : `Back on ${kid}'s New from school: ${x.title}`));
+  }
+  function schoolAddDue(st, form) {
+    const id = form.dataset.item;
+    const x = st.school && [].concat(st.school.new, st.school.hidden).find((y) => y.id === id);
+    if (!x) return;
+    const err = form.querySelector('.form-error');
+    const box = form.elements.due;
+    const due = String(box.value || '');
+    const fail = (m) => { err.textContent = m; err.hidden = false; box.focus(); };
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(due)) { fail('Choose the due date.'); return; }
+    if (due < x.due_date || due > dates.addDays(st.today, 120)) { fail('Choose a due date from the day it was assigned to 4 months from today.'); return; }
+    err.hidden = true;
+    const kid = kidName(st);
+    write(st, () => run(sb().rpc('school_item_action', { p_item: id, p_action: 'add', p_due: due })),
+      () => { st.form = null; toast(`On ${kid}'s homework, due ${fmt.day(due)}: ${x.title}`); });
   }
   // Check now: hub-jobs reads every link not read in the last minute, as the parent; then the status is read again.
   async function checkNow(st) {
@@ -1927,6 +1982,7 @@
       case 'school-pause': case 'school-resume': pauseSchool(st, d.feed, d.act === 'school-pause'); break;
       case 'school-now': checkNow(st); break;
       case 'school-off': st.schoolOff = true; draw(st); break;
+      case 'school-redate': st.schoolRedate = !st.schoolRedate; st.schoolOff = false; draw(st); break;
       case 'school-dates': checkDates(st, d.id, d.rule, Number(d.shift)); break;
       case 'school-item': schoolItemAct(st, d.item, d.do); break;
       case 'add-link': open('link:new', 'link', null); break;
@@ -1960,6 +2016,7 @@
     else if (form.dataset.form === 'values') savePoints(st, form);
     else if (form.dataset.form === 'link') submitLink(st, form);
     else if (form.dataset.form === 'school') saveSchool(st, form);
+    else if (form.dataset.form === 'schooldue') schoolAddDue(st, form);
     else if (form.dataset.form === 'never') addNever(st, form);
     else if (form.classList.contains('hw-afields')) saveFields(st, form);
   }

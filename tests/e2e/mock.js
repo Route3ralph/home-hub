@@ -1735,6 +1735,17 @@ function withSchoolCheck(db) {
   db.schoolCheck8 = true;
   return db;
 }
+// withSchoolAssigned(db) (after withSchool) is 0015 (schema 15, docs/v1.3-homework.md §23): check_school_feed takes
+// 'assigned' (an item's first day is the day it was given); New from school (his and the card's new and hidden) holds
+// what such a link gave from 10 days ago to 30 days on, each with assigned: true (and quick: false on his); Add
+// (school_item_action) and Quick or Plan with Pat (school_item_by_token) take p_due, needed from an assigned link, and
+// the school never moves that due date ("moved" and moved_to leave it out). Without it, p_due is an argument nobody
+// takes (PGRST202) and 'assigned' is refused, as on 14.
+function withSchoolAssigned(db) {
+  withSchoolCheck(db);
+  db.schoolAssigned15 = true;
+  return db;
+}
 const schoolUrlOf = (db, feedId) => (SCHOOL_URLS.get(db) || new Map()).get(feedId) || null;
 const schoolFeedRow = (o) => Object.assign({
   id: uuid(), kid_id: null, kind: 'assignments', host: 'academy.school.example', url_end: 'a1b2', date_rule: 'end', date_shift: 0, checked: false,
@@ -1768,12 +1779,14 @@ const scFeed = (db, id) => db.school_feeds.find((f) => f.id === id) || null;
 const scByDue = (x, y) => (x.due_date < y.due_date ? -1 : x.due_date > y.due_date ? 1 : x.title < y.title ? -1 : x.title > y.title ? 1 : x.id < y.id ? -1 : 1);
 const scItemsOf = (db, kid, pred) => db.school_items.filter((i) => { const f = scFeed(db, i.feed_id); return f && f.kid_id === kid && pred(i, f); });
 // The school's marks on his assignments made from school: { id: {gone, moved_to} } (private.school_marks).
+const scGiven = (f) => !!f && f.date_rule === 'assigned';   // 0015: the link's dates are the day each was given
+const scFrom = (f, today) => (scGiven(f) ? tkAdd(today, -10) : today);
 function scMarks(db, kid) {
   const out = {};
   scItemsOf(db, kid, (i) => !!i.assignment_id).forEach((i) => {
     const a = db.assignments.find((x) => x.id === i.assignment_id);
     if (!a) return;
-    out[a.id] = { gone: i.gone_at != null, moved_to: i.due_date !== a.due_date && i.applied && a.due_date === i.applied.due_date ? i.due_date : null };
+    out[a.id] = { gone: i.gone_at != null, moved_to: !scGiven(scFeed(db, i.feed_id)) && i.due_date !== a.due_date && i.applied && a.due_date === i.applied.due_date ? i.due_date : null };
   });
   return out;
 }
@@ -1781,8 +1794,12 @@ function scMarks(db, kid) {
 function scNew(db, kid, today) {
   if (!db.school_feeds || !db.school_feeds.some((f) => f.kid_id === kid && f.kind === 'assignments' && f.checked)) return null;
   return scItemsOf(db, kid, (i, f) => f.kind === 'assignments' && f.checked && !i.made_at && !i.hidden && !i.gone_at
-    && i.due_date >= today && i.due_date <= tkAdd(today, 30)).sort(scByDue).slice(0, 20)
-    .map((i) => ({ id: i.id, title: i.title, subject: i.subject, due_date: i.due_date, quick: tkBetween(today, i.due_date) <= 3 }));
+    && i.due_date >= scFrom(f, today) && i.due_date <= tkAdd(today, 30)).sort(scByDue).slice(0, 20)
+    .map((i) => {
+      const given = scGiven(scFeed(db, i.feed_id));
+      return Object.assign({ id: i.id, title: i.title, subject: i.subject, due_date: i.due_date, quick: !given && tkBetween(today, i.due_date) <= 3 },
+        given ? { assigned: true } : {});
+    });
 }
 // The first-import check: an Assignments link not checked (nor removed). 0006: its next 5 items, due today or later.
 // 0008 (db.schoolCheck8): up to 5 still on the school site, the ones to come earliest first, then the latest past ones;
@@ -1801,7 +1818,7 @@ function scCheck(db, kid, today) {
 function scStatus(db, kid, nowMs, today) {
   const order = { assignments: 1, schedule: 2, games: 3 };
   const assignment = (i) => (i.assignment_id ? db.assignments.find((a) => a.id === i.assignment_id && a.status === 'open') : null);
-  const pick = (i) => ({ id: i.id, title: i.title, subject: i.subject, due_date: i.due_date });
+  const pick = (i) => Object.assign({ id: i.id, title: i.title, subject: i.subject, due_date: i.due_date }, scGiven(scFeed(db, i.feed_id)) ? { assigned: true } : {});
   const on = db.homework_kids.some((k) => k.kid_id === kid && k.active);
   return {
     kid_id: kid, last_run_at: db.schoolLastRun || null,
@@ -1810,10 +1827,10 @@ function scStatus(db, kid, nowMs, today) {
       last_try_at: f.last_try_at, last_ok_at: f.last_ok_at, last_count: f.last_count, last_repeats: f.last_repeats, last_stop: f.last_stop, fails: f.fails,
       next_at: f.next_at, stale: !f.paused && on && f.next_at != null && tkMs(f.next_at) < nowMs - 2 * 3600e3 })),
     check: scCheck(db, kid, today),
-    new: scItemsOf(db, kid, (i, f) => f.kind === 'assignments' && f.checked && !f.removed_at && !i.made_at && !i.hidden && !i.gone_at && i.due_date >= today
+    new: scItemsOf(db, kid, (i, f) => f.kind === 'assignments' && f.checked && !f.removed_at && !i.made_at && !i.hidden && !i.gone_at && i.due_date >= scFrom(f, today)
       && i.due_date <= tkAdd(today, 30)).sort(scByDue).slice(0, 50).map(pick),
-    hidden: scItemsOf(db, kid, (i, f) => f.kind === 'assignments' && !f.removed_at && !i.made_at && i.hidden && !i.gone_at && i.due_date >= today).sort(scByDue).map(pick),
-    moved: scItemsOf(db, kid, (i) => { const a = assignment(i); return !!a && !i.gone_at && i.due_date !== a.due_date && !!i.applied && a.due_date === i.applied.due_date; })
+    hidden: scItemsOf(db, kid, (i, f) => f.kind === 'assignments' && !f.removed_at && !i.made_at && i.hidden && !i.gone_at && i.due_date >= scFrom(f, today)).sort(scByDue).map(pick),
+    moved: scItemsOf(db, kid, (i, f) => { const a = assignment(i); return !scGiven(f) && !!a && !i.gone_at && i.due_date !== a.due_date && !!i.applied && a.due_date === i.applied.due_date; })
       .map((i) => { const a = assignment(i); return { assignment_id: a.id, title: a.title, from: a.due_date, to: i.due_date, due_date: a.due_date }; })
       .sort(scByDue).map((x) => ({ assignment_id: x.assignment_id, title: x.title, from: x.from, to: x.to })),
     gone: scItemsOf(db, kid, (i) => !!assignment(i) && i.gone_at != null).map((i) => { const a = assignment(i); return { assignment_id: a.id, title: a.title, due_date: a.due_date }; })
@@ -1821,20 +1838,32 @@ function scStatus(db, kid, nowMs, today) {
   };
 }
 // private.school_assignment: the item made an assignment from school (once; a second time answers the same one).
-function scAssignment(db, item, who, stamp) {
+// 0015: due (p_due), the assignment's due date: needed from an assigned link (from the day it was given to today + 120),
+// optional from a start or end link (from today - 14 to today + 120); applied then keeps no due date.
+function scAssignment(db, item, who, stamp, due, today) {
   if (!item || item.due_date == null) throw new Raise('22023', "That item from school isn't there any more.");
   if (item.made_at) return item.assignment_id;
   const f = scFeed(db, item.feed_id);
-  const a = assignmentRow({ kid_id: f.kid_id, kind: 'assignment', added_by: 'school', title: item.title, subject: item.subject, due_date: item.due_date,
+  let d = item.due_date;
+  if (scGiven(f)) {
+    if (due == null) throw new Raise('22023', 'Choose the due date.');
+    if (due < item.due_date || due > tkAdd(today, 120)) throw new Raise('22023', 'Choose a due date from the day it was given to 4 months from today.');
+    d = due;
+  } else if (due != null) {
+    if (due < tkAdd(today, -14) || due > tkAdd(today, 120)) throw new Raise('22023', 'Choose a due date from 2 weeks ago to 4 months from today.');
+    d = due;
+  }
+  const a = assignmentRow({ kid_id: f.kid_id, kind: 'assignment', added_by: 'school', title: item.title, subject: item.subject, due_date: d,
     details: item.details, created_by: who, updated_by: who, created_at: stamp, updated_at: stamp });
   db.assignments.push(a);
   Object.assign(item, { assignment_id: a.id, made_at: stamp, hidden: false,
-    applied: { title: a.title, subject: a.subject, due_date: a.due_date, details: a.details } });
+    applied: { title: a.title, subject: a.subject, due_date: scGiven(f) || d !== item.due_date ? null : a.due_date, details: a.details } });
   return a.id;
 }
 // private.school_apply: the school's changes reach the open assignments made from a link's items, a field at a time,
 // never a field a person changed; a planned assignment's due date never moves by itself.
 function scApply(db, feedId) {
+  const given = scGiven(scFeed(db, feedId));   // 0015: an assigned link never writes a due date
   db.school_items.filter((i) => i.feed_id === feedId && !i.gone_at && i.due_date && i.assignment_id).forEach((i) => {
     const a = db.assignments.find((x) => x.id === i.assignment_id && x.status === 'open');
     if (!a) return;
@@ -1842,16 +1871,18 @@ function scApply(db, feedId) {
     const plan = db.homework_steps.some((s) => s.assignment_id === a.id);
     const next = {
       title: a.title === ap.title ? i.title : a.title, subject: a.subject === ap.subject ? i.subject : a.subject,
-      due_date: a.due_date === ap.due_date && !plan ? i.due_date : a.due_date, details: a.details === ap.details ? i.details : a.details,
+      due_date: !given && a.due_date === ap.due_date && !plan ? i.due_date : a.due_date, details: a.details === ap.details ? i.details : a.details,
     };
     if (Object.keys(next).some((k) => next[k] !== a[k])) Object.assign(a, next, { updated_by: 'school link', updated_at: now() });
-    i.applied = Object.fromEntries(Object.keys(next).map((k) => [k, next[k] === i[k] ? i[k] : ap[k]]));
+    i.applied = Object.fromEntries(Object.keys(next).map((k) => [k, k === 'due_date' && given ? null : next[k] === i[k] ? i[k] : ap[k]]));
   });
 }
 function scCall(name, args, defaults, run) {
   return (db, b, email) => {
     const sent = Object.keys(b || {});
-    if (!db.school_feeds || !db.homework_kids || sent.some((k) => !args.includes(k) && !defaults.includes(k)) || args.some((k) => !sent.includes(k))) {
+    // 0015's p_due is an argument only from schema 15 (withSchoolAssigned).
+    if (!db.school_feeds || !db.homework_kids || sent.some((k) => !args.includes(k) && !(defaults.includes(k) && (k !== 'p_due' || db.schoolAssigned15)))
+      || args.some((k) => !sent.includes(k))) {
       return { __status: 404, body: { code: 'PGRST202', message: `Could not find the function public.${name}(${sent.sort().join(', ')}) in the schema cache`, details: null, hint: null } };
     }
     if (db.schoolFail && db.schoolFail[name]) return db.schoolFail[name];
@@ -1917,11 +1948,14 @@ const schoolRpc = {
     const f = scFeed(db, b.p_feed);
     if (!f || f.removed_at) throw new Raise('22023', "That school link isn't there any more.");
     if (f.kind !== 'assignments') throw new Raise('22023', 'Only the Assignments link has dates to check.');
-    if (!['start', 'end'].includes(b.p_date_rule) || ![-1, 0, 1].includes(b.p_date_shift)) {
+    if (!['start', 'end'].concat(db.schoolAssigned15 ? ['assigned'] : []).includes(b.p_date_rule) || ![-1, 0, 1].includes(b.p_date_shift)) {
       throw new Raise('22023', 'Choose the start or the end date, and a shift of -1, 0 or 1 day.');
     }
     Object.assign(f, { date_rule: b.p_date_rule, date_shift: b.p_date_shift, checked: true, updated_by: email, updated_at: now() });
-    db.school_items.filter((i) => i.feed_id === f.id && i.first_day).forEach((i) => { i.due_date = tkAdd(b.p_date_rule === 'start' ? i.first_day : i.last_day, b.p_date_shift); });
+    db.school_items.filter((i) => i.feed_id === f.id && i.first_day).forEach((i) => {
+      i.due_date = tkAdd(b.p_date_rule === 'end' ? i.last_day : i.first_day, b.p_date_shift);
+      if (b.p_date_rule === 'assigned' && i.applied) i.applied = Object.assign({}, i.applied, { due_date: null });
+    });
     scApply(db, f.id);
     return scStatusOf(db, f.kid_id);
   }),
@@ -1935,14 +1969,14 @@ const schoolRpc = {
     Object.assign(f, { paused: b.p_paused, updated_by: email, updated_at: now() });
     return null;
   }),
-  school_item_action: scCall('school_item_action', ['p_item', 'p_action'], [], (db, b, email) => {
+  school_item_action: scCall('school_item_action', ['p_item', 'p_action'], ['p_due'], (db, b, email) => {
     parentOnly(db, email);
     if (!['add', 'hide', 'show'].includes(b.p_action)) throw new Raise('22023', 'Choose add, hide or show.');
     const i = db.school_items.find((x) => x.id === b.p_item);
     const f = i && scFeed(db, i.feed_id);
     if (!f || f.kind !== 'assignments') throw new Raise('22023', "That item from school isn't there any more.");
     let aid = null;
-    if (b.p_action === 'add') aid = scAssignment(db, i, email, fromMicros(scNowMs(db) * 1000));
+    if (b.p_action === 'add') aid = scAssignment(db, i, email, fromMicros(scNowMs(db) * 1000), b.p_due == null ? null : b.p_due, hwToday(db));
     else if (!i.made_at) i.hidden = b.p_action === 'hide';
     return Object.assign({ assignment_id: aid }, scStatusOf(db, f.kid_id));
   }),
@@ -3449,7 +3483,7 @@ function tkViewTutor(db, link, aid, part) {
 function tkCall(name, args, defaults, run) {
   return (db, b) => {
     const sent = Object.keys(b || {});
-    if (!db.homework_kids || sent.some((k) => !args.includes(k) && !defaults.includes(k)) || args.some((k) => !sent.includes(k))) {
+    if (!db.homework_kids || sent.some((k) => !args.includes(k) && !(defaults.includes(k) && (k !== 'p_due' || db.schoolAssigned15))) || args.some((k) => !sent.includes(k))) {
       return { __status: 404, body: { code: 'PGRST202', message: `Could not find the function public.${name}(${sent.sort().join(', ')}) in the schema cache`, details: null, hint: null } };
     }
     const saved = JSON.stringify(TK_WRITES.map((t) => db[t]));
@@ -3636,7 +3670,7 @@ const tkCoachCall = (name, args, defaults, run) => {
     : { __status: 404, body: { code: 'PGRST202', message: `Could not find the function public.${name}(${Object.keys(b || {}).sort().join(', ')}) in the schema cache`, details: null, hint: null } });
 };
 const tkKidWho = (db, me) => `${tkShortName(db, me)} (My day)`;
-const tkSchoolItem = tkCall('school_item_by_token', ['p_token', 'p_item', 'p_action'], ['p_minutes'], (db, b) => {
+const tkSchoolItem = tkCall('school_item_by_token', ['p_token', 'p_item', 'p_action'], ['p_minutes', 'p_due'], (db, b) => {
   const me = tkKidByToken(db, b.p_token);
   if (!me) return null;
   if (!['quick', 'with_tutor', 'hide'].includes(b.p_action)) throw new Raise('22023', 'Choose quick, with_tutor or hide.');
@@ -3653,7 +3687,7 @@ const tkSchoolItem = tkCall('school_item_by_token', ['p_token', 'p_item', 'p_act
     if (!i.hidden) { i.hidden = true; changed = true; }
   } else {
     if (!i.made_at) changed = true;
-    aid = scAssignment(db, i, tkKidWho(db, me), tkStamp(db.hwNow));
+    aid = scAssignment(db, i, tkKidWho(db, me), tkStamp(db.hwNow), b.p_due == null ? null : b.p_due, tkToday(db));
     if (b.p_action === 'quick') {
       const r = homeworkTokenRpc.assignment_by_token(db, { p_token: b.p_token, p_action: 'quick', p_assignment: aid, p_minutes: b.p_minutes });
       if (r && r.__status) throw new Raise(r.body.code, r.body.message);
@@ -3954,4 +3988,4 @@ module.exports = { makeDb, install, signIn, expectedConsoleError, SUPA, withCale
   withFood, mealRow, shopItem, foodRpc, personDayFood, foodStamp, withRecipes, recipeRow,
   withHomework, homeworkRpc, homePlan, hwKidRow, tutorLinkRow, assignmentRow, stepRow, sessionRow, rewardRow, askRow, ledgerRow,
   withHomeworkTokens, homeworkTokenRpc, personDayHomework, tkKidRow, tkLinkRow, tkAssignmentRow, tkStepRow, tkSessionRow, tkRewardRow, tkLedgerRow, stubShare,
-  withSchool, withSchoolCheck, schoolRpc, schoolFeedRow, schoolItemRow, schoolUrlOf, withCoach, coachRpc, coachNoteRow, withCoachRewards, aiRpc, aiJob, aiMessage, aiComplete };
+  withSchool, withSchoolCheck, withSchoolAssigned, schoolRpc, schoolFeedRow, schoolItemRow, schoolUrlOf, withCoach, coachRpc, coachNoteRow, withCoachRewards, aiRpc, aiJob, aiMessage, aiComplete };

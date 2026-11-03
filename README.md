@@ -247,6 +247,14 @@ The school links' first-import check (**Check the dates**) used to show only ass
 
 There is nothing to switch off: the answer only adds the past ones, and the page reads both. The design's §16.7 has the undo, if ever wanted.
 
+### The school's assigned dates (v1.3, migration 0015)
+
+Some schools' Assignments feed puts each assignment on the day it was **assigned**, not the day it's due (Blackbaud's Assignment Center shows the due date; its calendar feed may not). Read as due dates, those items dropped off New from school the day after they were given. From 0015 the dates check has a third answer, **The day it was assigned**, and a checked link has **Change dates** to answer it again. Then New from school shows what was assigned in the last 10 days, marked "assigned …", and **Add to homework** (or, on Jordan's My day, **Plan with Pat** or **Quick**) asks for the due date. The school never moves a due date a person gave.
+
+1. **Merge** (the site first: nothing changes until step 2).
+2. **About 2 minutes:** run [`supabase/migrations/0015_school_assigned_dates.sql`](supabase/migrations/0015_school_assigned_dates.sql) in the Supabase SQL editor. "isn't installed" means 0014 is missing; "already installed" means it's done.
+3. **About 2 minutes:** Homework → Switches → School links → Assignments → **Change dates** → **The day it was assigned**, then add each new item with its due date from the Assignment Center.
+
 ### The school items' keys (v1.3, migration 0009)
 
 Blackbaud makes its calendar feeds again every hour or two, and each time it gives every assignment and class a new ID. The hub used to tell items apart by that ID, so after each change it took every assignment for a new one: the first-import check showed each one twice, and once the link was checked every assignment would have come back in Jordan's New from school, an assignment already made from it marked "no longer on the school site", and his classes counted twice as busy time. From 0009 the hub tells an assignment by its class, its title and its first day (a class or a game by its title and start), whatever the ID, and the copies it already has become one each. A due date the school moves still keeps its assignment; a title the school rewords comes as a new item (the old one goes after two reads).
@@ -567,7 +575,7 @@ Never commit the token. The rules for changing the repo (tests, migrations, depl
 | `manifest.webmanifest`, `assets/icons/` | The Home Screen app: name, colours and icons |
 | `config.js` | Database connection settings |
 | `supabase/schema.sql` | The v1 tables, security rules and functions (the baseline) |
-| `supabase/migrations/` | Every database change since, in order: `0002_home_hub_v2.sql` is v2, `0003_google_calendar.sql` is v1.1 (Google Calendar), `0004_meals_and_shopping.sql` is v1.2 (Food), `0005_homework.sql` is v1.3 (Homework), `0006_homework_school.sql` its school feed, `0007_homework_coach.sql` its coach view, `0008_school_check.sql` its first-import check when nothing is due yet and `0009_school_keys.sql` its school items' keys; `0010_hearth_people.sql` sorts the wall's own calendar by Hearth person (v1.1); `0011_project_guests.sql` is v1.4 (project guests); `0012_coach_rewards.sql` is v1.3's coach's rewards |
+| `supabase/migrations/` | Every database change since, in order: `0002_home_hub_v2.sql` is v2, `0003_google_calendar.sql` is v1.1 (Google Calendar), `0004_meals_and_shopping.sql` is v1.2 (Food), `0005_homework.sql` is v1.3 (Homework), `0006_homework_school.sql` its school feed, `0007_homework_coach.sql` its coach view, `0008_school_check.sql` its first-import check when nothing is due yet and `0009_school_keys.sql` its school items' keys; `0010_hearth_people.sql` sorts the wall's own calendar by Hearth person (v1.1); `0011_project_guests.sql` is v1.4 (project guests); `0012_coach_rewards.sql` is v1.3's coach's rewards; `0015_school_assigned_dates.sql` its school dates that are the day each was assigned |
 | `supabase/preflight.sql` | Read-only checks to run before applying the v2 migration (0002 only) |
 | `supabase/cron.sql` | Schedules the morning email and the Google Calendar job (pg_cron) once hub-jobs is deployed |
 | `supabase/config.toml` | Supabase CLI settings: both Edge Functions deploy with JWT verification off |

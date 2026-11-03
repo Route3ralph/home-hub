@@ -16,7 +16,7 @@ where name = 'Kitchen';
 -- ---------------------------------------------------------------------
 -- The schema version and the catalog
 -- ---------------------------------------------------------------------
-select test.is(hub_schema_version(), 14, 'hub_schema_version is 14 (0011 made it 11, 0012 12, 0013 13, 0014 makes it 14)');
+select test.is(hub_schema_version(), 15, 'hub_schema_version is 15 (0011 made it 11, 0012 12, 0013 13, 0014 14, 0015 makes it 15)');
 select test.is((select string_agg(c.relname || ':' || c.relrowsecurity, ', ' order by c.relname) from pg_class c
                 where c.oid in ('public.guests'::regclass, 'public.project_guests'::regclass, 'public.project_contacts'::regclass)),
                'guests:true, project_contacts:true, project_guests:true', 'the three new tables have row-level security');
