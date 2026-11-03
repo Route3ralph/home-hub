@@ -720,11 +720,82 @@
       + `<span class="hw-arow-sub">${esc(sub.filter(Boolean).join(' · '))}</span><span class="hw-arow-state">${esc(state)}</span></a>${bars}</li>`;
   }
 
+  // ---------- Print (the Assignments card's Print): his open assignments and lessons on paper, by due date, each with its
+  // class and due day and, once a plan is given, its steps as boxes to tick with the day each is planned for (done ones
+  // ticked). Next 2 weeks (due within 14 days, and any late) or all open; English or Spanish (his own language first);
+  // the teacher's text if asked. Built from what the page read; printed through core.printSheet, like the Calendar's.
+  const PRINT = {
+    en: {
+      days: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'], months: ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'],
+      title: (n) => `${n}'s homework`, soon: (d) => `Due by ${d}`, all: 'Everything open', due: (d) => `Due ${d}`, doBy: (d) => `Do by ${d}`,
+      late: 'Late', lesson: 'Lesson', planning: 'Being planned: no steps yet.', min: 'min', milestone: 'milestone', none: 'Nothing due.',
+      printed: (d) => `Printed ${d}`,
+    },
+    es: {
+      days: ['lun', 'mar', 'mié', 'jue', 'vie', 'sáb', 'dom'], months: ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'],
+      title: (n) => `Tareas de ${n}`, soon: (d) => `Para entregar hasta el ${d}`, all: 'Todo lo pendiente', due: (d) => `Entrega: ${d}`, doBy: (d) => `Hacer antes del ${d}`,
+      late: 'Atrasada', lesson: 'Lección', planning: 'En planificación: todavía sin pasos.', min: 'min', milestone: 'hito', none: 'Nada pendiente.',
+      printed: (d) => `Impreso el ${d}`,
+    },
+  };
+  function printDay(lang, iso) {
+    const w = PRINT[lang];
+    const wd = w.days[dates.isoWeekday(iso) - 1];
+    const d = Number(iso.slice(8, 10));
+    const m = w.months[Number(iso.slice(5, 7)) - 1];
+    return lang === 'es' ? `${wd} ${d} ${m}` : `${wd} ${m} ${d}`;
+  }
+  // The assignments a sheet lists: open ones, due within two weeks (and the late ones) unless all, by due date.
+  function printList(st, range) {
+    const last = dates.addDays(st.today, 13);
+    return st.assignments.filter((a) => a.status === 'open' && (range === 'all' || a.due_date <= last))
+      .sort((a, b) => (a.due_date < b.due_date ? -1 : a.due_date > b.due_date ? 1 : String(a.title).localeCompare(String(b.title))));
+  }
+  function printHTML(st, opts) {
+    const w = PRINT[opts.lang];
+    const list = printList(st, opts.range);
+    const block = (a) => {
+      const sub = [a.subject, (a.kind === 'lesson' ? w.doBy : w.due)(printDay(opts.lang, a.due_date)), a.kind === 'lesson' ? w.lesson : '',
+        a.due_date < st.today ? w.late : ''].filter(Boolean).join(' · ');
+      const steps = a.given_at ? st.steps.filter((x) => x.assignment_id === a.id).sort((x, y) => x.pos - y.pos) : [];
+      const stepLine = (x) => `<li class="ps-item ps-task${x.done_at ? ' ps-done' : ''}">
+        <span class="ps-time"><span class="ps-box" aria-hidden="true">${x.done_at ? '✓' : ''}</span>${esc(printDay(opts.lang, x.day))}</span>
+        <span class="ps-what"><b>${esc(x.title)}</b> <span class="ps-extra">${esc([`${x.minutes} ${w.min}`, x.kind === 'milestone' ? w.milestone : ''].filter(Boolean).join(' · '))}</span>${x.done_looks_like ? `<span class="ps-note">${esc(x.done_looks_like)}</span>` : ''}</span>
+      </li>`;
+      return `<section class="ps-day ps-assign"><h2>${esc(a.title)}</h2><p class="ps-sub">${esc(sub)}</p>`
+        + `${opts.details && a.details ? `<p class="ps-details">${esc(a.details)}</p>` : ''}`
+        + `${steps.length ? `<ul>${steps.map(stepLine).join('')}</ul>` : `<p class="ps-empty">${esc(w.planning)}</p>`}</section>`;
+    };
+    const when = opts.range === 'all' ? w.all : w.soon(printDay(opts.lang, dates.addDays(st.today, 13)));
+    return `<header class="ps-head"><h1>${esc(w.title(kidName(st)))}</h1><p>${esc(when)}</p></header>
+      <div class="ps-list">${list.length ? list.map(block).join('') : `<p class="ps-empty">${esc(w.none)}</p>`}</div>
+      <p class="ps-foot">${esc(w.printed(printDay(opts.lang, st.today)))}</p>`;
+  }
+  function printForm(st) {
+    const kid = v2.person(st.kid);
+    core.openForm({
+      title: `Print ${kidName(st)}'s homework`,
+      intro: 'His open assignments and lessons by due date, with their steps to tick.',
+      fields: [
+        { name: 'range', label: 'Which', type: 'select', value: 'soon', options: [['soon', 'Due in the next 2 weeks (and any late)'], ['all', 'Everything open']] },
+        { name: 'lang', label: 'Language', type: 'select', value: kid && kid.language === 'es' ? 'es' : 'en', options: [['en', 'English'], ['es', 'Español']] },
+        { name: 'details', label: 'Include the teacher\'s text', type: 'checkbox', value: false },
+      ],
+      submitLabel: 'Print',
+      onSubmit: (v) => {
+        const lang = v.lang === 'es' ? 'es' : 'en';
+        core.printSheet(printHTML(st, { range: v.range === 'all' ? 'all' : 'soon', lang, details: !!v.details }), { lang });
+      },
+    });
+  }
+
   function assignmentsHTML(st) {
     const admin = isAdmin();
     const open = st.assignments.filter((a) => a.status === 'open').sort((a, b) => (a.due_date < b.due_date ? -1 : a.due_date > b.due_date ? 1 : 0));
     const closed = st.assignments.filter((a) => a.status !== 'open' && recent(st, a));
-    const adds = admin ? `<span class="hw-adds">${btn('add-assignment', '+ Assignment')}${btn('add-lesson', '+ Lesson')}</span>` : '';
+    // Print, for the parents (the page has no buttons for the other grown-ups).
+    const printBtn = open.length ? btn('print', 'Print') : '';
+    const adds = admin ? `<span class="hw-adds">${printBtn}${btn('add-assignment', '+ Assignment')}${btn('add-lesson', '+ Lesson')}</span>` : '';
     const body = `${open.length ? `<ul class="hw-card hw-arows">${open.map((a) => assignmentRow(st, a)).join('')}</ul>`
       : `<p class="hw-card empty-line hw-empty">No assignments or lessons yet.${admin ? ' Add one, or he can write one down on his My day.' : ''}</p>`}`
       + `${closed.length ? `<details class="hw-done"><summary>Done (30 days)</summary><ul class="hw-card hw-arows">${closed.map((a) => assignmentRow(st, a)).join('')}</ul></details>` : ''}`;
@@ -1819,6 +1890,7 @@
       case 'change': { const s = st.steps.find((x) => x.id === d.step); open(`step:${d.step}`, 'answer', d.step, s ? s.answer : ''); break; }
       case 'clear': stepAction(st, d.step, 'clear', d.which); break;
       case 'cancel-note': st.form = null; draw(st); break;
+      case 'print': if (isAdmin()) printForm(st); break;
       case 'add-assignment': newAssignment(st, 'assignment'); break;
       case 'add-lesson': newAssignment(st, 'lesson'); break;
       case 'give': giveDialog(st); break;

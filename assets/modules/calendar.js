@@ -1413,28 +1413,9 @@
     const rows = await v2.call('agenda', { p_from: range.from, p_to: range.to });
     const g = await google;
     const items = (Array.isArray(rows) ? rows : []).concat(g.items);
-    let sheet = document.getElementById('print-sheet');
-    if (!sheet) {
-      sheet = document.createElement('div');
-      sheet.id = 'print-sheet';
-      document.body.appendChild(sheet);
-    }
-    sheet.lang = lang;
-    sheet.innerHTML = printSheetHTML({ who: person ? person.id : 'family', lang, range: v.range === 'day' ? 'day' : 'week',
-      layout: v.layout === 'days' ? 'days' : 'columns', day: v.day, items });
     // Seven columns fit a page on its side; the browser's dialog can still change it.
-    let pageSize = document.getElementById('print-page');
-    if (!pageSize) {
-      pageSize = document.createElement('style');
-      pageSize.id = 'print-page';
-      document.head.appendChild(pageSize);
-    }
-    pageSize.textContent = v.range !== 'day' && v.layout !== 'days' ? '@page { size: landscape; margin: 10mm; }' : '@page { margin: 12mm; }';
-    document.body.classList.add('printing');
-    const done = () => document.body.classList.remove('printing');
-    window.addEventListener('afterprint', done, { once: true });
-    // The form closes first, so the dialog isn't on the paper.
-    setTimeout(() => { try { window.print(); } finally { if (!('onafterprint' in window)) done(); } }, 50);
+    core.printSheet(printSheetHTML({ who: person ? person.id : 'family', lang, range: v.range === 'day' ? 'day' : 'week',
+      layout: v.layout === 'days' ? 'days' : 'columns', day: v.day, items }), { lang, landscape: v.range !== 'day' && v.layout !== 'days' });
   }
 
   // ============================================
