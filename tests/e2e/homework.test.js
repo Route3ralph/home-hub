@@ -1801,29 +1801,6 @@ const emailOf = (req) => {
     const books = row(BOOKS);
     check('the book list, due Tuesday and still open: marked late (on today\'s column, no flag)', books.late && books.bar === '1 / 2 late' && books.due === null
       && books.sub === 'English · 0 of 1 · late · due Tue Nov 3' && books.sr === 'Book list · late · due Tue Nov 3 · 0 of 1 steps done', JSON.stringify(books));
-    await page.selectOption('[data-sec="timeline"] select[name="tl-range"]', '7');
-    await sleep(200);
-    let ov7 = await readTl(page, TL);
-    check('Next week: the heading follows, 7 days from today, late ones still there; remembered on this device',
-      (await page.$eval('[data-sec="timeline"] > .sec-head', (h) => h.textContent.trim())) === 'Next week' && !!ov7 && ov7.days.length === 7 && ov7.days[6] === 'W11'
-      && ov7.label === 'Open assignments, Thu Nov 5 to Wed Nov 11' && ov7.rows.some((r) => r.id === BOOKS && r.late)
-      && (await page.evaluate(() => localStorage.getItem('hh.hw.tl_days'))) === '7', JSON.stringify(ov7 && [ov7.label, ov7.days]));
-    await page.reload();
-    await page.waitForSelector(TL);
-    ov7 = await readTl(page, TL);
-    check('... still Next week after a reload', (await page.$eval('[data-sec="timeline"] > .sec-head', (h) => h.textContent.trim())) === 'Next week' && ov7.days.length === 7
-      && (await page.inputValue('[data-sec="timeline"] select[name="tl-range"]')) === '7', JSON.stringify(ov7 && ov7.days));
-    await page.selectOption('[data-sec="timeline"] select[name="tl-range"]', '3');
-    await sleep(200);
-    const ov3 = await readTl(page, TL);
-    check('Next 3 days: Thu Nov 5 to Sat Nov 7', (await page.$eval('[data-sec="timeline"] > .sec-head', (h) => h.textContent.trim())) === 'Next 3 days'
-      && !!ov3 && ov3.days.length === 3 && ov3.label === 'Open assignments, Thu Nov 5 to Sat Nov 7', JSON.stringify(ov3 && [ov3.label, ov3.days]));
-    await page.selectOption('[data-sec="timeline"] select[name="tl-range"]', '14');
-    await sleep(200);
-    const ov14 = await readTl(page, TL);
-    check('Next 2 weeks: 14 days', (await page.$eval('[data-sec="timeline"] > .sec-head', (h) => h.textContent.trim())) === 'Next 2 weeks' && !!ov14 && ov14.days.length === 14, JSON.stringify(ov14 && ov14.days));
-    await page.selectOption('[data-sec="timeline"] select[name="tl-range"]', '21');
-    await sleep(200);
     const cell = row(CELL);
     check('the cell model, due Dec 4 (past the 3 weeks): its bar from its first step day to the edge, an arrow, "due Fri Dec 4"; its milestone past the days not drawn',
       cell.bar === '19 / 22 past' && cell.arrow && cell.due === null && !cell.ms.length && cell.sub === 'Science · 0 of 4 · due Fri Dec 4', JSON.stringify(cell));
@@ -1944,6 +1921,37 @@ const emailOf = (req) => {
       await page.screenshot({ path: `${TL_SHOTS}homework-list-${w}-${scheme}.png`, fullPage: true });
       await page.context().close();
     }
+  }
+
+  // Next 3 weeks' range: a parent's choice, remembered on this device (no migration)
+  {
+    ({ page, db, log } = await open({ label: 'timeline-range', db: timelineDb() }));
+    await page.selectOption('[data-sec="timeline"] select[name="tl-range"]', '7');
+    await sleep(200);
+    let ov7 = await readTl(page, TL);
+    check('Next week: the heading follows, 7 days from today, late ones still there; remembered on this device',
+      (await page.$eval('[data-sec="timeline"] > .sec-head', (h) => h.textContent.trim())) === 'Next week' && !!ov7 && ov7.days.length === 7 && ov7.days[6] === 'W11'
+      && ov7.label === 'Open assignments, Thu Nov 5 to Wed Nov 11' && ov7.rows.some((r) => r.id === BOOKS && r.late)
+      && (await page.evaluate(() => localStorage.getItem('hh.hw.tl_days'))) === '7', JSON.stringify(ov7 && [ov7.label, ov7.days]));
+    await page.reload();
+    await page.waitForSelector(TL);
+    ov7 = await readTl(page, TL);
+    check('... still Next week after a reload', (await page.$eval('[data-sec="timeline"] > .sec-head', (h) => h.textContent.trim())) === 'Next week' && ov7.days.length === 7
+      && (await page.inputValue('[data-sec="timeline"] select[name="tl-range"]')) === '7', JSON.stringify(ov7 && ov7.days));
+    await page.selectOption('[data-sec="timeline"] select[name="tl-range"]', '3');
+    await sleep(200);
+    const ov3 = await readTl(page, TL);
+    check('Next 3 days: Thu Nov 5 to Sat Nov 7', (await page.$eval('[data-sec="timeline"] > .sec-head', (h) => h.textContent.trim())) === 'Next 3 days'
+      && !!ov3 && ov3.days.length === 3 && ov3.label === 'Open assignments, Thu Nov 5 to Sat Nov 7', JSON.stringify(ov3 && [ov3.label, ov3.days]));
+    await page.selectOption('[data-sec="timeline"] select[name="tl-range"]', '14');
+    await sleep(200);
+    const ov14 = await readTl(page, TL);
+    check('Next 2 weeks: 14 days', (await page.$eval('[data-sec="timeline"] > .sec-head', (h) => h.textContent.trim())) === 'Next 2 weeks' && !!ov14 && ov14.days.length === 14, JSON.stringify(ov14 && ov14.days));
+    await page.context().close();
+    ({ page, db, log } = await open({ label: 'timeline-range-sam', db: timelineDb(), email: 'sam@example.com' }));
+    check('Sam: Next 3 weeks with no picker', (await page.$eval('[data-sec="timeline"] > .sec-head', (h) => h.textContent.trim())) === 'Next 3 weeks'
+      && !(await page.$('[data-sec="timeline"] select')));
+    await page.context().close();
   }
 
   // =====================================================================
