@@ -1306,7 +1306,7 @@ const emailOf = (req) => {
   const morganRow = rows.find((r) => r[0] === ID.morgan) || [];
   const foodUrl = `${BASE}/#/food`;
   check('Send the list: a grown-up with a phone gets a row after the helper\'s, under "Send the list"', rows.length === 3 && rows[0][0] === ID.taylor
-    && samRow[1] === 'Send Sam the list' && (await text(page, '[data-ref="send"] .sec-head')) === 'Send the list', JSON.stringify(rows));
+    && samRow[1] === 'Send Sam the list' && (await page.$eval('[data-ref="send"] .sec-head', (h) => h.textContent.trim()).catch(() => '')) === 'Send the list', JSON.stringify(rows));
   const samMsg = samRow.length ? msgOf(samRow) : '';
   check('a grown-up\'s message: hello, the items to buy, and the Food page; never the helper\'s My day link',
     /^Hi Sam, here's the household's shopping list\./.test(samMsg) && samMsg.includes('• Milk') && samMsg.includes('• Light bulbs') && samMsg.includes(foodUrl)
