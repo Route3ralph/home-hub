@@ -829,9 +829,9 @@
     const days = tlDays(st);
     const html = P.overview(items, { today: st.today, days, lang: 'en', link: (id) => `#/homework/${id}` });
     const title = (TL_RANGES.find((r) => r[0] === days) || TL_RANGES[3])[1];
-    const pick = isAdmin() ? `<span class="hw-adds"><select class="hw-tl-range" name="tl-range" data-act="tl-range" aria-label="How far ahead">${TL_RANGES.map(([n, label]) =>
-      `<option value="${n}"${n === days ? ' selected' : ''}>${esc(label)}</option>`).join('')}</select></span>` : '';
-    return html ? section('timeline', title, `<div class="hw-card hw-tl">${html}</div>`, null, pick) : '';
+    const pick = isAdmin() ? `<div class="hw-tl-pick"><select class="hw-tl-range" name="tl-range" data-act="tl-range" aria-label="How far ahead">${TL_RANGES.map(([n, label]) =>
+      `<option value="${n}"${n === days ? ' selected' : ''}>${esc(label)}</option>`).join('')}</select></div>` : '';
+    return html ? section('timeline', title, `${pick}<div class="hw-card hw-tl">${html}</div>`) : '';
   }
 
   function weekHTML(st) {
