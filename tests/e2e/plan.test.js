@@ -468,6 +468,7 @@ const WEEK = [
           };
         }),
         img: !!box.querySelector('img'), hidden: Array.from(box.querySelectorAll('.plan-tl-track')).every((x) => x.getAttribute('aria-hidden') === 'true'),
+        more: txt(box, '.plan-tl-more'), grid: !!box.querySelector('.plan-tl-grid'),
       };
     };
     const readChart = (html) => {
@@ -558,6 +559,11 @@ const WEEK = [
       ovNone: [P.overview([], { today, lang: 'en' }), P.overview([DONE, DROPPED], { today, lang: 'en' }), P.overview(null, { today })],
       ovHostile: readOverview(P.overview([hostile], { today, lang: 'en', link })),
       ovClock: readOverview(P.overview([clock], { today: '2026-10-30', days: 7, lang: 'en' })),
+      // Only what the days hold (Mon Nov 2 to Wed Nov 4): the rest counted, or alone when nothing is left.
+      ovShort: readOverview(P.overview(all, { today, days: 3, lang: 'en', link })),
+      ovShortEs: readOverview(P.overview(all, { today, days: 3, lang: 'es', link })),
+      ovEmpty: readOverview(P.overview([POSTER, LESSON], { today, days: 3, lang: 'en' })),
+      ovEmptyEs: readOverview(P.overview([POSTER, LESSON], { today, days: 3, lang: 'es' })),
       chart: readChart(P.chart(ESSAY, { today, lang: 'en', week: WEEK })),
       chartNoWeek: readChart(P.chart(ESSAY, { today, lang: 'en' })),
       chartEs: readChart(P.chart(ESSAY, { today, lang: 'es', week: WEEK })),
@@ -716,10 +722,22 @@ const WEEK = [
       same(an.scroll, ['0', 'region', 'Plan by day, Mon Oct 12 to Fri Nov 20', 22]) && same(tl.chart.scroll, ['0', 'region', 'Plan by day, Thu Oct 29 to Fri Nov 13', 3])
       && same(tl.chartShort.scroll.slice(3), [0]), JSON.stringify([an.scroll, tl.chart.scroll, tl.chartShort.scroll]));
     const lt = tl.ovLater;
-    check('overview: a plan whose first step is after the 3 weeks has no bar in them, only the arrow and "due Fri Dec 11"; one starting on their last day has its bar there',
-      lt.rows[0].bar === null && lt.rows[0].arrow && lt.rows[0].due === null && lt.rows[0].sub === 'Science · 0 of 2 · due Fri Dec 11'
-      && lt.rows[0].sr === 'Science fair · steps from Mon Nov 30 · due Fri Dec 11 · 0 of 2 steps done' && lt.rows[1].bar === null && lt.rows[1].arrow
-      && lt.rows[2].bar === '21 / 22' && lt.rows[2].arrow, JSON.stringify(lt.rows));
+    // The days hold only what they hold (the owner, 4 Nov): a plan whose first step is after the 3 weeks isn't drawn
+    // (it used to be a row with only an arrow); it is counted under the rows.
+    check('overview: a plan whose first step is after the 3 weeks isn\'t drawn, only counted ("2 more due after Sun Nov 22"); one starting on their last day has its bar there, to the edge with an arrow',
+      same(lt.rows.map((r) => r.id), ['F3']) && lt.rows[0].bar === '21 / 22' && lt.rows[0].arrow && lt.rows[0].due === null && lt.rows[0].sub === 'Science · 0 of 2 · due Fri Dec 11'
+      && lt.more === '2 more due after Sun Nov 22', JSON.stringify([lt.rows, lt.more]));
+    check('overview: nothing counted when the days hold every open one (no line)', tl.ov.more === null && tl.ovDefault.more === null, JSON.stringify([tl.ov.more, tl.ovDefault.more]));
+    const sh = tl.ovShort;
+    check('overview over 3 days (Mon Nov 2 to Wed Nov 4): the late worksheet, Pat\'s reading log (steps left, no step days) and the essay (a step not done on Fri Oct 30); not the lesson with no plan (do by Fri Nov 6) or the poster (steps from Mon Nov 9)',
+      same(sh.rows.map((r) => r.id), ['A3', 'A4', 'A1']) && sh.dates.length === 3 && sh.label === 'Open assignments, Mon Nov 2 to Wed Nov 4', JSON.stringify([sh.rows.map((r) => r.id), sh.label]));
+    check('... the rest counted under the rows, in the list\'s own words: "2 more due after Wed Nov 4" / "2 más para después del mié 4 nov"',
+      sh.more === '2 more due after Wed Nov 4' && tl.ovShortEs.more === '2 más para después del mié 4 nov' && same(tl.ovShortEs.rows.map((r) => r.id), ['A3', 'A4', 'A1']),
+      JSON.stringify([sh.more, tl.ovShortEs.more]));
+    check('... nothing the days hold: no days drawn, only "Nothing due by Wed Nov 4; 2 more after that" / "Nada para el mié 4 nov o antes; 2 más después"',
+      !!tl.ovEmpty && !tl.ovEmpty.grid && !tl.ovEmpty.rows.length && tl.ovEmpty.more === 'Nothing due by Wed Nov 4; 2 more after that'
+      && tl.ovEmpty.label === 'Open assignments, Mon Nov 2 to Wed Nov 4' && tl.ovEmptyEs.more === 'Nada para el mié 4 nov o antes; 2 más después',
+      JSON.stringify([tl.ovEmpty, tl.ovEmptyEs && tl.ovEmptyEs.more]));
 
     const pa = tl.path;
     check('path: one line on top, the next flag, its day in plain words and the points at his tick ("Next flag: Outline · Thu (3 days) · +20 points now")',
