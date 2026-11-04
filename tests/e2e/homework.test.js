@@ -1775,6 +1775,9 @@ const emailOf = (req) => {
     check('timelines: Next 3 weeks between Assignments and lessons and This week, its heading "Next 3 weeks"',
       same(await secs(page), ['approve', 'check', 'talk', 'qa', 'assignments', 'timeline', 'week', 'points', 'switches'])
       && (await tc(page, '[data-sec="timeline"] > .sec-head')) === 'Next 3 weeks', JSON.stringify([await secs(page), await tc(page, '[data-sec="timeline"] > .sec-head')]));
+    const tlPick = () => page.$eval('[data-sec="timeline"] select[name="tl-range"]', (x) => ({ value: x.value, options: [...x.options].map((o) => o.textContent), label: x.getAttribute('aria-label') })).catch(() => null);
+    check('a parent picks how far Next 3 weeks reaches: 3 days · a week · 2 weeks · 3 weeks, on 3 weeks', same(await tlPick(),
+      { value: '21', options: ['Next 3 days', 'Next week', 'Next 2 weeks', 'Next 3 weeks'], label: 'How far ahead' }), JSON.stringify(await tlPick()));
     const ov = await readTl(page, TL);
     check('the overview: 21 days from today, "Open assignments, Thu Nov 5 to Wed Nov 25", Nov on the first, today\'s column first, each week from its Monday',
       !!ov && ov.label === 'Open assignments, Thu Nov 5 to Wed Nov 25' && ov.days.length === 21 && ov.days[0] === 'T5' && ov.days[4] === 'M9' && ov.days[20] === 'W25'
@@ -1920,6 +1923,37 @@ const emailOf = (req) => {
     }
   }
 
+  // Next 3 weeks' range: a parent's choice, remembered on this device (no migration)
+  {
+    ({ page, db, log } = await open({ label: 'timeline-range', db: timelineDb() }));
+    await page.selectOption('[data-sec="timeline"] select[name="tl-range"]', '7');
+    await sleep(200);
+    let ov7 = await readTl(page, TL);
+    check('Next week: the heading follows, 7 days from today, late ones still there; remembered on this device',
+      (await page.$eval('[data-sec="timeline"] > .sec-head', (h) => h.textContent.trim())) === 'Next week' && !!ov7 && ov7.days.length === 7 && ov7.days[6] === 'W11'
+      && ov7.label === 'Open assignments, Thu Nov 5 to Wed Nov 11' && ov7.rows.some((r) => r.id === BOOKS && r.late)
+      && (await page.evaluate(() => localStorage.getItem('hh.hw.tl_days'))) === '7', JSON.stringify(ov7 && [ov7.label, ov7.days]));
+    await page.reload();
+    await page.waitForSelector(TL);
+    ov7 = await readTl(page, TL);
+    check('... still Next week after a reload', (await page.$eval('[data-sec="timeline"] > .sec-head', (h) => h.textContent.trim())) === 'Next week' && ov7.days.length === 7
+      && (await page.inputValue('[data-sec="timeline"] select[name="tl-range"]')) === '7', JSON.stringify(ov7 && ov7.days));
+    await page.selectOption('[data-sec="timeline"] select[name="tl-range"]', '3');
+    await sleep(200);
+    const ov3 = await readTl(page, TL);
+    check('Next 3 days: Thu Nov 5 to Sat Nov 7', (await page.$eval('[data-sec="timeline"] > .sec-head', (h) => h.textContent.trim())) === 'Next 3 days'
+      && !!ov3 && ov3.days.length === 3 && ov3.label === 'Open assignments, Thu Nov 5 to Sat Nov 7', JSON.stringify(ov3 && [ov3.label, ov3.days]));
+    await page.selectOption('[data-sec="timeline"] select[name="tl-range"]', '14');
+    await sleep(200);
+    const ov14 = await readTl(page, TL);
+    check('Next 2 weeks: 14 days', (await page.$eval('[data-sec="timeline"] > .sec-head', (h) => h.textContent.trim())) === 'Next 2 weeks' && !!ov14 && ov14.days.length === 14, JSON.stringify(ov14 && ov14.days));
+    await page.context().close();
+    ({ page, db, log } = await open({ label: 'timeline-range-sam', db: timelineDb(), email: 'sam@example.com' }));
+    check('Sam: Next 3 weeks with no picker', (await page.$eval('[data-sec="timeline"] > .sec-head', (h) => h.textContent.trim())) === 'Next 3 weeks'
+      && !(await page.$('[data-sec="timeline"] select')));
+    await page.context().close();
+  }
+
   // =====================================================================
   // 13. Print (no migration): his open assignments by due date, their steps to tick; English or Spanish; parents only
   // =====================================================================
@@ -1950,6 +1984,29 @@ const emailOf = (req) => {
       en.sciSteps === 8 && en.sciDone === 3 && en.lesson === 'Being planned: no steps yet.' && !/Make a poster about a river/.test(en.text)
         && /Thu Nov 5 Draft the first half 20 min/.test(en.text), en.text);
     await page.evaluate(() => window.dispatchEvent(new Event('afterprint')));
+    const printed = async (range, n) => {
+      await page.click('[data-sec="assignments"] [data-act="print"]');
+      await page.waitForSelector('#formDialog[open] select[name="range"]');
+      await page.selectOption('#formDialog select[name="range"]', range);
+      await page.click('#formDialog button[type="submit"]');
+      await page.waitForFunction((n) => window.__printed === n, n);
+      const r = await page.evaluate(() => { const s = document.getElementById('print-sheet'); return { when: s.querySelector('.ps-head p').textContent, names: [...s.querySelectorAll('.ps-assign h2')].map((h) => h.textContent) }; });
+      await page.evaluate(() => window.dispatchEvent(new Event('afterprint')));
+      return r;
+    };
+    await page.click('[data-sec="assignments"] [data-act="print"]');
+    await page.waitForSelector('#formDialog[open] select[name="range"]');
+    const ranges = await page.$$eval('#formDialog select[name="range"] option', (os) => os.map((o) => [o.value, o.textContent]));
+    check('print: Which offers 3 days, a week, 2 weeks, 3 weeks (each with any late) and everything open', same(ranges, [['d3', 'Due in the next 3 days (and any late)'],
+      ['w1', 'Due in the next week (and any late)'], ['soon', 'Due in the next 2 weeks (and any late)'], ['w3', 'Due in the next 3 weeks (and any late)'], ['all', 'Everything open']]), JSON.stringify(ranges));
+    await page.keyboard.press('Escape');
+    await sleep(200);
+    const p3 = await printed('d3', 2);
+    check('print: the next 3 days: due by Sat Nov 7 (Worksheet 5.1 only)', p3.when === 'Due by Sat Nov 7' && same(p3.names, ['Worksheet 5.1']), JSON.stringify(p3));
+    const p7 = await printed('w1', 3);
+    check('print: the next week: due by Wed Nov 11', p7.when === 'Due by Wed Nov 11' && same(p7.names, ['Worksheet 5.1', 'Fractions practice', 'History timeline']), JSON.stringify(p7));
+    const p21 = await printed('w3', 4);
+    check('print: the next 3 weeks: due by Wed Nov 25', p21.when === 'Due by Wed Nov 25' && same(p21.names, ['Worksheet 5.1', 'Fractions practice', 'History timeline', 'Science project: river poster']), JSON.stringify(p21));
 
     await page.click('[data-sec="assignments"] [data-act="print"]');
     await page.waitForSelector('#formDialog[open] select[name="range"]');
@@ -1957,7 +2014,7 @@ const emailOf = (req) => {
     await page.selectOption('#formDialog select[name="lang"]', 'es');
     await page.check('#formDialog input[name="details"]');
     await page.click('#formDialog button[type="submit"]');
-    await page.waitForFunction(() => window.__printed === 2);
+    await page.waitForFunction(() => window.__printed === 5);
     const es = await page.evaluate(() => {
       const s = document.getElementById('print-sheet');
       return { lang: s.lang, title: s.querySelector('h1').textContent, when: s.querySelector('.ps-head p').textContent,
