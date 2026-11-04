@@ -20,6 +20,9 @@
    before it.
    v1.2 (docs/v1.2-kitchen.md §7, §8): each day's meals are its last rows
    (days[i].meals), with the note and recipe link for the person on it.
+   From 0017 (docs/v2-design.md §22) an event's `bring` shows under its title
+   ("Bring: Cleats"); the key is left out when there's none and on a private
+   item, so an answer from before 0017 draws as it did.
    A helper whose answer has `list` gets a "Shopping list · 7 ›" button
    that opens #list: the household's list from get_list_by_token, to tick
    off (buy_item_by_token, with Undo for 15 minutes) and add to
@@ -80,7 +83,7 @@
     en: {
       my_day: 'My day', hi: 'Hi, {name}', today: 'Today', tomorrow: 'Tomorrow', yesterday: 'Yesterday', late: 'Late',
       nothing_today: 'Nothing planned for today.', nothing_tomorrow: 'Nothing planned for tomorrow.',
-      all_day: 'All day', any_time: 'Any time', skipped: 'Skipped',
+      all_day: 'All day', any_time: 'Any time', skipped: 'Skipped', bring: 'Bring:',
       done_label: 'Done: {title}', call: 'Call {name}', ticked: 'Done: {title}', undo: 'Undo', dismiss: 'Close',
       undone: "Undone. It's back on your list.",
       already: 'That was already ticked off. The list is up to date now.',
@@ -210,7 +213,7 @@
     es: {
       my_day: 'Mi día', hi: 'Hola, {name}', today: 'Hoy', tomorrow: 'Mañana', yesterday: 'Ayer', late: 'Atrasado',
       nothing_today: 'Nada planeado para hoy.', nothing_tomorrow: 'Nada planeado para mañana.',
-      all_day: 'Todo el día', any_time: 'Sin hora', skipped: 'Saltada',
+      all_day: 'Todo el día', any_time: 'Sin hora', skipped: 'Saltada', bring: 'Llevar:',
       done_label: 'Hecho: {title}', call: 'Llamar a {name}', ticked: 'Hecho: {title}', undo: 'Deshacer', dismiss: 'Cerrar',
       undone: 'Deshecho. Vuelve a estar en tu lista.',
       already: 'Eso ya estaba marcado. La lista ya está al día.',
@@ -736,7 +739,8 @@
     return `<div class="irow st-${esc(status)} k-${esc(it.kind)}" data-i="${i}">
       <div class="irow-time${untimed ? ' untimed' : ''}"><span>${esc(top)}</span>${sub ? `<small>${esc(sub)}</small>` : ''}</div>
       ${canTick || ticked ? `<button type="button" class="irow-check day-check" role="checkbox" aria-checked="${ticked}"${ticked ? ' disabled' : ''} aria-label="${esc(t('done_label', { title: it.title }))}"><span class="irow-box">${ICON.check}</span></button>` : ''}
-      <div class="irow-main"><span class="irow-title">${esc(it.title)}</span>${details || badge ? `<span class="irow-sub">${badge}${details}</span>` : ''}</div>
+      <div class="irow-main"><span class="irow-title">${esc(it.title)}</span>${details || badge ? `<span class="irow-sub">${badge}${details}</span>` : ''}${typeof it.bring === 'string' && it.bring
+        ? `<span class="irow-bring"><b>${esc(t('bring'))}</b> ${esc(it.bring)}</span>` : ''}</div>
       ${it.contractor_phone ? `<a class="irow-call" href="${esc(telHref(it.contractor_phone))}" aria-label="${esc(t('call', { name: who }))}" title="${esc(t('call', { name: who }))}">${ICON.phone}</a>` : ''}
     </div>`;
   }

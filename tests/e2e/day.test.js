@@ -3534,6 +3534,35 @@ const HW_AUDIO_DROP = `(${HW_STUBS})(); (${HW_CLOCKED})(); (${HW_WAKE_DROP})();`
     }
   }
 
+  // =====================================================================
+  // Bring (migration 0017, docs/v2-design.md §22): an event's `bring` on its own line under the title,
+  // "Bring:" / "Llevar:" in the page's language, the text as typed; no line without the key (an answer from
+  // before 0017, or an event with none), and the private rule is the database's (it never sends the key then).
+  // =====================================================================
+  {
+    const bdb = dayDb();
+    const td = bdb.my[TAYLOR].days;
+    td[0].find((x) => x.item_id === ID.piano).bring = 'Music book, water bottle';
+    td[1].find((x) => x.item_id === ID.dentist).bring = '<img src=x onerror="window.__pwned=1">Insurance card & form';
+    bdb.my[JORDAN].days[0].find((x) => x.item_id === ID.jpiano).bring = 'Libro de música';
+    ({ page } = await open({ label: 'bring', path: `/day.html?t=${TAYLOR}`, db: bdb }));
+    const bringOf = (title) => rowByTitle(page, title).locator('.irow-bring').innerText().catch(() => '');
+    check('bring: today\'s Piano pickup has "Bring: Music book, water bottle" on its own line, after the place', (await bringOf('Piano pickup')) === 'Bring: Music book, water bottle'
+      && (await rowsOf(page, 'today')).find((r) => r.title === 'Piano pickup').details === 'Music school', await bringOf('Piano pickup'));
+    check('bring: tomorrow\'s Dentist shows its Bring as text, tags and all (nothing runs)', (await bringOf('Dentist')) === 'Bring: <img src=x onerror="window.__pwned=1">Insurance card & form'
+      && !(await page.evaluate(() => window.__pwned)) && !(await page.$('.irow-bring img')), await bringOf('Dentist'));
+    check('bring: no line on items without one (the key absent, as before 0017)', (await page.locator('.irow-bring').count()) === 2);
+    await page.context().close();
+    ({ page } = await open({ label: 'bring-es', path: `/day.html?t=${JORDAN}`, db: bdb }));
+    check('bring: in Spanish, "Llevar: Libro de música"', (await rowByTitle(page, 'Piano').locator('.irow-bring').innerText().catch(() => '')) === 'Llevar: Libro de música');
+    await page.context().close();
+    // A long one on a phone: it wraps; no sideways scroll.
+    td[0].find((x) => x.item_id === ID.piano).bring = `Cleats${'-and-shin-guards'.repeat(12)}`;
+    ({ page } = await open({ label: 'bring-390', path: `/day.html?t=${TAYLOR}`, db: bdb, ctx: phone() }));
+    check('bring 390px: a long Bring wraps, with no sideways page scroll', await noSideScroll(page));
+    await page.context().close();
+  }
+
   console.log(results.join('\n'));
   console.log(`\n${results.filter((r) => r.startsWith('PASS')).length}/${results.length} passed`);
   console.log('PAGE ERRORS:', errors.length ? '\n' + errors.join('\n') : 'none');

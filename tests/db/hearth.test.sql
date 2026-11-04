@@ -734,4 +734,4 @@ select test.is((select string_agg(p.proname, ', ' order by p.proname) from pg_pr
                 where p.pronamespace in ('public'::regnamespace, 'private'::regnamespace) and p.prosecdef
                   and p.proname in ('set_hearth_tag', 'hearth_tag', 'hearth_whose', 'google_item', 'google_for', 'calendars_tidy', 'calendar_store_events', 'calendar_read_due')),
                'set_hearth_tag', 'of the functions 0010 adds, replaces or makes again, set_hearth_tag is the only definer');
-select test.is(hub_schema_version(), 16, 'hub_schema_version is 16 (0010 made it 10, 0011 11, 0012 12, 0013 13, 0014 14, 0015 15, 0016 makes it 16)');
+select test.is(hub_schema_version(), 17, 'hub_schema_version is 17 (0010 made it 10, 0011 11, 0012 12, 0013 13, 0014 14, 0015 15, 0016 16, 0017 makes it 17)');

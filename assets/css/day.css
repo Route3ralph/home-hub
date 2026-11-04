@@ -97,6 +97,9 @@
 .day .irow.k-meal .irow-title { font-weight: 550; color: var(--text-2); }
 .day .irow.k-meal.is-mine .irow-title { color: var(--text); }
 .meal-note { display: block; margin-top: 2px; color: var(--text-2); font-size: 14px; overflow-wrap: anywhere; }
+/* An event's Bring (schema 17): its own line under the title, "Bring: Cleats" / "Llevar: Cleats". */
+.irow-bring { display: block; margin-top: 2px; color: var(--text-2); font-size: 14px; overflow-wrap: anywhere; }
+.irow-bring b { font-weight: 650; color: var(--text); }
 .meal-recipe { align-self: flex-start; display: inline-flex; align-items: center; min-height: 44px; font-size: 15px; font-weight: 600; overflow-wrap: anywhere; }
 
 /* ---------- The list's button (a helper's My day) ---------- */

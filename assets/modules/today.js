@@ -232,11 +232,18 @@
     return Promise.all(v2.people().filter(sendable).map((p) => call('day_text', { p_person: p.id, p_day: today })
       .then((text) => ({ person: p, text }), (err) => ({ person: p, error: friendly(err) }))));
   }
+  // Send tomorrow (schema 17): tomorrow_text for the same people, loaded with the page for the same reason.
+  // Below 17 there's no such function, and no section.
+  function loadTomorrowTexts() {
+    if (!(core.schemaVersion >= 17)) return Promise.resolve([]);
+    return Promise.all(v2.people().filter(sendable).map((p) => call('tomorrow_text', { p_person: p.id })
+      .then((text) => ({ person: p, text }), (err) => ({ person: p, error: friendly(err) }))));
+  }
 
   async function load() {
     const today = dates.today();
     const projects = loadProjects();
-    const [agenda, late, heads, setup, texts, , google, notice, dinners, homework] = await Promise.all([
+    const [agenda, late, heads, setup, texts, , google, notice, dinners, homework, tomorrowTexts] = await Promise.all([
       call('agenda', { p_from: today, p_to: today }),
       call('late_items'),
       call('heads_up', { p_day: today }),
@@ -247,16 +254,18 @@
       loadNotice(today),
       loadDinners(today),
       loadHomework(today),
+      loadTomorrowTexts(),
     ]);
     const p = await projects;
     return {
       today,
-      agenda: (p.backfilled ? await call('agenda', { p_from: today, p_to: today }) : agenda) || [],
+      agenda: await v2.withBring((p.backfilled ? await call('agenda', { p_from: today, p_to: today }) : agenda) || [], today, today),
       late: late || [],
       heads: heads || [],
       projects: p.rows,
       setup,
       texts,
+      tomorrowTexts,
       google: google.items,
       googleFailed: google.failed,
       kidSources: google.kidSources,
@@ -535,19 +544,23 @@
   }
 
   // WhatsApp, Share (where the browser has it; it carries the same message) and Text.
-  function sendHTML(texts) {
-    return `<ul class="today-send">${texts.map(({ person, text, error }) => {
+  // which: 'day' (Send their day: today's day_text) or 'tomorrow' (Send tomorrow, schema 17: tomorrow_text).
+  function sendHTML(texts, which) {
+    const tomorrow = which === 'tomorrow';
+    const send = (name) => (tomorrow ? `Send ${name} tomorrow` : `Send ${name} their day`);
+    const whose = (name) => (tomorrow ? `${possessive(name)} tomorrow` : `${possessive(name)} day`);
+    return `<ul class="today-send"${tomorrow ? ' data-which="tomorrow"' : ''}>${texts.map(({ person, text, error }) => {
       const name = firstName(person.name);
       if (error || !text) {
-        return `<li><div class="today-send-who">${ui.personDot(person)}<b>Send ${esc(name)} their day</b></div>
-          <p class="today-note">Couldn't get ${esc(possessive(name))} day: ${esc(error || 'nothing came back')}. Reload to try again.</p></li>`;
+        return `<li><div class="today-send-who">${ui.personDot(person)}<b>${esc(send(name))}</b></div>
+          <p class="today-note">Couldn't get ${esc(whose(name))}: ${esc(error || 'nothing came back')}. Reload to try again.</p></li>`;
       }
       return `<li data-send="${esc(person.id)}">
-        <div class="today-send-who">${ui.personDot(person)}<b>Send ${esc(name)} their day</b></div>
+        <div class="today-send-who">${ui.personDot(person)}<b>${esc(send(name))}</b></div>
         <div class="today-send-btns">
-          <a class="btn" data-via="whatsapp" href="${esc(whatsappHref(person.phone, text))}" target="_blank" rel="noopener" aria-label="Send ${esc(name)} their day by WhatsApp">WhatsApp</a>
-          ${canShare() ? `<button type="button" class="btn" data-share="${esc(text)}" aria-label="Share ${esc(possessive(name))} day with another app">Share</button>` : ''}
-          <a class="btn" data-via="sms" href="${esc(smsHref(person.phone, text))}" aria-label="Send ${esc(name)} their day by text">Text</a>
+          <a class="btn" data-via="whatsapp" href="${esc(whatsappHref(person.phone, text))}" target="_blank" rel="noopener" aria-label="${esc(send(name))} by WhatsApp">WhatsApp</a>
+          ${canShare() ? `<button type="button" class="btn" data-share="${esc(text)}" aria-label="Share ${esc(whose(name))} with another app">Share</button>` : ''}
+          <a class="btn" data-via="sms" href="${esc(smsHref(person.phone, text))}" aria-label="${esc(send(name))} by text">Text</a>
         </div>
         <details class="today-preview"><summary>See the message</summary><pre>${esc(text)}</pre></details>
       </li>`;
@@ -703,6 +716,7 @@
       : [];
     const lines = household ? projectLines(d) : [];
     const texts = d.texts.filter((t) => (household ? true : t.person.id === focus));
+    const tomorrowTexts = (d.tomorrowTexts || []).filter((t) => (household ? true : t.person.id === focus));
     let setup = '';
     if (household && d.setup && !setupFlag()) {
       setup = setupHTML(d.setup);
@@ -714,7 +728,8 @@
     const side = [
       nobody.length ? `<section class="today-sec" aria-label="Nobody's on it">${ui.sectionHeading('Nobody\'s on it', nobody.length)}<div class="today-card irows" data-list="nobody"></div>
         ${nobody.length > 5 ? `<a class="today-more" href="#/tasks">${nobody.length - 5} more on the Tasks page</a>` : ''}</section>` : '',
-      texts.length ? `<section class="today-sec" aria-label="Send their day">${ui.sectionHeading('Send their day')}<div class="today-card">${sendHTML(texts)}</div></section>` : '',
+      texts.length ? `<section class="today-sec" aria-label="Send their day">${ui.sectionHeading('Send their day')}<div class="today-card">${sendHTML(texts, 'day')}</div></section>` : '',
+      tomorrowTexts.length ? `<section class="today-sec" aria-label="Send tomorrow">${ui.sectionHeading('Send tomorrow')}<div class="today-card">${sendHTML(tomorrowTexts, 'tomorrow')}</div></section>` : '',
       lines.length ? `<section class="today-sec" aria-label="Projects today">${ui.sectionHeading('Projects today', lines.length)}<div class="today-card">${projectsHTML(lines, d.today)}</div></section>` : '',
       setup,
     ].join('');

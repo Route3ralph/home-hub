@@ -546,5 +546,34 @@ const SOON_LINES = ['History · Read chapter 9', 'Math · Homework', 'Science ·
     await context.close();
   });
 
+  // The new site on 16 (Bring and Send tomorrow are 17's): the Calendar and Today work and ask for neither; then the
+  // owner pastes 0017 while the hub runs, and the same pages offer them (docs/v2-design.md §22, deploy order).
+  await flow('0017: Bring and the Tomorrow message, pasted after the site', async () => {
+    await h.mark();
+    let { page, context } = await open({ email: 'alex@example.com', path: '/#/calendar', label: 'bring-16' });
+    await page.waitForSelector('.cal-head', { timeout: 8000 });
+    await go(page, '#/');
+    await page.waitForSelector('.today-head', { timeout: 8000 });
+    const asked16 = (await h.requests()).filter((r) => /tomorrow_text|bring/.test(r.path + JSON.stringify(r.query || {})));
+    check('on 16 the new site asks for no Bring and no tomorrow_text, and shows no Send tomorrow', !asked16.length && !(await page.$('.today-send[data-which="tomorrow"]')), asked16);
+    let f = await failures();
+    check('0017, on 16: no API request failed', !f.length, f);
+    await context.close();
+    const r17 = await h.migrate('supabase/migrations/0017_bring_tomorrow.sql');
+    check('the owner pastes 0017 while the hub runs: it applies, schema 17', !r17.error && (await one('select public.hub_schema_version() as v')).v === '17', r17.error);
+    const again = await h.migrate('supabase/migrations/0017_bring_tomorrow.sql');
+    check('… and a second paste is refused, changing nothing', !!again.error && /already installed/.test(again.error.message || String(again.error)) && (await one('select public.hub_schema_version() as v')).v === '17', again.error);
+    await h.mark();
+    ({ page, context } = await open({ email: 'alex@example.com', path: '/#/calendar', label: 'bring-17' }));
+    await page.waitForSelector('.cal-head', { timeout: 8000 });
+    await page.click('.topbar-end [data-shell="add"]');
+    await page.click('#sheet [data-add="event"]');
+    await page.waitForSelector('#formDialog[open] .cal-form');
+    check('on 17 (after a reload) the event form offers Bring', !!(await page.$('#formDialog [name="bring"]')));
+    f = await failures();
+    check('0017, on 17: no API request failed', !f.length, f);
+    await context.close();
+  });
+
   await h.finish();
 })().catch((e) => { console.log(`FAIL  school stopped: ${e && e.stack}`); process.exit(1); });

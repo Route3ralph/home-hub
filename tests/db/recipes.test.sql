@@ -7,7 +7,7 @@
 \set as_guest 'reset role; set request.jwt.claims = ''{"role": "authenticated", "email": "riley@example.com"}''; set role authenticated;'
 
 :as_owner
-select test.is(hub_schema_version(), 16, 'hub_schema_version is 16 (0013 made it 13, 0014 14, 0015 15, 0016 makes it 16)');
+select test.is(hub_schema_version(), 17, 'hub_schema_version is 17 (0013 made it 13, 0014 14, 0015 15, 0016 16, 0017 makes it 17)');
 select test.is((select relrowsecurity from pg_class where oid = 'public.recipes'::regclass), true, 'recipes has row-level security');
 select test.is((select string_agg(privilege_type, ',' order by privilege_type) from information_schema.role_table_grants
                 where table_schema = 'public' and table_name = 'recipes' and grantee = 'authenticated'), 'DELETE,SELECT',

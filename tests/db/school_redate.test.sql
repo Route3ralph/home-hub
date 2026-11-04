@@ -39,7 +39,7 @@ end;
 $$;
 create or replace function private.school_host_suffix() returns text language sql immutable set search_path = '' as $$ select '.school.example' $$;
 
-select test.is(hub_schema_version(), 16, 'hub_schema_version is 16 (0015 made it 15, 0016 makes it 16)');
+select test.is(hub_schema_version(), 17, 'hub_schema_version is 17 (0015 made it 15, 0016 16, 0017 makes it 17)');
 select test.ok((select p.prosecdef and coalesce(array_to_string(p.proconfig, ','), '') like '%search_path=%'
                 from pg_proc p where p.oid = 'public.check_school_feed(uuid, text, int)'::regprocedure),
                'check_school_feed: still a definer, with set search_path');

@@ -51,10 +51,10 @@ const MY_DAY_FNS = new RegExp(`^/rest/v1/rpc/(get_person_day|complete_by_token|u
     await page.click('#codeForm button[type="submit"]');
     await page.waitForSelector('.today-head', { timeout: 10000 });
     await settle(page, 600);
-    // Schema 16 since migration 0016 (Change dates keeps due dates): the template has every migration, so the version
-    // this check reads moves with each release, on purpose (it was 4 with v1.2, 5 with 0005, … 14 with 0014, 15 with 0015).
-    check('sign-in: the code signs Alex in and the v2 Today page shows (schema version 16 from the real database: migration 0016)',
-      (await page.evaluate(() => HomeHub.core.schemaVersion)) === 16 && /Good morning, Alex/.test(await tc(page, '#main h1')), await tc(page, '#main h1'));
+    // Schema 17 since migration 0017 (Bring and the Tomorrow message): the template has every migration, so the version
+    // this check reads moves with each release, on purpose (it was 4 with v1.2, 5 with 0005, … 15 with 0015, 16 with 0016).
+    check('sign-in: the code signs Alex in and the v2 Today page shows (schema version 17 from the real database: migration 0017)',
+      (await page.evaluate(() => HomeHub.core.schemaVersion)) === 17 && /Good morning, Alex/.test(await tc(page, '#main h1')), await tc(page, '#main h1'));
     check('sign-in: Today shows the household\'s date (Tuesday, October 27)', /Tuesday, October 27/.test(await tc(page, '.today-head .eyebrow')), await tc(page, '.today-head .eyebrow'));
     const alex = await one(`select email_verified_at is not null as ok, (select token from people_confirm c where c.person_id = p.id) as secret from people p where email = 'alex@example.com'`);
     const again = alex.secret ? await h.api('/rest/v1/rpc/confirm_digest', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ p_confirm: alex.secret }) }) : null;
@@ -189,6 +189,63 @@ const MY_DAY_FNS = new RegExp(`^/rest/v1/rpc/(get_person_day|complete_by_token|u
     await settle(page, 500);
     const f = await failures();
     check('piano change/skip: no API request failed', !f.length, f);
+    await context.close();
+  });
+
+  // ===================================================================
+  // Bring (0017): on Piano (every Tuesday) and on Nov 3 only, written by the pages and read back through the real
+  // tables, filters and functions: the Calendar row, Send their day (day_text) and Send tomorrow (tomorrow_text)
+  // ===================================================================
+  await flow('bring', async () => {
+    if (!piano) throw new Error('no Piano event');
+    await h.mark();
+    const { page, context } = await open({ email: 'alex@example.com', path: `/#/calendar/event/${piano.id}`, label: 'bring' });
+    await page.waitForSelector('#detail [data-ev="edit"]', { timeout: 5000 });
+    await page.click('#detail [data-ev="edit"]');
+    await page.waitForSelector('#formDialog .cal-form [name="bring"]');
+    await page.fill('#formDialog [name="bring"]', 'Music book');
+    await page.click('#formDialog [type="submit"]');
+    await settle(page, 600);
+    const ev = await one(`select bring, updated_by from events where id = '${piano.id}'`);
+    check('bring: Edit all days saves it on the event, as Alex', !!ev && ev.bring === 'Music book' && ev.updated_by === 'alex@example.com', ev);
+    await go(page, `#/calendar/event/${piano.id}/2026-11-03`);
+    await page.waitForSelector('#detail [data-ev="change"]', { timeout: 5000 });
+    await page.click('#detail [data-ev="change"]');
+    await page.waitForSelector('#formDialog .cal-form [name="bring"]');
+    check('bring: Change this day (Nov 3) starts from the usual', (await page.inputValue('#formDialog [name="bring"]')) === 'Music book');
+    await page.fill('#formDialog [name="bring"]', 'Music book, recital form');
+    await page.click('#formDialog [type="submit"]');
+    await settle(page, 600);
+    const ch = await one(`select bring, start_time from event_changes where event_id = '${piano.id}' and on_date = '2026-11-03'`);
+    check('bring: Nov 3 keeps its own time (17:00) and gets its own Bring', !!ch && ch.bring === 'Music book, recital form' && ch.start_time === '17:00:00', ch);
+    const tidy = await one(`with u as (update events set bring = E'  Music\\tbook  ' where id = '${piano.id}' returning bring) select bring from u`);
+    check('bring: the database tidies what it stores ("Music book")', tidy && tidy.bring === 'Music book', tidy);
+    await go(page, `#/calendar/${TODAY}`);
+    await page.click('[data-view="week"]');
+    await page.waitForSelector(`[data-list="${TODAY}"] .irow`, { timeout: 5000 });
+    const rows = await page.$$eval(`[data-list="${TODAY}"] .irow`, (rs) => rs.map((r) => r.innerText.replace(/\s+/g, ' ')));
+    check('bring: the Calendar\'s Piano row says "Bring: Music book" (read from events through the real filters)', rows.some((t) => /Piano/.test(t) && /Bring: Music book/.test(t)), rows);
+    await go(page, '#/calendar/2026-11-03');
+    await page.waitForSelector('[data-list="2026-11-03"] .irow', { timeout: 5000 });
+    const nov3 = await page.$$eval('[data-list="2026-11-03"] .irow', (rs) => rs.map((r) => r.innerText.replace(/\s+/g, ' ')));
+    check('bring: Nov 3\'s row has the day\'s own Bring', nov3.some((t) => /Piano/.test(t) && /Bring: Music book, recital form/.test(t)), nov3);
+    // Today: Send their day and Send tomorrow carry the real functions' texts.
+    await go(page, '#/');
+    await page.click('.today-chips [data-view="me"]').catch(() => {});
+    await settle(page, 300);
+    const href = async (sel) => { const h1 = await page.getAttribute(sel, 'href').catch(() => null); return h1 ? decodeURIComponent(h1.split('?text=')[1]) : null; };
+    const dayMsg = await href(`.today-send:not([data-which]) [data-send="${P.taylor}"] [data-via="whatsapp"]`);
+    const dbDay = (await one(`select public.day_text('${P.taylor}', '${TODAY}') as t`)).t;
+    check('bring: "Send Taylor their day" is the real day_text, now with "Llevar: Music book" (Taylor reads Spanish)', !!dayMsg && dayMsg === dbDay && /16:00 Piano .*Llevar: Music book$/m.test(dayMsg), dayMsg);
+    const tomMsg = await href(`.today-send[data-which="tomorrow"] [data-send="${P.taylor}"] [data-via="whatsapp"]`);
+    const dbTom = (await one(`select public.tomorrow_text('${P.taylor}') as t`)).t;
+    check('bring: "Send Taylor tomorrow" is the real tomorrow_text ("Mañana, mié 28 oct")', !!tomMsg && tomMsg === dbTom && /^Taylor[^\n]* · Mañana, mié 28 oct\n/.test(tomMsg), tomMsg);
+    // Monday evening Nov 2: tomorrow is Piano's changed Tuesday (the household's clock moved for this one statement).
+    const mon = (await one(`with c as (select set_config('hub.now', '2026-11-02 19:30 America/New_York', true) as x) select public.tomorrow_text('${P.taylor}') as t from c`)).t;
+    check('bring: tomorrow_text on Mon Nov 2: Piano at 17:00 with the place and the day\'s Bring, and no Late section',
+      /^Taylor[^\n]* · Mañana, mar 3 nov\n/.test(mon) && /^17:00 Piano · con Jordan · Music school · Llevar: Music book, recital form$/m.test(mon) && !/Atrasado/.test(mon), mon);
+    const f = await failures();
+    check('bring: no API request failed', !f.length, f);
     await context.close();
   });
 
