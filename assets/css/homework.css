@@ -146,6 +146,19 @@
 .hw-schooldue { display: grid; gap: 8px; width: 100%; padding: 10px 12px; border-radius: 12px; background: var(--surface-2); }
 .hw-schooldue input { min-height: 44px; font-size: 16px; }
 .hw-schooldue .form-actions { margin: 0; }
+/* Paste due dates (§23.5): the box over New from school, what it read, and Add */
+.hw-paste-open { margin: 8px 0 0; }
+.hw-paste { display: grid; gap: 8px; margin: 8px 0 0; padding: 10px 12px; border-radius: 12px; background: var(--surface-2); min-width: 0; }
+.hw-paste .hw-switch-title, .hw-paste .hw-switch-line { margin: 0; }
+.hw-paste-how { margin: 0; padding-left: 22px; color: var(--text-2); font-size: 14px; }
+.hw-paste textarea { width: 100%; box-sizing: border-box; font-size: 16px; }
+.hw-paste-rows, .hw-paste-misses { list-style: none; margin: 0; padding: 0; }
+.hw-paste-rows > li { border-bottom: 1px solid var(--line); font-size: 14px; overflow-wrap: anywhere; }
+.hw-paste-rows > li:last-child { border-bottom: 0; }
+.hw-paste-rows label.check { display: flex; gap: 10px; align-items: flex-start; min-height: 44px; padding: 8px 0; min-width: 0; }
+.hw-paste-rows label.check input { width: 20px; height: 20px; flex: none; }
+.hw-paste-misses > li { padding: 2px 0; color: var(--text-2); font-size: 13px; overflow-wrap: anywhere; }
+.hw-paste .form-actions { margin: 0; flex-wrap: wrap; }
 .hw-school-how > summary {
   display: flex; align-items: center; min-height: 44px; color: var(--accent); font-size: 14px; font-weight: 650; cursor: pointer;
 }

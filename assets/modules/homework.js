@@ -1080,6 +1080,75 @@
   // are to come; those read "was due". On 6 and 7 there is no past key, and nothing past on the check.
   const isPast = (x) => x.past === true;
   const checkLine = (x) => [x.subject, x.title, `${isPast(x) ? 'was due' : 'due'} ${fmt.day(x.due_date)}`].filter(Boolean).join(' · ');
+
+  // ---------- Paste due dates (docs/v1.3-homework.md §23.5): pages only, nothing pasted is kept or sent.
+  // A parent copies Blackbaud's Assignment Center in Month view, displayed by due date, and pastes it. As text the
+  // calendar reads: "November 2026", the weekdays, then each day ("Nov 1" for a month's first day, then 2, 3 …), and
+  // under a day its assignments, each as its time, title, class, points and status lines.
+  const PASTE_MONTHS = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'];
+  const PASTE_STATUS = ['completed', 'graded', 'in progress', 'overdue', 'paused', 'to do'];
+  const DONE_AT_SCHOOL = ['completed', 'graded'];
+  const PASTE_TIME = /^\d{1,2}:\d{2} ?(am|pm)$/i;
+  const pasteKey = (s) => String(s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  const pad2 = (n) => String(n).padStart(2, '0');
+  const monthDays = (y, m) => new Date(Date.UTC(y, m + 1, 0)).getUTCDate();
+  // Its lines, each with its day: [{ text, day }], or null when no "<Month> <year>" line is in it (not a month view).
+  // A day line counts only in order (the day after the last, or "<Mon> <d>" for a new month), so a number in a title
+  // never moves the day. A link pasted as Markdown ([title](address)) reads as its title. Several months pasted one
+  // under the other each start again at their own "<Month> <year>".
+  function readCalendar(text) {
+    const lines = String(text || '').split(/\r\n|\r|\n/)
+      .map((l) => l.replace(/\[([^\]]*)\]\([^)]*\)/g, '$1').replace(/^\s*[*•]\s*/, '').replace(/\s+/g, ' ').trim()).filter(Boolean);
+    const out = [];
+    let head = null; let y = 0; let m = 0; let d = null;
+    lines.forEach((line) => {
+      let r = /^([a-z]+) (\d{4})$/i.exec(line);
+      if (r && PASTE_MONTHS.includes(r[1].toLowerCase())) { head = { y: Number(r[2]), m: PASTE_MONTHS.indexOf(r[1].toLowerCase()) }; d = null; return; }
+      if (!head) return;
+      r = /^([a-z]{3})[a-z]*\.? (\d{1,2})$/i.exec(line);
+      const mi = r ? PASTE_MONTHS.findIndex((x) => x.slice(0, 3) === r[1].toLowerCase() && x.startsWith(line.split(/[ .]/)[0].toLowerCase())) : -1;
+      if (mi >= 0) {
+        // The month shown before or after the header's (its first or last week): the year that puts it nearest.
+        const yy = head.y + (mi - head.m > 6 ? -1 : head.m - mi > 6 ? 1 : 0);
+        const dd = Number(r[2]);
+        if (dd >= 1 && dd <= monthDays(yy, mi)) { y = yy; m = mi; d = dd; return; }
+      }
+      if (d !== null && /^\d{1,2}$/.test(line) && Number(line) === d + 1 && d + 1 <= monthDays(y, m)) { d += 1; return; }
+      if (d !== null) out.push({ text: line, day: `${y}-${pad2(m + 1)}-${pad2(d)}` });
+    });
+    return head ? out : null;
+  }
+  // Each waiting item's due date from the calendar: { id, due, status } (due null when it isn't there). An item's
+  // title is found as a whole line, any case; its class line must start with its subject. A title that repeats (one a
+  // week) pairs newest with newest: the latest date goes to the one assigned last on or before it, and so on down, so
+  // an item never takes a date from before it was assigned. The hidden ones take their own dates the same way (never
+  // given to another), and a date already on his homework under that title is not offered again.
+  function matchDueDates(cal, items, hidden, taken) {
+    const people = items.map((x) => ({ x, mine: true })).concat(hidden.map((x) => ({ x, mine: false })));
+    const keys = new Set(people.map((p) => pasteKey(p.x.title)));
+    const had = new Set(taken.map(([title, due]) => `${pasteKey(title)}|${due}`));
+    const seen = [];
+    cal.forEach((e, i) => {
+      const k = pasteKey(e.text);
+      if (!keys.has(k) || had.has(`${k}|${e.day}`)) return;
+      const after = [];
+      for (let j = i + 1; j < cal.length && cal[j].day === e.day && after.length < 4 && !PASTE_TIME.test(cal[j].text); j += 1) after.push(cal[j].text);
+      seen.push({ k, day: e.day, cls: after[0] || '', status: after.map((t) => t.toLowerCase()).find((t) => PASTE_STATUS.includes(t)) || null });
+    });
+    const fits = (o, p) => !p.x.subject || !/ - /.test(o.cls) || o.cls.toLowerCase().startsWith(`${p.x.subject.toLowerCase()} `);
+    const free = people.slice();
+    const got = new Map();
+    seen.sort((a, b) => (a.day < b.day ? 1 : a.day > b.day ? -1 : 0)).forEach((o) => {
+      let best = -1;
+      free.forEach((p, n) => {
+        if (pasteKey(p.x.title) === o.k && p.x.due_date <= o.day && fits(o, p) && (best < 0 || p.x.due_date > free[best].x.due_date)) best = n;
+      });
+      if (best < 0) return;
+      const [p] = free.splice(best, 1);
+      if (p.mine) got.set(p.x.id, { due: o.day, status: o.status });
+    });
+    return items.map((x) => Object.assign({ id: x.id }, got.get(x.id) || { due: null, status: null }));
+  }
   // The stops only Replace mends (their words say "use Replace"); Home Hub tries the others again.
   const REPLACE_STOPS = ['bad_link', 'redirect', 'refused', 'gone', 'sign_in', 'not_calendar'];
   // An empty check, in words, by the Assignments link's status (the same on 7 and 8, with no version gate): not read
@@ -1140,11 +1209,11 @@
     const marks = s.moved.map((m) => [m.assignment_id, `${m.title}: the school moved its due date from ${fmt.day(m.from)} to ${fmt.day(m.to)}. Open it to place it again ›`])
       .concat(s.gone.map((g) => [g.assignment_id, `${g.title} is no longer on the school site ›`]));
     if (marks.length) out.push(`<ul class="hw-school-marks">${marks.map(([id, text]) => `<li><a href="#/homework/${esc(id)}">${esc(text)}</a></li>`).join('')}</ul>`);
-    const list = (key, title, rows, acts) => `<details class="hw-school-list" data-keep="${key}"${st.schoolOpen[key] ? ' open' : ''}><summary>${esc(title)}</summary>
+    const list = (key, title, rows, acts, top) => `<details class="hw-school-list" data-keep="${key}"${st.schoolOpen[key] ? ' open' : ''}><summary>${esc(title)}</summary>${top || ''}
       <ul class="hw-school-items">${rows.map((x) => `<li class="hw-school-row" data-item="${esc(x.id)}"><span>${esc(itemLine(x))}</span>
         <span class="hw-feed-acts">${acts.map(([act, label]) => btn('school-item', label, ` data-item="${esc(x.id)}" data-do="${act}"`)).join('')}</span>
         ${st.form && st.form.key === `schooldue:${x.id}` ? schoolDueHTML(st, x) : ''}</li>`).join('')}</ul></details>`;
-    if (s.new.length) out.push(list('new', `New from school for ${kid} (${s.new.length})`, s.new, [['add', 'Add to homework'], ['hide', 'Hide']]));
+    if (s.new.length) out.push(list('new', `New from school for ${kid} (${s.new.length})`, s.new, [['add', 'Add to homework'], ['hide', 'Hide']], pasteHTML(st)));
     if (s.hidden.length) out.push(list('hidden', `Hidden from ${kid}'s list (${s.hidden.length})`, s.hidden, [['show', 'Show']]));
     return out.join('');
   }
@@ -1156,6 +1225,48 @@
         <input type="date" name="due" min="${esc(x.due_date)}" max="${esc(most)}" required></label>
       <p class="form-error" role="alert" hidden></p>
       <div class="form-actions"><button type="button" class="btn" data-act="cancel-note">Cancel</button><button type="submit" class="btn btn-primary">Add to homework</button></div></form>`;
+  }
+  // Paste due dates (§23.5), over New from school when any item there is dated the day it was assigned: the box, then
+  // what it read, each found one ticked unless the school shows it done; Add puts the ticked ones on his homework.
+  const pasteItems = (st) => (st.school ? st.school.new.filter(isAssigned) : []);
+  // The rows read, for the items still waiting (a write or a read can take some away while the box is open).
+  const pasteRows = (st) => {
+    const r = st.paste && st.paste.read;
+    if (!r || !r.rows) return [];
+    const now = pasteItems(st);
+    return r.rows.map((row) => Object.assign({}, row, { x: now.find((x) => x.id === row.id) })).filter((row) => row.x);
+  };
+  const pasteAddLabel = (n) => (n ? `Add ${n} to homework` : 'Add to homework');
+  function pasteHTML(st) {
+    if (core.schemaVersion < 15 || !pasteItems(st).length) return '';
+    if (!st.paste) return `<div class="hw-feed-acts hw-paste-open">${btn('school-paste', 'Paste due dates')}</div>`;
+    const kid = kidName(st);
+    const r = st.paste.read;
+    const rows = pasteRows(st);
+    let found = '';
+    if (r && r.error) found = `<p class="form-error" role="alert">${esc(r.error)}</p>`;
+    else if (r) {
+      const hits = rows.filter((row) => row.due);
+      const misses = rows.filter((row) => !row.due);
+      found = `<p class="hw-switch-line hw-paste-found" role="status">${esc(hits.length
+        ? `Found ${hits.length} of ${rows.length}. Tick the ones to add to ${kid}'s homework with that due date.`
+        : `None of the ${plural(rows.length, 'assignment')} waiting is on the page you pasted.`)}</p>
+        ${hits.length ? `<ul class="hw-paste-rows">${hits.map((row) => `<li><label class="check"><input type="checkbox" name="pick" value="${esc(row.id)}"${row.pick ? ' checked' : ''}>
+          <span>${esc([row.x.subject, row.x.title, `due ${fmt.day(row.due)}`].concat(DONE_AT_SCHOOL.includes(row.status) ? [`${row.status} at school`] : []).filter(Boolean).join(' · '))}</span></label></li>`).join('')}</ul>` : ''}
+        ${misses.length ? `<ul class="hw-paste-misses">${misses.map((row) => `<li>${esc(`${row.x.title}: not on the page you pasted`)}</li>`).join('')}</ul>` : ''}`;
+    }
+    const n = rows.filter((row) => row.due && row.pick).length;
+    const read = r && !r.error && rows.some((row) => row.due);
+    return `<form class="hw-paste" data-form="schoolpaste" novalidate autocomplete="off">
+      <p class="hw-switch-title">Paste due dates</p>
+      <ol class="hw-paste-how"><li>${esc(`On a computer, open ${kid}'s Assignments on the school's Blackbaud site.`)}</li>
+        <li>Choose Display assignments by: Due date, and Month.</li>
+        <li>Click the page, press Ctrl+A, then Ctrl+C (⌘A, ⌘C on a Mac), and paste it here. For one due next month, show that month, copy it and paste it under the first.</li></ol>
+      <label class="field"><span>The Assignments page</span><textarea name="paste" rows="4" spellcheck="false">${esc(st.paste.text)}</textarea></label>
+      <small class="hw-switch-line">Only the due dates you add are saved. Nothing else you paste is kept or sent.</small>
+      ${found}
+      <div class="form-actions"><button type="button" class="btn" data-act="paste-cancel">Cancel</button><button type="submit" class="btn${read ? '' : ' btn-primary'}">Read the dates</button>${read
+        ? `<button type="button" class="btn btn-primary" data-act="paste-add"${n ? '' : ' disabled'}>${esc(pasteAddLabel(n))}</button>` : ''}</div></form>`;
   }
   function schoolHTML(st) {
     const kid = kidName(st);
@@ -1236,6 +1347,8 @@
     if (window.scrollY !== y) window.scrollTo(window.scrollX, y);
     const input = st.form && main.querySelector(`form[data-key="${CSS.escape(st.form.key)}"] input, form[data-link] input[name="label"], form[data-form="school"] input[name="url"], form[data-form="schooldue"] input[name="due"]`);
     if (input && st.form.focus) { input.focus(); st.form.focus = false; }
+    const box = st.paste && st.paste.focus && main.querySelector('form[data-form="schoolpaste"] textarea');
+    if (box) { box.focus(); st.paste.focus = false; }
   }
 
   // ============================================
@@ -1818,6 +1931,54 @@
     write(st, () => run(sb().rpc('school_item_action', { p_item: id, p_action: 'add', p_due: due })),
       () => { st.form = null; toast(`On ${kid}'s homework, due ${fmt.day(due)}: ${x.title}`); });
   }
+  // Paste due dates (§23.5): read the pasted page in the browser (nothing is sent), then Add the ticked ones, one
+  // school_item_action(add, p_due) each, as Add with a typed due date does.
+  function readPaste(st, form) {
+    const text = String(form.elements.paste.value || '');
+    st.paste.text = text;
+    const items = pasteItems(st);
+    const cal = readCalendar(text);
+    let read;
+    if (!text.trim()) read = { error: 'Paste the Assignments page first.' };
+    else if (!cal) read = { error: 'That isn\'t Blackbaud\'s Assignments page in Month view. Choose Month, copy the whole page and paste it again.' };
+    else {
+      const most = dates.addDays(st.today, 120);
+      const res = matchDueDates(cal, items, st.school.hidden || [], st.assignments.map((a) => [a.title, a.due_date]));
+      const rows = res.map((m) => {
+        const due = m.due && m.due <= most ? m.due : null;
+        return { id: m.id, due, status: due ? m.status : null, pick: !!due && !DONE_AT_SCHOOL.includes(m.status) };
+      });
+      // In "Display assignments by: Assigned date" every day is the day it was assigned, as these items' dates are.
+      const hits = rows.filter((row) => row.due);
+      const same = hits.filter((row) => row.due === (items.find((x) => x.id === row.id) || {}).due_date);
+      read = hits.length >= 2 && same.length === hits.length
+        ? { error: 'Those are the days each was assigned, not the due dates. On Blackbaud choose Display assignments by: Due date, then copy and paste again.' }
+        : { rows };
+    }
+    st.paste.read = read;
+    draw(st);
+  }
+  function addPasted(st) {
+    const picks = pasteRows(st).filter((row) => row.due && row.pick);
+    if (!picks.length) return;
+    const kid = kidName(st);
+    let added = 0;
+    write(st, async () => {
+      for (const row of picks) {
+        try {
+          await run(sb().rpc('school_item_action', { p_item: row.id, p_action: 'add', p_due: row.due }));
+        } catch (err) {
+          if (!added) throw err;
+          // Those added stay added; the toast says so, and the rest stay ticked in the box.
+          const said = new Error(`${hwError(err)} ${plural(added, 'assignment')} added before that; the rest are still ticked.`);
+          said.code = 'P0001';
+          throw said;
+        }
+        added += 1;
+      }
+      st.paste = null;   // before write's reload draws the page again
+    }, () => toast(`On ${kid}'s homework, each with its due date: ${plural(added, 'assignment')}`));
+  }
   // Check now: hub-jobs reads every link not read in the last minute, as the parent; then the status is read again.
   async function checkNow(st) {
     if (st.busy) return;
@@ -2008,6 +2169,9 @@
       case 'school-redate': st.schoolRedate = !st.schoolRedate; st.schoolOff = false; draw(st); break;
       case 'school-dates': checkDates(st, d.id, d.rule, Number(d.shift)); break;
       case 'school-item': schoolItemAct(st, d.item, d.do); break;
+      case 'school-paste': st.paste = { text: '', read: null, focus: true }; st.schoolOpen.new = true; draw(st); break;
+      case 'paste-cancel': st.paste = null; draw(st); break;
+      case 'paste-add': addPasted(st); break;
       case 'add-link': open('link:new', 'link', null); break;
       case 'erase': eraseDialog(st); break;
       case 'ai-test': aiTest(st); break;
@@ -2040,6 +2204,7 @@
     else if (form.dataset.form === 'link') submitLink(st, form);
     else if (form.dataset.form === 'school') saveSchool(st, form);
     else if (form.dataset.form === 'schooldue') schoolAddDue(st, form);
+    else if (form.dataset.form === 'schoolpaste') { if (st.paste) readPaste(st, form); }
     else if (form.dataset.form === 'never') addNever(st, form);
     else if (form.classList.contains('hw-afields')) saveFields(st, form);
   }
@@ -2049,7 +2214,7 @@
   // ============================================
   async function renderHomework(main, ctx) {
     const st = { main, ctx, params: ctx.params, today: dates.today(), kids: [], kid: null, row: null, times: [], links: [], events: [], assignments: [], steps: [],
-      sessions: [], ledger: [], rewards: [], asks: [], week: [], weekFailed: false, school: null, schoolFailed: false, schoolOpen: {}, schoolOff: false, loaded: false, failed: false,
+      sessions: [], ledger: [], rewards: [], asks: [], week: [], weekFailed: false, school: null, schoolFailed: false, schoolOpen: {}, schoolOff: false, paste: null, loaded: false, failed: false,
       busy: false, form: null, editor: null, fieldsDirty: false, typing: false, household: null, aiRuns: [], lastTest: null, aiTest: null };
     ctx.signal.addEventListener('abort', () => stopEditor(st));
     main.innerHTML = '<p class="loading">Loading…</p>';
@@ -2059,6 +2224,7 @@
       const x = e.target;
       if (x.closest('[data-ref="editor"]')) return;
       if (st.form && x.closest('form.hw-note, form.hw-price')) st.form.text = x.value;
+      if (st.paste && x.name === 'paste' && x.closest('form[data-form="schoolpaste"]')) st.paste.text = x.value;
       if (x.closest('form[data-form]')) st.typing = true;   // the homework time, rewards, points values and link forms
       if (x.closest('form.hw-afields')) {
         st.fieldsDirty = true;
@@ -2068,11 +2234,20 @@
     main.addEventListener('change', (e) => {
       const x = e.target;
       if (x.closest('[data-ref="editor"]')) return;
-      if (x.name === 'kid' && x.tagName === 'SELECT') { chosen = x.value; st.form = null; reload(st); return; }
+      if (x.name === 'kid' && x.tagName === 'SELECT') { chosen = x.value; st.form = null; st.paste = null; reload(st); return; }
       if (x.dataset.act === 'kid-on') { write(st, () => run(sb().rpc('save_homework_kid', { p_kid: st.kid, p_active: x.checked })), () => toast(x.checked ? `Homework is on for ${kidName(st)}` : `Homework is off for ${kidName(st)}`)); return; }
       if (x.dataset.act === 'tl-range') {
         const n = Number(x.value);
         if (TL_RANGES.some((r) => r[0] === n)) { st.tlDays = n; tlStore.set(n); draw(st); }
+        return;
+      }
+      // Paste due dates: a tick changes what Add takes, and its count, without drawing the box again.
+      if (x.name === 'pick' && st.paste && st.paste.read && st.paste.read.rows && x.closest('form[data-form="schoolpaste"]')) {
+        const row = st.paste.read.rows.find((r) => r.id === x.value);
+        if (row) row.pick = x.checked;
+        const n = pasteRows(st).filter((r) => r.due && r.pick).length;
+        const add = x.closest('form').querySelector('[data-act="paste-add"]');
+        if (add) { add.textContent = pasteAddLabel(n); add.disabled = !n; }
         return;
       }
       if (x.dataset.act === 'points-on') { write(st, () => saveKid(st, { points_on: x.checked }), () => toast(x.checked ? 'Points are on' : 'Points are off')); return; }

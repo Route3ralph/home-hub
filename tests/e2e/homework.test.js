@@ -2118,6 +2118,149 @@ const emailOf = (req) => {
     await page.context().close();
   }
 
+  // =====================================================================
+  // 15. Paste due dates (pages only; docs/v1.3-homework.md §23.5): Blackbaud's Assignment Center in Month view, by due
+  // date, pasted over New from school; read in the browser, nothing sent until Add; each found one ticked unless the
+  // school shows it done; a weekly title pairs newest with newest; Add is school_item_action(add, p_due) for each ticked
+  // =====================================================================
+  {
+    const RPC15 = Object.assign({}, RPC8, { hub_schema_version: () => 15 });
+    const WAIT = [['2026-10-29', 'Equations worksheet', 'Math'], ['2026-10-30', 'Quiz review', 'Math'], ['2026-11-02', 'Vocabulary practice', 'English'],
+      ['2026-11-03', 'Letter to the teacher', 'History'], ['2026-11-05', 'Character slides', 'English']];
+    const pasteDb = (rule) => {
+      const d = checkDb(true, WAIT);
+      withSchoolAssigned(d);
+      Object.assign(d.school_feeds[0], { checked: true, date_rule: rule || 'assigned' });
+      // Last week's Vocabulary practice, hidden: it owns the earlier of the two Vocabulary dates on the page.
+      d.school_items.push(schoolItemRow({ id: '5c2f1000-0000-4000-8000-000000000099', feed_id: FA, title: 'Vocabulary practice', subject: 'English', due_date: '2026-10-26', hidden: true }));
+      return d;
+    };
+    // The page as a browser copies it (made-up classes and titles): the filters, then November 2026 in Month view.
+    const day = (n, items) => [String(n)].concat(...(items || []).map(([time, title, cls, status]) => [time, title, cls, '100 pts. | Preparation | Assignment', status]));
+    const MONTH = (head, days) => ['Skip to Main Content', 'Assignments', 'Display assignments by', 'Assigned date', 'Due date', 'Classes', 'Select allClear all',
+      ' English 6 - A ( 12 )', ' Math 6 - B ( 9 )', 'Status', '* Completed', '* To do', ' Hide filters', ' Today', head, 'MonthWeekDay', 'Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+      .concat(days).join('\n');
+    const NOV = [].concat(['Nov 1'], day(2, [['3:00 PM', 'Vocabulary Practice', 'English 6 - A', 'Completed']]), day(3),
+      day(4, [['12:45 PM', 'Equations worksheet', 'Math 6 - B', 'Completed']]), day(5), day(6), day(7), day(8),
+      day(9, [['9:58 AM', 'Vocabulary practice', 'English 6 - A', 'To do']]),
+      // A title with a Markdown link around it (pasted from somewhere that keeps links), and a class that isn't his: skipped.
+      day(10, [['11:00 PM', '[Letter to the teacher](https://academy.school.example/x)', 'History 6 - C', 'To do'], ['11:30 PM', 'Character slides', 'Science 6 - D', 'To do']]),
+      ...[11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30].map((n) => day(n)),
+      ['Dec 1'], day(2, [['8:00 AM', 'Quiz review', 'Math 6 - B', 'To do']]), day(3), day(4), day(5));
+    const PAGE = MONTH('November 2026', NOV);
+    const BOX = 'form[data-form="schoolpaste"]';
+    const rowsOf = (page) => texts(page, `${BOX} .hw-paste-rows li`);
+    const ticks = (page) => page.$$eval(`${BOX} input[name="pick"]`, (es) => es.map((e) => e.checked));
+    const addBtn = (page) => page.$eval(`${BOX} [data-act="paste-add"]`, (b) => ({ text: b.textContent.trim(), disabled: b.disabled })).catch(() => null);
+    const pasteIn = async (page, text) => { await page.fill(`${BOX} textarea[name="paste"]`, text); await page.click(`${BOX} button[type="submit"]`); await sleep(150); };
+
+    // Schema 14: no box.
+    ({ page, db } = await open({ label: 'paste-14', db: pasteDb(), rpc: Object.assign({}, RPC8, { hub_schema_version: () => 14 }) }));
+    check('schema 14: no Paste due dates', !(await page.$('[data-act="school-paste"]')), await tc(page, '[data-row="school"]'));
+    await page.context().close();
+    // A link read by due dates (Looks right): its items carry due dates, so no box.
+    ({ page, db } = await open({ label: 'paste-end', db: pasteDb('end'), rpc: RPC15 }));
+    check('a link read by due dates (its items carry due dates): no Paste due dates', !(await page.$('[data-act="school-paste"]')), await tc(page, '[data-row="school"]'));
+    await page.context().close();
+
+    ({ page, db } = await open({ label: 'paste', db: pasteDb(), rpc: RPC15 }));
+    await page.click('[data-keep="new"] summary');
+    check('schema 15, dated the day each was assigned: Paste due dates over New from school', !!(await page.$('[data-keep="new"] [data-act="school-paste"]')),
+      await tc(page, '[data-keep="new"]'));
+    await page.click('[data-act="school-paste"]');
+    check('Paste due dates opens the box: how to copy the page, the box focused, Cancel and Read the dates, no Add yet',
+      !!(await page.$(BOX)) && await page.$eval(`${BOX} textarea`, (t) => document.activeElement === t)
+      && /Choose Display assignments by: Due date, and Month\./.test(await tc(page, `${BOX} .hw-paste-how`))
+      && same(await texts(page, `${BOX} .form-actions button`), ['Cancel', 'Read the dates']), await tc(page, BOX));
+    await page.click(`${BOX} button[type="submit"]`);
+    await sleep(150);
+    check('... Read the dates with nothing pasted: "Paste the Assignments page first."', (await tc(page, `${BOX} .form-error`)) === 'Paste the Assignments page first.');
+    await pasteIn(page, 'Math 6 - B\nEquations worksheet\nNov 4');
+    check('... a paste with no "<Month> <year>": not the Month view, said; nothing found', /^That isn't Blackbaud's Assignments page in Month view\./.test(await tc(page, `${BOX} .form-error`))
+      && !(await page.$(`${BOX} .hw-paste-rows`)), await tc(page, BOX));
+    // The Assigned date view: every day is the day each was assigned.
+    const OCT = [].concat(['Oct 1'], ...Array.from({ length: 27 }, (x, n) => day(n + 2)),
+      day(29, [['12:45 PM', 'Equations worksheet', 'Math 6 - B', 'To do']]), day(30, [['9:00 AM', 'Quiz review', 'Math 6 - B', 'To do']]), day(31));
+    await pasteIn(page, MONTH('October 2026', OCT));
+    check('... the Assigned date view: "Those are the days each was assigned …", and no Add', /^Those are the days each was assigned, not the due dates\./.test(await tc(page, `${BOX} .form-error`))
+      && !(await page.$(`${BOX} [data-act="paste-add"]`)), await tc(page, BOX));
+    await page.evaluate(() => { window.__xss = 0; });
+    await pasteIn(page, `${PAGE}\n<img src=x onerror="window.__xss=1">`);
+    check('the November page: found 4 of 5, each with its subject, title and due date, the one done at school marked so',
+      (await tc(page, `${BOX} .hw-paste-found`)) === 'Found 4 of 5. Tick the ones to add to Jordan\'s homework with that due date.'
+      && same(await rowsOf(page), ['Math · Equations worksheet · due Wed Nov 4 · completed at school', 'Math · Quiz review · due Wed Dec 2',
+        'English · Vocabulary practice · due Mon Nov 9', 'History · Letter to the teacher · due Tue Nov 10']), JSON.stringify(await rowsOf(page)));
+    check('... the weekly one takes the later date (last week\'s hidden one owns Nov 2); a Markdown link reads as its title; December\'s days after November\'s',
+      (await rowsOf(page)).includes('English · Vocabulary practice · due Mon Nov 9') && (await rowsOf(page)).includes('History · Letter to the teacher · due Tue Nov 10')
+      && (await rowsOf(page)).includes('Math · Quiz review · due Wed Dec 2'));
+    check('... a title under a class that isn\'t its subject isn\'t taken: Character slides "not on the page you pasted"',
+      same(await texts(page, `${BOX} .hw-paste-misses li`), ['Character slides: not on the page you pasted']), JSON.stringify(await texts(page, `${BOX} .hw-paste-misses li`)));
+    check('... ticked unless done at school; Add 3 to homework; nothing sent yet; the paste is still in the box, as text',
+      same(await ticks(page), [false, true, true, true]) && same(await addBtn(page), { text: 'Add 3 to homework', disabled: false })
+      && !calls(db, 'school_item_action').length && (await page.$eval(`${BOX} textarea`, (t) => t.value)).startsWith('Skip to Main Content')
+      && (await page.evaluate(() => window.__xss)) === 0, JSON.stringify(await addBtn(page)));
+    // Ticks change Add's count, without drawing the box again.
+    await page.click(`${BOX} .hw-paste-rows li:nth-child(2) input`);
+    check('... untick Quiz review: Add 2 to homework', same(await addBtn(page), { text: 'Add 2 to homework', disabled: false }), JSON.stringify(await addBtn(page)));
+    await page.click(`${BOX} .hw-paste-rows li:nth-child(3) input`);
+    await page.click(`${BOX} .hw-paste-rows li:nth-child(4) input`);
+    check('... untick the rest: Add is off', same(await ticks(page), [false, false, false, false]) && same(await addBtn(page), { text: 'Add to homework', disabled: true }),
+      JSON.stringify(await addBtn(page)));
+    await page.click(`${BOX} .hw-paste-rows li:nth-child(1) input`);
+    await page.click(`${BOX} .hw-paste-rows li:nth-child(3) input`);
+    await page.click(`${BOX} .hw-paste-rows li:nth-child(4) input`);
+    check('... tick Equations worksheet (done at school), Vocabulary practice and the letter: Add 3', same(await ticks(page), [true, false, true, true])
+      && same(await addBtn(page), { text: 'Add 3 to homework', disabled: false }), JSON.stringify(await ticks(page)));
+    check('phone: no sideways scroll with the box open', await page.setViewportSize({ width: 320, height: 800 }).then(() => noSideScroll(page)));
+    await page.locator('[data-keep="new"]').screenshot({ path: SHOTS + 'homework-phone-paste.png' });
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.click(`${BOX} [data-act="paste-add"]`);
+    await settle(page);
+    const idOf = (t) => db.school_items.find((i) => i.title === t && !i.hidden).id;
+    check('Add: school_item_action(add, p_due) for each ticked one, in order; on his homework with those dates; the box closes; the toast counts them',
+      same(calls(db, 'school_item_action').map((c) => c.body), [
+        { p_item: idOf('Equations worksheet'), p_action: 'add', p_due: '2026-11-04' }, { p_item: idOf('Vocabulary practice'), p_action: 'add', p_due: '2026-11-09' },
+        { p_item: idOf('Letter to the teacher'), p_action: 'add', p_due: '2026-11-10' }])
+      && ['Equations worksheet:2026-11-04', 'Vocabulary practice:2026-11-09', 'Letter to the teacher:2026-11-10'].every((x) => {
+        const [t, due] = x.split(':');
+        return db.assignments.some((a) => a.title === t && a.due_date === due);
+      })
+      && !(await page.$(BOX)) && (await lastToast(page)) === 'On Jordan\'s homework, each with its due date: 3 assignments',
+      `${JSON.stringify(calls(db, 'school_item_action').map((c) => c.body))} | ${await lastToast(page)}`);
+    check('... New from school keeps the two left, with Paste due dates again', same(await texts(page, '[data-keep="new"] .hw-school-row > span:first-child'),
+      ['Math · Quiz review · assigned Fri Oct 30', 'English · Character slides · assigned Thu Nov 5']) && !!(await page.$('[data-act="school-paste"]')),
+      JSON.stringify(await texts(page, '[data-keep="new"] .hw-school-row > span:first-child')));
+    // Read again: what is on his homework now isn't offered again.
+    await page.click('[data-act="school-paste"]');
+    await pasteIn(page, PAGE);
+    check('... read again: Quiz review only (the added ones left New from school), and Cancel closes the box with nothing sent',
+      same(await rowsOf(page), ['Math · Quiz review · due Wed Dec 2']) && (await tc(page, `${BOX} .hw-paste-found`)) === 'Found 1 of 2. Tick the ones to add to Jordan\'s homework with that due date.',
+      JSON.stringify(await rowsOf(page)));
+    await page.click(`${BOX} [data-act="paste-cancel"]`);
+    check('... Cancel: no box, nothing more sent', !(await page.$(BOX)) && calls(db, 'school_item_action').length === 3);
+    await page.context().close();
+
+    // A refusal half way: those added stay added, the toast says so, the rest stay in the box, ticked.
+    const failing = Object.assign({}, RPC15, {
+      school_item_action: (db2, b, email) => (b.p_item === '5c2f1000-0000-4000-8000-000000000003'
+        ? { __status: 400, body: { code: '22023', message: 'That item from school isn\'t there any more.', details: null, hint: null } }
+        : RPC15.school_item_action(db2, b, email)),
+    });
+    ({ page, db } = await open({ label: 'paste-fail', db: pasteDb(), rpc: failing, allowConsole: /status of 400/ }));
+    await page.click('[data-keep="new"] summary');
+    await page.click('[data-act="school-paste"]');
+    await pasteIn(page, PAGE);
+    await page.click(`${BOX} [data-act="paste-add"]`);
+    await settle(page);
+    check('a refusal after one was added: the database\'s words, "1 assignment added before that; the rest are still ticked."; the box keeps the rest',
+      (await lastToast(page)) === 'That item from school isn\'t there any more. 1 assignment added before that; the rest are still ticked.'
+      && db.assignments.some((a) => a.title === 'Quiz review' && a.due_date === '2026-12-02')
+      && same(await rowsOf(page), ['Math · Equations worksheet · due Wed Nov 4 · completed at school', 'English · Vocabulary practice · due Mon Nov 9',
+        'History · Letter to the teacher · due Tue Nov 10']) && same(await ticks(page), [false, true, true]),
+      `${await lastToast(page)} | ${JSON.stringify(await rowsOf(page))}`);
+    await page.context().close();
+  }
+
   console.log(results.join('\n'));
   console.log(`\n${results.filter((r) => r.startsWith('PASS')).length}/${results.length} passed`);
   console.log('PAGE ERRORS:', errors.length ? '\n' + errors.join('\n') : 'none');
