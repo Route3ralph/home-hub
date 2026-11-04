@@ -249,6 +249,12 @@ The school links' first-import check (**Check the dates**) used to show only ass
 
 There is nothing to switch off: the answer only adds the past ones, and the page reads both. The design's §16.7 has the undo, if ever wanted.
 
+### Paste due dates (v1.3, the site only)
+
+When the school's feed dates each assignment by the day it was given, **Paste due dates** on the parents' New from school saves typing each due date: on a computer, open Jordan's Assignments on Blackbaud with **Display assignments by: Due date** and **Month**, press Ctrl+A then Ctrl+C, paste, and tap **Read the dates**. The hub matches each waiting assignment by its title and class, ticks the ones it found (not those the school shows done), and **Add N to homework** adds them with those due dates. The page is read in the browser and never sent or kept; only the due dates added are saved. Details: [docs/v1.3-homework.md §23.5](docs/v1.3-homework.md#235-paste-due-dates-pages-only).
+
+**Turning it on:** merge. Nothing to run.
+
 ### Change dates keeps due dates (v1.3, migration 0016)
 
 **Change dates** says homework already added keeps its due dates. Before 0016 that held only for **The day it was assigned**: switching between **Looks right** and **Use the first date** (or a day earlier or later) moved the due dates of homework added from those items. From 0016 it moves only the items' dates; the school's own later changes to a date still reach its homework.

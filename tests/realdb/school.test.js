@@ -482,6 +482,22 @@ const SOON_LINES = ['History · Read chapter 9', 'Math · Homework', 'Science ·
     await toastIs(page, /^On Jordan's homework, due/);
     const eq = await one(`select a.added_by, a.due_date::text as due, i.applied ->> 'due_date' as applied from assignments a join school_items i on i.assignment_id = a.id where a.title = 'Equations worksheet'`);
     check('Add with Fri Dec 4: an assignment from school due that day; the feed keeps no due date it wrote', same(eq, { added_by: 'school', due: '2026-12-04', applied: null }), eq);
+    // Paste due dates (pages only, docs/v1.3-homework.md §23.5): the box reads a pasted Month view against the real
+    // status, in the browser; Cancel sends nothing (the letter stays for Jordan's own Plan with Pat below).
+    const BOX = `${NEW} form[data-form="schoolpaste"]`;
+    await page.click(`${NEW} [data-act="school-paste"]`);
+    const month = ['December 2026', 'MonthWeekDay', 'Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Nov 29', '30', 'Dec 1', '2', '3', '4', '5', '6', '7', '8',
+      '11:00 PM', 'Letter to the teacher', 'History - 7 (B)', '100 pts. | Online submission | Assignment', 'To do', '9', '10'].join('\n');
+    await page.fill(`${BOX} textarea[name="paste"]`, month);
+    await page.click(`${BOX} button[type="submit"]`);
+    await until(async () => !!(await page.$(`${BOX} .hw-paste-found`)), 4000);
+    const found = await texts(page, `${BOX} .hw-paste-rows li`);
+    const tick = await page.$$eval(`${BOX} input[name="pick"]`, (es) => es.map((e) => e.checked)).catch(() => []);
+    check('Paste due dates on the real status: the letter found, due Tue Dec 8, ticked', same(found, ['History · Letter to the teacher · due Tue Dec 8']) && same(tick, [true]),
+      { found, tick, box: await tc(page, BOX) });
+    await page.click(`${BOX} [data-act="paste-cancel"]`);
+    const still = await one("select count(*)::int as n from assignments where title = 'Letter to the teacher'");
+    check('... Cancel: the box goes and nothing was sent', !(await page.$(BOX)) && Number(still.n) === 0, still);
     let f = await failures();
     check('0015, the parents\' page: no API request failed', !f.length, f);
     await context.close();
