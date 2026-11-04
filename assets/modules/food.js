@@ -843,7 +843,7 @@
       : `Hi ${name}, here's the household's shopping list on Home Hub. Tap to see it and tick off what you buy:\n${link}`;
   }
 
-  // A grown-up who signs in (role 'adult', with an address on the member list) and a phone gets the list itself in
+  // A grown-up who signs in (role 'parent' or 'adult', with an address on the member list) and a phone gets the list itself in
   // the message: what is to buy now (never a locked line: a text leaves the hub), at most 30 names, then the Food
   // page, where they sign in. A grown-up who can't sign in (a tutor, say) gets no row: the Food link wouldn't open
   // for them. None until the member list is read. Never the signed-in person.
@@ -855,7 +855,7 @@
     return !!(me.email && p.email && String(me.email).toLowerCase() === String(p.email).toLowerCase());
   };
   const signsIn = (st, p) => !!(st.memberEmails && p.email && st.memberEmails.has(String(p.email).trim().toLowerCase()));
-  const adultsToSend = (st) => v2.people().filter((p) => p.active !== false && p.role === 'adult' && textable(p.phone) && !isMe(p) && signsIn(st, p));
+  const adultsToSend = (st) => v2.people().filter((p) => p.active !== false && (p.role === 'parent' || p.role === 'adult') && textable(p.phone) && !isMe(p) && signsIn(st, p));
   const foodLink = () => new URL('#/food', location.href).href;
   function adultMessage(st, p) {
     const name = firstName(p.name);
@@ -925,7 +925,8 @@
   }
 
   // Saved as Settings saves the household: only if nobody changed it since it was read.
-  async function saveHousehold(st, patch, control) {
+  // opts.rethrow: a dialog's save hands the error back, so the dialog stays open with what was typed.
+  async function saveHousehold(st, patch, control, opts) {
     const hh = v2.household;
     if (control) control.disabled = true;
     try {
@@ -936,6 +937,10 @@
       try { await v2.refresh(); } catch (err) { /* the saved row still shows; the next sign-in catches up */ }
       if (!st.ctx.stale()) toast('Saved');
     } catch (err) {
+      if (opts && opts.rethrow) {
+        if (!st.ctx.stale()) { drawSwitches(st); drawSend(st); }
+        throw err;
+      }
       if (!st.ctx.stale()) toast(friendly(err), { error: true });
     }
     if (st.ctx.stale()) return;
@@ -973,7 +978,7 @@
   function shownRecipes(st) {
     const words = S.nameKey(st.rq || '').split(/\s+/).filter(Boolean);
     return st.recipes.rows.filter((r) => (st.rlabel === 'all' || r.label === st.rlabel)
-      && words.every((w) => S.nameKey(`${r.title} ${r.note || ''}`).includes(w)));
+      && words.every((w) => S.clean(`${r.title} ${r.note || ''}`, 400).toLowerCase().includes(w)));
   }
 
   function recipeRowHTML(r) {
@@ -1044,8 +1049,13 @@
         const url = recipeLink(v.url);
         if (url === null) throw new Error('The link has to be a web address starting with https://.');
         const row = { title, url: url || null, label: LABELS.some(([k]) => k === v.label) ? v.label : 'dinner', note: S.clean(v.note, 300) || null };
-        if (r) await q(core.sb.from('recipes').update(row).eq('id', r.id).select('id'));
-        else await q(core.sb.from('recipes').insert(row).select('id'));
+        if (r) {
+          const saved = await q(core.sb.from('recipes').update(row).eq('id', r.id).select('id'));
+          if (!saved || !saved.length) {
+            reloadRecipes(st).catch(() => {});
+            throw new Error('That recipe isn\'t there any more: someone may have deleted it. Close this and add it again if you need it.');
+          }
+        } else await q(core.sb.from('recipes').insert(row).select('id'));
         toast(r ? 'Saved' : `Added ${title}`);
         await reloadRecipes(st);
       },
@@ -1084,7 +1094,7 @@
       onSubmit: async (v) => {
         const url = String(v.url || '').trim();
         if (url && !/^https:\/\/drive\.google\.com\/[^\s<>"']*$/.test(url)) throw new Error('That has to be a Google Drive address, starting with https://drive.google.com/.');
-        await saveHousehold(st, { recipes_folder_url: url || null });
+        await saveHousehold(st, { recipes_folder_url: url || null }, null, { rethrow: true });
         drawRecipes(st);
       },
     });

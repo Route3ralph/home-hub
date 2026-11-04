@@ -1333,9 +1333,11 @@ const emailOf = (req) => {
   rows = await sendRows();
   check('a line added shows in the grown-up\'s message at once', msgOf(rows.find((r) => r[0] === ID.sam) || ['', '', 'text=']).includes('• Oat milk'), JSON.stringify(rows));
   await page.context().close();
+  db.people.find((p) => p.id === ID.alex).phone = '(201) 555-0106';   // a parent who signs in, with a phone
   ({ page } = await open({ label: 'send-adult-sam', db, email: 'sam@example.com' }));
   rows = await sendRows();
   check('signed in as Sam: no "Send Sam the list", Morgan\'s is there', !rows.some((r) => r[0] === ID.sam) && rows.some((r) => r[0] === ID.morgan), JSON.stringify(rows));
+  check('a parent who signs in, with a phone, gets a row too ("Send Alex the list")', (rows.find((r) => r[0] === ID.alex) || [])[1] === 'Send Alex the list', JSON.stringify(rows));
   await page.context().close();
   db = stockList(foodDb());
   for (let i = 0; i < 25; i++) db.shopping_items.push(shopItem({ name: `Extra ${i + 1}`, aisle: 'other', added_at: at(addDays(TODAY, -1), '19:00'), added_by: ID.alex }));
@@ -1563,6 +1565,35 @@ const emailOf = (req) => {
   await page.click('#formDialog button[type="submit"]');
   await sleep(300);
   check('a Drive folder saves and the button comes back', (db.household[0] || {}).recipes_folder_url === DRIVE_FOLDER && (await page.getAttribute('[data-ref="recipefolder"]', 'href')) === DRIVE_FOLDER);
+  // A refused save keeps the dialog open with what was typed.
+  await page.click('[data-act="recipe-folder"]');
+  await sleep(100);
+  await page.fill('#formDialog input[name="url"]', 'https://drive.google.com/drive/folders/OTHER-example');
+  db.household[0].updated_at = '2026-10-27T15:00:00.000000+00:00';   // someone else changed the settings meanwhile
+  await page.click('#formDialog button[type="submit"]');
+  await sleep(300);
+  check('a refused folder save: the dialog stays open, says so, keeps the address', (await dialogOpen(page)) && (await dlg(page, '.form-error')).startsWith('That wasn\'t saved')
+    && (await page.inputValue('#formDialog input[name="url"]')) === 'https://drive.google.com/drive/folders/OTHER-example' && (db.household[0] || {}).recipes_folder_url === DRIVE_FOLDER,
+    JSON.stringify([await dialogOpen(page), await dlg(page, '.form-error')]));
+  await page.evaluate(() => document.getElementById('formDialog').close());
+  // Edit of a recipe someone deleted meanwhile: said, not "Saved".
+  await recipeRowOf(page, 'Red lentil soup').locator('[data-act="recipe-edit"]').click();
+  await sleep(100);
+  await page.fill('#formDialog input[name="title"]', 'Red lentil soup (big pot)');
+  db.recipes = db.recipes.filter((r) => r.title !== 'Red lentil soup');
+  await page.click('#formDialog button[type="submit"]');
+  await sleep(300);
+  check('editing a recipe deleted meanwhile: the dialog stays open and says it isn\'t there any more; nothing saved', (await dialogOpen(page)) && (await dlg(page, '.form-error')).startsWith('That recipe isn\'t there any more')
+    && !db.recipes.some((r) => r.title === 'Red lentil soup (big pot)'), JSON.stringify([await dialogOpen(page), await dlg(page, '.form-error'), db.recipes.map((r) => r.title)]));
+  await page.evaluate(() => document.getElementById('formDialog').close());
+  await page.context().close();
+  // Search reads the whole note, not its first 60 characters.
+  const longNote = recipeDb(DRIVE_FOLDER);
+  longNote.recipes.find((r) => r.title === 'Chickpea lunch bowls').note = 'Double the chickpeas, roast them crisp, then a spoon of tahini and lemon on top';
+  ({ page } = await open({ label: 'recipes-long-note', db: longNote, rpc: RPC13 }));
+  await page.fill('[data-ref="rsearch"]', 'tahini');
+  await sleep(80);
+  check('search finds a word late in a long note ("tahini")', same(await recipeNames(page), ['Chickpea lunch bowls']), JSON.stringify(await recipeNames(page)));
   await page.context().close();
 
   // An adult who isn't a parent: adds a recipe; sees the folder but can't change it.

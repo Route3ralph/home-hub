@@ -1445,7 +1445,7 @@
     if (/That one is on your homework already/i.test(msg)) return hw('hw_school_already');
     // 0015: an item assigned on a day needs its due date.
     if (/Choose the due date/i.test(msg)) return hw('hw_school_need_due');
-    if (/Choose a due date from/i.test(msg)) return hw('hw_school_bad_due');
+    if (/Choose a due date from (the day it was given|2 weeks ago)/i.test(msg)) return hw('hw_school_bad_due');
     return friendly(err);
   }
 
