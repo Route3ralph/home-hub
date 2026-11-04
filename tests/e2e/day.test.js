@@ -3295,6 +3295,18 @@ const HW_AUDIO_DROP = `(${HW_STUBS})(); (${HW_CLOCKED})(); (${HW_WAKE_DROP})();`
       && await until(async () => !!(await page.$(`${SCH(hid(300))} [data-act="hw-school-pat"]:not([disabled])`))), await text(page, '.toasts'));
     await hwClear(page);
     check('... the date he chose stays in the box', (await page.$eval(`${SCH(hid(300))} input[name="school-due"]`, (i) => i.value)) === '2026-11-09');
+    // The database's range refusal from 0015 reads as the school one; his own Add's (0005) never does.
+    db.hwError = [400, '22023', 'Choose a due date from the day it was given to 4 months from today.'];
+    await page.click(`${SCH(hid(300))} [data-act="hw-school-pat"]`);
+    check('the database\'s 0015 range refusal: the school item\'s words', (await hwToast(page)) === 'Choose a due date from the day it was assigned to 4 months from today.'
+      && await until(async () => !!(await page.$(`${SCH(hid(300))} [data-act="hw-school-pat"]:not([disabled])`))), await text(page, '.toasts'));
+    await hwClear(page);
+    db.hwError = [400, '22023', 'Choose a due date from today to 60 days ahead.'];
+    await page.click(`${SCH(hid(300))} [data-act="hw-school-pat"]`);
+    await until(async () => !!(await hwToast(page)));
+    check('... and his own Add\'s refusal (0005) is never taken for the school one', (await hwToast(page)) !== 'Choose a due date from the day it was assigned to 4 months from today.'
+      && await until(async () => !!(await page.$(`${SCH(hid(300))} [data-act="hw-school-pat"]:not([disabled])`))), await text(page, '.toasts'));
+    await hwClear(page);
     await page.click(`${SCH(hid(300))} [data-act="hw-school-pat"]`);
     await until(async () => !(await page.$(SCH(hid(300)))));
     const letter = db.assignments.find((a) => a.title === 'Letter to the teacher');
