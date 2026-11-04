@@ -843,9 +843,10 @@
       : `Hi ${name}, here's the household's shopping list on Home Hub. Tap to see it and tick off what you buy:\n${link}`;
   }
 
-  // A grown-up who signs in (role 'adult') with a phone gets the list itself in the message: what is to buy now
-  // (never a locked line: a text leaves the hub), at most 30 names, then the Food page, where they sign in.
-  // Never the signed-in person.
+  // A grown-up who signs in (role 'adult', with an address on the member list) and a phone gets the list itself in
+  // the message: what is to buy now (never a locked line: a text leaves the hub), at most 30 names, then the Food
+  // page, where they sign in. A grown-up who can't sign in (a tutor, say) gets no row: the Food link wouldn't open
+  // for them. None until the member list is read. Never the signed-in person.
   const SEND_MAX = 30;
   const isMe = (p) => {
     const me = core.me;
@@ -853,7 +854,8 @@
     if (me.person && me.person.id) return me.person.id === p.id;
     return !!(me.email && p.email && String(me.email).toLowerCase() === String(p.email).toLowerCase());
   };
-  const adultsToSend = () => v2.people().filter((p) => p.active !== false && p.role === 'adult' && textable(p.phone) && !isMe(p));
+  const signsIn = (st, p) => !!(st.memberEmails && p.email && st.memberEmails.has(String(p.email).trim().toLowerCase()));
+  const adultsToSend = (st) => v2.people().filter((p) => p.active !== false && p.role === 'adult' && textable(p.phone) && !isMe(p) && signsIn(st, p));
   const foodLink = () => new URL('#/food', location.href).href;
   function adultMessage(st, p) {
     const name = firstName(p.name);
@@ -875,7 +877,7 @@
     if (!box) return;
     const hh = v2.household;
     const helperList = hh && hh.helper_list !== 'off' ? helpers().filter((p) => textable(p.phone) && p.day_token) : [];
-    const who = helperList.concat(adultsToSend());
+    const who = helperList.concat(adultsToSend(st));
     const html = who.length ? `${ui.sectionHeading(who.length === 1 ? `Send ${firstName(who[0].name)} the list` : 'Send the list')}
       <ul class="food-card food-send">${who.map((p) => {
         const name = firstName(p.name);
@@ -1097,7 +1099,7 @@
       main, ctx, today: dates.today(), meals: { rows: [], loaded: false, failed: false }, suggest: [], unfold: false,
       items: null, listFailed: false, reading: false, readAgain: false, pollTimer: null, drawn: null, dirty: false, draws: 0,
       rowData: new Map(), tapped: new Set(), aislePick: null, againOpen: againOpen(), familyCalendar: null, me: me ? me.id : null,
-      recipes: { rows: [], loaded: false, failed: false }, rq: '', rlabel: 'all',
+      recipes: { rows: [], loaded: false, failed: false }, rq: '', rlabel: 'all', memberEmails: null,
     };
     st.hold = S.hold(S.HOLD_MS, () => drawList(st));
     st.box = S.outbox({
@@ -1161,6 +1163,12 @@
     drawSend(st);
     drawSwitches(st);
     wireAdd(st);
+    // Who can sign in, for "Send the list" (the member list, which every member reads).
+    q(core.sb.from('members').select('email')).then((rows) => {
+      if (ctx.stale()) return;
+      st.memberEmails = new Set((rows || []).map((r) => String(r.email || '').trim().toLowerCase()).filter(Boolean));
+      drawSend(st);
+    }, () => {});
 
     const list = main.querySelector('[data-ref="list"]');
     // Every tap on the list holds its rows where they are for 3 seconds.

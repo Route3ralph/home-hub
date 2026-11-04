@@ -56,6 +56,7 @@ const ID = {
   jordan: 'f00d0000-0000-4000-8000-000000000003', taylor: 'f00d0000-0000-4000-8000-000000000004',
   morgan: 'f00d0000-0000-4000-8000-000000000005',
 };
+const PAT = 'f00d0000-0000-4000-8000-000000000006';   // 9b: a grown-up who can't sign in
 const token = (id) => createHash('md5').update(id).digest('hex');
 const person = (id, name, role, color, sort, extra) => Object.assign({
   id, name, role, email: null, email_verified_at: null, phone: null, color, language: 'en',
@@ -1297,6 +1298,10 @@ const emailOf = (req) => {
   db.people.find((p) => p.id === ID.morgan).phone = '(201) 555-0102';
   db.people.find((p) => p.id === ID.morgan).role = 'adult';
   db.people.find((p) => p.id === ID.morgan).language = 'es';
+  db.people.find((p) => p.id === ID.morgan).email = 'morgan@example.com';
+  db.members.push({ email: 'morgan@example.com', name: 'Morgan Example', role: 'member', created_at: T });
+  // A grown-up with a phone who can't sign in (no address on the member list), like a tutor.
+  db.people.push(person(PAT, 'Pat Lee', 'adult', '#0891b2', 6, { email: 'pat@example.com', phone: '(201) 555-0105' }));
   ({ page } = await open({ label: 'send-adult', db }));
   const sendRows = () => page.$$eval('[data-ref="send"] li', (lis) => lis.map((li) => [li.dataset.send, li.querySelector('b').textContent,
     ...[...li.querySelectorAll('a')].map((a) => a.getAttribute('href'))]));
@@ -1316,6 +1321,7 @@ const emailOf = (req) => {
   check('a grown-up\'s message in Spanish for a Spanish speaker', /^Hola Morgan: esta es la lista de compras de la casa\./.test(morganMsg) && morganMsg.includes('• Milk')
     && morganMsg.includes(foodUrl) && /Ábrela en Home Hub/.test(morganMsg), morganMsg);
   check('never a row for the signed-in person, nor for a grown-up without a phone', !rows.some((r) => r[0] === ID.alex) && rows.every((r) => r[0] !== ID.jordan), JSON.stringify(rows));
+  check('no row for a grown-up who can\'t sign in (not on the member list): the Food link wouldn\'t open for them', !rows.some((r) => r[0] === PAT), JSON.stringify(rows));
   await page.click('.food-seg-btn[data-value="off"]');
   await sleep(400);
   rows = await sendRows();
