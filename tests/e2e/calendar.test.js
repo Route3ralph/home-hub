@@ -1540,6 +1540,28 @@ const emailOf = (req) => {
       JSON.stringify([w && w.body, e16 && e16.body]));
     check('bring (16): nothing reads Bring', !log.some((l) => /bring/.test(l)), log.filter((l) => /bring/.test(l)).join(' | '));
     await page.context().close();
+
+    // A page that read 16 at sign-in, open while the owner pastes 0017: its rows have the column, so Change this day
+    // offers "Bring this day" and keeps the day's own Bring when only the note is cleared (review of 0017).
+    const dbStale = withCalendars(calDb());
+    dbStale.events.find((e) => e.id === E.piano).bring = 'Piano book';
+    dbStale.event_changes.push({ event_id: E.piano, on_date: TODAY, cancelled: false, start_time: null, end_time: null, responsible_id: null, participant_ids: null,
+      nobody_in_charge: false, note: 'Side door', bring: 'Recital form' });
+    ({ page } = await open({ label: 'bring-stale-16', db: dbStale, rpc: Object.assign({ hub_schema_version: () => 16 }, calendarRpc) }));
+    await page.click('[data-view="week"]');
+    await page.waitForSelector('.cal-days');
+    await clickRow(page, `[data-list="${TODAY}"]`, 'Piano');
+    await page.waitForSelector('#detail[open] [data-ev="change"]');
+    await page.click('#detail [data-ev="change"]');
+    await page.waitForSelector('#formDialog[open] .cal-form');
+    const staleField = await page.inputValue('#formDialog [name="bring"]').catch(() => null);
+    await page.fill('#formDialog [name="note"]', '');
+    await page.click('#formDialog [type="submit"]');
+    await settle(page, 500);
+    w = dbStale.changeWrites[dbStale.changeWrites.length - 1];
+    check('bring (a page still on 16 after the paste): Change this day offers the day\'s own Bring and keeps it when only the note is cleared',
+      staleField === 'Recital form' && w && w.method === 'POST' && w.body.bring === 'Recital form' && w.body.note === null, JSON.stringify([staleField, w]));
+    await page.context().close();
   }
 
   // =====================================================================

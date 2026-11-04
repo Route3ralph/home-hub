@@ -242,8 +242,8 @@ const MY_DAY_FNS = new RegExp(`^/rest/v1/rpc/(get_person_day|complete_by_token|u
     check('bring: "Send Taylor tomorrow" is the real tomorrow_text ("Mañana, mié 28 oct")', !!tomMsg && tomMsg === dbTom && /^Taylor[^\n]* · Mañana, mié 28 oct\n/.test(tomMsg), tomMsg);
     // Monday evening Nov 2: tomorrow is Piano's changed Tuesday (the household's clock moved for this one statement).
     const mon = (await one(`with c as (select set_config('hub.now', '2026-11-02 19:30 America/New_York', true) as x) select public.tomorrow_text('${P.taylor}') as t from c`)).t;
-    check('bring: tomorrow_text on Mon Nov 2: Piano at 17:00 with the place and the day\'s Bring, and no Late section',
-      /^Taylor[^\n]* · Mañana, mar 3 nov\n/.test(mon) && /^17:00 Piano · con Jordan · Music school · Llevar: Music book, recital form$/m.test(mon) && !/Atrasado/.test(mon), mon);
+    check('bring: tomorrow_text on Mon Nov 2: Piano 17:00–18:00 (the day\'s change) with the place and the day\'s Bring, and no Late section',
+      /^Taylor[^\n]* · Mañana, mar 3 nov\n/.test(mon) && /^17:00–18:00 Piano · con Jordan · Music school · Llevar: Music book, recital form$/m.test(mon) && !/Atrasado/.test(mon), mon);
     const f = await failures();
     check('bring: no API request failed', !f.length, f);
     await context.close();

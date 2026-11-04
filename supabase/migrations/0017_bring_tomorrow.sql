@@ -18,8 +18,8 @@
 --     private.digest_item (the email: "Bring: …" at the end of the detail). None of them on a private item (My day,
 --     the texts) or a hidden one (the email). With no Bring anywhere, every answer is exactly as on 16.
 --   • public.tomorrow_text(p_person uuid): the Tomorrow message (Today → Send tomorrow), built by
---     private.tomorrow_line(a, p_person, p_lang): day_text's lines for tomorrow, with the place and Bring, and no
---     Late section.
+--     private.tomorrow_line(a, p_person, p_lang): day_text's lines for tomorrow, with the end time, the place and
+--     Bring, the chores on set dates that fall tomorrow even while today's is still open, and no Late section.
 --   • hub_schema_version() (17). The pages offer Bring and Send tomorrow only on 17.
 --
 -- Rules
@@ -40,6 +40,8 @@
 --   drop function private.bring_tidy();
 --   then 0002's private.my_day_item (its "create function" block, run as "create or replace") and 0003's
 --   private.text_line and private.digest_item ("create or replace function" blocks), each to its "$$;";
+--   then, so that a day changed only for its Bring isn't left marked changed with nothing different:
+--   delete from public.event_changes where bring is not null and not cancelled and not nobody_in_charge and start_time is null and end_time is null and responsible_id is null and participant_ids is null and note is null;
 --   alter table public.events drop column bring;
 --   alter table public.event_changes drop column bring;
 --   and 0016's hub_schema_version() block (returning 16). 0017 can then run again.
@@ -214,8 +216,9 @@ $$;
 -- ---------------------------------------------------------------------
 -- The Tomorrow message (§22)
 -- ---------------------------------------------------------------------
--- One line of the Tomorrow message: text_line's, with the place after who's on it:
--- "3:00pm Piano · with Taylor · 12 Elm St · Rivera Music 555-0150 · Side door · Bring: Music book".
+-- One line of the Tomorrow message: text_line's, with the end time (when it has one: the driver's pickup) and the
+-- place after who's on it:
+-- "3:00pm–4:00pm Piano · with Taylor · 12 Elm St · Rivera Music 555-0150 · Side door · Bring: Music book".
 -- Private items show as "Private item" and nothing else.
 create function private.tomorrow_line(a public.agenda_item, p_person uuid, p_lang text)
 returns text
@@ -224,7 +227,7 @@ stable
 set search_path = ''
 as $$
   select concat_ws(' · ',
-    coalesce(private.time_label(a.local_start, p_lang) || ' ', '')
+    coalesce(private.time_label(a.local_start, p_lang) || coalesce('–' || private.time_label(a.local_end, p_lang), '') || ' ', '')
       || case when a.local_start is null and a.kind in ('event', 'google') then private.word('all_day', p_lang) || ': ' else '' end
       || case when a.kind = 'task' then '☐ ' else '' end
       || case when a.kind = 'project' then a.project_name || ': ' else '' end
@@ -240,6 +243,9 @@ $$;
 -- date, their open items in order (tomorrow_line), then the meals they're on, as day_text does; "Nothing planned"
 -- when there's none. No Late section: tonight, today's open tasks aren't late yet. Tomorrow is the household's
 -- (today_local() + 1). Runs with the caller's rights, so a non-member gets null, as with day_text.
+-- A chore on set dates is listed when tomorrow is one of its dates, even while today's date (or a missed one) is
+-- still open: agenda() puts an open task on its current date, so person_items alone would leave it out tonight and
+-- list it tomorrow morning (private.current_due then moves it there).
 create function public.tomorrow_text(p_person uuid)
 returns text
 language plpgsql
@@ -260,10 +266,14 @@ begin
   lang := me.language;
 
   lines := array[private.short_name(me) || ' · ' || private.word('tomorrow', lang) || ', ' || private.day_label(d, lang)]
-        || array(select private.tomorrow_line(a, p_person, lang)
-                 from private.person_items(p_person, d) a
-                 where a.status = 'open'
-                 order by private.item_order(a), a.local_start, a.title)
+        || array(select private.tomorrow_line(x.a, p_person, lang)
+                 from (select i as a from private.person_items(p_person, d) i where i.status = 'open'
+                       union all
+                       select private.task_item(t, d, 'open')
+                       from public.tasks t
+                       where t.responsible_id = p_person and t.active and t.repeat_mode = 'schedule'
+                         and private.current_due(t) < d and private.series_on_or_before(t, d) = d) x
+                 order by private.item_order(x.a), (x.a).local_start, (x.a).title)
         || array(select private.food_word(m.slot, lang) || ': ' || private.meal_title(m, lang) || ' · '
                         || private.food_word(case when m.kind = 'cook' then 'you_cook' else 'you_on_dinner' end, lang)
                  from public.meals m

@@ -63,7 +63,10 @@
   const sameSet = (a, b) => a.length === b.length && a.every((x) => b.includes(x));
   const daysOff = () => new Set(((v2.household && v2.household.days_off) || []).map(String));
   // Bring (schema 17, migration 0017): the form shows it and sends it only then; a 16 database has no column.
+  // A row read with select('*') has the key exactly when the column is there, so an open page that still thinks
+  // it is on 16 after the paste offers it too, and never drops a day's Bring it can't see (bringOn(ev)).
   const hasBring = () => core.schemaVersion >= 17;
+  const bringOn = (row) => hasBring() || !!(row && Object.prototype.hasOwnProperty.call(row, 'bring'));
   const BRING_MAX = 120; // events.bring and event_changes.bring
   const oneLine = (s) => String(s || '').replace(/\s+/g, ' ').trim();
 
@@ -978,7 +981,7 @@
       <small class="cal-hint">An end time before the start means it ends the next day.</small>
       <fieldset class="cal-fs"><legend>Who</legend><div data-ref="who"></div></fieldset>
       <label class="field"><span>Note for this day</span><input type="text" name="note" maxlength="300" value="${esc((change && change.note) || '')}" placeholder="Pick up at the side door"></label>
-      ${hasBring() ? `<label class="field"><span>Bring this day</span><input type="text" name="bring" maxlength="${BRING_MAX}" value="${esc(occ.bring || '')}" placeholder="Signed form"></label>
+      ${bringOn(ev) ? `<label class="field"><span>Bring this day</span><input type="text" name="bring" maxlength="${BRING_MAX}" value="${esc(occ.bring || '')}" placeholder="Signed form"></label>
       <small class="cal-hint">${ev.bring ? `Usually: ${esc(ev.bring)}. Change it for this day only, for example add to it.` : 'Only for this day. Every day it repeats: Edit all days.'}</small>` : ''}
       <p class="form-error" role="alert" hidden></p>
       <div class="form-actions">
@@ -1005,8 +1008,8 @@
       }
       // Bring (schema 17): what matches the usual is saved as "as usual" (null), like the time and who. A day
       // can't say "nothing": null already means the usual.
-      const bring = hasBring() ? oneLine(form.elements.bring.value) : '';
-      const sameBring = !hasBring() || bring === oneLine(ev.bring);
+      const bring = bringOn(ev) ? oneLine(form.elements.bring.value) : '';
+      const sameBring = !bringOn(ev) || bring === oneLine(ev.bring);
       if (!sameBring && !bring) {
         return fail(`A day can't leave out the usual Bring (${ev.bring}). Write what to bring that day, or change it for every day with Edit all days.`);
       }
@@ -1025,7 +1028,7 @@
             start_time: sameTime ? null : start || null, end_time: sameTime ? null : end || null,
             responsible_id: sameWho ? null : w.responsibleId, participant_ids: sameWho ? null : w.participantIds,
             note: note || null,
-            ...(hasBring() ? { bring: sameBring ? null : bring } : {}),
+            ...(bringOn(ev) ? { bring: sameBring ? null : bring } : {}),
           });
           formDialog.close();
           toast(`Changed ${ev.title} on ${fmt.day(day)}`, { action: { label: 'Undo', onClick: () => undoDay(ev, day, change) } });
@@ -1083,7 +1086,7 @@
     const shownDay = page && !page.stale() && page.st.range ? addDay(page.st) : null;
     const startDate = ev ? ev.start_date : [d.date, d.start_date, shownDay].find(isIso) || today;
     const allDay = ev ? !ev.start_time : !!d.all_day;
-    const moreOpen = !!(x.end_time || x.location || x.contractor_id || x.notes || x.private || (hasBring() && x.bring));
+    const moreOpen = !!(x.end_time || x.location || x.contractor_id || x.notes || x.private || (bringOn(ev) && x.bring));
     // "Not on days off" belongs to a repeat (the school run on a school holiday); a one-off keeps it
     // only if it already has it.
     const oneOffSkips = !!(ev && ev.repeat !== 'weekly' && ev.skip_days_off);
@@ -1120,14 +1123,14 @@
         <label class="check cal-check" data-show="daysoff"><input type="checkbox" name="skip_days_off"${x.skip_days_off ? ' checked' : ''}> Not on days off (school holidays)</label>
       </fieldset>
       <details class="cal-more"${moreOpen ? ' open' : ''}>
-        <summary>More: end time, place,${hasBring() ? ' bring,' : ''} contact, notes</summary>
+        <summary>More: end time, place,${bringOn(ev) ? ' bring,' : ''} contact, notes</summary>
         <div class="cal-more-body">
           <div class="cal-row" data-show="endtime">
             <label class="field"><span>Ends at</span><input type="time" name="end_time" value="${esc(hm(x.end_time))}"></label>
             <label class="check cal-check"><input type="checkbox" name="ends_next_day"${x.ends_next_day ? ' checked' : ''}> Ends the next day</label>
           </div>
           <label class="field"><span>Place</span><input type="text" name="location" value="${esc(x.location || '')}" maxlength="200" placeholder="Music school"></label>
-          ${hasBring() ? `<label class="field"><span>Bring</span><input type="text" name="bring" value="${esc(x.bring || '')}" maxlength="${BRING_MAX}" autocomplete="off" placeholder="Cleats, water bottle">
+          ${bringOn(ev) ? `<label class="field"><span>Bring</span><input type="text" name="bring" value="${esc(x.bring || '')}" maxlength="${BRING_MAX}" autocomplete="off" placeholder="Cleats, water bottle">
             <small>Shows on the calendar, My day and the messages you send. ${ev && ev.repeat === 'weekly' ? 'Every day it repeats; for one day, use Change this day.' : 'For a repeating event: every day it repeats.'}</small></label>` : ''}
           <label class="field"><span>Directory contact</span><select name="contractor_id"><option value="">None</option>${options.map(([id, label]) => `<option value="${esc(id)}"${id === x.contractor_id ? ' selected' : ''}>${esc(label)}</option>`).join('')}</select>
             <small>${contractors ? 'Their phone number shows on the event, one tap to call.' : "Couldn't load the directory just now. Try again later to pick a contact."}</small></label>
@@ -1305,8 +1308,8 @@
       repeat_every: every,
       repeat_weekdays: weekdays,
       repeat_until: until || null,
-      // Only on 17: a 16 database has no bring column, and every save would fail.
-      ...(hasBring() && el.bring ? { bring: oneLine(el.bring.value) || null } : {}),
+      // Only when the form has the field (bringOn: schema 17, or a row that has the column); a 16 database has none.
+      ...(el.bring ? { bring: oneLine(el.bring.value) || null } : {}),
     };
   }
 

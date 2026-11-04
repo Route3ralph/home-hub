@@ -196,13 +196,13 @@ set hub.now = '2026-11-02 19:30 America/New_York';
 :as_admin
 select tomorrow_text(test.person('Taylor')) as tt_taylor, tomorrow_text(test.person('Jordan')) as tt_jordan \gset
 select test.is(split_part(:'tt_taylor', E'\n', 1), 'Taylor · Mañana, mar 3 nov', 'tomorrow_text (Taylor, Spanish): "Mañana" and the date');
-select test.ok(pg_temp.line(:'tt_taylor', 'Piano') like '16:00 Piano · con Jordan · Rivera Music, 12 Elm St · Rivera Music % · Side door, code 1234 · Llevar: Music book, recital form',
-               '... Piano: who''s with her, the place, the contact, the day''s note and the day''s Bring');
+select test.ok(pg_temp.line(:'tt_taylor', 'Piano') like '16:00–17:00 Piano · con Jordan · Rivera Music, 12 Elm St · Rivera Music % · Side door, code 1234 · Llevar: Music book, recital form',
+               '... Piano: start and end, who''s with her, the place, the contact, the day''s note and the day''s Bring');
 select test.ok(position('Atrasado' in :'tt_taylor') = 0 and position('Atrasado' in day_text(test.person('Taylor'), '2026-11-03')) > 0,
                '... no Late section (day_text for the same day has one)');
 select test.is(split_part(:'tt_jordan', E'\n', 1), 'Jordan · Tomorrow, Tue Nov 3', 'Jordan''s (English): "Tomorrow" and the date');
-select test.ok(pg_temp.line(:'tt_jordan', 'Piano') like '4:00pm Piano · Taylor · Rivera Music, 12 Elm St · % · Bring: Music book, recital form',
-               '... Piano: who''s in charge, the place, Bring');
+select test.ok(pg_temp.line(:'tt_jordan', 'Piano') like '4:00pm–5:00pm Piano · Taylor · Rivera Music, 12 Elm St · % · Bring: Music book, recital form',
+               '... Piano: start and end (the driver''s pickup), who''s in charge, the place, Bring');
 select test.is(tomorrow_text(test.person('Jordan')), tomorrow_text(test.person('Jordan')), '(the same twice)');
 :as_owner
 insert into people (name, role, language, sort_order) values ('Casey', 'adult', 'en', 9);
@@ -216,6 +216,27 @@ select test.is(tomorrow_text(test.person('Taylor')), null, 'a stranger: null (no
 select test.ok(pg_temp.run($$select public.tomorrow_text(test.person('Taylor'))$$) like '42501 %', 'anon can''t call it');
 :as_service
 select test.ok(pg_temp.run($$select public.tomorrow_text(test.person('Taylor'))$$) like '42501 %', 'service_role can''t either');
+:as_owner
+-- A chore on set dates is in the message when tomorrow is one of its dates, even while today's (or a missed one) is
+-- still open: Jordan's Trash is every Monday and last Monday's wasn't done.
+set hub.now = '2026-11-01 19:30 America/New_York';
+:as_admin
+select test.ok(pg_temp.line(tomorrow_text(test.person('Jordan')), 'Trash') = '☐ Trash', 'Sun Nov 1 evening: Jordan''s Monday Trash is in tomorrow''s message (last Monday''s still open)');
+select test.ok(not exists (select 1 from regexp_split_to_table(day_text(test.person('Jordan'), '2026-11-02'), E'\n') l where l = '☐ Trash')
+               and pg_temp.line(day_text(test.person('Jordan'), '2026-11-02'), 'Trash') like '☐ Trash (%)',
+               '(day_text for Monday, read on Sunday, has it only under Late, with its open date: agenda puts it there)');
+:as_owner
+insert into tasks (title, responsible_id, due_date, category, repeat_mode, every_count, every_unit, anchor_date)
+values ('Water the ferns', test.person('Taylor'), '2026-11-02', 'home', 'schedule', 1, 'day', '2026-11-02'),
+       ('Sweep the porch', test.person('Taylor'), '2026-11-02', 'home', 'after_done', 2, 'day', '2026-11-02');
+set hub.now = '2026-11-02 19:30 America/New_York';
+:as_admin
+select test.is((select count(*) from regexp_split_to_table(tomorrow_text(test.person('Taylor')), E'\n') l where l = '☐ Water the ferns'), 1::bigint,
+               'Mon Nov 2 evening: Taylor''s daily chore, still open today, is in tomorrow''s message once');
+select test.ok(pg_temp.line(tomorrow_text(test.person('Taylor')), 'Sweep the porch') is null, '... one repeated a while after it''s done isn''t (it doesn''t move until done)');
+select complete_task(test.task('Water the ferns'), '2026-11-02');
+select test.is((select count(*) from regexp_split_to_table(tomorrow_text(test.person('Taylor')), E'\n') l where l = '☐ Water the ferns'), 1::bigint,
+               '... and once after today''s is ticked (now due tomorrow)');
 :as_owner
 -- After midnight, tomorrow is the next day.
 set hub.now = '2026-11-03 00:30 America/New_York';

@@ -1437,25 +1437,37 @@ for broken in 'drop function public.day_text(uuid, date)' \
     report "PASS  migration 0017 refuses a database at 0016 not as 0016 left it (${broken:0:90}), and changes nothing"
   else report "FAIL  migration 0017 refuses a database at 0016 not as 0016 left it (${broken:0:90})  (${out:0:200})"; fi
 done
-# The undo, as the header writes it: its drop and alter lines, 0002's my_day_item (written there as "create function"),
-# 0003's text_line and digest_item, and 0016's hub_schema_version.
+# The undo, as the header writes it: its drop lines, 0002's my_day_item (written there as "create function"), 0003's
+# text_line and digest_item, the delete of the days changed only for their Bring, the two drop column lines, and 0016's
+# hub_schema_version. It runs on a database with a weekly event and three changed days: one only for its Bring (gone
+# after the undo, so it isn't left marked changed with nothing different), one with a note and a Bring, and one
+# skipped with a Bring (both kept, without the Bring).
 sql -d postgres -c 'create database hub_undo_17 template hub_17_on16'
-{ sed -n '/^-- Undo (not needed/,/^-- =====/p' $m17 | sed -n 's/^--   \(\(drop\|alter\) .*;\)$/\1/p' | grep -v 'drop column'
+quiet -d hub_undo_17 >/dev/null <<'SQL'
+insert into public.events (title, start_date, start_time, repeat, repeat_weekdays, bring) values ('Undo check', '2026-11-03', '16:00', 'weekly', '{2}', 'Book');
+insert into public.event_changes (event_id, on_date, bring, note, cancelled)
+select e.id, d.on_date, d.bring, d.note, d.cancelled from public.events e
+cross join (values ('2026-11-10'::date, 'Form', null, false), ('2026-11-17'::date, 'Form', 'Side door', false), ('2026-11-24'::date, 'Form', null, true)) d (on_date, bring, note, cancelled)
+where e.title = 'Undo check';
+SQL
+{ sed -n '/^-- Undo (not needed/,/^-- =====/p' $m17 | sed -n 's/^--   \(drop .*;\)$/\1/p' | grep -v 'drop column'
   sed -n '/^create function private.my_day_item(a public.agenda_item, p_person uuid, p_lang text)/,/^\$\$;/p' supabase/migrations/0002_home_hub_v2.sql \
     | sed '1s/^create function/create or replace function/'
   sed -n '/^create or replace function private.text_line(a public.agenda_item, p_person uuid, p_lang text)/,/^\$\$;/p' supabase/migrations/0003_google_calendar.sql
   sed -n '/^create or replace function private.digest_item(a public.agenda_item, p_person uuid, p_lang text, p_hide boolean,/,/^\$\$;/p' supabase/migrations/0003_google_calendar.sql
-  sed -n '/^-- Undo (not needed/,/^-- =====/p' $m17 | sed -n 's/^--   \(alter .* drop column .*;\)$/\1/p'
+  sed -n '/^-- Undo (not needed/,/^-- =====/p' $m17 | sed -n 's/^--   \(delete from .*;\|alter .* drop column .*;\)$/\1/p'
   sed -n '/^create or replace function public.hub_schema_version()/,/^\$\$;/p' $m16
 } >"$dir/undo_0017.sql"
 undo=$(quiet -d hub_undo_17 -f "$dir/undo_0017.sql" 2>&1)
 got_undo="$(quiet -d hub_undo_17 -A -t -c "select public.hub_schema_version()") $([[ $(catalog_of hub_undo_17) == "$(catalog_of hub_16_on15)" && $(columns_of hub_undo_17) == "$(columns_of hub_16_on15)" && $(policies_of hub_undo_17) == "$(policies_of hub_16_on15)" ]] && echo same-as-0016)"
+days_left=$(quiet -d hub_undo_17 -A -t -c "select string_agg(c.on_date::text || ':' || coalesce(c.note, '-') || ':' || c.cancelled, ',' order by c.on_date) from public.event_changes c join public.events e on e.id = c.event_id where e.title = 'Undo check'")
 out=$(quiet -d hub_undo_17 -f $m17 2>&1)
 got_again="$(quiet -d hub_undo_17 -A -t -c "select public.hub_schema_version()") $([[ $(catalog_of hub_undo_17) == "$(catalog_of hub)" && $(columns_of hub_undo_17) == "$(columns_of hub)" && $(policies_of hub_undo_17) == "$(policies_of hub)" ]] && echo same-as-0017)"
-if [[ $(grep -c '^drop \|^alter ' "$dir/undo_0017.sql") == 9 && $(grep -c '^create or replace function private\.\(my_day_item\|text_line\|digest_item\)' "$dir/undo_0017.sql") == 3 \
-      && -z $undo && $got_undo == "16 same-as-0016" && -z $out && $got_again == "17 same-as-0017" ]]; then
-  report "PASS  migration 0017's undo (as its header says): as at 0016; then 0017 runs again, as on a fresh install"
-else report "FAIL  migration 0017's undo  (undo: ${undo:0:200}; then: $got_undo; again: ${out:0:150} $got_again)"; fi
+if [[ $(grep -c '^drop \|^alter \|^delete ' "$dir/undo_0017.sql") == 10 && $(grep -n '^delete \|^alter ' "$dir/undo_0017.sql" | head -n 1 | grep -c ':delete ') == 1 \
+      && $(grep -c '^create or replace function private\.\(my_day_item\|text_line\|digest_item\)' "$dir/undo_0017.sql") == 3 \
+      && -z $undo && $got_undo == "16 same-as-0016" && $days_left == "2026-11-17:Side door:false,2026-11-24:-:true" && -z $out && $got_again == "17 same-as-0017" ]]; then
+  report "PASS  migration 0017's undo (as its header says): as at 0016, a day changed only for its Bring gone and the others kept; then 0017 runs again, as on a fresh install"
+else report "FAIL  migration 0017's undo  (undo: ${undo:0:200}; then: $got_undo; days: $days_left; again: ${out:0:150} $got_again)"; fi
 
 # 5. preflight.sql's promise, "nothing migration 0002 creates exists yet", covers everything the
 #    migration creates that a live database could already have under the same name (which would
