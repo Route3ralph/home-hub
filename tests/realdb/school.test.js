@@ -513,5 +513,38 @@ const SOON_LINES = ['History · Read chapter 9', 'Math · Homework', 'Science ·
     check('0015: no API request failed', !f.length, f);
   });
 
+  await flow('0016: Change dates keeps the due dates of homework already added', async () => {
+    const r16 = await h.migrate('supabase/migrations/0016_school_redate_keeps.sql');
+    check('the owner pastes 0016 while the hub runs: it applies, schema 16', !r16.error && (await one('select public.hub_schema_version() as v')).v === '16', r16.error);
+    // The link back to "Looks right" (each item's last day), then a three-day project read from the school.
+    const back = await rpcAs('alex@example.com', 'check_school_feed', { p_feed: feedId, p_date_rule: 'end', p_date_shift: 0 });
+    check('Change dates back to Looks right (check_school_feed end, 0)', ok(back), back.body);
+    h.school.serve(SECRET, ics([
+      { uid: 'k-1', summary: 'Science - 7 (C): Volcano model', lines: ['DTSTART;VALUE=DATE:20261207', 'DTEND;VALUE=DATE:20261210'] },
+    ]));
+    const rd = await checkNowAt('2026-12-02T21:10:00Z');
+    const item = await one("select id, due_date::text as due from school_items where title = 'Volcano model'");
+    check('a read keeps the project, due its last day (Wed Dec 9)', rd.status === 200 && !!item && item.due === '2026-12-09', { r: rd.body, item });
+    const add = await rpcAs('alex@example.com', 'school_item_action', { p_item: item.id, p_action: 'add' });
+    const made = await one("select due_date::text as due from assignments where title = 'Volcano model'");
+    check('Add without a date: the assignment is due Dec 9, the item\'s date', ok(add) && made.due === '2026-12-09', { add: add.body, made });
+
+    await h.mark();
+    const { page, context } = await open({ email: 'alex@example.com', path: '/#/homework', label: 'school-redate-alex' });
+    await until(async () => !!(await page.$(`${FEED('assignments')} [data-act="school-redate"]`)), 8000);
+    await page.click(`${FEED('assignments')} [data-act="school-redate"]`);
+    check('Change dates says homework already added keeps its due dates', /already added keeps its due dates/.test(await tc(page, '[data-ref="school-check"]')),
+      await tc(page, '[data-ref="school-check"]'));
+    await page.click('[data-ref="school-check"] [data-act="school-dates"][data-rule="start"]');
+    await toastIs(page, /^Dates checked\./);
+    const after = await one("select a.due_date::text as due, i.due_date::text as item_due, i.applied ->> 'due_date' as applied from assignments a join school_items i on i.assignment_id = a.id where a.title = 'Volcano model'");
+    const st = await rpcAs('alex@example.com', 'school_feed_status', { p_kid: P.jordan.id });
+    check('Use the first date: the item is now Dec 7, the assignment keeps Dec 9, and nothing reads as "moved"',
+      same(after, { due: '2026-12-09', item_due: '2026-12-07', applied: null }) && ok(st) && same(st.body.moved, []), { after, moved: st.body && st.body.moved });
+    const f = await failures();
+    check('0016, the parents\' page: no API request failed', !f.length, f);
+    await context.close();
+  });
+
   await h.finish();
 })().catch((e) => { console.log(`FAIL  school stopped: ${e && e.stack}`); process.exit(1); });

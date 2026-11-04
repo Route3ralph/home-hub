@@ -247,6 +247,12 @@ The school links' first-import check (**Check the dates**) used to show only ass
 
 There is nothing to switch off: the answer only adds the past ones, and the page reads both. The design's §16.7 has the undo, if ever wanted.
 
+### Change dates keeps due dates (v1.3, migration 0016)
+
+**Change dates** says homework already added keeps its due dates. Before 0016 that held only for **The day it was assigned**: switching between **Looks right** and **Use the first date** (or a day earlier or later) moved the due dates of homework added from those items. From 0016 it moves only the items' dates; the school's own later changes to a date still reach its homework.
+
+**Turning it on** (nothing to merge first, nothing to deploy: no page, Edge Function or `cron.sql` change): **about 2 minutes:** run [`supabase/migrations/0016_school_redate_keeps.sql`](supabase/migrations/0016_school_redate_keeps.sql) in the Supabase SQL editor. "aren't installed" means 0015 is missing; "already installed" means it's done.
+
 ### The school's assigned dates (v1.3, migration 0015)
 
 Some schools' Assignments feed puts each assignment on the day it was **assigned**, not the day it's due (Blackbaud's Assignment Center shows the due date; its calendar feed may not). Read as due dates, those items dropped off New from school the day after they were given. From 0015 the dates check has a third answer, **The day it was assigned**, and a checked link has **Change dates** to answer it again. Then New from school shows what was assigned in the last 10 days, marked "assigned …", and **Add to homework** (or, on Jordan's My day, **Plan with Pat** or **Quick**) asks for the due date. The school never moves a due date a person gave.
@@ -575,7 +581,7 @@ Never commit the token. The rules for changing the repo (tests, migrations, depl
 | `manifest.webmanifest`, `assets/icons/` | The Home Screen app: name, colours and icons |
 | `config.js` | Database connection settings |
 | `supabase/schema.sql` | The v1 tables, security rules and functions (the baseline) |
-| `supabase/migrations/` | Every database change since, in order: `0002_home_hub_v2.sql` is v2, `0003_google_calendar.sql` is v1.1 (Google Calendar), `0004_meals_and_shopping.sql` is v1.2 (Food), `0005_homework.sql` is v1.3 (Homework), `0006_homework_school.sql` its school feed, `0007_homework_coach.sql` its coach view, `0008_school_check.sql` its first-import check when nothing is due yet and `0009_school_keys.sql` its school items' keys; `0010_hearth_people.sql` sorts the wall's own calendar by Hearth person (v1.1); `0011_project_guests.sql` is v1.4 (project guests); `0012_coach_rewards.sql` is v1.3's coach's rewards; `0015_school_assigned_dates.sql` its school dates that are the day each was assigned |
+| `supabase/migrations/` | Every database change since, in order: `0002_home_hub_v2.sql` is v2, `0003_google_calendar.sql` is v1.1 (Google Calendar), `0004_meals_and_shopping.sql` is v1.2 (Food), `0005_homework.sql` is v1.3 (Homework), `0006_homework_school.sql` its school feed, `0007_homework_coach.sql` its coach view, `0008_school_check.sql` its first-import check when nothing is due yet and `0009_school_keys.sql` its school items' keys; `0010_hearth_people.sql` sorts the wall's own calendar by Hearth person (v1.1); `0011_project_guests.sql` is v1.4 (project guests); `0012_coach_rewards.sql` is v1.3's coach's rewards; `0015_school_assigned_dates.sql` its school dates that are the day each was assigned, and `0016_school_redate_keeps.sql` keeps the due dates of homework already added when a parent changes the dates |
 | `supabase/preflight.sql` | Read-only checks to run before applying the v2 migration (0002 only) |
 | `supabase/cron.sql` | Schedules the morning email and the Google Calendar job (pg_cron) once hub-jobs is deployed |
 | `supabase/config.toml` | Supabase CLI settings: both Edge Functions deploy with JWT verification off |

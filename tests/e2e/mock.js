@@ -1951,10 +1951,14 @@ const schoolRpc = {
     if (!['start', 'end'].concat(db.schoolAssigned15 ? ['assigned'] : []).includes(b.p_date_rule) || ![-1, 0, 1].includes(b.p_date_shift)) {
       throw new Raise('22023', 'Choose the start or the end date, and a shift of -1, 0 or 1 day.');
     }
+    // 0016: on a link already checked (Change dates), an item whose day changes forgets the due date the feed wrote,
+    // so its assignment keeps its due date; 'assigned' forgets it on any link (0015).
+    const wasChecked = !!f.checked;
     Object.assign(f, { date_rule: b.p_date_rule, date_shift: b.p_date_shift, checked: true, updated_by: email, updated_at: now() });
     db.school_items.filter((i) => i.feed_id === f.id && i.first_day).forEach((i) => {
-      i.due_date = tkAdd(b.p_date_rule === 'end' ? i.last_day : i.first_day, b.p_date_shift);
-      if (b.p_date_rule === 'assigned' && i.applied) i.applied = Object.assign({}, i.applied, { due_date: null });
+      const day = tkAdd(b.p_date_rule === 'end' ? i.last_day : i.first_day, b.p_date_shift);
+      if (i.applied && (b.p_date_rule === 'assigned' || (wasChecked && day !== i.due_date))) i.applied = Object.assign({}, i.applied, { due_date: null });
+      i.due_date = day;
     });
     scApply(db, f.id);
     return scStatusOf(db, f.kid_id);
