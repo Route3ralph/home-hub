@@ -1262,6 +1262,67 @@ const emailOf = (req) => {
   }
 
   // =====================================================================
+  // 9c. Send tomorrow and Bring (schema 17, migration 0017, docs/v2-design.md §22): tomorrow_text for each kid and
+  //     helper with a phone, beside Send their day; an event's Bring on its row. On 16: neither, and nothing read.
+  // =====================================================================
+  {
+    const TOMORROW_MSG = 'Taylor Example · Tomorrow, Mon Oct 26\n4:00pm Piano · with Jordan Example · Music school · Bring: Piano book';
+    const bRpc = (v) => Object.assign({ hub_schema_version: () => v }, calendarRpc, homeworkRpc, {
+      tomorrow_text: (d, b) => { const p = d.people.find((x) => x.id === b.p_person); return p ? TOMORROW_MSG.replace('Taylor Example', p.name) : null; },
+    });
+    const bDb = () => {
+      const d = withHearth(withHomework(withFood(withCalendars(todayDb(), { auth: 'service_account' }))));
+      const piano = d.agenda.find((x) => x.title === 'Piano');
+      // What withBring reads: the events and one-day changes that have a Bring (members read both tables).
+      d.events = [{ id: piano.item_id, bring: 'Piano book' }, { id: uuid(), bring: 'Not today' }];
+      d.event_changes = [];
+      return d;
+    };
+    ({ page, db, log } = await open({ label: 'tomorrow', db: bDb(), rpc: bRpc(17), share: true, ctx: phone }));
+    const secs = await page.$$eval('.today-sec', (ss) => ss.map((s) => s.getAttribute('aria-label')));
+    check('tomorrow (17): a "Send tomorrow" section right after "Send their day"', secs.indexOf('Send tomorrow') === secs.indexOf('Send their day') + 1, JSON.stringify(secs));
+    const tm = await page.$$eval('.today-send[data-which="tomorrow"] li', (lis) => lis.map((li) => ({
+      who: li.querySelector('.today-send-who').innerText.trim(),
+      wa: (li.querySelector('[data-via="whatsapp"]') || {}).href, sms: (li.querySelector('[data-via="sms"]') || {}).href,
+      labels: [...li.querySelectorAll('.today-send-btns > *')].map((e) => [e.textContent, e.getAttribute('aria-label')]),
+    })));
+    check('tomorrow: one row, for the same people as Send their day (Taylor: a helper with a phone)', tm.length === 1 && /Send Taylor tomorrow$/.test(tm[0].who), JSON.stringify(tm.map((x) => x.who)));
+    check('tomorrow: WhatsApp and Text carry tomorrow_text for that person, asked once, with only p_person',
+      tm[0].wa === `https://wa.me/12015550104?text=${encodeURIComponent(TOMORROW_MSG)}` && tm[0].sms === `sms:+12015550104?&body=${encodeURIComponent(TOMORROW_MSG)}`
+      && same(calls(db, 'tomorrow_text').map((c) => c.body), [{ p_person: ID.taylor }]), JSON.stringify(tm[0]).slice(0, 240));
+    check('tomorrow: its buttons say tomorrow (WhatsApp, Share, Text)', same(tm[0].labels, [['WhatsApp', 'Send Taylor tomorrow by WhatsApp'],
+      ['Share', 'Share Taylor\'s tomorrow with another app'], ['Text', 'Send Taylor tomorrow by text']]), JSON.stringify(tm[0].labels));
+    await page.click('.today-send[data-which="tomorrow"] [data-share]');
+    await page.waitForTimeout(300);
+    const shared = await page.evaluate(() => window.__shares);
+    check('tomorrow: Share sends the same message', shared.length === 1 && same(shared[0].data, { text: TOMORROW_MSG }), JSON.stringify(shared));
+    await page.click('.today-send[data-which="tomorrow"] .today-preview summary');
+    check('tomorrow: the message can be previewed', (await text(page, '.today-send[data-which="tomorrow"] .today-preview pre')) === TOMORROW_MSG);
+    const dayWa = await page.getAttribute('.today-send:not([data-which]) [data-via="whatsapp"]', 'href');
+    check('tomorrow: Send their day is as before (today\'s day_text)', /Send Taylor their day/.test(await text(page, '.today-send:not([data-which]) .today-send-who'))
+      && decodeURIComponent(dayWa.split('?text=')[1]) === 'Taylor Example · Sun Oct 25\n4:00pm Piano · with Jordan Example\n☐ Wipe the counters', dayWa);
+    await page.click('.today-chips [data-view="all"]');
+    await page.waitForTimeout(300);
+    const pianoRow = await rowFor(page, 'day', 'Piano').locator('.irow-sub').innerText().catch(() => '');
+    check('bring (17): today\'s Piano row says "Bring: Piano book"', /Bring: Piano book/.test(pianoRow), pianoRow);
+    check('bring (17): no other row gets a Bring', (await page.locator('[data-list="day"] .irow-sub', { hasText: 'Bring:' }).count()) === 1 && !/Not today/.test(await text(page, '#main')));
+    await page.context().close();
+
+    // A failed tomorrow_text says so on its row and leaves the rest.
+    const failRpc = Object.assign(bRpc(17), { tomorrow_text: () => ({ __status: 500, body: { code: 'XX000', message: 'Database restarting', details: null, hint: null } }) });
+    ({ page, db } = await open({ label: 'tomorrow-fail', db: bDb(), rpc: failRpc, allowConsole: /status of 500/ }));
+    check('tomorrow: a failed read says so on the row ("Couldn\'t get Taylor\'s tomorrow")', /Couldn't get Taylor's tomorrow: .*Reload to try again/.test(await text(page, '.today-send[data-which="tomorrow"]'))
+      && !!(await page.$('.today-send:not([data-which]) [data-via="whatsapp"]')), await text(page, '.today-send[data-which="tomorrow"]'));
+    await page.context().close();
+
+    // Schema 16: no section, no tomorrow_text call, no Bring read.
+    ({ page, db, log } = await open({ label: 'tomorrow-16', db: bDb(), rpc: bRpc(16) }));
+    check('tomorrow (16): no Send tomorrow, no tomorrow_text call, no Bring read or shown', !(await page.$('.today-send[data-which="tomorrow"]'))
+      && !calls(db, 'tomorrow_text').length && !log.some((l) => /bring/.test(l)) && !/Bring:/.test(await text(page, '#main')), log.filter((l) => /bring|tomorrow/.test(l)).join(' | '));
+    await page.context().close();
+  }
+
+  // =====================================================================
   // 10. v1 mode: no Today page, no v2 reads
   // =====================================================================
   ({ page, log } = await open({ label: 'v1', v1: true, db: makeDb() }));

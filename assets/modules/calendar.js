@@ -62,6 +62,13 @@
   const withYear = (label, iso) => (iso.slice(0, 4) === dates.today().slice(0, 4) ? label : `${label}, ${iso.slice(0, 4)}`);
   const sameSet = (a, b) => a.length === b.length && a.every((x) => b.includes(x));
   const daysOff = () => new Set(((v2.household && v2.household.days_off) || []).map(String));
+  // Bring (schema 17, migration 0017): the form shows it and sends it only then; a 16 database has no column.
+  // A row read with select('*') has the key exactly when the column is there, so an open page that still thinks
+  // it is on 16 after the paste offers it too, and never drops a day's Bring it can't see (bringOn(ev)).
+  const hasBring = () => core.schemaVersion >= 17;
+  const bringOn = (row) => hasBring() || !!(row && Object.prototype.hasOwnProperty.call(row, 'bring'));
+  const BRING_MAX = 120; // events.bring and event_changes.bring
+  const oneLine = (s) => String(s || '').replace(/\s+/g, ' ').trim();
 
   // People: colours, names, and "Taylor in charge, with Jordan".
   function colorOf(id) {
@@ -218,6 +225,9 @@
       responsible_id: resp,
       participant_ids: others(resp, c.participant_ids != null ? c.participant_ids : ev.participant_ids),
       status: c.cancelled ? 'cancelled' : 'open',
+      // What to bring that day: the day's own (schema 17), else the event's; bringDay when it's the day's own.
+      bring: c.bring || ev.bring || null,
+      bringDay: !!c.bring,
     };
   }
   function whenText(occ) {
@@ -344,12 +354,12 @@
   async function load(st) {
     const range = rangeOf(st);
     const google = loadGoogle(range);
-    const rows = await v2.call('agenda', { p_from: range.from, p_to: range.to });
+    const rows = await v2.withBring(await v2.call('agenda', { p_from: range.from, p_to: range.to }), range.from, range.to);
     const g = await google;
     st.window = await st.windowLoad;
     if (st.ctx.stale()) return;
     st.range = range;
-    st.items = (Array.isArray(rows) ? rows : []).concat(g.items);
+    st.items = rows.concat(g.items);
     st.googleFailed = g.failed;
     if (!(st.selected >= range.from && st.selected <= range.to)) st.selected = st.anchor;
     draw(st);
@@ -872,6 +882,7 @@
           : ev.skip_days_off ? '<dt>Days off</dt><dd>Not on days off</dd>' : ''}
         <dt>Who</dt><dd class="cal-whos">${whoHTML(occ.responsible_id, occ.participant_ids)}</dd>
         ${ev.location ? `<dt>Place</dt><dd>${esc(ev.location)}</dd>` : ''}
+        ${occ.bring ? `<dt>Bring</dt><dd>${esc(occ.bring)}${occ.bringDay ? ' <small>(this day)</small>' : ''}</dd>` : ''}
         ${contact ? contactHTML(contact.name, contact.phone) : ''}
         ${ev.private ? '<dt>Private</dt><dd>Kids and helpers see "Private item"</dd>' : ''}
       </dl>
@@ -970,6 +981,8 @@
       <small class="cal-hint">An end time before the start means it ends the next day.</small>
       <fieldset class="cal-fs"><legend>Who</legend><div data-ref="who"></div></fieldset>
       <label class="field"><span>Note for this day</span><input type="text" name="note" maxlength="300" value="${esc((change && change.note) || '')}" placeholder="Pick up at the side door"></label>
+      ${bringOn(ev) ? `<label class="field"><span>Bring this day</span><input type="text" name="bring" maxlength="${BRING_MAX}" value="${esc(occ.bring || '')}" placeholder="Signed form"></label>
+      <small class="cal-hint">${ev.bring ? `Usually: ${esc(ev.bring)}. Change it for this day only, for example add to it.` : 'Only for this day. Every day it repeats: Edit all days.'}</small>` : ''}
       <p class="form-error" role="alert" hidden></p>
       <div class="form-actions">
         <button type="button" class="btn" data-close>Cancel</button>
@@ -993,11 +1006,18 @@
       if (!w.responsibleId && ev.responsible_id && !sameWho) {
         return fail('Someone has to be in charge on a changed day. Tap a name to put them in charge, or skip the day instead.');
       }
+      // Bring (schema 17): what matches the usual is saved as "as usual" (null), like the time and who. A day
+      // can't say "nothing": null already means the usual.
+      const bring = bringOn(ev) ? oneLine(form.elements.bring.value) : '';
+      const sameBring = !bringOn(ev) || bring === oneLine(ev.bring);
+      if (!sameBring && !bring) {
+        return fail(`A day can't leave out the usual Bring (${ev.bring}). Write what to bring that day, or change it for every day with Edit all days.`);
+      }
       const btn = form.querySelector('[type="submit"]');
       btn.disabled = true;
       errBox.hidden = true;
       try {
-        if (sameTime && sameWho && !note) {
+        if (sameTime && sameWho && !note && sameBring) {
           // Nothing differs from the usual: the day goes back to normal.
           if (change) await dropChange(ev.id, day);
           formDialog.close();
@@ -1008,6 +1028,7 @@
             start_time: sameTime ? null : start || null, end_time: sameTime ? null : end || null,
             responsible_id: sameWho ? null : w.responsibleId, participant_ids: sameWho ? null : w.participantIds,
             note: note || null,
+            ...(bringOn(ev) ? { bring: sameBring ? null : bring } : {}),
           });
           formDialog.close();
           toast(`Changed ${ev.title} on ${fmt.day(day)}`, { action: { label: 'Undo', onClick: () => undoDay(ev, day, change) } });
@@ -1065,7 +1086,7 @@
     const shownDay = page && !page.stale() && page.st.range ? addDay(page.st) : null;
     const startDate = ev ? ev.start_date : [d.date, d.start_date, shownDay].find(isIso) || today;
     const allDay = ev ? !ev.start_time : !!d.all_day;
-    const moreOpen = !!(x.end_time || x.location || x.contractor_id || x.notes || x.private);
+    const moreOpen = !!(x.end_time || x.location || x.contractor_id || x.notes || x.private || (bringOn(ev) && x.bring));
     // "Not on days off" belongs to a repeat (the school run on a school holiday); a one-off keeps it
     // only if it already has it.
     const oneOffSkips = !!(ev && ev.repeat !== 'weekly' && ev.skip_days_off);
@@ -1102,13 +1123,15 @@
         <label class="check cal-check" data-show="daysoff"><input type="checkbox" name="skip_days_off"${x.skip_days_off ? ' checked' : ''}> Not on days off (school holidays)</label>
       </fieldset>
       <details class="cal-more"${moreOpen ? ' open' : ''}>
-        <summary>More: end time, place, contact, notes</summary>
+        <summary>More: end time, place,${bringOn(ev) ? ' bring,' : ''} contact, notes</summary>
         <div class="cal-more-body">
           <div class="cal-row" data-show="endtime">
             <label class="field"><span>Ends at</span><input type="time" name="end_time" value="${esc(hm(x.end_time))}"></label>
             <label class="check cal-check"><input type="checkbox" name="ends_next_day"${x.ends_next_day ? ' checked' : ''}> Ends the next day</label>
           </div>
           <label class="field"><span>Place</span><input type="text" name="location" value="${esc(x.location || '')}" maxlength="200" placeholder="Music school"></label>
+          ${bringOn(ev) ? `<label class="field"><span>Bring</span><input type="text" name="bring" value="${esc(x.bring || '')}" maxlength="${BRING_MAX}" autocomplete="off" placeholder="Cleats, water bottle">
+            <small>Shows on the calendar, My day and the messages you send. ${ev && ev.repeat === 'weekly' ? 'Every day it repeats; for one day, use Change this day.' : 'For a repeating event: every day it repeats.'}</small></label>` : ''}
           <label class="field"><span>Directory contact</span><select name="contractor_id"><option value="">None</option>${options.map(([id, label]) => `<option value="${esc(id)}"${id === x.contractor_id ? ' selected' : ''}>${esc(label)}</option>`).join('')}</select>
             <small>${contractors ? 'Their phone number shows on the event, one tap to call.' : "Couldn't load the directory just now. Try again later to pick a contact."}</small></label>
           <label class="field"><span>Notes</span><textarea name="notes" rows="3">${esc(x.notes || '')}</textarea></label>
@@ -1285,6 +1308,8 @@
       repeat_every: every,
       repeat_weekdays: weekdays,
       repeat_until: until || null,
+      // Only when the form has the field (bringOn: schema 17, or a row that has the column); a 16 database has none.
+      ...(el.bring ? { bring: oneLine(el.bring.value) || null } : {}),
     };
   }
 
@@ -1302,6 +1327,7 @@
       days: WD_LONG, months: MONTHS, allDay: 'All day', with: 'with', family: 'Family', nothing: 'Nothing planned.',
       sched: (who) => `${who}'s schedule`, famSched: 'Family schedule', weekOf: (d) => `Week of ${d}`,
       date: (wd, d, m, y) => `${wd}, ${m} ${d}${y ? `, ${y}` : ''}`, printed: (d) => `Printed ${d}`, private: 'Private item',
+      bring: 'Bring',
     },
     es: {
       days: ['lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado', 'domingo'],
@@ -1309,6 +1335,7 @@
       allDay: 'Todo el día', with: 'con', family: 'Familia', nothing: 'Nada planeado.',
       sched: (who) => `Horario de ${who}`, famSched: 'Horario de la familia', weekOf: (d) => `Semana del ${d}`,
       date: (wd, d, m, y) => `${wd} ${d} de ${m}${y ? ` de ${y}` : ''}`, printed: (d) => `Impreso el ${d}`, private: 'Asunto privado',
+      bring: 'Llevar',
     },
   };
   const firstName = (p) => String((p && p.name) || '').trim().split(/\s+/)[0] || '';
@@ -1330,8 +1357,8 @@
     const t = (x) => { const [h, m] = String(x).split(':'); return `${Number(h) % 24}:${m}`; };
     return it.local_end ? `${t(it.local_start)}–${t(it.local_end)}` : t(it.local_start);
   }
-  // Who else, from the reader's side: on Lorena's sheet "con Max" (she's in charge) or "Ralph" (she's along);
-  // on the family's, "Lorena · con Max".
+  // Who else, from the reader's side: on Morgan's sheet "con Taylor" (Morgan's in charge) or "Alex" (Morgan's
+  // along); on the family's, "Morgan · con Taylor".
   function printWho(lang, it, personId) {
     const w = PRINT_WORDS[lang];
     const resp = v2.person(it.responsible_id);
@@ -1355,7 +1382,7 @@
     const extra = [it.location, printWho(lang, it, personId)].filter(Boolean).join(' · ');
     return `<li class="ps-item${it.kind === 'task' ? ' ps-task' : ''}">
       <span class="ps-time">${it.kind === 'task' ? '<span class="ps-box" aria-hidden="true"></span>' : ''}${esc(printTime(lang, it))}</span>
-      <span class="ps-what"><b>${esc(title)}</b>${extra ? ` <span class="ps-extra">${esc(extra)}</span>` : ''}${it.day_note ? `<span class="ps-note">${esc(it.day_note)}</span>` : ''}</span>
+      <span class="ps-what"><b>${esc(title)}</b>${extra ? ` <span class="ps-extra">${esc(extra)}</span>` : ''}${it.day_note ? `<span class="ps-note">${esc(it.day_note)}</span>` : ''}${it.bring && !it.private ? `<span class="ps-note ps-bring">${esc(w.bring)}: ${esc(it.bring)}</span>` : ''}</span>
     </li>`;
   }
 
@@ -1410,9 +1437,9 @@
     const lang = v.lang === 'es' || v.lang === 'en' ? v.lang : (person && person.language === 'es' ? 'es' : 'en');
     const range = v.range === 'day' ? { from: v.day, to: v.day } : { from: dates.mondayOf(v.day), to: dates.addDays(dates.mondayOf(v.day), 6) };
     const google = loadGoogle(range);
-    const rows = await v2.call('agenda', { p_from: range.from, p_to: range.to });
+    const rows = await v2.withBring(await v2.call('agenda', { p_from: range.from, p_to: range.to }), range.from, range.to);
     const g = await google;
-    const items = (Array.isArray(rows) ? rows : []).concat(g.items);
+    const items = rows.concat(g.items);
     // Seven columns fit a page on its side; the browser's dialog can still change it.
     core.printSheet(printSheetHTML({ who: person ? person.id : 'family', lang, range: v.range === 'day' ? 'day' : 'week',
       layout: v.layout === 'days' ? 'days' : 'columns', day: v.day, items }), { lang, landscape: v.range !== 'day' && v.layout !== 'days' });

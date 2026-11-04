@@ -499,6 +499,34 @@
     return result;
   }
 
+  // Bring (schema 17): sets `bring` on each event row of agenda() between from and to (dates), the way
+  // private.bring_of works it out: that day's own (event_changes.bring), else the event's (events.bring).
+  // Two small reads of only the rows that have one (members read both tables). Below 17 it reads nothing.
+  // Answers the same array (an empty one for anything else). If either read fails, the rows show without
+  // Bring rather than not at all.
+  async function withBring(rows, from, to) {
+    const list = Array.isArray(rows) ? rows : [];
+    if (!(schemaVersion >= 17) || !list.some((r) => r && r.kind === 'event')) return list;
+    let events;
+    let changes;
+    try {
+      [events, changes] = await Promise.all([
+        q(sb.from('events').select('id,bring').not('bring', 'is', null)),
+        q(sb.from('event_changes').select('event_id,on_date,bring').not('bring', 'is', null).gte('on_date', from).lte('on_date', to)),
+      ]);
+    } catch (err) {
+      return list;
+    }
+    const usual = new Map((events || []).map((e) => [e.id, e.bring]));
+    const day = new Map((changes || []).map((c) => [`${c.event_id} ${c.on_date}`, c.bring]));
+    for (const r of list) {
+      if (!r || r.kind !== 'event') continue;
+      const b = day.get(`${r.item_id} ${r.occurrence}`) || usual.get(r.item_id);
+      if (b) r.bring = b;
+    }
+    return list;
+  }
+
   // ============================================
   // V2: DATES AND TIMES, in the household time zone
   // Dates are 'YYYY-MM-DD' strings; date arithmetic uses whole UTC days (as gantt.js does), so the
@@ -754,7 +782,7 @@
 
     const resp = personById(it.responsible_id);
     const withPeople = (it.participant_ids || []).map(personById).filter((p) => p && p !== resp);
-    const details = [it.kind === 'project' ? it.project_name : null, it.location, it.contractor_name].filter(Boolean);
+    const details = [it.kind === 'project' ? it.project_name : null, it.location, it.bring ? `Bring: ${it.bring}` : null, it.contractor_name].filter(Boolean);
     const canTick = !!o.checkbox && isTask && (status === 'open' || status === 'late');
     const tickedDone = !!o.checkbox && isTask && status === 'done';
     const canUntick = tickedDone && typeof o.onUntick === 'function';
@@ -919,6 +947,7 @@
     // Reload people, household and clock, e.g. after saving a person or the settings.
     refresh: () => loadV2(),
     call,
+    withBring,
     undoDone,
     fmt: Object.freeze(fmt),
     dates: Object.freeze(dates),

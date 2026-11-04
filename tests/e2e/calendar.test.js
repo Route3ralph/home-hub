@@ -1427,6 +1427,144 @@ const emailOf = (req) => {
   }
 
   // =====================================================================
+  // 7c. Bring (schema 17, migration 0017, docs/v2-design.md §22): on the rows, the details, Change this day, the
+  //     form and print; on 16 no field, nothing sent and nothing read
+  // =====================================================================
+  {
+    // Schema 17 also reads Google (schema 3): the household has its Hub calendars, with nothing read from Google yet.
+    const db = withCalendars(calDb());
+    db.events.find((e) => e.id === E.piano).bring = 'Piano book';
+    db.people.find((p) => p.id === P.taylor).language = 'es';
+    let log;
+    ({ page, log } = await open({ label: 'bring', db, rpc: Object.assign({ hub_schema_version: () => 17 }, calendarRpc) }));
+    await page.click('[data-view="week"]');
+    await page.waitForSelector('.cal-days');
+    await settle(page);
+    let piano = (await dayRows(page, TODAY)).find((r) => r.title === 'Piano');
+    check('bring (17): the week list shows "Bring: Piano book" on Piano, after its place', piano && /Music school · Bring: Piano book/.test(piano.sub), JSON.stringify(piano));
+    check('bring (17): read with two small reads of only the rows that have one', log.some((l) => /^GET \/rest\/v1\/events\?select=id%2Cbring&bring=not\.is\.null/.test(l))
+      && log.some((l) => /^GET \/rest\/v1\/event_changes\?select=event_id%2Con_date%2Cbring&bring=not\.is\.null&on_date=gte\./.test(l)), log.filter((l) => /bring/.test(l)).join(' | '));
+    await clickRow(page, `[data-list="${TODAY}"]`, 'Piano');
+    await page.waitForSelector('#detail[open] #dTitle:text("Piano")');
+    check('bring: the details have "Bring Piano book"', /Bring\s+Piano book/.test(await dialogText(page)) && !/\(this day\)/.test(await dialogText(page)), await dialogText(page));
+    // Change this day: filled with the usual; the usual as it is changes nothing.
+    await page.click('#detail [data-ev="change"]');
+    await page.waitForSelector('#formDialog[open] .cal-form');
+    check('bring: Change this day has "Bring this day", filled with the usual, and says what it usually is',
+      (await page.inputValue('#formDialog [name="bring"]')) === 'Piano book' && /Usually: Piano book/.test(await text(page, '#formDialog .cal-form')), await text(page, '#formDialog .cal-form'));
+    await page.click('#formDialog [type="submit"]');
+    await settle(page);
+    check('bring: the usual Bring as it is: nothing written', /Nothing changed/.test(await toastText(page)) && !db.changeWrites.length, JSON.stringify(db.changeWrites));
+    // A Bring for this day only.
+    await clickRow(page, `[data-list="${TODAY}"]`, 'Piano');
+    await page.waitForSelector('#detail[open] [data-ev="change"]');
+    await page.click('#detail [data-ev="change"]');
+    await page.waitForSelector('#formDialog[open] .cal-form');
+    await page.fill('#formDialog [name="bring"]', '  Piano book,   recital form ');
+    await page.click('#formDialog [type="submit"]');
+    await settle(page, 500);
+    let w = db.changeWrites[db.changeWrites.length - 1];
+    check('bring: a Bring for this day only saves the day with its own Bring, one line, and nothing else changed', w && w.method === 'POST' && same(w.body, {
+      event_id: E.piano, on_date: TODAY, cancelled: false, start_time: null, end_time: null, responsible_id: null, participant_ids: null, note: null, bring: 'Piano book, recital form',
+    }), JSON.stringify(w && w.body));
+    piano = (await dayRows(page, TODAY)).find((r) => r.title === 'Piano');
+    check('bring: the row shows the day\'s own Bring, and Changed', piano && /Bring: Piano book, recital form/.test(piano.sub) && /Changed/.test(piano.sub), JSON.stringify(piano));
+    const nextWeek = (await dayRows(page, addDays(TODAY, 7)).catch(() => [])) || [];
+    await clickRow(page, `[data-list="${TODAY}"]`, 'Piano');
+    await page.waitForSelector('#detail[open] [data-ev="restore"]');
+    check('bring: the details say it\'s this day\'s own', /Bring\s+Piano book, recital form\s*\(this day\)/.test(await dialogText(page)), await dialogText(page));
+    // Clearing it for one day can't be said (null is "as usual"): the form says so and writes nothing.
+    const before = db.changeWrites.length;
+    await page.click('#detail [data-ev="change"]');
+    await page.waitForSelector('#formDialog[open] .cal-form');
+    await page.fill('#formDialog [name="bring"]', '');
+    await page.click('#formDialog [type="submit"]');
+    await settle(page);
+    check('bring: an empty Bring for one day is refused, with why, and nothing written', /can't leave out the usual Bring \(Piano book\)/.test(await text(page, '#formDialog .form-error'))
+      && db.changeWrites.length === before, await text(page, '#formDialog .form-error'));
+    await page.click('#formDialog [data-close]');
+    await settle(page);
+    // The form: Edit all days has Bring in More, open, and saves it with the event.
+    await clickRow(page, `[data-list="${TODAY}"]`, 'Piano');
+    await page.waitForSelector('#detail[open] [data-ev="edit"]');
+    await page.click('#detail [data-ev="edit"]');
+    await page.waitForSelector('#formDialog[open] .cal-form');
+    check('bring: the form\'s More is open and has Bring, filled', (await page.$eval('#formDialog details.cal-more', (d) => d.open)) && (await page.inputValue('#formDialog [name="bring"]')) === 'Piano book'
+      && /More: end time, place, bring, contact, notes/.test(await text(page, '#formDialog details.cal-more summary')), await text(page, '#formDialog details.cal-more summary'));
+    await page.fill('#formDialog [name="bring"]', 'Music book');
+    await page.click('#formDialog [type="submit"]');
+    await settle(page, 500);
+    w = db.eventWrites[db.eventWrites.length - 1];
+    check('bring: Save sends bring with the event (PATCH)', w && w.method === 'PATCH' && w.body.bring === 'Music book', JSON.stringify(w));
+    // Print: Taylor's week (Spanish) has "Llevar: …" on Tuesday; a private event prints no Bring.
+    db.events.push(Object.assign({}, db.events.find((e) => e.id === E.piano), { id: uid(299), title: 'Checkup', start_date: TODAY, start_time: '11:00:00', end_time: null,
+      repeat: 'none', repeat_weekdays: [], private: true, bring: 'Insurance card' }));
+    await page.evaluate(() => { window.__printed = 0; window.print = () => { window.__printed += 1; }; });
+    await page.click('[data-act="print"]');
+    await page.waitForSelector('dialog[open] select[name="who"]');
+    await page.selectOption('dialog[open] select[name="who"]', P.taylor);
+    await page.click('dialog[open] button[type="submit"]');
+    await page.waitForFunction(() => window.__printed === 1);
+    const tue = await page.evaluate(() => [...document.querySelectorAll('#print-sheet .ps-day')][1].innerText.replace(/\s+/g, ' ').trim());
+    check('bring: print, Taylor\'s week in Spanish: "Llevar: Piano book, recital form" under Tuesday\'s Piano', /16:00–17:00 Piano Music school · con Jordan\s*Llevar: Piano book, recital form/.test(tue), tue);
+    check('bring: print: a private item prints as "Asunto privado", with no Bring', /Asunto privado/.test(tue) && !/Insurance card/.test(tue), tue);
+    await page.evaluate(() => window.dispatchEvent(new Event('afterprint')));
+    check('bring: no page errors', true, nextWeek.length);
+    await page.context().close();
+
+    // Schema 16: no field anywhere, nothing sent, nothing read.
+    const db16 = withCalendars(calDb());
+    ({ page, log } = await open({ label: 'bring-16', db: db16, rpc: Object.assign({ hub_schema_version: () => 16 }, calendarRpc) }));
+    await page.click('[data-view="week"]');
+    await page.waitForSelector('.cal-days');
+    await clickRow(page, `[data-list="${TODAY}"]`, 'Piano');
+    await page.waitForSelector('#detail[open] [data-ev="change"]');
+    await page.click('#detail [data-ev="change"]');
+    await page.waitForSelector('#formDialog[open] .cal-form');
+    const changeField = await page.$('#formDialog [name="bring"]');
+    await page.fill('#formDialog [name="note"]', 'Side door');
+    await page.click('#formDialog [type="submit"]');
+    await settle(page, 500);
+    w = db16.changeWrites[db16.changeWrites.length - 1];
+    await clickRow(page, `[data-list="${TODAY}"]`, 'Piano');
+    await page.waitForSelector('#detail[open] [data-ev="edit"]');
+    await page.click('#detail [data-ev="edit"]');
+    await page.waitForSelector('#formDialog[open] .cal-form');
+    const formField = await page.$('#formDialog [name="bring"]');
+    const summary = await text(page, '#formDialog details.cal-more summary');
+    await page.click('#formDialog [type="submit"]');
+    await settle(page, 500);
+    const e16 = db16.eventWrites[db16.eventWrites.length - 1];
+    check('bring (16): no Bring field in Change this day or the form, and More doesn\'t offer it', !changeField && !formField && !/bring/.test(summary), summary);
+    check('bring (16): neither a day\'s change nor the event sends a bring key', w && !('bring' in w.body) && e16 && e16.method === 'PATCH' && !('bring' in e16.body),
+      JSON.stringify([w && w.body, e16 && e16.body]));
+    check('bring (16): nothing reads Bring', !log.some((l) => /bring/.test(l)), log.filter((l) => /bring/.test(l)).join(' | '));
+    await page.context().close();
+
+    // A page that read 16 at sign-in, open while the owner pastes 0017: its rows have the column, so Change this day
+    // offers "Bring this day" and keeps the day's own Bring when only the note is cleared (review of 0017).
+    const dbStale = withCalendars(calDb());
+    dbStale.events.find((e) => e.id === E.piano).bring = 'Piano book';
+    dbStale.event_changes.push({ event_id: E.piano, on_date: TODAY, cancelled: false, start_time: null, end_time: null, responsible_id: null, participant_ids: null,
+      nobody_in_charge: false, note: 'Side door', bring: 'Recital form' });
+    ({ page } = await open({ label: 'bring-stale-16', db: dbStale, rpc: Object.assign({ hub_schema_version: () => 16 }, calendarRpc) }));
+    await page.click('[data-view="week"]');
+    await page.waitForSelector('.cal-days');
+    await clickRow(page, `[data-list="${TODAY}"]`, 'Piano');
+    await page.waitForSelector('#detail[open] [data-ev="change"]');
+    await page.click('#detail [data-ev="change"]');
+    await page.waitForSelector('#formDialog[open] .cal-form');
+    const staleField = await page.inputValue('#formDialog [name="bring"]').catch(() => null);
+    await page.fill('#formDialog [name="note"]', '');
+    await page.click('#formDialog [type="submit"]');
+    await settle(page, 500);
+    w = dbStale.changeWrites[dbStale.changeWrites.length - 1];
+    check('bring (a page still on 16 after the paste): Change this day offers the day\'s own Bring and keeps it when only the note is cleared',
+      staleField === 'Recital form' && w && w.method === 'POST' && w.body.bring === 'Recital form' && w.body.note === null, JSON.stringify([staleField, w]));
+    await page.context().close();
+  }
+
+  // =====================================================================
   // 8. Dark mode uses the dark colours
   // =====================================================================
   for (const dark of [false, true]) {

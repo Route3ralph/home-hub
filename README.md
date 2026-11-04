@@ -12,7 +12,7 @@ v2 turns on by itself once the database is upgraded (see [Upgrading to v2](#upgr
 
 | Page | What it's for |
 |---|---|
-| **Today** | Your day at a glance: your events in time order, then your tasks with a box to tick (and **Undo** for 6 seconds). Chips at the top show anyone else's day, or **Everyone**. Below: what's **Late**, a **Heads-up** for what's coming (tasks with a heads-up, contracts ending soon), **Nobody's on it** for parents, **Send their day** for kids and helpers, and one line per project with work today. Tap a row to open it on the Calendar or Tasks. A short checklist helps you set the hub up the first time. |
+| **Today** | Your day at a glance: your events in time order, then your tasks with a box to tick (and **Undo** for 6 seconds). Chips at the top show anyone else's day, or **Everyone**. Below: what's **Late**, a **Heads-up** for what's coming (tasks with a heads-up, contracts ending soon), **Nobody's on it** for parents, **Send their day** and (from migration 0017) **Send tomorrow** for kids and helpers, and one line per project with work today. Tap a row to open it on the Calendar or Tasks. A short checklist helps you set the hub up the first time. |
 | **Calendar** | A week view (the default on phones) and a month grid. Filter by person; everything is coloured by who's in charge. Tap an event for its details, **Edit**, and for repeating ones **Change this day** or **Skip this day**. Project work shows as bars. **Print** puts one person's day or week (or the whole family's) on paper, in their language: the week as seven columns or one section per day. |
 | **Tasks** | Late · Today · Coming up · No date · Done (last 2 weeks), for you, everyone or one person. A task can repeat **on set dates** ("the 1st of every month") or **a while after it's done** ("60 days after the last filter change"). Its menu has done on another day, skip, pause, edit and delete. **Repeating → Add from starter list** adds the usual jobs (furnace filter, smoke alarms, heartworm pills…) spread over the next 4 weeks and given to whoever Settings says looks after the house or the pets. |
 | **Projects** | As before, plus an **owner** (who gets the project in their morning email), **Show in Home Hub calendar**, and a **Tasks** card for calls, orders and errands. **Put on the schedule** turns one of those into a Gantt task. |
@@ -40,6 +40,8 @@ Every date and time is in the household's time zone, wherever your phone is.
 | Add an event or a task | **＋** (or **Add** on a computer), then **Event** or **Task**. Tap a name once to put them in charge, again on more names for who's with them. |
 | Tick something off | The box on Today, Calendar or Tasks. **Undo** appears for 6 seconds. |
 | Send a kid or helper their day | **Today → Send their day → WhatsApp** or **Text**: the message is ready to send from your phone. |
+| Send tomorrow's plan in the evening | **Today → Send tomorrow → WhatsApp** or **Text**: tomorrow's times, who else is on it, the place and what to bring, in their language (from migration 0017). |
+| Say what to bring | On the event, **More → Bring** ("Cleats"): every day it happens. For one day only, open that day and use **Change this day → Bring this day** (from migration 0017). It shows on the Calendar, Today, My day, the printed sheet, the texts and the email, never on the wall or Google. |
 | Give someone their My day link | **Family →** their card **→ Copy**, **WhatsApp** or **Text**. |
 | Start a project | **Projects → + New project**. Start blank or copy an existing project's tasks. |
 | Add or change a schedule task | Open the project, click **+ Schedule task**, or click any task, then **Edit task**. |
@@ -310,7 +312,7 @@ The first three come from your own phone number or email address, so replies com
 
 - Everything lives in a Supabase database. Every table has row-level security, so only the family members who can sign in can read or change anything. Signed-out visitors and other accounts see nothing.
 - Account numbers in the Directory are for admins (parents who sign in) only, and the page asks for them only when an admin is looking.
-- A **My day** link shows only that person's own items for today and tomorrow, never notes or anyone else's details. Items marked **Private** show as "Private item".
+- A **My day** link shows only that person's own items for today and tomorrow, never notes or anyone else's details (from migration 0017, an event's **Bring** shows under it). Items marked **Private** show as "Private item", without their Bring.
 - The email that asks someone to confirm their address carries its own confirmation code, never their My day link, so an email that goes to a mistyped address gives nothing away.
 - The share page can read one project by its secret link. It returns only the schedule plus each contractor's name and company. It never returns phone numbers, emails or private notes. Turning sharing off, or clicking **Get a new link**, stops the old link immediately.
 - **Google Calendar (v1.1)** copies to the kitchen wall only what everyone in the house may see, and only after an admin has looked at it: see [Privacy](#privacy) under Google Calendar and Hearth.
