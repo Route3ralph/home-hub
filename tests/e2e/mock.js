@@ -1737,7 +1737,7 @@ function withSchoolCheck(db) {
 }
 // withSchoolAssigned(db) (after withSchool) is 0015 (schema 15, docs/v1.3-homework.md §23): check_school_feed takes
 // 'assigned' (an item's first day is the day it was given); New from school (his and the card's new and hidden) holds
-// what such a link gave from 10 days ago to 30 days on, each with assigned: true (and quick: false on his); Add
+// what such a link gave from 10 days ago (30 with db.schoolGiven18: 0018) to 30 days on, each with assigned: true (and quick: false on his); Add
 // (school_item_action) and Quick or Plan with Pat (school_item_by_token) take p_due, needed from an assigned link, and
 // the school never moves that due date ("moved" and moved_to leave it out). Without it, p_due is an argument nobody
 // takes (PGRST202) and 'assigned' is refused, as on 14.
@@ -1780,7 +1780,7 @@ const scByDue = (x, y) => (x.due_date < y.due_date ? -1 : x.due_date > y.due_dat
 const scItemsOf = (db, kid, pred) => db.school_items.filter((i) => { const f = scFeed(db, i.feed_id); return f && f.kid_id === kid && pred(i, f); });
 // The school's marks on his assignments made from school: { id: {gone, moved_to} } (private.school_marks).
 const scGiven = (f) => !!f && f.date_rule === 'assigned';   // 0015: the link's dates are the day each was given
-const scFrom = (f, today) => (scGiven(f) ? tkAdd(today, -10) : today);
+const scFrom = (db, f, today) => (scGiven(f) ? tkAdd(today, db.schoolGiven18 ? -30 : -10) : today);   // 0018: 30 days back
 function scMarks(db, kid) {
   const out = {};
   scItemsOf(db, kid, (i) => !!i.assignment_id).forEach((i) => {
@@ -1794,7 +1794,7 @@ function scMarks(db, kid) {
 function scNew(db, kid, today) {
   if (!db.school_feeds || !db.school_feeds.some((f) => f.kid_id === kid && f.kind === 'assignments' && f.checked)) return null;
   return scItemsOf(db, kid, (i, f) => f.kind === 'assignments' && f.checked && !i.made_at && !i.hidden && !i.gone_at
-    && i.due_date >= scFrom(f, today) && i.due_date <= tkAdd(today, 30)).sort(scByDue).slice(0, 20)
+    && i.due_date >= scFrom(db, f, today) && i.due_date <= tkAdd(today, 30)).sort(scByDue).slice(0, 20)
     .map((i) => {
       const given = scGiven(scFeed(db, i.feed_id));
       return Object.assign({ id: i.id, title: i.title, subject: i.subject, due_date: i.due_date, quick: !given && tkBetween(today, i.due_date) <= 3 },
@@ -1827,9 +1827,9 @@ function scStatus(db, kid, nowMs, today) {
       last_try_at: f.last_try_at, last_ok_at: f.last_ok_at, last_count: f.last_count, last_repeats: f.last_repeats, last_stop: f.last_stop, fails: f.fails,
       next_at: f.next_at, stale: !f.paused && on && f.next_at != null && tkMs(f.next_at) < nowMs - 2 * 3600e3 })),
     check: scCheck(db, kid, today),
-    new: scItemsOf(db, kid, (i, f) => f.kind === 'assignments' && f.checked && !f.removed_at && !i.made_at && !i.hidden && !i.gone_at && i.due_date >= scFrom(f, today)
+    new: scItemsOf(db, kid, (i, f) => f.kind === 'assignments' && f.checked && !f.removed_at && !i.made_at && !i.hidden && !i.gone_at && i.due_date >= scFrom(db, f, today)
       && i.due_date <= tkAdd(today, 30)).sort(scByDue).slice(0, 50).map(pick),
-    hidden: scItemsOf(db, kid, (i, f) => f.kind === 'assignments' && !f.removed_at && !i.made_at && i.hidden && !i.gone_at && i.due_date >= scFrom(f, today)).sort(scByDue).map(pick),
+    hidden: scItemsOf(db, kid, (i, f) => f.kind === 'assignments' && !f.removed_at && !i.made_at && i.hidden && !i.gone_at && i.due_date >= scFrom(db, f, today)).sort(scByDue).map(pick),
     moved: scItemsOf(db, kid, (i, f) => { const a = assignment(i); return !scGiven(f) && !!a && !i.gone_at && i.due_date !== a.due_date && !!i.applied && a.due_date === i.applied.due_date; })
       .map((i) => { const a = assignment(i); return { assignment_id: a.id, title: a.title, from: a.due_date, to: i.due_date, due_date: a.due_date }; })
       .sort(scByDue).map((x) => ({ assignment_id: x.assignment_id, title: x.title, from: x.from, to: x.to })),

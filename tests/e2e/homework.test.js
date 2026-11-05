@@ -2264,6 +2264,65 @@ const emailOf = (req) => {
         'History · Letter to the teacher · due Tue Nov 10']) && same(await ticks(page), [false, true, true]),
       `${await lastToast(page)} | ${JSON.stringify(await rowsOf(page))}`);
     await page.context().close();
+
+    // Already on his homework under other words (a family's own weekly entry): the row is ticked to Hide, not Add. Same
+    // class ("Math" and "Math 6 - B"'s Math), the same due date and a shared word ("Mathlab"); a family entry due the same
+    // day in the same class with no word in common ("Spelling list" and Vocabulary practice) is not one.
+    const dupeDb = () => {
+      const d = pasteDb();
+      d.school_items.push(schoolItemRow({ id: '5c2f1000-0000-4000-8000-000000000098', feed_id: FA, title: 'MathLab Due Friday', subject: 'Math', due_date: '2026-11-02' }));
+      d.assignments.push(assignmentRow({ kid_id: ID.jordan, added_by: 'family', title: 'Mathlab: 10 topics', subject: 'Math', due_date: '2026-11-06', created_by: 'alex@example.com' }),
+        assignmentRow({ kid_id: ID.jordan, added_by: 'family', title: 'Spelling list', subject: 'English', due_date: '2026-11-09', created_by: 'alex@example.com' }));
+      return d;
+    };
+    const NOV2 = [].concat(['Nov 1'], day(2, [['3:00 PM', 'Vocabulary Practice', 'English 6 - A', 'Completed']]), day(3),
+      day(4, [['12:45 PM', 'Equations worksheet', 'Math 6 - B', 'Completed']]), day(5), day(6, [['11:59 PM', 'MathLab Due Friday', 'Math 6 - B', 'To do']]), day(7), day(8),
+      day(9, [['9:58 AM', 'Vocabulary practice', 'English 6 - A', 'To do']]),
+      day(10, [['11:00 PM', 'Letter to the teacher', 'History 6 - C', 'To do']]),
+      ...[11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30].map((n) => day(n)),
+      ['Dec 1'], day(2, [['8:00 AM', 'Quiz review', 'Math 6 - B', 'To do']]), day(3));
+    const PAGE2 = MONTH('November 2026', NOV2);
+    const DUPE_ROW = 'Hide: Math · MathLab Due Friday · due Fri Nov 6 · already on homework as “Mathlab: 10 topics”';
+    ({ page, db } = await open({ label: 'paste-dupe', db: dupeDb(), rpc: RPC15 }));
+    await page.click('[data-keep="new"] summary');
+    await page.click('[data-act="school-paste"]');
+    await pasteIn(page, PAGE2);
+    check('already on his homework under other words: "Hide: …, already on homework as “Mathlab: 10 topics”", ticked; the others as before',
+      (await tc(page, `${BOX} .hw-paste-found`)) === 'Found 5 of 6. Tick the ones to add to Jordan\'s homework with that due date. The ones already on it are ticked to hide.'
+      && same(await rowsOf(page), ['Math · Equations worksheet · due Wed Nov 4 · completed at school', 'Math · Quiz review · due Wed Dec 2', DUPE_ROW,
+        'English · Vocabulary practice · due Mon Nov 9', 'History · Letter to the teacher · due Tue Nov 10'])
+      && same(await ticks(page), [false, true, true, true, true]), `${await tc(page, `${BOX} .hw-paste-found`)} | ${JSON.stringify(await rowsOf(page))}`);
+    check('... a family entry due that day in that class with no word in common (Spelling list) is not one: Vocabulary practice is to add',
+      (await rowsOf(page)).includes('English · Vocabulary practice · due Mon Nov 9'));
+    check('... the button counts both: Add 3, hide 1', same(await addBtn(page), { text: 'Add 3, hide 1', disabled: false }), JSON.stringify(await addBtn(page)));
+    await page.click(`${BOX} .hw-paste-rows li:nth-child(3) input`);
+    check('... untick the hide: Add 3 to homework', same(await addBtn(page), { text: 'Add 3 to homework', disabled: false }), JSON.stringify(await addBtn(page)));
+    await page.click(`${BOX} .hw-paste-rows li:nth-child(3) input`);
+    check('... tick it again: Add 3, hide 1', same(await addBtn(page), { text: 'Add 3, hide 1', disabled: false }), JSON.stringify(await addBtn(page)));
+    await page.click(`${BOX} [data-act="paste-add"]`);
+    await settle(page);
+    const idOf2 = (t) => db.school_items.find((i) => i.title === t && i.feed_id === FA && (t !== 'Vocabulary practice' || i.due_date === '2026-11-02')).id;
+    check('Add 3, hide 1: the three added with their due dates first, then the one already on it hidden (school_item_action hide); the toast says both',
+      same(calls(db, 'school_item_action').map((c) => c.body), [
+        { p_item: idOf2('Quiz review'), p_action: 'add', p_due: '2026-12-02' }, { p_item: idOf2('Vocabulary practice'), p_action: 'add', p_due: '2026-11-09' },
+        { p_item: idOf2('Letter to the teacher'), p_action: 'add', p_due: '2026-11-10' }, { p_item: idOf2('MathLab Due Friday'), p_action: 'hide' }])
+      && db.school_items.find((i) => i.title === 'MathLab Due Friday').hidden === true
+      && (await lastToast(page)) === 'On Jordan\'s homework, each with its due date: 3 assignments. Hidden, already on it: 1',
+      `${JSON.stringify(calls(db, 'school_item_action').map((c) => c.body))} | ${await lastToast(page)}`);
+    await page.context().close();
+    // Only the ones already on it: "Hide 1", and the toast says so.
+    ({ page, db } = await open({ label: 'paste-dupe-only', db: dupeDb(), rpc: RPC15 }));
+    await page.click('[data-keep="new"] summary');
+    await page.click('[data-act="school-paste"]');
+    await pasteIn(page, PAGE2);
+    for (const n of [2, 4, 5]) await page.click(`${BOX} .hw-paste-rows li:nth-child(${n}) input`);
+    check('only the hide ticked: Hide 1', same(await addBtn(page), { text: 'Hide 1', disabled: false }), JSON.stringify(await addBtn(page)));
+    await page.click(`${BOX} [data-act="paste-add"]`);
+    await settle(page);
+    check('... Hide 1: one school_item_action hide, "Hidden, already on Jordan\'s homework: 1"',
+      same(calls(db, 'school_item_action').map((c) => c.body), [{ p_item: '5c2f1000-0000-4000-8000-000000000098', p_action: 'hide' }])
+      && (await lastToast(page)) === 'Hidden, already on Jordan\'s homework: 1', `${JSON.stringify(calls(db, 'school_item_action').map((c) => c.body))} | ${await lastToast(page)}`);
+    await page.context().close();
   }
 
   console.log(results.join('\n'));

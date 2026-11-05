@@ -7,8 +7,8 @@
 // One run: take the lease (school_begin), then for each link it hands over, while there is time (no
 // fetch starts after RUN_BUDGET_MS): check the address again, fetch it (FETCH_MS for the whole read,
 // redirects and body included; at most MAX_REDIRECTS redirects, each checked like the link; at most
-// MAX_BYTES), parse it, keep what the hub uses (assignments due from today − 14 to today + 120 days,
-// schedule and games items with a start from today to today + 55; then at most 400 assignments or
+// MAX_BYTES), parse it, keep what the hub uses (assignments dated from today − 180 to today + 120 days,
+// schedule and games items with a start from today to today + 55; then at most 1,000 assignments or
 // 2,000 other items, else 'too_many') and store it, or store its stop (school_store; if school_store refuses
 // the items, the read is stored again as 'error', with none); then end the run (school_finish). A link that
 // fails doesn't stop the others. A run stopped partway (the Edge Function's limits) never reaches
@@ -33,9 +33,12 @@ export const SCHOOL_LIMITS = { fetchMs: 15000 };
 export const RUN_BUDGET_MS = 30000;      // no fetch starts after this (pg_net waits 60 seconds)
 export const MAX_REDIRECTS = 3;
 export const MAX_BYTES = 3 * 1024 * 1024;
-export const MAX_ASSIGNMENTS = 400;
+export const MAX_ASSIGNMENTS = 1000;
 export const MAX_BUSY = 2000;
-export const ASSIGNMENT_WINDOW = { from: -14, to: 120 };   // days from today (the due date)
+// Days from today (the item's date). From 0018 an Assignments read covers 180 days back, so that homework made from an
+// item dated the day it was given goes on following the school while it is open; the database keeps, of these, what
+// the link's rule needs (school_store's p_from is the first day covered; 400 at most in its window).
+export const ASSIGNMENT_WINDOW = { from: -180, to: 120 };
 export const BUSY_WINDOW = { from: 0, to: 55 };            // days from today (the start)
 
 // The fixed codes a read can end with (school_feeds.last_stop).
@@ -196,6 +199,10 @@ export async function runSchool(deps: Deps, opts: { force: boolean }): Promise<R
   const tz = typeof lease.tz === 'string' && lease.tz ? lease.tz : 'America/New_York';
   const feeds = Array.isArray(lease.feeds) ? lease.feeds : [];
 
+  // school_store takes p_from from schema 18 (migration 0018), so this file and 0018 go live in either order. A version
+  // that can't be read is taken as before 18: the read is stored as before, from 14 days back.
+  const ver = await db.rpc('hub_schema_version');
+  const withFrom = !ver.error && Number(ver.data) >= 18;
   const tally: Tally = { read: 0, stored: 0, failed: 0, skipped: 0, items: 0 };
   let stop: string | null = today ? null : 'error';
   for (const f of today ? feeds : []) {
@@ -223,9 +230,16 @@ export async function runSchool(deps: Deps, opts: { force: boolean }): Promise<R
     } catch {
       itemStop = 'error';   // never the error's own words
     }
-    let r = await db.rpc('school_store', {
-      p_run: run, p_feed: f?.feed_id ?? null, p_items: itemStop ? [] : items, p_stop: itemStop, p_repeats: repeats,
-    });
+    // From 0018 an Assignments read says the first day it covered, so nothing older is ever counted missing. A database
+    // before 0018 is sent the read without it (that school_store keeps from 14 days back, as before).
+    let r = withFrom
+      ? await db.rpc('school_store', {
+        p_run: run, p_feed: f?.feed_id ?? null, p_items: itemStop ? [] : items, p_stop: itemStop, p_repeats: repeats,
+        p_from: String(f?.kind) === 'assignments' ? addDays(today!, ASSIGNMENT_WINDOW.from) : null,
+      })
+      : await db.rpc('school_store', {
+        p_run: run, p_feed: f?.feed_id ?? null, p_items: itemStop ? [] : items, p_stop: itemStop, p_repeats: repeats,
+      });
     // The items refused (PostgREST or the database answered an error): still store this link's read as a failed
     // one, a fixed code with no items, so it backs off and the status card says so, rather than being due again
     // every hour with nothing recorded.
