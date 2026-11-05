@@ -251,9 +251,17 @@ There is nothing to switch off: the answer only adds the past ones, and the page
 
 ### Paste due dates (v1.3, the site only)
 
-When the school's feed dates each assignment by the day it was given, **Paste due dates** on the parents' New from school saves typing each due date: on a computer, open Jordan's Assignments on Blackbaud with **Display assignments by: Due date** and **Month**, press Ctrl+A then Ctrl+C, paste, and tap **Read the dates**. The hub matches each waiting assignment by its title and class, ticks the ones it found (not those the school shows done), and **Add N to homework** adds them with those due dates. The page is read in the browser and never sent or kept; only the due dates added are saved. Details: [docs/v1.3-homework.md §23.5](docs/v1.3-homework.md#235-paste-due-dates-pages-only).
+When the school's feed dates each assignment by the day it was given, **Paste due dates** on the parents' New from school saves typing each due date: on a computer, open Jordan's Assignments on Blackbaud with **Display assignments by: Due date** and **Month**, press Ctrl+A then Ctrl+C, paste, and tap **Read the dates**. The hub matches each waiting assignment by its title and class, ticks the ones it found (not those the school shows done), and **Add N to homework** adds them with those due dates. One already on Jordan's homework under other words (your own weekly entry, the same class and due date) is ticked to **Hide** instead, so the button reads "Add 3, hide 1". The page is read in the browser and never sent or kept; only the due dates added are saved. Details: [docs/v1.3-homework.md §23.5](docs/v1.3-homework.md#235-paste-due-dates-pages-only).
 
 **Turning it on:** merge. Nothing to run.
+
+### Keeping what the school gave (v1.3, migration 0018)
+
+On a link dated by the day each assignment was given, an assignment nobody added in its first 10 days used to drop off New from school and be deleted 4 days later, and homework added from one stopped following the school after 14 days. From 0018 New from school keeps what was given in the last 30 days, and homework added from one keeps following the school while it's open: a changed description reaches it, and one taken off the school site shows as "no longer on the school site". When it runs, anything that had already left New from school is put on its hidden list instead of coming back. Details: [docs/v1.3-homework.md §23.6](docs/v1.3-homework.md#236-keeping-what-the-school-gave-migration-0018).
+
+**Turning it on** (about 5 minutes, after the merge; the two steps work in either order):
+1. **About 2 minutes:** run [`supabase/migrations/0018_school_given_keep.sql`](supabase/migrations/0018_school_given_keep.sql) in the Supabase SQL editor. "isn't installed" means 0017 is missing; "already installed" means it's done.
+2. **About 3 minutes:** deploy `hub-jobs` from main (verify_jwt off), then **Check now** on the school links.
 
 ### Change dates keeps due dates (v1.3, migration 0016)
 
@@ -263,7 +271,7 @@ When the school's feed dates each assignment by the day it was given, **Paste du
 
 ### The school's assigned dates (v1.3, migration 0015)
 
-Some schools' Assignments feed puts each assignment on the day it was **assigned**, not the day it's due (Blackbaud's Assignment Center shows the due date; its calendar feed may not). Read as due dates, those items dropped off New from school the day after they were given. From 0015 the dates check has a third answer, **The day it was assigned**, and a checked link has **Change dates** to answer it again. Then New from school shows what was assigned in the last 10 days, marked "assigned …", and **Add to homework** (or, on Jordan's My day, **Plan with Pat** or **Quick**) asks for the due date. The school never moves a due date a person gave.
+Some schools' Assignments feed puts each assignment on the day it was **assigned**, not the day it's due (Blackbaud's Assignment Center shows the due date; its calendar feed may not). Read as due dates, those items dropped off New from school the day after they were given. From 0015 the dates check has a third answer, **The day it was assigned**, and a checked link has **Change dates** to answer it again. Then New from school shows what was assigned in the last 10 days (30 from migration 0018), marked "assigned …", and **Add to homework** (or, on Jordan's My day, **Plan with Pat** or **Quick**) asks for the due date. The school never moves a due date a person gave.
 
 1. **Merge** (the site first: nothing changes until step 2).
 2. **About 2 minutes:** run [`supabase/migrations/0015_school_assigned_dates.sql`](supabase/migrations/0015_school_assigned_dates.sql) in the Supabase SQL editor. "isn't installed" means 0014 is missing; "already installed" means it's done.

@@ -12,7 +12,7 @@
 \ir calendar_fixtures.sql
 
 :as_owner
-select test.is(hub_schema_version(), 17, 'hub_schema_version is 17 (0017)');
+select test.is(hub_schema_version(), 18, 'hub_schema_version is 18 (0017 made it 17, 0018 18)');
 -- Runs a statement and keeps what it did: 'ok', or the error's code and message.
 create function pg_temp.run(p_sql text) returns text language plpgsql as $$
 begin

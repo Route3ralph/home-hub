@@ -1149,6 +1149,23 @@
     });
     return items.map((x) => Object.assign({ id: x.id }, got.get(x.id) || { due: null, status: null }));
   }
+  // Already on his homework, under other words: a family's own entry (not made from school, not dropped) due that day,
+  // of the same class (one name starts with the other: "Math" and "Math 7"), whose title shares a word of 4 letters or
+  // more that isn't a day or a word every weekly task has ("Mathlab: 10 topics" and "MathLab Due Friday"). Answers its
+  // title, or null. Such a row is ticked to Hide, not Add.
+  const PASTE_COMMON = ['assignment', 'assignments', 'complete', 'due', 'each', 'from', 'homework', 'minute', 'minutes', 'monday', 'tuesday',
+    'wednesday', 'thursday', 'friday', 'saturday', 'sunday', 'session', 'sessions', 'separate', 'that', 'this', 'topic', 'topics', 'week', 'weekly', 'with', 'your'];
+  const pasteWords = (s) => (String(s || '').toLowerCase().match(/[a-z\u00e0-\u00ff]{4,}/g) || []).filter((w) => !PASTE_COMMON.includes(w));
+  const sameClass = (a, b) => {
+    const x = pasteKey(a); const y = pasteKey(b);
+    return !x || !y || x === y || x.startsWith(`${y} `) || y.startsWith(`${x} `);
+  };
+  function alreadyOn(st, x, due) {
+    const mine = pasteWords(x.title);
+    const a = mine.length ? st.assignments.find((y) => y.added_by !== 'school' && y.status !== 'dropped' && y.due_date === due
+      && sameClass(y.subject, x.subject) && pasteWords(y.title).some((w) => mine.includes(w))) : null;
+    return a ? a.title : null;
+  }
   // The stops only Replace mends (their words say "use Replace"); Home Hub tries the others again.
   const REPLACE_STOPS = ['bad_link', 'redirect', 'refused', 'gone', 'sign_in', 'not_calendar'];
   // An empty check, in words, by the Assignments link's status (the same on 7 and 8, with no version gate): not read
@@ -1236,7 +1253,12 @@
     const now = pasteItems(st);
     return r.rows.map((row) => Object.assign({}, row, { x: now.find((x) => x.id === row.id) })).filter((row) => row.x);
   };
-  const pasteAddLabel = (n) => (n ? `Add ${n} to homework` : 'Add to homework');
+  const pasteAddLabel = (n, hide = 0) => (n && hide ? `Add ${n}, hide ${hide}` : hide ? `Hide ${hide}` : n ? `Add ${n} to homework` : 'Add to homework');
+  // The ticked rows: [to add, to hide] (a row already on his homework is ticked to hide).
+  const pasteCounts = (st) => {
+    const picks = pasteRows(st).filter((row) => row.due && row.pick);
+    return [picks.filter((row) => !row.dupe).length, picks.filter((row) => row.dupe).length];
+  };
   function pasteHTML(st) {
     if (core.schemaVersion < 15 || !pasteItems(st).length) return '';
     if (!st.paste) return `<div class="hw-feed-acts hw-paste-open">${btn('school-paste', 'Paste due dates')}</div>`;
@@ -1249,13 +1271,14 @@
       const hits = rows.filter((row) => row.due);
       const misses = rows.filter((row) => !row.due);
       found = `<p class="hw-switch-line hw-paste-found" role="status">${esc(hits.length
-        ? `Found ${hits.length} of ${rows.length}. Tick the ones to add to ${kid}'s homework with that due date.`
+        ? `Found ${hits.length} of ${rows.length}. Tick the ones to add to ${kid}'s homework with that due date.${hits.some((row) => row.dupe) ? ` The ones already on it are ticked to hide.` : ''}`
         : `None of the ${plural(rows.length, 'assignment')} waiting is on the page you pasted.`)}</p>
         ${hits.length ? `<ul class="hw-paste-rows">${hits.map((row) => `<li><label class="check"><input type="checkbox" name="pick" value="${esc(row.id)}"${row.pick ? ' checked' : ''}>
-          <span>${esc([row.x.subject, row.x.title, `due ${fmt.day(row.due)}`].concat(DONE_AT_SCHOOL.includes(row.status) ? [`${row.status} at school`] : []).filter(Boolean).join(' · '))}</span></label></li>`).join('')}</ul>` : ''}
+          <span>${esc((row.dupe ? 'Hide: ' : '') + [row.x.subject, row.x.title, `due ${fmt.day(row.due)}`].concat(DONE_AT_SCHOOL.includes(row.status) ? [`${row.status} at school`] : [])
+            .concat(row.dupe ? [`already on homework as “${row.dupe}”`] : []).filter(Boolean).join(' · '))}</span></label></li>`).join('')}</ul>` : ''}
         ${misses.length ? `<ul class="hw-paste-misses">${misses.map((row) => `<li>${esc(`${row.x.title}: not on the page you pasted`)}</li>`).join('')}</ul>` : ''}`;
     }
-    const n = rows.filter((row) => row.due && row.pick).length;
+    const [n, hide] = pasteCounts(st);
     const read = r && !r.error && rows.some((row) => row.due);
     return `<form class="hw-paste" data-form="schoolpaste" novalidate autocomplete="off">
       <p class="hw-switch-title">Paste due dates</p>
@@ -1266,7 +1289,7 @@
       <small class="hw-switch-line">Only the due dates you add are saved. Nothing else you paste is kept or sent.</small>
       ${found}
       <div class="form-actions"><button type="button" class="btn" data-act="paste-cancel">Cancel</button><button type="submit" class="btn${read ? '' : ' btn-primary'}">Read the dates</button>${read
-        ? `<button type="button" class="btn btn-primary" data-act="paste-add"${n ? '' : ' disabled'}>${esc(pasteAddLabel(n))}</button>` : ''}</div></form>`;
+        ? `<button type="button" class="btn btn-primary" data-act="paste-add"${n || hide ? '' : ' disabled'}>${esc(pasteAddLabel(n, hide))}</button>` : ''}</div></form>`;
   }
   function schoolHTML(st) {
     const kid = kidName(st);
@@ -1946,7 +1969,8 @@
       const res = matchDueDates(cal, items, st.school.hidden || [], st.assignments.map((a) => [a.title, a.due_date]));
       const rows = res.map((m) => {
         const due = m.due && m.due <= most ? m.due : null;
-        return { id: m.id, due, status: due ? m.status : null, pick: !!due && !DONE_AT_SCHOOL.includes(m.status) };
+        const dupe = due ? alreadyOn(st, items.find((x) => x.id === m.id) || {}, due) : null;
+        return { id: m.id, due, status: due ? m.status : null, dupe, pick: !!due && (!!dupe || !DONE_AT_SCHOOL.includes(m.status)) };
       });
       // In "Display assignments by: Assigned date" every day is the day it was assigned, as these items' dates are.
       const hits = rows.filter((row) => row.due);
@@ -1958,26 +1982,31 @@
     st.paste.read = read;
     draw(st);
   }
+  // The ones to add first, then the ones already on his homework, hidden (school_item_action(hide), as Hide does).
   function addPasted(st) {
     const picks = pasteRows(st).filter((row) => row.due && row.pick);
     if (!picks.length) return;
     const kid = kidName(st);
+    const order = picks.filter((row) => !row.dupe).concat(picks.filter((row) => row.dupe));
     let added = 0;
+    let hidden = 0;
     write(st, async () => {
-      for (const row of picks) {
+      for (const row of order) {
         try {
-          await run(sb().rpc('school_item_action', { p_item: row.id, p_action: 'add', p_due: row.due }));
+          if (row.dupe) await run(sb().rpc('school_item_action', { p_item: row.id, p_action: 'hide' }));
+          else await run(sb().rpc('school_item_action', { p_item: row.id, p_action: 'add', p_due: row.due }));
         } catch (err) {
-          if (!added) throw err;
-          // Those added stay added; the toast says so, and the rest stay ticked in the box.
-          const said = new Error(`${hwError(err)} ${plural(added, 'assignment')} added before that; the rest are still ticked.`);
+          if (!added && !hidden) throw err;
+          // Those done stay done; the toast says so, and the rest stay ticked in the box.
+          const said = new Error(`${hwError(err)} ${plural(added, 'assignment')} added${hidden ? ` and ${hidden} hidden` : ''} before that; the rest are still ticked.`);
           said.code = 'P0001';
           throw said;
         }
-        added += 1;
+        if (row.dupe) hidden += 1; else added += 1;
       }
       st.paste = null;   // before write's reload draws the page again
-    }, () => toast(`On ${kid}'s homework, each with its due date: ${plural(added, 'assignment')}`));
+    }, () => toast(added && hidden ? `On ${kid}'s homework, each with its due date: ${plural(added, 'assignment')}. Hidden, already on it: ${hidden}`
+      : hidden ? `Hidden, already on ${kid}'s homework: ${hidden}` : `On ${kid}'s homework, each with its due date: ${plural(added, 'assignment')}`));
   }
   // Check now: hub-jobs reads every link not read in the last minute, as the parent; then the status is read again.
   async function checkNow(st) {
@@ -2245,9 +2274,9 @@
       if (x.name === 'pick' && st.paste && st.paste.read && st.paste.read.rows && x.closest('form[data-form="schoolpaste"]')) {
         const row = st.paste.read.rows.find((r) => r.id === x.value);
         if (row) row.pick = x.checked;
-        const n = pasteRows(st).filter((r) => r.due && r.pick).length;
+        const [n, hide] = pasteCounts(st);
         const add = x.closest('form').querySelector('[data-act="paste-add"]');
-        if (add) { add.textContent = pasteAddLabel(n); add.disabled = !n; }
+        if (add) { add.textContent = pasteAddLabel(n, hide); add.disabled = !n && !hide; }
         return;
       }
       if (x.dataset.act === 'points-on') { write(st, () => saveKid(st, { points_on: x.checked }), () => toast(x.checked ? 'Points are on' : 'Points are off')); return; }

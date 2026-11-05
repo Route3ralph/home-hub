@@ -144,10 +144,10 @@ const ASSIGNMENTS = crlf([
   'DTSTART;VALUE=DATE:20270521',
   'SUMMARY:Science 8: Year-end project',
   'END:VEVENT',
-  // 10. Past the window (two months back).
+  // 10. Past the window (seven months back; from 0018 the window reaches 180 days back).
   'BEGIN:VEVENT',
   'UID:a-110@academy.school.example',
-  'DTSTART;VALUE=DATE:20260904',
+  'DTSTART;VALUE=DATE:20260404',
   'SUMMARY:Science 8: Safety contract',
   'END:VEVENT',
   // 11. The same UID as 2, later in the feed (the database keeps the last).
@@ -316,7 +316,7 @@ check('unfoldBytes joins a fold (CRLF, LF or CR, then a space or a tab) inside a
 // What is kept.
 const kept = keep(evs, 'assignments', TODAY);
 const keptList = Array.isArray(kept) ? kept : [];
-check('assignments kept: due from today − 14 to today + 120 (the one 200 days out and the one in September aren\'t)',
+check('assignments kept: dated from today − 180 to today + 120 (the one 200 days out and the one in April aren\'t)',
   keptList.length === 10 && !keptList.some((k) => /Year-end|Safety/.test(String(k.title))), keptList.map((k) => k.title));
 const keptLab = keptList.find((k) => k.uid === 'a-101@academy.school.example');
 check('... each as school_store takes it: uid, title, class, description, first and last day',
@@ -333,8 +333,8 @@ const games = parseIcal(GAMES, TZ);
 const keptGames = keep(games.kind === 'calendar' ? games.events : [], 'games', TODAY);
 check('Games/Practices: timed events are busy time; an all-day meet isn\'t kept; DURATION gives the end',
   Array.isArray(keptGames) && keptGames.length === 2 && keptGames[1].ends_at === '2026-11-05T23:00:00.000Z' && keptGames[0].starts_at === '2026-11-04T21:15:00.000Z', keptGames);
-const many = Array.from({ length: 401 }, (_, i) => ({ uid: `n-${i}`, summary: `Worksheet ${i}`, description: null, allDay: true, firstDay: '2026-11-20', lastDay: '2026-11-20', start: null, end: null, repeats: false }));
-check('401 assignments in the window: too_many', keep(many, 'assignments', TODAY) === 'too_many' && Array.isArray(keep(many.slice(1), 'assignments', TODAY)));
+const many = Array.from({ length: 1001 }, (_, i) => ({ uid: `n-${i}`, summary: `Worksheet ${i}`, description: null, allDay: true, firstDay: '2026-11-20', lastDay: '2026-11-20', start: null, end: null, repeats: false }));
+check('1,001 assignments in the window: too_many (1,000 aren\'t)', keep(many, 'assignments', TODAY) === 'too_many' && Array.isArray(keep(many.slice(1), 'assignments', TODAY)));
 
 // ---------------------------------------------------------------------
 // The address check (school.ts; private.school_url does the same)
@@ -371,7 +371,7 @@ type Call = { fn: string; args: any };
 type Hit = { url: string; redirect: unknown; signal: boolean; method: string };
 type Route = (url: string, init: any) => Promise<Response> | Response;
 
-function setup(opts: { feeds?: any[]; routes?: Record<string, Route>; begin?: any; storeError?: boolean | ((args: any) => boolean); admin?: boolean } = {}) {
+function setup(opts: { feeds?: any[]; routes?: Record<string, Route>; begin?: any; storeError?: boolean | ((args: any) => boolean); admin?: boolean; before18?: boolean } = {}) {
   const calls: Call[] = [];
   const hits: Hit[] = [];
   const clock = { t: NOW };
@@ -383,11 +383,14 @@ function setup(opts: { feeds?: any[]; routes?: Record<string, Route>; begin?: an
         return Promise.resolve(opts.begin ?? { data: { go: true, stop: null, run_id: RUN, today: TODAY, tz: TZ, feeds: opts.feeds ?? [FEEDS.assignments] }, error: null });
       }
       if (fn === 'school_store') {
+        // A database before 0018: school_store takes no p_from, so PostgREST finds no such function.
+        if (opts.before18 && args && 'p_from' in args) return Promise.resolve({ data: null, error: { message: 'Could not find the function public.school_store', code: 'PGRST202' } });
         if (typeof opts.storeError === 'function' ? opts.storeError(args) : opts.storeError) return Promise.resolve({ data: null, error: { message: 'boom', code: 'XX000' } });
         const n = Array.isArray(args?.p_items) ? args.p_items.length : 0;
         return Promise.resolve({ data: args?.p_stop ? { stored: false, stop: args.p_stop } : { stored: true, stop: null, kept: n, added: n, missing: 0, gone: 0 }, error: null });
       }
       if (fn === 'school_finish') return Promise.resolve({ data: null, error: null });
+      if (fn === 'hub_schema_version') return Promise.resolve({ data: opts.before18 ? 17 : 18, error: null });
       return Promise.resolve({ data: null, error: { message: `unexpected ${fn}`, code: 'PGRST202' } });
     },
     from() { throw new Error('no table reads in the school action'); },
@@ -452,10 +455,38 @@ const keepAlive = setInterval(() => { /* waiting */ }, 1000);
     check('... school_store with the run, the link, the items and no stop',
       st.length === 3 && st.every((a) => a.p_run === RUN && a.p_stop === null) && st[0].p_feed === FEEDS.assignments.feed_id && st[0].p_items.length === 10 && st[0].p_repeats === 1, st.map((a) => [a.p_feed, a.p_items?.length, a.p_stop, a.p_repeats]));
     check('... 200 schedule items and 2 games items', st[1].p_items.length === 200 && st[2].p_items.length === 2);
+    check('... the Assignments read says the first day it covered, today − 180 (0018); the others none',
+      st[0].p_from === '2026-05-06' && st[1].p_from === null && st[2].p_from === null, st.map((a) => a.p_from));
     check('... each fetch is a GET with redirect: "manual" and a time limit',
       s.hits.length === 3 && s.hits.every((h) => h.redirect === 'manual' && h.signal && h.method === 'GET'), s.hits);
     check('... and nothing is written to the console', logged.length === 0, logged);
     check('... the answer carries no address', !r.text.includes('podium') && !r.text.includes('A1a2'), r.text);
+  }
+
+  // ---- A database before 0018 (hub_schema_version 17, school_store without p_from): each read is stored without it, as
+  // before, and nothing is refused (so hub-jobs and 0018 go live in either order).
+  {
+    const s = setup({
+      feeds: [FEEDS.assignments, FEEDS.schedule, FEEDS.games], before18: true,
+      routes: { [FEEDS.assignments.url]: ok(ASSIGNMENTS), [FEEDS.schedule.url]: ok(SCHEDULE.text), [FEEDS.games.url]: ok(GAMES) },
+    });
+    const r = await run(s);
+    const body = JSON.parse(r.text);
+    const st = stores(s.calls);
+    check('a database before 0018 (schema 17): hub_schema_version read once, after school_begin; each link stored without p_from; the run is good (200)',
+      r.status === 200 && body.ok === true && body.stored === 3 && body.failed === 0 && st.length === 3 && st.every((a) => !('p_from' in a) && a.p_run === RUN && a.p_stop === null)
+      && st[0].p_items.length === 10 && s.calls.filter((c) => c.fn === 'hub_schema_version').length === 1 && s.calls[1].fn === 'hub_schema_version',
+      [r.status, body, st.map((a) => [a.p_feed, 'p_from' in a, a.p_items?.length]), s.calls.map((c) => c.fn)]);
+  }
+  // ---- The version can't be read: as before 18 (no p_from), and the run goes on.
+  {
+    const s = setup({ feeds: [FEEDS.assignments], routes: { [FEEDS.assignments.url]: ok(ASSIGNMENTS) } });
+    const rpc = s.deps.service().rpc;
+    s.deps.service = () => ({ rpc: (fn: string, args?: any) => (fn === 'hub_schema_version' ? Promise.resolve({ data: null, error: { message: 'boom', code: 'XX000' } }) : rpc(fn, args)), from() { throw new Error('no'); } }) as any;
+    const r = await run(s);
+    const st = stores(s.calls);
+    check('hub_schema_version refused: the read stored without p_from (as before 18), and the run is good',
+      r.status === 200 && JSON.parse(r.text).stored === 1 && st.length === 1 && !('p_from' in st[0]), [r.status, r.text, st.map((a) => 'p_from' in a)]);
   }
 
   // ---- Who may ask.
@@ -537,8 +568,8 @@ const keepAlive = setInterval(() => { /* waiting */ }, 1000);
   await stopFor(() => new Response(new ReadableStream({
     pull(c) { c.enqueue(new TextEncoder().encode('BEGIN:VCALENDAR\r\n' + 'X'.repeat(256 * 1024))); },
   }), { status: 200 }), 'a body that runs on past 3 MB without a Content-Length → too_big', 'too_big');
-  await stopFor(ok(crlf(['BEGIN:VCALENDAR', ...Array.from({ length: 401 }, (_, i) => [`BEGIN:VEVENT`, `UID:w-${i}`, 'DTSTART;VALUE=DATE:20261120', `SUMMARY:Worksheet ${i}`, 'END:VEVENT']).flat(), 'END:VCALENDAR'])),
-    '401 assignments in the window → too_many, no items sent', 'too_many');
+  await stopFor(ok(crlf(['BEGIN:VCALENDAR', ...Array.from({ length: 1001 }, (_, i) => [`BEGIN:VEVENT`, `UID:w-${i}`, 'DTSTART;VALUE=DATE:20261120', `SUMMARY:Worksheet ${i}`, 'END:VEVENT']).flat(), 'END:VCALENDAR'])),
+    '1,001 assignments in the window → too_many, no items sent', 'too_many');
 
   // Redirects.
   const nextUrl = z('N1n2N3n4N5n6');

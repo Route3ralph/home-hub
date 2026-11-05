@@ -1,6 +1,6 @@
 -- The school's assigned dates (migration 0015, docs/v1.3-homework.md §23): an Assignments link whose dates are the
 -- day each item was given ('assigned'). The first-import check and Change dates take it; New from school (hers and
--- the parents') holds what was given from 10 days ago to 30 days on, each with assigned: true; Add, Quick and Plan
+-- the parents') holds what was given from 30 days ago (10 before 0018) to 30 days on, each with assigned: true; Add, Quick and Plan
 -- with Pat need the due date (p_due), from the day it was given to 4 months on, and it is the assignment's; the school
 -- never moves it (no "moved"), though title, class and description still follow; a link set back to 'end' keeps the
 -- due dates already given. A 'start' or 'end' link takes p_due too (within its own bounds) and answers as before
@@ -61,7 +61,7 @@ create or replace function private.school_host_suffix() returns text language sq
 -- ---------------------------------------------------------------------
 -- The schema, the signatures and their grants (§23.2)
 -- ---------------------------------------------------------------------
-select test.is(hub_schema_version(), 17, 'hub_schema_version is 17 (0015 made it 15, 0016 16, 0017 17)');
+select test.is(hub_schema_version(), 18, 'hub_schema_version is 18 (0015 made it 15, 0016 16, 0017 17, 0018 18)');
 select test.is((select string_agg(p.oid::regprocedure::text, ' | ' order by p.oid::regprocedure::text)
                 from pg_proc p where p.proname in ('school_item_action', 'school_item_by_token', 'school_assignment')),
                'private.school_assignment(uuid,text,date) | school_item_action(uuid,text,date) | school_item_by_token(text,uuid,text,integer,date)',
@@ -111,18 +111,18 @@ select test.is((select date_rule || ' ' || date_shift || ' ' || checked from sch
                '"The day it was assigned": the link is checked, its rule assigned');
 select test.is((pg_temp.item('Equations worksheet')).due_date, '2026-10-29'::date, '... an item''s day is its first day (the day it was given)');
 select test.is(:'st'::jsonb -> 'feeds' -> 0 ->> 'date_rule', 'assigned', 'the status card says the rule');
-select test.is(pg_temp.titles(:'st'::jsonb -> 'new'), 'Equations worksheet | Character slides | Vocabulary practice | Letter to the teacher',
-               'New from school: what was given from 10 days ago on (not the map, given 11 days ago), by the day it was given');
+select test.is(pg_temp.titles(:'st'::jsonb -> 'new'), 'Map of the rivers | Equations worksheet | Character slides | Vocabulary practice | Letter to the teacher',
+               'New from school: what was given from 30 days ago on (the map, given 11 days ago, too: 0018), by the day it was given');
 select test.is((select string_agg((x ->> 'assigned') || ' ' || pg_temp.keys(x), ' | ') from jsonb_array_elements(:'st'::jsonb -> 'new') x),
-               'true assigned,due_date,id,subject,title | true assigned,due_date,id,subject,title | true assigned,due_date,id,subject,title | true assigned,due_date,id,subject,title',
+               'true assigned,due_date,id,subject,title | true assigned,due_date,id,subject,title | true assigned,due_date,id,subject,title | true assigned,due_date,id,subject,title | true assigned,due_date,id,subject,title',
                '... each with assigned: true (its due_date is the day it was given)');
 :as_anon
 select homework_by_token(test.token('Taylor')) as kv \gset
-select test.is(pg_temp.titles(:'kv'::jsonb -> 'from_school'), 'Equations worksheet | Character slides | Vocabulary practice | Letter to the teacher',
-               'her New from school: the same four');
+select test.is(pg_temp.titles(:'kv'::jsonb -> 'from_school'), 'Map of the rivers | Equations worksheet | Character slides | Vocabulary practice | Letter to the teacher',
+               'her New from school: the same five');
 select test.is((select string_agg((x ->> 'assigned') || ' ' || (x ->> 'quick'), ',') from jsonb_array_elements(:'kv'::jsonb -> 'from_school') x),
-               'true false,true false,true false,true false', '... each assigned: true, quick: false (its due date isn''t known yet)');
-select test.is(get_person_day(test.token('Taylor')) -> 'homework' -> 'from_school', '4'::jsonb, '... and her card counts them');
+               'true false,true false,true false,true false,true false', '... each assigned: true, quick: false (its due date isn''t known yet)');
+select test.is(get_person_day(test.token('Taylor')) -> 'homework' -> 'from_school', '5'::jsonb, '... and her card counts them');
 
 -- ---------------------------------------------------------------------
 -- A parent's Add needs the due date
@@ -142,7 +142,7 @@ select school_item_action(pg_temp.iid('Equations worksheet'), 'add', '2026-11-04
 select test.is((select a.added_by || ' ' || a.due_date || ' ' || a.subject from assignments a where a.id = (:'ad'::jsonb ->> 'assignment_id')::uuid),
                'school 2026-11-04 Math', 'Add with its due date: an assignment from school, due that day');
 select test.is((pg_temp.item('Equations worksheet')).applied ->> 'due_date', null, '... and the feed keeps no due date it wrote (it never writes one)');
-select test.is(pg_temp.titles(:'ad'::jsonb -> 'new'), 'Character slides | Vocabulary practice | Letter to the teacher', '... it leaves New from school');
+select test.is(pg_temp.titles(:'ad'::jsonb -> 'new'), 'Map of the rivers | Character slides | Vocabulary practice | Letter to the teacher', '... it leaves New from school');
 select test.is(school_item_action(pg_temp.iid('Equations worksheet'), 'add') ->> 'assignment_id', :'ad'::jsonb ->> 'assignment_id',
                'a resent Add (even without the date) finds the same assignment');
 select test.is(school_item_action(pg_temp.iid('Equations worksheet'), 'add', '2026-11-20') ->> 'assignment_id', :'ad'::jsonb ->> 'assignment_id',
@@ -151,7 +151,7 @@ select test.is((pg_temp.asg('Equations worksheet')).due_date, '2026-11-04'::date
 -- Hide and Show work as before, with assigned: true on the hidden list.
 select test.is(pg_temp.el(school_item_action(pg_temp.iid('Vocabulary practice'), 'hide') -> 'hidden', 'Vocabulary practice') ->> 'assigned', 'true',
                'Hide: on the hidden list with assigned: true');
-select test.is(pg_temp.titles(school_item_action(pg_temp.iid('Vocabulary practice'), 'show') -> 'new'), 'Character slides | Vocabulary practice | Letter to the teacher',
+select test.is(pg_temp.titles(school_item_action(pg_temp.iid('Vocabulary practice'), 'show') -> 'new'), 'Map of the rivers | Character slides | Vocabulary practice | Letter to the teacher',
                '... and Show brings it back');
 
 -- ---------------------------------------------------------------------
@@ -181,7 +181,7 @@ select test.is((select count(*) from homework_steps s where s.assignment_id = (p
 select test.is((pg_temp.asg('Letter to the teacher')).due_date || ' ' || (select count(*) from homework_steps s where s.assignment_id = (pg_temp.asg('Letter to the teacher')).id),
                '2026-11-10 0', 'Plan with Pat with its due date: due a week on, no plan yet');
 :as_anon
-select test.is(pg_temp.titles(:'wt'::jsonb -> 'from_school'), 'Vocabulary practice', '... and what is left on her New from school');
+select test.is(pg_temp.titles(:'wt'::jsonb -> 'from_school'), 'Map of the rivers | Vocabulary practice', '... and what is left on her New from school');
 select test.is(pg_temp.el(:'wt'::jsonb -> 'assignments', 'Letter to the teacher') -> 'school', '{"gone": false, "moved_to": null}'::jsonb,
                '... its school marks: on the site, not moved');
 select test.is(pg_temp.run(format('select school_item_by_token(%L, %L, ''hide'', null, ''2026-11-10'')', test.token('Taylor'), pg_temp.iid('Vocabulary practice'))), 'ok',
