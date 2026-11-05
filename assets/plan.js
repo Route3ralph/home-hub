@@ -113,7 +113,11 @@
    (the month on the first day and each 1st, the weekday's letter, the date; each week from its Monday;
    today marked); plan.css draws them light and dark, a box too narrow scrolls inside itself.
      overview(items, o)         the parents' Homework page and Pat's link: a row per open assignment (status open
-                                or none), by due date, over o.days (21) days. A bar from its first step day (today
+                                or none) that the days hold, by due date, over o.days (21) days: due by their last
+                                day (late ones too), or a step not done planned on or before it, or (Pat's list, no
+                                step days) a plan with steps left; the rest counted under the rows ("12 more due
+                                after Sun Nov 22"), or alone ("Nothing due by …; 12 more after that") when no row is
+                                left. A bar from its first step day (today
                                 when it has no plan or that day is earlier) to its due date, the done share filled;
                                 milestones as diamonds (filled when done) on their days when the steps are known,
                                 else next_milestone's; one not done whose day has passed on today's column (is-behind);
@@ -319,6 +323,7 @@
       tl_next_weeks: 'Next {n} weeks', tl_overview: 'Open assignments, {from} to {to}', tl_chart: 'Plan by day, {from} to {to}',
       tl_from: 'steps from {day}', tl_no_plan: 'no plan yet', tl_ms: 'milestone {title} {day}', tl_ms_done: 'milestone {title} done',
       tl_steps_done: '{n} of {m} steps done', tl_late: 'late', tl_behind: 'from earlier',
+      tl_more: '{n} more due after {day}', tl_nothing: 'Nothing due by {day}; {n} more after that',
       tl_phase_end: 'Check and turn in', tl_phase_all: 'The plan', tl_n_steps: '{n} steps', tl_n_steps_one: '1 step',
       tl_key_due: 'due date', tl_key_done: 'done', tl_key_off: 'no homework time',
       tl_next_flag: 'Next flag: {title}', tl_points_now: '+{n} points now', tl_all_flags: 'Every flag done!', tl_due_when: 'Due {when}', tl_do_when: 'Do by {when}',
@@ -450,6 +455,7 @@
       tl_next_weeks: 'Las próximas {n} semanas', tl_overview: 'Trabajos abiertos, del {from} al {to}', tl_chart: 'Plan por días, del {from} al {to}',
       tl_from: 'pasos desde {day}', tl_no_plan: 'todavía sin plan', tl_ms: 'hito {title} {day}', tl_ms_done: 'hito {title} hecho',
       tl_steps_done: '{n} de {m} pasos hechos', tl_late: 'con retraso', tl_behind: 'de antes',
+      tl_more: '{n} más para después del {day}', tl_nothing: 'Nada para el {day} o antes; {n} más después',
       tl_phase_end: 'Revisar y entregar', tl_phase_all: 'El plan', tl_n_steps: '{n} pasos', tl_n_steps_one: '1 paso',
       tl_key_due: 'entrega', tl_key_done: 'hecho', tl_key_off: 'sin tiempo de tarea',
       tl_next_flag: 'Siguiente bandera: {title}', tl_points_now: '+{n} puntos ahora', tl_all_flags: '¡Todas las banderas hechas!', tl_due_when: 'Se entrega {when}', tl_do_when: 'Hacer para {when}',
@@ -1280,10 +1286,22 @@
     if (!isDay(today)) return '';
     const n = Math.max(3, Math.min(TL_MAX, Math.round(Number(x.days)) || TL_DAYS));
     const end = addDays(today, n - 1);
-    const open = (Array.isArray(items) ? items : []).map((a, i) => ({ a, i }))
+    const all = (Array.isArray(items) ? items : []).map((a, i) => ({ a, i }))
       .filter(({ a }) => isOpen(a) && isDay(a.due_date))
       .sort((p, q) => (p.a.due_date < q.a.due_date ? -1 : p.a.due_date > q.a.due_date ? 1 : p.i - q.i));
-    if (!open.length) return '';
+    if (!all.length) return '';
+    // Only what the days hold: due by their last day (late ones too), or a step not done planned on or before it;
+    // without step days (Pat's list), a plan with steps left. The rest are counted under the rows, not drawn.
+    const inDays = (a) => {
+      if (a.due_date <= end) return true;
+      const steps = stepsOf(a);
+      if (steps) return steps.some((s) => !s.done && isDay(s.day) && s.day <= end);
+      const total = Math.max(0, Math.round(Number(a.steps)) || 0);
+      return total > Math.max(0, Math.round(Number(a.steps_done)) || 0);
+    };
+    const open = all.filter(({ a }) => inDays(a));
+    const more = all.length - open.length;
+    const endDay = fmt.day(end, l);
     const colOf = (d) => Math.max(0, Math.min(n - 1, daysBetween(today, d)));
     const cells = tlCells(today, n, { today });
     const rows = open.map(({ a }) => {
@@ -1326,8 +1344,13 @@
         + `<span class="plan-tl-track" aria-hidden="true">${cells}${bar}${marks}${tail}</span></li>`;
     }).join('');
     const label = t('tl_overview', { from: fmt.day(today, l), to: fmt.day(end, l) }, l);
+    if (!open.length) {
+      return `<div class="plan-tl plan-tl-overview is-empty" role="group" aria-label="${esc(label)}" style="--tl-days:${n}">`
+        + `<p class="plan-tl-more">${esc(t('tl_nothing', { n: more, day: endDay }, l))}</p></div>`;
+    }
     return `<div class="plan-tl plan-tl-overview" role="group" aria-label="${esc(label)}" style="--tl-days:${n}">`
       + `<div class="plan-tl-scroll"><div class="plan-tl-grid">${tlHead(today, n, { today }, l)}<ul class="plan-tl-rows">${rows}</ul></div></div>`
+      + `${more ? `<p class="plan-tl-more">${esc(t('tl_more', { n: more, day: endDay }, l))}</p>` : ''}`
       + `${tlKey([['k-ms', ICON.diamond, t('tag_milestone', null, l)], ['k-due', ICON.flag, t('tl_key_due', null, l)], ['k-today', '<i></i>', t('rel_today', null, l)]])}</div>`;
   }
 

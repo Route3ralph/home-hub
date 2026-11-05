@@ -166,6 +166,8 @@ a.plan-tl-name:hover .plan-tl-title, a.plan-tl-name:focus-visible .plan-tl-title
 .plan-tl-step.is-done .plan-tl-min { color: var(--surface); }
 .plan-tl-step.is-behind { border-style: dashed; border-color: var(--warn); background: var(--warn-soft); color: var(--warn); }
 .plan-tl-foot { margin: 4px 0 0; color: var(--text-2); font-size: 13px; font-weight: 600; text-align: right; }
+/* The overview's count of what its days don't hold ("12 more due after Sun Nov 22") */
+.plan-tl-more { margin: 6px 0 0; color: var(--text-2); font-size: 13px; }
 .plan-tl-key { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 6px 0 0; color: var(--text-3); font-size: 12px; }
 .plan-tl-key span { display: inline-flex; align-items: center; gap: 5px; }
 .plan-tl-key svg { width: 12px; height: 12px; }

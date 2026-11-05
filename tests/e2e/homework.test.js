@@ -1943,6 +1943,11 @@ const emailOf = (req) => {
     const ov3 = await readTl(page, TL);
     check('Next 3 days: Thu Nov 5 to Sat Nov 7', (await page.$eval('[data-sec="timeline"] > .sec-head', (h) => h.textContent.trim())) === 'Next 3 days'
       && !!ov3 && ov3.days.length === 3 && ov3.label === 'Open assignments, Thu Nov 5 to Sat Nov 7', JSON.stringify(ov3 && [ov3.label, ov3.days]));
+    // Only what the 3 days hold (the owner, 4 Nov: "when I filter to 3 days it still shows over a month").
+    const more3 = await page.$eval('[data-sec="timeline"] .plan-tl-more', (x) => x.textContent.trim()).catch(() => null);
+    check('... only what the 3 days hold: due by Sat Nov 7 (the late book list too) or a step not done planned by then; the rest counted under the rows',
+      same(ov3.rows.map((r) => r.title), ['Book list', 'Worksheet 5.1', 'Science project: river poster']) && more3 === '4 more due after Sat Nov 7',
+      JSON.stringify([ov3.rows.map((r) => r.title), more3]));
     await page.selectOption('[data-sec="timeline"] select[name="tl-range"]', '14');
     await sleep(200);
     const ov14 = await readTl(page, TL);
