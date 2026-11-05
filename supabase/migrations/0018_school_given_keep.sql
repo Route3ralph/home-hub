@@ -8,8 +8,8 @@
 --   On a link dated by the day each assignment was given ('assigned', 0015), the hub kept an item only while that day
 --   was in the last 14 days, and showed it in New from school only while it was in the last 10. Two things went wrong:
 --   • an item nobody added in its first 10 days left New from school, and 4 days later it was deleted, without a word;
---   • homework made from one stopped following the school 14 days after it was given: a title, class or description
---     the teacher changed later never reached it, and one the teacher took off the school site was never marked gone.
+--   • homework made from one stopped following the school 14 days after it was given: a description the teacher
+--     changed later never reached it, and one the teacher took off the school site was never marked gone.
 --
 -- What it changes (an 'assigned' link only; a 'start' or 'end' link, and Schedule and Games links, are as on 17)
 --   • New from school (his on My day, and the parents' status card, new and hidden): the items given from today − 30
@@ -46,7 +46,7 @@
 --   then 0009's school_store ("create or replace function public.school_store(p_run uuid, p_feed uuid, p_items jsonb,
 --   p_stop text, p_repeats int default 0)", to its "$$;") with 0006's revoke and grant for it, 0015's school_new and
 --   school_feed_status, 0006's school_trim (as "create or replace") and 0017's hub_schema_version (each block to its
---   "$$;"). hub-jobs must be the one before this release first (it sends p_from). The items hidden once stay hidden.
+--   "$$;"). hub-jobs can stay as it is: on 17 it sends no p_from. The items hidden once stay hidden.
 -- =====================================================================
 
 begin;
