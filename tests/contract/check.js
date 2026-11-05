@@ -8,7 +8,7 @@
 //   sb.rpc('name', { p_a: …, p_b }) and core.v2.call('name', { … })   a function in public
 //     (any call('name', …) or x.call('name', …) whose first argument is a plain string counts)
 //   .from('table')                                                     a table or view in public
-// Who makes the call: the signed-out pages (day.js, day.html, share.html) as anon, the Edge
+// Who makes the call: the signed-out pages (day.js, day.html, board.js, board.html, share.html) as anon, the Edge
 // Functions as authenticated or service_role (it depends on the key), everything else as
 // authenticated. A call matches a function the way PostgREST picks one: every name sent is one
 // of its arguments, and every argument without a default is sent.
@@ -232,7 +232,7 @@ function scanFile(file) {
 const ROLE_LABEL = { anon: 'signed out', authenticated: 'signed in', server: 'Edge Function' };
 function roleOf(rel) {
   if (/^supabase\/functions\//.test(rel)) return 'server';
-  if (/(^|\/)(day\.js|day\.html|share\.html)$/.test(rel)) return 'anon';
+  if (/(^|\/)(day\.js|day\.html|board\.js|board\.html|share\.html)$/.test(rel)) return 'anon';
   return 'authenticated';
 }
 function canUse(entry, role) {
@@ -354,8 +354,9 @@ function main() {
   // The site has always made these calls; if the scan misses them, the scanner is broken.
   if (!only.length) {
     const has = (kind, name, role) => all.some((x) => x.call.kind === kind && x.call.name === name && x.role === role);
-    report(has('rpc', 'whoami', 'authenticated') && has('table', 'projects', 'authenticated') && has('rpc', 'get_shared_project', 'anon'),
-           'the scan finds the calls the site is known to make (whoami, projects, get_shared_project)', 'one of them is missing');
+    report(has('rpc', 'whoami', 'authenticated') && has('table', 'projects', 'authenticated') && has('rpc', 'get_shared_project', 'anon')
+           && has('rpc', 'board_by_token', 'anon'),
+           'the scan finds the calls the site is known to make (whoami, projects, get_shared_project, and the board\'s board_by_token signed out)', 'one of them is missing');
   }
 
   const rpcs = all.filter((x) => x.call.kind === 'rpc').length;

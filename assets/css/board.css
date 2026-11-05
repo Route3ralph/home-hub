@@ -1,0 +1,106 @@
+/* =====================================================================
+   THE FAMILY BOARD (board.html) — one screen for the house, on a wall.
+   Uses the shared tokens, banners, buttons and toasts from styles.css;
+   only the board's own pieces are here. Big type, to read across a room,
+   and boxes big enough to tap on a touchscreen. Light by day; from 9pm to
+   6am (board.js puts .night on the body) the dark tokens, whatever the
+   device's own setting.
+   ===================================================================== */
+.board-body { min-height: 100vh; }
+.board-body.night {
+  --bg: #121110; --surface: #1b1917; --surface-2: #24211e; --border: #34302b; --line: #282521;
+  --text: #f3efe9; --text-2: #d0c8bd; --text-3: #a59c90; --accent: #86c5ae; --accent-soft: #1d2e28;
+  --danger: #ff8b7b; --danger-soft: #3a1d19; --warn: #f2c14e; --warn-soft: #342b14; --shadow: none;
+  background: var(--bg); color: var(--text);
+}
+.board { max-width: none; padding: 20px clamp(16px, 2vw, 32px) 120px; }   /* room under the columns for the Undo toast */
+
+/* ---------- The date and the clock ---------- */
+.bd-head { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 12px; }
+.bd-date { margin: 0; font-size: clamp(26px, 3.2vw, 44px); line-height: 1.1; overflow-wrap: anywhere; }
+.bd-clock {
+  margin: 0; font-size: clamp(36px, 5vw, 72px); font-weight: 700; line-height: 1;
+  font-variant-numeric: tabular-nums; color: var(--text);
+}
+.bd-ampm { margin-left: 4px; font-size: 0.45em; font-weight: 600; color: var(--text-2); }
+.bd-notice { font-size: 16px; }
+
+/* ---------- Meals ---------- */
+.bd-meals { display: flex; flex-wrap: wrap; gap: 6px 24px; margin: 0 0 16px; font-size: clamp(16px, 1.5vw, 22px); color: var(--text-2); }
+.bd-meal b { color: var(--text); }
+
+/* ---------- The columns ---------- */
+.bd-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; align-items: start; }
+.bd-col {
+  min-width: 0; padding: 12px 14px 14px;
+  background: var(--surface); border: 1px solid var(--border); border-top: 6px solid var(--who, var(--border));
+  border-radius: var(--radius); box-shadow: var(--shadow);
+}
+.bd-name { display: flex; align-items: center; gap: 10px; margin: 0 0 8px; font-size: clamp(20px, 1.8vw, 28px); overflow-wrap: anywhere; }
+.bd-dot { flex: none; width: 14px; height: 14px; border-radius: 50%; background: var(--who, var(--text-3)); }
+.bd-sub { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin: 14px 0 4px; font-size: 15px; color: var(--text-2); text-transform: uppercase; letter-spacing: 0.04em; }
+.bd-late-head { color: var(--danger); }
+.bd-count { font-size: 14px; font-weight: 600; text-transform: none; letter-spacing: 0; color: var(--text-3); }
+.bd-empty { margin: 8px 0 2px; color: var(--text-3); font-size: 17px; }
+
+/* ---------- Items ---------- */
+.bd-items { list-style: none; margin: 0; padding: 0; }
+.bd-items li + li { border-top: 1px solid var(--line); }
+.bd-item {
+  display: flex; align-items: center; gap: 12px; width: 100%; min-height: 52px; padding: 8px 2px;
+  font: inherit; color: var(--text); text-align: left; background: none; border: 0;
+}
+.bd-text { display: block; min-width: 0; flex: 1; }
+/* With a time: the time in its own column, the title (and its chips) beside it, wrapping under itself. */
+.bd-text.has-time { display: grid; grid-template-columns: 4.6em minmax(0, 1fr); column-gap: 10px; align-items: baseline; }
+.bd-main { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; min-width: 0; }
+.bd-time { font-weight: 700; font-size: 17px; font-variant-numeric: tabular-nums; color: var(--text-2); white-space: nowrap; }
+.bd-allday { font-weight: 600; font-size: 14px; color: var(--text-3); }
+.bd-title { font-size: clamp(17px, 1.4vw, 21px); overflow-wrap: anywhere; }
+.bd-private { font-style: italic; color: var(--text-2); }
+.bd-chip { display: inline-block; white-space: nowrap; padding: 1px 8px; border-radius: 999px; background: var(--surface-2); color: var(--text-2); font-size: 13px; font-weight: 600; }
+.bd-chip-late { background: var(--danger-soft); color: var(--danger); }
+.bd-item.is-done .bd-title, .bd-item.is-skipped .bd-title { color: var(--text-3); text-decoration: line-through; }
+
+/* A big box to tick: the whole row is the button, the box 34px to see. */
+button.bd-check { cursor: pointer; border-radius: 10px; }
+button.bd-check:hover { background: var(--surface-2); }
+button.bd-check:focus-visible { outline: 3px solid var(--accent); outline-offset: 1px; }
+button.bd-check:disabled { cursor: progress; }
+.bd-box {
+  flex: none; display: grid; place-items: center; width: 34px; height: 34px;
+  border: 2px solid var(--text-3); border-radius: 9px; background: var(--surface);
+}
+.bd-box svg { width: 24px; height: 24px; fill: none; stroke: var(--surface); stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
+.bd-check[aria-checked="true"] .bd-box { background: var(--accent); border-color: var(--accent); }
+.bd-check[aria-checked="false"] .bd-box svg { visibility: hidden; }
+
+/* ---------- A kid's routine ---------- */
+.bd-rt { margin-bottom: 6px; }
+.bd-rt .bd-sub { margin-top: 2px; }
+.bd-sec { border-top: 1px solid var(--line); }
+.bd-sec summary {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  min-height: 48px; padding: 4px 2px; cursor: pointer; list-style: none; font-weight: 700; font-size: 18px;
+}
+.bd-sec summary::-webkit-details-marker { display: none; }
+.bd-sec summary::after { content: '›'; margin-left: 4px; color: var(--text-3); transition: transform 0.15s; }
+.bd-sec[open] summary::after { transform: rotate(90deg); }
+.bd-sec-title { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.bd-sec-count { font-size: 14px; font-weight: 600; color: var(--text-3); }
+.bd-sec.is-done .bd-sec-count { color: var(--accent); }
+.bd-sec-note { margin: -4px 0 4px; color: var(--text-3); font-size: 14px; }
+.bd-part { margin: 8px 0 0; font-size: 13px; font-weight: 700; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.05em; }
+
+/* ---------- The foot, problems ---------- */
+.bd-foot { margin-top: 20px; text-align: right; }
+.bd-lang { font-size: 15px; }
+.bd-problem { font-size: 18px; max-width: 640px; }
+.bd-actions { margin-top: 12px; }
+.board-body .toasts .toast { font-size: 17px; }
+
+/* A phone (to check the board on the way past it): one column. */
+@media (max-width: 560px) {
+  .board { padding: 14px 12px 120px; }
+  .bd-cols { grid-template-columns: 1fr; }
+}

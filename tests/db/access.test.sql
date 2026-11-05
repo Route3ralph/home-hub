@@ -43,7 +43,7 @@ select test.is((whoami() -> 'person' ->> 'id')::uuid, test.person('Alex'), 'whoa
 -- people under Calendars to read, and asks for hearth_tags and calendars.sort_by_guest, only on 10.
 -- Migration 0011 (project guests) changes it on purpose again: the client shows a guest their projects, and the parents
 -- Guest access, the Guests card and the Documents link, only on 11 (guests.test.sql).
-select test.is(hub_schema_version(), 19, 'hub_schema_version is 19');
+select test.is(hub_schema_version(), 20, 'hub_schema_version is 20');
 -- 0009 replaces private.school_rows with the same signature: still not a definer function, stable, search_path = '',
 -- and no API role may call it (as 0006 revoked it; 0009 revokes it again). Its private.school_rekey (run once by 0009,
 -- again only by the owner) runs as the owner too, and no API role may call it either.
@@ -103,21 +103,23 @@ select test.is((select string_agg(c.relname, ', ' order by c.relname) from pg_cl
                'food_pairs, list_done, school_feed_urls, school_sync', '... (the private tables: food_pairs, list_done, school_feed_urls, school_sync)');
 select test.is((select string_agg(p.proname, ', ' order by p.proname) from pg_proc p
                 where p.pronamespace = 'public'::regnamespace and has_function_privilege('anon', p.oid, 'execute')),
-               'add_to_list_by_token, assignment_by_token, buy_item_by_token, coach_note_by_token, coach_reward_by_token, coach_view_by_token, complete_by_token, '
+               'add_to_list_by_token, assignment_by_token, board_by_token, board_routine_by_token, board_tick_by_token, board_undo_by_token, '
+               'buy_item_by_token, coach_note_by_token, coach_reward_by_token, coach_view_by_token, complete_by_token, '
                'confirm_digest, focus_by_token, '
                'get_list_by_token, get_person_day, get_shared_project, homework_by_token, homework_prefs_by_token, plan_by_token, '
                'reward_by_token, routine_tick_by_token, school_item_by_token, set_language_by_token, step_by_token, stop_digest, tutor_assignment_by_token, tutor_plan_by_token, tutor_step_by_token, '
                'tutor_view_by_token, undo_by_token',
-               'anon can execute only get_shared_project and the twenty-five token functions (0004 adds the three for the list, 0005 '
+               'anon can execute only get_shared_project and the twenty-nine token functions (0004 adds the three for the list, 0005 '
                'Jordan''s seven and the tutor link''s four, 0006 his New from school, 0007 the coach view''s two, 0012 the coach''s rewards, '
-               '0014 My day''s language switch, 0019 his routine''s ticks)');
+               '0014 My day''s language switch, 0019 his routine''s ticks, 0020 the family board''s four)');
 select test.is(has_schema_privilege('anon', 'private', 'usage'), false, 'anon cannot use the private schema');
 select test.is((select string_agg(n.nspname || '.' || p.proname, ', ') from pg_proc p join pg_namespace n on n.oid = p.pronamespace
                 where n.nspname in ('public', 'private') and not coalesce(p.proconfig, '{}') @> '{"search_path=\"\""}'),
                null, 'every function sets search_path = ''''');
 select test.is((select string_agg(p.proname, ', ' order by p.proname) from pg_proc p
                 where p.pronamespace = 'public'::regnamespace and p.prosecdef),
-               'add_project_guest, add_to_list, add_to_list_by_token, assignment_by_token, buy_item, buy_item_by_token, check_school_feed, coach_note_by_token, '
+               'add_project_guest, add_to_list, add_to_list_by_token, assignment_by_token, board_by_token, board_link, board_routine_by_token, board_tick_by_token, '
+               'board_undo_by_token, buy_item, buy_item_by_token, check_school_feed, coach_note_by_token, '
                'coach_note_done, coach_reward_by_token, coach_view_by_token, complete_by_token, complete_task, '
                'confirm_digest, decide_reward, erase_homework, focus_by_token, get_list_by_token, get_person_day, get_shared_project, '
                'give_points, guest_contacts, guest_save_contact, guest_whoami, homework_ai_draft, homework_ai_finish, homework_ai_preview, homework_ai_start, homework_by_token, homework_prefs_by_token, '
@@ -132,7 +134,7 @@ select test.is((select string_agg(p.proname, ', ' order by p.proname) from pg_pr
                'and homework_week run as the caller; 0006: the parents'' school links, the status card, his New from school and hub-jobs'' '
                'three school functions; 0007: the coach view''s two token functions and the parents'' switch and Done; 0010: the parents'' '
                'Hearth matches; 0011: the guests'' and the parents'' guest functions; 0012: the coach''s rewards and the parents'' switch; '
-               '0014: My day''s language switch; 0019: the routine''s three)');
+               '0014: My day''s language switch; 0019: the routine''s three; 0020: the family board''s four and the parents'' link)');
 select test.is((select string_agg(p.proname, ', ' order by p.proname) from pg_proc p
                 where p.pronamespace = 'private'::regnamespace and has_function_privilege('authenticated', p.oid, 'execute')
                   and p.proname in ('complete_task', 'undo_task', 'roll_task', 'person_by_token', 'my_day_item', 'digest_item', 'people_confirm_sync',
@@ -151,7 +153,9 @@ select test.is((select string_agg(p.proname, ', ' order by p.proname) from pg_pr
                                     -- 0009: the rekey of the school items
                                     'school_rekey',
                                     -- 0010: a guest address as a Hearth tag (hub-jobs' store only)
-                                    'hearth_tag')),
+                                    'hearth_tag',
+                                    -- 0020: the family board's view and its token check
+                                    'board_ok', 'board_item', 'board_view')),
                null, 'members cannot call the private helpers that act for someone else');
 -- What 0005 grants members in private: free_minutes (homework_week runs as the member), and clean_block
 -- and homework_word (the tidy triggers and add_homework_time run as the parent who saves).
@@ -729,7 +733,13 @@ insert into rpc values
   -- Migration 0019: his routine's ticks (his token is the key), and the parents' page's read and save.
   ('routine_tick_by_token', $$select routine_tick_by_token(repeat('0', 32), gen_random_uuid(), true)$$,     'ok',     'ok',     'ok',     'ok',     'ok',     'denied'),
   ('routine_status',     $$select routine_status(test.person('Taylor'))$$,                                  'denied', 'ok',     'ok',     'ok',     'ok',     'denied'),
-  ('save_routine',       $$select save_routine(gen_random_uuid(), '[]', 0)$$,                               'denied', 'denied', 'denied', 'denied', 'error: Turn on homework for this kid first.', 'denied');
+  ('save_routine',       $$select save_routine(gen_random_uuid(), '[]', 0)$$,                               'denied', 'denied', 'denied', 'denied', 'error: Turn on homework for this kid first.', 'denied'),
+  -- Migration 0020: the family board's four (its token is the key) and the parents' link.
+  ('board_by_token',     $$select board_by_token(repeat('0', 32), 'en')$$,                                  'ok',     'ok',     'ok',     'ok',     'ok',     'denied'),
+  ('board_tick_by_token', $$select board_tick_by_token(repeat('0', 32), gen_random_uuid(), null, 'en')$$,   'ok',     'ok',     'ok',     'ok',     'ok',     'denied'),
+  ('board_undo_by_token', $$select board_undo_by_token(repeat('0', 32), gen_random_uuid(), 'en')$$,         'ok',     'ok',     'ok',     'ok',     'ok',     'denied'),
+  ('board_routine_by_token', $$select board_routine_by_token(repeat('0', 32), gen_random_uuid(), true, 'en')$$, 'ok', 'ok',     'ok',     'ok',     'ok',     'denied'),
+  ('board_link',         $$select board_link('show')$$,                                                     'denied', 'denied', 'denied', 'denied', 'ok',     'denied');
 
 :as_anon
 select test.is(test.can(call), anon, 'anon → ' || fn) from rpc order by fn;

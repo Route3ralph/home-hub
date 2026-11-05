@@ -12,7 +12,9 @@
    on a calendar the hub reads as Family, and its Hearth people to match.
    Members see that card read-only. From schema 11 (migration 0011), the
    parents also get Project guests: every guest, their projects, and Remove
-   guest (docs/v1.4-project-guests.md §5). Then how to put the
+   guest (docs/v1.4-project-guests.md §5). From schema 20 (migration
+   0020), the parents also get the Family board's link: make, copy, open,
+   replace or turn it off (docs/v2-design.md §25). Then how to put the
    Home Hub on a phone's Home Screen, and Sign out. Dates and times are the
    household's.
    ===================================================================== */
@@ -159,6 +161,72 @@
   }
 
   // ============================================
+  // THE FAMILY BOARD (schema 20, the parents; docs/v2-design.md §25)
+  // One link (board.html?b=<code>) for a screen the whole house sees, with no sign-in: board_link('show') reads it,
+  // 'new' makes one (the old link stops at once) and 'off' turns the board off.
+  // ============================================
+  const boardUrl = (tok) => new URL(`board.html?b=${encodeURIComponent(tok)}`, location.href).href;
+  async function drawBoard(box, ctx) {
+    let tok;
+    try {
+      tok = await q(core.sb.rpc('board_link', { p_action: 'show' }));
+    } catch (err) {
+      if (ctx.stale()) return;
+      box.innerHTML = `<p class="form-error" role="alert">Couldn't load the board link. ${esc(friendly(err))}</p>`;
+      return;
+    }
+    if (ctx.stale()) return;
+    const about = `<p class="set-help">A screen the whole house can see, like a monitor on the kitchen wall: everyone's day, the chores to tick and the kids' routines, with no sign-in. It shows what the Hearth wall shows: private items read "Private item", and there are no notes, phone numbers, homework, points or shopping list. Anyone with the link can see the board and tick things off on it, so keep the link on that screen.</p>`;
+    if (!tok) {
+      box.innerHTML = `${about}
+        <div class="set-actions"><button type="button" class="btn btn-primary set-btn" data-board="new">Make the board link</button></div>
+        <p class="form-error" role="alert" hidden></p>`;
+    } else {
+      const url = boardUrl(tok);
+      box.innerHTML = `${about}
+        <p class="set-row"><span class="set-row-text"><b>The board's link</b><br><small class="set-board-url">${esc(url)}</small></span></p>
+        <div class="set-actions">
+          <button type="button" class="btn btn-primary set-btn" data-board="copy">Copy link</button>
+          <a class="btn set-btn" href="${esc(url)}" target="_blank" rel="noopener noreferrer" data-board="open">Open the board</a>
+          <button type="button" class="btn set-btn" data-board="new">New link</button>
+          <button type="button" class="btn btn-danger set-btn" data-board="off">Turn off</button>
+        </div>
+        <p class="set-help">On the screen, open the link in Chrome and press F11 for full screen. It reads the board again every minute, goes dark from 9pm to 6am, and keeps the screen awake where the browser allows it.</p>
+        <p class="form-error" role="alert" hidden></p>`;
+    }
+    const fail = (err) => {
+      const e = box.querySelector('.form-error');
+      e.textContent = friendly(err);
+      e.hidden = false;
+    };
+    box.querySelectorAll('[data-board]').forEach((b) => b.addEventListener('click', async () => {
+      const act = b.dataset.board;
+      if (act === 'open') return;
+      if (act === 'copy') {
+        try {
+          await navigator.clipboard.writeText(boardUrl(tok));
+          toast('Copied the board link');
+        } catch (err) {
+          window.prompt('Copy the board link:', boardUrl(tok));
+        }
+        return;
+      }
+      if (act === 'new' && tok && !window.confirm('Make a new board link? The old link stops working right away, so open the new one on the board\'s screen.')) return;
+      if (act === 'off' && !window.confirm('Turn the family board off? Its screen stops showing it right away.')) return;
+      b.disabled = true;
+      try {
+        await q(core.sb.rpc('board_link', { p_action: act }));
+      } catch (err) {
+        b.disabled = false;
+        fail(err);
+        return;
+      }
+      toast(act === 'off' ? 'Family board turned off' : tok ? 'New board link made. Open it on the board\'s screen.' : 'Board link made');
+      drawBoard(box, ctx);
+    }));
+  }
+
+  // ============================================
   // THE PAGE
   // ============================================
   async function renderSettings(main, ctx) {
@@ -205,6 +273,10 @@
         <div class="set-body" data-ref="calendar">${core.schemaVersion >= 3 ? '<p class="set-status">Checking…</p>'
           : '<div class="set-row"><span class="set-row-text">Waiting for the database update</span></div>'}</div>
       </section>
+      ${admin && core.schemaVersion >= 20 ? `<section class="card set-card" aria-labelledby="setBoard">
+        <div class="card-head"><h2 id="setBoard">Family board</h2><span class="card-sub">One screen for the whole house</span></div>
+        <div class="set-body" data-ref="board"><p class="set-status">Checking…</p></div>
+      </section>` : ''}
       ${admin && core.schemaVersion >= 11 ? `<section class="card set-card" aria-labelledby="setGuests">
         <div class="card-head"><h2 id="setGuests">Project guests</h2><span class="card-sub">People outside the family who manage a project</span></div>
         <div class="set-body" data-ref="guests"><p class="set-status">Checking…</p></div>
@@ -236,6 +308,7 @@
     ref('standalone').hidden = !standalone;
 
     if (ref('guests')) drawGuests(ref('guests'), ctx);
+    if (ref('board')) drawBoard(ref('board'), ctx);
 
     if (!hh) {
       ref('household').innerHTML = '<p class="set-help">The household\'s settings aren\'t there yet. Reload the page to try again.</p>';

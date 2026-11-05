@@ -1,6 +1,6 @@
 // What the API gives someone signed out (anon) and someone signed in who isn't on the family list,
 // through the PostgREST stand-in on the real database: every public table and every public function.
-// Signed out, only get_shared_project and the twenty-five token functions (TOKEN_FNS) may answer; a
+// Signed out, only get_shared_project and the twenty-nine token functions (TOKEN_FNS) may answer; a
 // stranger gets nothing from any table, and from the functions only the harmless HARMLESS ones (and
 // empty lists). The Google Calendar tables and functions (migration 0003), the dinners and the
 // shopping list (migration 0004), and homework (migration 0005) are checked again with rows in their
@@ -14,12 +14,13 @@ const { setup, HOMEWORK_TABLES, HOMEWORK_FNS } = require('./lib');
 // The only public functions anon may run: v1's get_shared_project, 0002's five My day functions,
 // 0004's three for the helper's list, 0005's seven for Jordan's homework and four for the tutor link, 0006's
 // one for his New from school, 0007's two for the tutor link's coach view, 0012's one for the coach's rewards, and 0014's
-// one for My day's English | Español, and 0019's one for his routine's ticks.
+// one for My day's English | Español, 0019's one for his routine's ticks, and 0020's four for the family board.
 const TOKEN_FNS = ['get_person_day', 'complete_by_token', 'undo_by_token', 'confirm_digest', 'stop_digest', 'set_language_by_token', 'get_shared_project',
   'get_list_by_token', 'add_to_list_by_token', 'buy_item_by_token',
   'homework_by_token', 'step_by_token', 'plan_by_token', 'focus_by_token', 'reward_by_token', 'assignment_by_token', 'homework_prefs_by_token',
   'tutor_view_by_token', 'tutor_assignment_by_token', 'tutor_plan_by_token', 'tutor_step_by_token', 'school_item_by_token',
-  'coach_view_by_token', 'coach_note_by_token', 'coach_reward_by_token', 'routine_tick_by_token'];
+  'coach_view_by_token', 'coach_note_by_token', 'coach_reward_by_token', 'routine_tick_by_token',
+  'board_by_token', 'board_tick_by_token', 'board_undo_by_token', 'board_routine_by_token'];
 // What any signed-in account may learn, by design: its own email, the household's date, clock and
 // time zone, and the schema version (sign-up is limited to the family list by the auth hook).
 const HARMLESS = ['current_email', 'clock', 'today_local', 'hub_schema_version'];
@@ -404,6 +405,11 @@ const emptyLists = (b) => !!b && typeof b === 'object' && !Array.isArray(b)
     });
     // 0019's tick on his routine: a kid's token function too, but not one of 0005's (HOMEWORK_FNS).
     const ROUTINE = (t) => ({ routine_tick_by_token: { p_token: t, p_item: I.fresh, p_done: true } });
+    // 0020's family board: its own link is the key, so a kid's or a tutor's token opens none of them.
+    const BOARD = (t) => ({
+      board_by_token: { p_token: t, p_lang: 'en' }, board_tick_by_token: { p_token: t, p_task_id: I.fresh, p_occurrence: '2026-10-27', p_lang: 'en' },
+      board_undo_by_token: { p_token: t, p_log_id: I.fresh, p_lang: 'en' }, board_routine_by_token: { p_token: t, p_item: I.fresh, p_done: true, p_lang: 'en' },
+    });
     const TUTOR = (t) => ({
       tutor_view_by_token: { p_token: t, p_assignment: null, p_part: 'all' },
       tutor_assignment_by_token: { p_token: t, p_fields: { id: I.fresh, kind: 'lesson', title: 'Fractions practice', due_date: '2026-11-06' } },
@@ -461,18 +467,18 @@ const emptyLists = (b) => !!b && typeof b === 'object' && !Array.isArray(b)
       confirm_digest: { p_confirm: PAT }, stop_digest: { p_token: PAT }, set_language_by_token: { p_token: PAT, p_lang: 'es' }, get_shared_project: { share: PAT },
       get_list_by_token: { p_token: PAT }, add_to_list_by_token: { p_token: PAT, p_name: 'Bread' }, buy_item_by_token: { p_token: PAT, p_item: I.fresh, p_bought: true, p_seen: '2026-10-27T13:00:00Z' },
     };
-    Object.assign(elsewhere, KID(PAT), ROUTINE(PAT));
+    Object.assign(elsewhere, KID(PAT), ROUTINE(PAT), BOARD(PAT));
     const patElse = [];
     for (const [f, args] of Object.entries(elsewhere)) { const r = await fn(f, null, args); patElse.push([f, r.status, r.body]); }
     const nothing = ([, st, b]) => (st === 200 && (b === null || b === false)) || st === 204 || (st >= 400 && st < 500 && !!b && !!b.code);
     check('homework, Pat\'s link: its token opens nothing else (every other anonymous function answers null, false or a refusal)',
-      Object.keys(elsewhere).length === 18 && patElse.every(nothing), patElse.filter((x) => !nothing(x)));
+      Object.keys(elsewhere).length === 22 && patElse.every(nothing), patElse.filter((x) => !nothing(x)));
     const unknown = [];
-    for (const [f, args] of Object.entries(Object.assign({}, KID('0123456789abcdef0123456789abcdef'), TUTOR('0123456789abcdef0123456789abcdef'), ROUTINE('0123456789abcdef0123456789abcdef')))) {
+    for (const [f, args] of Object.entries(Object.assign({}, KID('0123456789abcdef0123456789abcdef'), TUTOR('0123456789abcdef0123456789abcdef'), ROUTINE('0123456789abcdef0123456789abcdef'), BOARD('0123456789abcdef0123456789abcdef')))) {
       const r = await fn(f, null, args);
       unknown.push([f, r.status, r.body]);
     }
-    check('homework: an unknown token gets null from the eleven new token functions and the routine\'s tick', unknown.every(([, st, b]) => st === 200 && b === null), unknown.filter(([, st, b]) => st !== 200 || b !== null));
+    check('homework: an unknown token gets null from the eleven new token functions, the routine\'s tick and the board\'s four', unknown.every(([, st, b]) => st === 200 && b === null), unknown.filter(([, st, b]) => st !== 200 || b !== null));
 
     // A stranger (signed in, not on the family list).
     const sTables = [];
