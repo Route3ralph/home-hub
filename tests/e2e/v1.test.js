@@ -21,6 +21,9 @@ const check = (name, ok, detail) => { results.push(`${ok ? 'PASS' : 'FAIL'}  ${n
     const context = await browser.newContext(Object.assign({ viewport: { width: 1366, height: 900 } }, opts.ctx));
     if (opts.email) await signIn(context, opts.email);
     const page = await context.newPage();
+    // The page's clock on a day inside the kitchen project (it starts Mon Nov 2 2026), so what Home lists as upcoming
+    // doesn't depend on the day the tests run: on the real clock its first task fell out of "upcoming" on Nov 5.
+    await page.clock.install({ time: new Date('2026-11-03T15:00:00Z') });
     page.on('pageerror', (e) => errors.push(`${opts.label || ''}: ${e.message}`));
     page.on('console', (m) => { if (m.type() === 'error' && !expectedConsoleError(m)) errors.push(`${opts.label || ''} console: ${m.text()}`); });
     page.on('dialog', (d) => d.accept());
