@@ -159,17 +159,17 @@ for (const s of optionalSuites) {
 // The public pages, and one ?v= for every page that loads the site's files
 // ---------------------------------------------------------------------
 const clientSec = section(claude, /Client code/);
-for (const page of ['index.html', 'share.html', 'day.html']) {
+for (const page of ['index.html', 'share.html', 'day.html', 'board.html']) {
   check(`CLAUDE.md "Client code" describes ${page}`, clientSec.includes(`\`${page}\``));
 }
 const versions = {};
-for (const page of ['index.html', 'day.html']) {
+for (const page of ['index.html', 'day.html', 'board.html']) {
   const html = read(page).replace(/<!--[\s\S]*?-->/g, '');
   versions[page] = [...new Set([...html.matchAll(/\?v=([^"'&\s>]*)/g)].map((m) => m[1]))];
 }
 const all = new Set(Object.values(versions).flat());
-check('index.html and day.html carry one and the same ?v= (CLAUDE.md: bump them together)', all.size === 1 && !all.has(''), versions);
-check('CLAUDE.md says day.html carries the same ?v= as index.html', /day\.html[^\n]*\?v=|\?v=[^\n]*day\.html/.test(clientSec));
+check('index.html, day.html and board.html carry one and the same ?v= (CLAUDE.md: bump them together)', all.size === 1 && !all.has(''), versions);
+check('CLAUDE.md says day.html and board.html carry the same ?v= as index.html', /day\.html[^\n]*board\.html[^\n]*\?v=|\?v=[^\n]*day\.html[^\n]*board\.html/.test(clientSec));
 
 // CLAUDE.md "Client code" says what index.html and day.html load, in order: each script either page loads
 // (index.html's page modules aside: "then the module files") is named in that page's line, in the page's order,
@@ -183,7 +183,7 @@ check('CLAUDE.md says day.html carries the same ?v= as index.html', /day\.html[^
     const end = s.search(/\.\s+[A-Z]/);
     return s.slice(0, end < 0 ? undefined : end + 1);
   };
-  const loads = { 'index.html': line(/^- `index\.html` loads/), 'day.html': line(/^- `day\.html` is/) };
+  const loads = { 'index.html': line(/^- `index\.html` loads/), 'day.html': line(/^- `day\.html` is/), 'board.html': line(/^- `board\.html` is/) };
   for (const [page, text] of Object.entries(loads)) {
     const html = read(page).replace(/<!--[\s\S]*?-->/g, '');
     const srcs = [...html.matchAll(/<script\s+src="([^"?]+)/g)].map((m) => m[1]).filter((s) => !/^assets\/modules\//.test(s));
@@ -199,10 +199,10 @@ check('CLAUDE.md says day.html carries the same ?v= as index.html', /day\.html[^
     const outOfOrder = srcs.filter((s) => { const p = at(s, from); if (p < 0) return true; from = p + 1; return false; });
     check(`CLAUDE.md "Client code" names the scripts ${page} loads, in its order (${srcs.map((s) => path.basename(s)).join(', ')})`,
       !!text && !missing.length && !outOfOrder.length, missing.length ? `missing ${missing.join(', ')}` : `out of order from ${outOfOrder.join(', ')}: ${text.slice(0, 300)}`);
-    if (page !== 'day.html') continue;
+    if (page === 'index.html') continue;
     const css = [...html.matchAll(/<link\s+rel="stylesheet"\s+href="([^"?]+)/g)].map((m) => path.basename(m[1]));
     const missingCss = css.filter((c) => !text.includes(`${c}\``));
-    check(`CLAUDE.md "Client code" names the stylesheets day.html loads (${css.join(', ')})`, css.length > 0 && !missingCss.length, `missing ${missingCss.join(', ')}`);
+    check(`CLAUDE.md "Client code" names the stylesheets ${page} loads (${css.join(', ')})`, css.length > 0 && !missingCss.length, `missing ${missingCss.join(', ')}`);
   }
 }
 // Each way into day.html (the ?x= its script reads: t, the My day link; c, the confirmation email; from v1.3 h,
@@ -342,16 +342,25 @@ check(`docs/v2-design.md "Anonymous token functions" lists every function anon c
 // the helper's shopping list; 0005 (v1.3): a kid's homework on My day (seven) and the tutor link (four);
 // 0006 (v1.3's school feed): his New from school (one); 0007 (the coach view): the coach's view and note (two);
 // 0012 (the coach's rewards): the coach's changes to rewards and points (one); 0014 (My day's language switch):
-// English | Español on a My day link (one); 0019 (the routine): his ticks on My day (one).
-const ANON = ['add_to_list_by_token', 'assignment_by_token', 'buy_item_by_token', 'coach_note_by_token', 'coach_reward_by_token', 'coach_view_by_token',
+// English | Español on a My day link (one); 0019 (the routine): his ticks on My day (one); 0020 (the family board):
+// board.html's read, its two ticks and Undo (four).
+const ANON = ['add_to_list_by_token', 'assignment_by_token', 'board_by_token', 'board_routine_by_token', 'board_tick_by_token', 'board_undo_by_token',
+  'buy_item_by_token', 'coach_note_by_token', 'coach_reward_by_token', 'coach_view_by_token',
   'complete_by_token', 'confirm_digest', 'focus_by_token',
   'get_list_by_token', 'get_person_day', 'homework_by_token', 'homework_prefs_by_token', 'plan_by_token', 'reward_by_token', 'routine_tick_by_token',
   'school_item_by_token', 'set_language_by_token', 'step_by_token', 'stop_digest', 'tutor_assignment_by_token', 'tutor_plan_by_token', 'tutor_step_by_token',
   'tutor_view_by_token', 'undo_by_token'];
 check(`the migrations let anon call exactly the ${ANON.length} token functions this check knows`, [...anon].sort().join() === ANON.join(), [...anon].sort());
-// They are all day.html's (My day, and from v1.3 the tutor link's mode), and CLAUDE.md says day.html calls only them.
+// They are day.html's (My day, and from v1.3 the tutor link's mode) and, from 0020, board.html's four, and CLAUDE.md
+// names each page's.
 const missingClaude = ANON.filter((n) => !clientSec.includes(`\`${n}\``));
-check(`CLAUDE.md "Client code" names every token function day.html may call (${ANON.length})`, !missingClaude.length, `missing ${missingClaude.join(', ')}`);
+check(`CLAUDE.md "Client code" names every token function day.html and board.html may call (${ANON.length})`, !missingClaude.length, `missing ${missingClaude.join(', ')}`);
+{
+  const boardJs = read('assets/board.js');
+  const boardCalls = [...new Set([...boardJs.matchAll(/\.rpc\('(\w+)'/g)].map((m) => m[1]))].sort();
+  check(`board.html calls only the board's four token functions (${boardCalls.join(', ')})`,
+    boardCalls.join() === 'board_by_token,board_routine_by_token,board_tick_by_token,board_undo_by_token', boardCalls);
+}
 const NUMBER = { five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12, thirteen: 13, fourteen: 14,
   fifteen: 15, sixteen: 16, seventeen: 17, eighteen: 18, nineteen: 19, twenty: 20 };
 // A count written out, hyphenated ones too: "nineteen" → 19, "twenty-two" → 22.
