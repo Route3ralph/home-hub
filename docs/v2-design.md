@@ -248,13 +248,14 @@ day_note text   -- an event's note for this one day (event_changes.note), for wh
 `day_text(p_person uuid, p_day date) returns text` — the message for one person's day in their language (used by the Today page "Send their day" buttons and the digest; covered by SQL tests). Lines: timed events in order, all-day events, tasks due, then up to 3 late tasks ("+N more"). People are named by first name (`private.short_name`: the whole name only when another active person has the same first name): the person in charge's copy reads "Piano · with Jordan"; the copy for someone along reads "Piano · Taylor". Linked directory entries add their phone; a changed day's own note comes last. Never the event's or task's notes, never account numbers; private items read "Private item". (v1.2 adds the line of a meal the person is on, before the late tasks: §9.)
 
 ### Anonymous token functions (My day page; `grant execute to anon, authenticated`)
-A secret is the only key: the person's My day token (`people.day_token`) for sixteen of them, the confirmation secret (`people_confirm.token`) for `confirm_digest`, and a tutor link's token (`tutor_links.token`) for the tutor link's seven. These twenty-four are the only new functions anon can call (v1's `get_shared_project` is the other one): 0002 adds the first five, migration 0004 (v1.2, §9) the next three, for the helper's shopping list, migration 0005 (v1.3, §10) eleven, seven for a kid's homework on his My day and four for the tutor link, migration 0006 (§11) one, his New from school, migration 0007 (§12) two, the tutor link's coach view, migration 0012 (§17) one, the coach's rewards, and migration 0014 (§19) the last one, My day's language switch. A tutor token is never a My day token: the My day functions look up `people.day_token` only, and the tutor link's seven `tutor_links.token` only.
+A secret is the only key: the person's My day token (`people.day_token`) for seventeen of them, the confirmation secret (`people_confirm.token`) for `confirm_digest`, and a tutor link's token (`tutor_links.token`) for the tutor link's seven. These twenty-five are the only new functions anon can call (v1's `get_shared_project` is the other one): 0002 adds the first five, migration 0004 (v1.2, §9) the next three, for the helper's shopping list, migration 0005 (v1.3, §10) eleven, seven for a kid's homework on his My day and four for the tutor link, migration 0006 (§11) one, his New from school, migration 0007 (§12) two, the tutor link's coach view, migration 0012 (§17) one, the coach's rewards, migration 0014 (§19) one, My day's language switch, and migration 0019 (§24) the last one, his routine's ticks. A tutor token is never a My day token: the My day functions look up `people.day_token` only, and the tutor link's seven `tutor_links.token` only.
 - `get_person_day(p_token text) returns jsonb` → `{person:{name, language, digest_enabled, email_confirmed}, today: date, days:[{day, items:[…]}], late:[…]}` for today and tomorrow; only that person's items (responsible or participant); item fields: kind, item_id, occurrence, day, end_day, title, all_day, start_time, end_time, time_label, location, contractor_name, contractor_phone, note (a changed day's own note), status, mine (a task they're in charge of), and from 0017 bring (an event's Bring that day, §22; left out when there's none and on a private item). No notes, no other people's details; private items read "Private item". Returns null for an unknown token or inactive person. (v1.2 adds `meals` to a day that has any, and `list` for a helper; both are left out when empty: §9.)
 - `complete_by_token(p_token text, p_task_id uuid, p_occurrence date) returns uuid` (log id, for Undo) → only tasks where that person is responsible; a repeating task needs `p_occurrence` (a page left open overnight can't tick off the next date); otherwise the same rules as complete_task. Logged as done by "<name> (My day)".
 - `undo_by_token(p_token text, p_log_id uuid) returns uuid` (task id) → the toast's Undo on My day: only a `done` entry that person made on My day, on a task they're in charge of, that is still the task's latest entry, within 15 minutes.
 - `confirm_digest(p_confirm text) returns boolean` → the button on the page the confirmation email opens (`day.html?c=<secret>#confirm`). The secret is the whole key: the link carries no My day token, so an email that goes to a mistyped address gives away nothing but the chance to confirm that address, and a My day link (which a kid, a helper or a WhatsApp group may have) confirms nothing. Sets email_verified_at. True also when the address was already confirmed (a second tap, or the email opened again later; the secret is kept); false for an unknown, malformed or replaced secret (the address changed since) or an inactive person.
 - `stop_digest(p_token text) returns boolean` → digest_enabled = false.
 - `set_language_by_token(p_token text, p_lang text) returns jsonb` (0014, §19) → My day's **English | Español**: sets that person's `people.language` (`'en'` or `'es'`; anything else 22023 "Choose English or Español.") and answers `get_person_day(p_token)`, in the new language. A change is one of the link's My day changes (30 a day); the language it already has changes and counts nothing.
+- `routine_tick_by_token(p_token text, p_item uuid, p_done boolean) returns jsonb` (0019, §24) → a kid's routine on his My day: ticks or unticks one of his items today and, when that finishes its section, pays the section's bonus once a day; answers `get_person_day` with `paid`. Null for a token that isn't a kid's with homework on.
 - `get_list_by_token(p_token text) returns jsonb` (v1.2) → the shopping list on a helper's My day: `{language, as_of, can_add, items, bought, suggest}`, unlocked lines only, with no person's name or id. Null for anyone but a helper, and while `household.helper_list` is `'off'`.
 - `add_to_list_by_token(p_token text, p_name text, p_key uuid default null) returns jsonb` (v1.2) → her add, while `helper_list` is `'add'`: `{result, item_id, name, seen}` (`seen`: the line's `added_at`) and her list. Only ever finds or makes an unlocked line; anything over 200 characters is refused before any work; counted (30 changes a day) and capped (150 things to buy). `p_key` is her phone's key for the add: a second try gets the first answer, changes nothing and isn't counted again (§9, `private.list_done`).
 - `buy_item_by_token(p_token text, p_item uuid, p_bought boolean, p_seen timestamptz, p_key uuid default null) returns jsonb` (v1.2) → her tick, or the Undo of her own tick within 15 minutes: `{changed, seen}` (`seen`: the one it gave the line, when it changed it) and her list. `p_seen` is the row's state as her phone saw it, so a tick that waited offline never buys a line put back since; a locked line's id answers as an unknown id (`false`); counted (100 ticks a day). `p_key` as for her add.
@@ -1389,3 +1390,71 @@ On an Assignments link dated by the day each item was given (`'assigned'`, §20)
 - Paste due dates (`assets/modules/homework.js`, pages only, schema 15 and up, `docs/v1.3-homework.md` §23.5): a found row whose item is already on his homework under other words (a family's own entry, not from school and not dropped, due that day, of the same class, whose title shares a word of 4 letters or more that isn't a weekday or a word every weekly task has) is ticked to **Hide** ("Hide: … · already on homework as “…”"), not Add; the button counts both ("Add 3, hide 1", "Hide 1"); the ones to add go first, then each such row is `school_item_action(p_item, 'hide')`.
 
 Undoing it isn't needed (it only keeps items longer). If wanted, in one go, as the migration's header writes it out (hub-jobs can stay: on 17 it sends no `p_from`): drop the new `school_store` and `private.school_kept`; 0009's `school_store` again with 0006's revoke and grant for it; 0015's `private.school_new` and `school_feed_status`; 0006's `private.school_trim`; and 0017's `hub_schema_version()`. The items hidden once stay hidden. 0018 can then run again.
+
+## 24. v1.3: the routine
+
+A kid's day as a checklist on his My day: sections in order (Morning, Home time, After school, Before bed), each with its items, ticked top to bottom, the same every day; it starts again each day. A parent writes it once on the Homework page; a small bonus is paid when he finishes a whole section, once a section a day. The build contract is `docs/v1.3-homework.md` §24; its migration is `supabase/migrations/0019_routine.sql`. Fresh install = `schema.sql`, then `0002` to `0019`. One transaction; it refuses to run without 0018 ("Keeping what the school gave (migration 0018) isn't installed"), twice ("already installed"), on a database set back to 18 ("set back to 18"), or on one that isn't as 0018 left it (`school_store`'s 0018 signature, `get_person_day`, `private.homework_card`, `private.homework_kid_by_token`, `private.count_homework`, `private.short_name`, `points_ledger` and its kind check, `household.days_off`, and no `routine_points` or `routine_section_id` column yet).
+
+### Tables
+```sql
+alter table public.points_ledger drop column routine_section_id;
+alter table public.points_ledger drop constraint points_ledger_kind_check;
+alter table public.points_ledger add constraint points_ledger_kind_check check (kind in ('focus', 'on_time', 'milestone_done', 'milestone', 'given', 'void', 'trade'));
+alter table public.homework_kids drop column routine_points;
+create table public.routine_sections (
+  id         uuid primary key default gen_random_uuid(),
+  kid_id     uuid not null references public.homework_kids (kid_id) on delete cascade,
+  pos        int not null check (pos between 1 and 8),
+  title      text not null check (char_length(title) between 1 and 40),
+  note       text check (note is null or char_length(note) between 1 and 40),   -- "At home", "Before you leave school"
+  created_at timestamptz not null default now(),
+  created_by text,
+  updated_at timestamptz not null default now(),
+  updated_by text,
+  unique (kid_id, pos) deferrable initially deferred
+);
+create table public.routine_items (
+  id          uuid primary key default gen_random_uuid(),
+  section_id  uuid not null references public.routine_sections (id) on delete cascade,
+  pos         int not null check (pos between 1 and 30),
+  title       text not null check (char_length(title) between 1 and 80),
+  tag         text check (tag is null or char_length(tag) between 1 and 24),     -- "30 min early"
+  part        text check (part is null or char_length(part) between 1 and 24),   -- a sub-heading inside the section: "Pack up"
+  school_days boolean not null default false,                                    -- shown only on school days
+  unique (section_id, pos) deferrable initially deferred
+);
+create table public.routine_ticks (
+  item_id uuid not null references public.routine_items (id) on delete cascade,
+  day     date not null,
+  at      timestamptz not null,
+  who     text not null check (char_length(who) between 1 and 120),
+  primary key (item_id, day)
+);
+alter table public.homework_kids add column routine_points int not null default 0 check (routine_points between 0 and 10);
+alter table public.points_ledger drop constraint points_ledger_kind_check;
+alter table public.points_ledger add constraint points_ledger_kind_check
+  check (kind in ('focus', 'on_time', 'milestone_done', 'milestone', 'given', 'void', 'trade', 'routine'));
+alter table public.points_ledger add column routine_section_id uuid references public.routine_sections (id) on delete set null;
+```
+- `routine_sections`: a kid's sections, `pos` 1 to 8 (unique a kid, checked at commit); a title and a short note ("At home"). Gone with his `homework_kids` row.
+- `routine_items`: a section's items, `pos` 1 to 30 (unique a section, checked at commit); `tag` ("30 min early"), `part` (a group inside the section: "Pack up"; the items of one group are next to each other), `school_days` (shown only on a school day).
+- `routine_ticks`: an item ticked on a day (the household's day), with when and who ("<name> (My day)"). Kept 30 days.
+- `homework_kids.routine_points`: points for each section he finishes, 0 to 10; 0, the default, pays nothing. `points_on` off pays nothing either.
+- `points_ledger.routine_section_id` and the kind `'routine'`: the bonus for one section on one day; the unique index `points_ledger_routine_day` (`routine_section_id, day`, where the kind is `'routine'`) makes it once a day.
+- Row-level security on the three tables: members read (`private.is_member()`); nothing writes them but the functions below (no insert, update or delete privilege for any API role).
+
+### Functions
+- `private.routine_school_day(p_day date) returns boolean` (stable; revoked from public, anon and authenticated): Monday to Friday and not in `household.days_off`, which holds the school's closed days.
+- `private.routine_view(p_kid uuid, p_day date) returns jsonb` (stable; revoked from public, anon and authenticated): `{day, school_day, points, sections: [{id, title, note, done, total, paid, items: [{id, title, tag, part, done}]}]}`, in order; an item for school days only is left out on another day, and a section left with none with it; `points` is what a finished section pays (0 while points or the routine's points are off); `paid`, that day's bonus for the section was paid. Null when nothing shows.
+- `routine_status(p_kid uuid) returns jsonb` (authenticated; revoked from public, anon and service_role; a definer, `set search_path = ''`): `{kid_id, points, sections: [{id, title, note, items: [{id, title, tag, part, school_days}]}], today}` (`today` is `private.routine_view` for today); null for someone who isn't a member, or a kid without homework.
+- `save_routine(p_kid uuid, p_sections jsonb, p_points int) returns jsonb` (authenticated, parents only: 42501 "Only a parent can change homework."; revoked from public, anon and service_role; a definer): the whole routine at once, `[{id?, title, note?, items: [{id?, title, tag?, part?, school_days?}]}]` in order; at most 8 sections and 40 items, 1 to 30 a section; a title for each (22023, in the page's words). A section or item sent with the id it has keeps it, and so today's ticks; one left out is deleted, with its ticks; one without an id (or with one that isn't his) is new. Text is tidied (`private.clean_text`) and cut to its column. `p_points` 0 to 10. Answers `routine_status`.
+- `routine_tick_by_token(p_token text, p_item uuid, p_done boolean) returns jsonb` (anon and authenticated; revoked from public and service_role; a definer): his token (`private.homework_kid_by_token`: a kid with homework on; else null). Ticks or unticks one of his items today (42501 "That isn't on your routine."; a school-days item on another day, 22023 "That one is for school days."); each change counts as a write (`private.count_homework`, 150 a day). A tick that finishes its section pays `routine_points` (points on, above 0) as a `'routine'` entry noted with the section's title, once a section a day: unticking keeps it, and ticking again pays nothing more. Ticks older than 30 days go. Answers `get_person_day(p_token)` with `paid` (the points this tick paid, 0).
+- Replaced, same signature and grants: `get_person_day(p_token text)`: a `routine` key (`private.routine_view` for today) for a kid with homework on whose routine shows something today; left out otherwise, so every other answer is as on 18.
+- `hub_schema_version()` returns 19.
+
+### Client
+- Gated on `core.schemaVersion >= 19` on the Homework page (`assets/modules/homework.js`): Switches has a **Routine** row (today's progress, section by section, and the points; members read it); for a parent, **Write the routine** / **Change the routine** opens the editor: each section's title, note and items, one a line, where "(…)" at the end is a tag, " *" at the end means school days only, and a line ending in ":" starts a group; **+ Section**, **Move up**, **Remove section**, and the points for each finished section. Save is `save_routine`; a line that is the same as before keeps its item's id. The points list names a routine entry "Routine · <section>".
+- My day (`assets/day.js`): the routine card, above the homework card, from `get_person_day`'s `routine` key (no schema check: the key is there only from 0019): "My routine", the count ("2 of 4"), the points line; the first section not finished open and the others folded with their counts ("✓ 2 of 2 · +2"); each item a big tick box with its tag; groups as small headings. A tick is `routine_tick_by_token`; its answer is the whole day; a paid bonus says "Morning done: +2 points" and his balance on the homework card counts up. A section opened or folded by hand stays so until the next tick. English and Spanish.
+
+Undoing it isn't needed (nothing shows until a parent saves a routine). If wanted, in one go, as the migration's header writes it out: drop the routine's functions, delete the `'routine'` entries (the balance drops by them), drop the index, the column and the kind, the three tables and `homework_kids.routine_points`; then 0005's `get_person_day` and 0018's `hub_schema_version()`. 0019 can then run again.
+

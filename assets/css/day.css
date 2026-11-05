@@ -162,6 +162,35 @@
 .list-bought .lrow { color: var(--text-3); }
 .list-empty { padding: 16px 2px; font-size: 16px; }
 
+/* ---------- The routine (v1.3, 0019): his day as parts he ticks, top to bottom ----------
+   The first part not finished is open; each item is one big tap target (52px) with the shared tick box. */
+.rt-card { padding-bottom: 6px; }
+.rt-total { flex: none; color: var(--text-2); font-size: 14px; font-weight: 650; white-space: nowrap; }
+.rt-hint { margin: 4px 0 0; color: var(--text-3); font-size: 13px; }
+.rt-sec { margin: 8px 0 0; border-top: 1px solid var(--border); }
+.rt-sec > summary {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; min-height: 44px; padding: 10px 0 6px;
+  list-style: none; cursor: pointer;
+}
+.rt-sec > summary::-webkit-details-marker { display: none; }
+.rt-sec > summary::after { content: '›'; flex: none; color: var(--text-3); font-size: 20px; line-height: 1; transform: rotate(0deg); transition: transform .15s; }
+.rt-sec[open] > summary::after { transform: rotate(90deg); }
+@media (prefers-reduced-motion: reduce) { .rt-sec > summary::after { transition: none; } }
+.rt-title { font-size: 17px; font-weight: 700; overflow-wrap: anywhere; }
+.rt-note { color: var(--text-3); font-size: 13px; overflow-wrap: anywhere; }
+.rt-count { margin-left: auto; color: var(--text-2); font-size: 14px; font-weight: 650; white-space: nowrap; }
+.rt-sec.is-done .rt-count { color: var(--accent); }
+.rt-items { padding: 0 0 6px; }
+.rt-part { margin: 8px 0 2px; color: var(--text-3); font-size: 12px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+.rt-item {
+  display: flex; align-items: center; gap: 12px; width: 100%; min-height: 52px; padding: 6px 0;
+  border: 0; background: none; color: var(--text); font: inherit; font-size: 17px; text-align: left; cursor: pointer;
+}
+.rt-item .irow-box { flex: none; width: 30px; height: 30px; border-radius: 9px; }
+.rt-text { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.rt-item[aria-checked="true"] .rt-text { color: var(--text-3); text-decoration: line-through; }
+.rt-tag { flex: none; padding: 2px 8px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-size: 12px; font-weight: 700; }
+
 /* ---------- Homework (v1.3): the card, #homework, #focus, #points, #plan/<id> ----------
    Big targets for one hand (44px and more), plain text for "behind" (never red), the ring from plan.css.
    Every view also works in a 420px window beside his work on a computer. */

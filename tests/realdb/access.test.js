@@ -1,6 +1,6 @@
 // What the API gives someone signed out (anon) and someone signed in who isn't on the family list,
 // through the PostgREST stand-in on the real database: every public table and every public function.
-// Signed out, only get_shared_project and the twenty-four token functions (TOKEN_FNS) may answer; a
+// Signed out, only get_shared_project and the twenty-five token functions (TOKEN_FNS) may answer; a
 // stranger gets nothing from any table, and from the functions only the harmless HARMLESS ones (and
 // empty lists). The Google Calendar tables and functions (migration 0003), the dinners and the
 // shopping list (migration 0004), and homework (migration 0005) are checked again with rows in their
@@ -14,12 +14,12 @@ const { setup, HOMEWORK_TABLES, HOMEWORK_FNS } = require('./lib');
 // The only public functions anon may run: v1's get_shared_project, 0002's five My day functions,
 // 0004's three for the helper's list, 0005's seven for Jordan's homework and four for the tutor link, 0006's
 // one for his New from school, 0007's two for the tutor link's coach view, 0012's one for the coach's rewards, and 0014's
-// one for My day's English | Español.
+// one for My day's English | Español, and 0019's one for his routine's ticks.
 const TOKEN_FNS = ['get_person_day', 'complete_by_token', 'undo_by_token', 'confirm_digest', 'stop_digest', 'set_language_by_token', 'get_shared_project',
   'get_list_by_token', 'add_to_list_by_token', 'buy_item_by_token',
   'homework_by_token', 'step_by_token', 'plan_by_token', 'focus_by_token', 'reward_by_token', 'assignment_by_token', 'homework_prefs_by_token',
   'tutor_view_by_token', 'tutor_assignment_by_token', 'tutor_plan_by_token', 'tutor_step_by_token', 'school_item_by_token',
-  'coach_view_by_token', 'coach_note_by_token', 'coach_reward_by_token'];
+  'coach_view_by_token', 'coach_note_by_token', 'coach_reward_by_token', 'routine_tick_by_token'];
 // What any signed-in account may learn, by design: its own email, the household's date, clock and
 // time zone, and the schema version (sign-up is limited to the family list by the auth hook).
 const HARMLESS = ['current_email', 'clock', 'today_local', 'hub_schema_version'];
@@ -401,6 +401,7 @@ const emptyLists = (b) => !!b && typeof b === 'object' && !Array.isArray(b)
       reward_by_token: { p_token: t, p_action: 'ask', p_reward: I.reward, p_key: I.fresh },
       assignment_by_token: { p_token: t, p_action: 'add', p_assignment: I.fresh, p_title: 'Worksheet 5.1', p_subject: 'Math', p_due_date: '2026-10-28', p_minutes: 15 },
       homework_prefs_by_token: { p_token: t, p_cue: 'Snack first.', p_if_stuck: null, p_minutes: 25 },
+      routine_tick_by_token: { p_token: t, p_item: I.fresh, p_done: true },
     });
     const TUTOR = (t) => ({
       tutor_view_by_token: { p_token: t, p_assignment: null, p_part: 'all' },
