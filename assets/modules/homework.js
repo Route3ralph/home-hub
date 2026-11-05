@@ -225,6 +225,13 @@
   }
   const feedOf = (st, kind) => (st.school ? st.school.feeds.find((f) => f.kind === kind) || null : null);
   // The parents' status of his school links: { status, failed }. Never throws; nothing on schema 5 or for Sam.
+  // The routine (§24, schema 19): routine_status, or null on 18 and before.
+  async function readRoutine(kid) {
+    if (!(core.schemaVersion >= 19)) return { routine: null, failed: false };
+    try {
+      return { routine: await run(sb().rpc('routine_status', { p_kid: kid })), failed: false };
+    } catch (err) { return { routine: null, failed: true }; }
+  }
   async function readSchool(kid) {
     if (!(core.schemaVersion >= 6) || !isAdmin()) return { status: null, failed: false };
     try {
@@ -268,10 +275,10 @@
     const kid = chosen;
     const fresh = { today, kids: known, kid, row: known.find((k) => k.kid_id === kid) || null, times: (times || []).filter((t) => t.kid_id === kid),
       links: (links || []).filter((l) => l.kid_id === kid), events: [], assignments: [], steps: [], sessions: [], ledger: [], rewards: [], asks: [],
-      week: [], weekFailed: false, school: null, schoolFailed: false, coachNotes: [], coachFailed: false };
+      week: [], weekFailed: false, school: null, schoolFailed: false, coachNotes: [], coachFailed: false, routine: null, routineFailed: false };
     if (kid) {
       const ids = fresh.times.map((t) => t.event_id);
-      const [events, assignments, sessions, ledger, rewards, asks, week, school, coach] = await Promise.all([
+      const [events, assignments, sessions, ledger, rewards, asks, week, school, coach, routine] = await Promise.all([
         ids.length ? q(sb().from('events').select('id,title,start_date,start_time,end_time,repeat,repeat_weekdays,repeat_until').in('id', ids)) : Promise.resolve([]),
         q(sb().from('assignments').select(A_COLS).eq('kid_id', kid).order('due_date')),
         q(sb().from('focus_sessions').select('*').eq('kid_id', kid).order('started_at', { ascending: false })),
@@ -282,12 +289,13 @@
         readWeek(kid, today),
         readSchool(kid),
         readCoachNotes(fresh.links),
+        readRoutine(kid),
       ]);
       const aIds = (assignments || []).map((a) => a.id);
       const steps = aIds.length ? await q(sb().from('homework_steps').select('*').in('assignment_id', aIds).order('pos')) : [];
       Object.assign(fresh, { events: events || [], assignments: assignments || [], steps: steps || [], sessions: sessions || [], ledger: ledger || [],
         rewards: rewards || [], asks: asks || [], week: week.rows, weekFailed: week.failed, school: school.status, schoolFailed: school.failed,
-        coachNotes: coach.notes, coachFailed: coach.failed });
+        coachNotes: coach.notes, coachFailed: coach.failed, routine: routine.routine, routineFailed: routine.failed });
     }
     Object.assign(st, fresh, { loaded: true, failed: false });
   }
@@ -850,7 +858,7 @@
         : esc(blockLine(st, b))}</li>`).join('')}</ul>` : ''}`);
   }
 
-  const LEDGER = { focus: 'Focus', on_time: 'On time', milestone_done: 'Ticked', milestone: 'Checked', given: 'Given' };
+  const LEDGER = { focus: 'Focus', on_time: 'On time', milestone_done: 'Ticked', milestone: 'Checked', given: 'Given', routine: 'Routine' };
   function ledgerLine(st, l) {
     // A trade of an instant reward he cashed himself says so (no parent's yes was needed).
     const cashed = l.kind === 'trade' && l.ask_id && st.asks.some((x) => x.id === l.ask_id && x.status === 'cashed');
@@ -959,6 +967,111 @@
       <div class="form-actions"><button type="button" class="btn" data-act="cancel-note">Cancel</button><button type="submit" class="btn btn-primary">${x.id ? 'Save' : 'Make the link'}</button></div></form>`;
   }
 
+  // ---------- The routine (§24, schema 19): his day as sections of items he ticks on his My day ----------
+  // The editor writes a section's items one a line: "(…)" at the end is a tag, "*" at the end means school days only,
+  // and a line ending in ":" starts a group, which runs to the next group or the section's end. A line that is the
+  // same as before keeps its item, and so today's tick.
+  function routineLines(sec) {
+    let part = null;
+    const out = [];
+    (sec.items || []).forEach((it) => {
+      if (it.part && it.part !== part) out.push(`${it.part}:`);
+      part = it.part || null;
+      out.push(`${it.title}${it.tag ? ` (${it.tag})` : ''}${it.school_days ? ' *' : ''}`);
+    });
+    return out.join('\n');
+  }
+  function readRoutineLines(text, old) {
+    const pool = (old || []).slice();
+    const out = [];
+    let part = null;
+    String(text || '').split(/\r\n|\r|\n/).map((l) => l.replace(/\s+/g, ' ').trim()).filter(Boolean).forEach((line) => {
+      if (line.length > 1 && line.endsWith(':')) { part = line.slice(0, -1).trim() || null; return; }
+      let title = line;
+      const school = /(^|\s)\*$/.test(title);
+      if (school) title = title.replace(/\s*\*$/, '');
+      let tag = null;
+      const m = /^(.*\S)\s*\(([^()]{1,24})\)$/.exec(title);
+      if (m) { title = m[1]; tag = m[2].trim(); }
+      if (!title) return;
+      const i = pool.findIndex((o) => o.title === title);
+      const id = i >= 0 ? pool.splice(i, 1)[0].id : null;
+      out.push(Object.assign(id ? { id } : {}, { title, tag, part, school_days: school }));
+    });
+    return out;
+  }
+  function routineDraft(st) {
+    const secs = st.routine && st.routine.sections && st.routine.sections.length ? st.routine.sections : [{ title: 'Morning', note: '', items: [] }];
+    return { points: String(st.routine ? st.routine.points : 0), sections: secs.map((x) => ({ id: x.id || null, title: x.title, note: x.note || '', text: routineLines(x) })) };
+  }
+  // The form's values into the draft, before a section is added, removed or moved (and before Save).
+  function routineRead(st, form) {
+    if (!form || !st.routineDraft) return;
+    st.routineDraft.points = form.elements.rt_points ? form.elements.rt_points.value : st.routineDraft.points;
+    st.routineDraft.sections = st.routineDraft.sections.map((d, i) => ({
+      id: d.id,
+      title: form.elements[`rt_title_${i}`] ? form.elements[`rt_title_${i}`].value : d.title,
+      note: form.elements[`rt_note_${i}`] ? form.elements[`rt_note_${i}`].value : d.note,
+      text: form.elements[`rt_items_${i}`] ? form.elements[`rt_items_${i}`].value : d.text,
+    }));
+  }
+  function routineFormHTML(st) {
+    const kid = kidName(st);
+    const d = st.routineDraft;
+    const n = d.sections.length;
+    return `<form class="hw-routine" data-form="routine" novalidate autocomplete="off">
+      <p class="hw-switch-title">${esc(`${kid}'s routine`)}</p>
+      <small class="hw-switch-line">${esc(`Top to bottom, the order of ${kid}'s day. Each section: a title, a short note if you like, and its items, one a line. "(30 min early)" at the end of a line is a tag; " *" at the end means school days only; a line ending in ":" (like "Pack up:") starts a group.`)}</small>
+      ${d.sections.map((x, i) => `<fieldset class="hw-rt-sec" data-i="${i}"><legend>${esc(`Section ${i + 1}`)}</legend>
+        <div class="field-row"><label class="field"><span>Title</span><input type="text" name="rt_title_${i}" maxlength="40" value="${esc(x.title)}"></label>
+        <label class="field"><span>Note</span><input type="text" name="rt_note_${i}" maxlength="40" value="${esc(x.note)}" placeholder="At home"></label></div>
+        <label class="field"><span>Items, one a line</span><textarea name="rt_items_${i}" rows="${Math.min(12, Math.max(3, x.text.split('\n').length + 1))}" spellcheck="true">${esc(x.text)}</textarea></label>
+        <div class="hw-rt-acts">${i > 0 ? btn('routine-up', 'Move up', ` data-i="${i}"`) : ''}${n > 1 ? btn('routine-del', 'Remove section', ` data-i="${i}"`) : ''}</div></fieldset>`).join('')}
+      ${n < 8 ? btn('routine-add', '+ Section') : ''}
+      <label class="field hw-rt-points"><span>Points for each section he finishes (paid once a day; 0 for none)</span>
+        <input type="number" name="rt_points" min="0" max="10" step="1" inputmode="numeric" value="${esc(d.points)}"></label>
+      <p class="form-error" role="alert" hidden></p>
+      <div class="form-actions"><button type="button" class="btn" data-act="routine-cancel">Cancel</button><button type="submit" class="btn btn-primary">Save</button></div></form>`;
+  }
+  function routineRowHTML(st) {
+    const admin = isAdmin();
+    const kid = kidName(st);
+    const r = st.routine;
+    const head = '<p class="hw-switch-title">Routine</p>';
+    if (st.routineFailed) return `<div class="hw-switch-row" data-row="routine">${head}<p class="hw-switch-line">The routine didn't load. It shows again on the next refresh.</p></div>`;
+    if (admin && st.form && st.form.key === 'routine' && st.routineDraft) return `<div class="hw-switch-row" data-row="routine">${routineFormHTML(st)}</div>`;
+    const has = !!(r && r.sections && r.sections.length);
+    let line = `A checklist of ${kid}'s day on his My day: sections of items he ticks, top to bottom, the same every day. It starts again each day.`;
+    let pts = '';
+    if (has) {
+      const t = r.today && r.today.sections ? r.today.sections : [];
+      const done = t.reduce((a, x) => a + (Number(x.done) || 0), 0);
+      const total = t.reduce((a, x) => a + (Number(x.total) || 0), 0);
+      line = t.length ? `Today: ${done} of ${total} · ${t.map((x) => `${x.title} ${x.done}/${x.total}${Number(x.done) >= Number(x.total) ? ' ✓' : ''}`).join(' · ')}` : 'Nothing on it today.';
+      pts = r.points ? `Each section he finishes: +${r.points} points, once a day${st.row && st.row.points_on ? '' : ' (points are off, so nothing is paid)'}.` : 'No points for it.';
+    }
+    return `<div class="hw-switch-row" data-row="routine">${head}<small class="hw-switch-line">${esc(line)}</small>${pts ? `<p class="hw-switch-line">${esc(pts)}</p>` : ''}
+      ${admin ? btn('routine-edit', has ? 'Change the routine' : 'Write the routine') : ''}</div>`;
+  }
+  function saveRoutine(st, form) {
+    routineRead(st, form);
+    const err = form.querySelector('.form-error');
+    const fail = (m) => { err.textContent = m; err.hidden = false; };
+    const old = new Map(((st.routine && st.routine.sections) || []).map((x) => [x.id, x.items]));
+    const sections = st.routineDraft.sections.map((x) => ({ id: x.id || undefined, title: x.title.replace(/\s+/g, ' ').trim(), note: x.note.replace(/\s+/g, ' ').trim() || null,
+      items: readRoutineLines(x.text, old.get(x.id)) })).filter((x) => x.title || x.items.length);
+    const points = Number(st.routineDraft.points);
+    if (!sections.length) return fail('Write at least one section, with its items.');
+    if (sections.some((x) => !x.title)) return fail('Each section needs a title.');
+    if (sections.some((x) => !x.items.length)) return fail('Each section needs at least one item.');
+    if (sections.some((x) => x.items.length > 30)) return fail('A section has at most 30 items.');
+    if (sections.reduce((a, x) => a + x.items.length, 0) > 40) return fail('A routine has at most 40 items.');
+    if (!Number.isInteger(points) || points < 0 || points > 10) return fail('Points for a finished section: 0 to 10.');
+    const kid = kidName(st);
+    return write(st, () => run(sb().rpc('save_routine', { p_kid: st.kid, p_sections: sections, p_points: points })),
+      () => { st.routineDraft = null; toast(`Saved ${kid}'s routine`); });
+  }
+
   function switchesHTML(st) {
     const admin = isAdmin();
     const k = st.row;
@@ -989,6 +1102,7 @@
           <span>${esc(`${e.repeat === 'weekly' ? weekdays(e.repeat_weekdays) : fmt.day(e.start_date)} ${timeRange(e.start_time, e.end_time)}`)}</span>
           ${admin ? btn('change-time', 'Change', ` data-event="${esc(e.id)}"`) : ''}</li>`).join('')}</ul>` : `<p class="hw-switch-line">${esc(times || 'No homework time set')}</p>`}
         ${admin && st.events.length ? `<details class="hw-addtime"><summary>Add another time</summary>${timeFormHTML(false)}</details>` : ''}</div>`);
+      if (core.schemaVersion >= 19) rows.push(routineRowHTML(st));
       if (admin) {
         rows.push(`<div class="hw-switch-row" data-row="links"><p class="hw-switch-title">Tutor links</p>
           <small class="hw-switch-line">A link with no sign-in that shows only ${esc(kid)}'s homework. Send it to the tutor; it ends after 180 days. New link stops the old one at once.</small>
@@ -2202,6 +2316,20 @@
       case 'paste-cancel': st.paste = null; draw(st); break;
       case 'paste-add': addPasted(st); break;
       case 'add-link': open('link:new', 'link', null); break;
+      case 'routine-edit': st.routineDraft = routineDraft(st); st.form = { key: 'routine' }; draw(st); break;
+      case 'routine-cancel': st.routineDraft = null; st.form = null; draw(st); break;
+      case 'routine-add': case 'routine-del': case 'routine-up': {
+        const form = st.main.querySelector('form[data-form="routine"]');
+        if (!form || !st.routineDraft) break;
+        routineRead(st, form);
+        const secs = st.routineDraft.sections;
+        const i = Number(d.i);
+        if (d.act === 'routine-add' && secs.length < 8) secs.push({ id: null, title: '', note: '', text: '' });
+        if (d.act === 'routine-del' && secs.length > 1 && secs[i]) secs.splice(i, 1);
+        if (d.act === 'routine-up' && i > 0 && secs[i]) secs.splice(i - 1, 2, secs[i], secs[i - 1]);
+        draw(st);
+        break;
+      }
       case 'erase': eraseDialog(st); break;
       case 'ai-test': aiTest(st); break;
       case 'never-remove': {
@@ -2235,6 +2363,7 @@
     else if (form.dataset.form === 'schooldue') schoolAddDue(st, form);
     else if (form.dataset.form === 'schoolpaste') { if (st.paste) readPaste(st, form); }
     else if (form.dataset.form === 'never') addNever(st, form);
+    else if (form.dataset.form === 'routine') saveRoutine(st, form);
     else if (form.classList.contains('hw-afields')) saveFields(st, form);
   }
 

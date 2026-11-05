@@ -84,6 +84,8 @@
       my_day: 'My day', hi: 'Hi, {name}', today: 'Today', tomorrow: 'Tomorrow', yesterday: 'Yesterday', late: 'Late',
       nothing_today: 'Nothing planned for today.', nothing_tomorrow: 'Nothing planned for tomorrow.',
       all_day: 'All day', any_time: 'Any time', skipped: 'Skipped', bring: 'Bring:',
+      routine: 'My routine', routine_count: '{done} of {total}', routine_points: 'Each section you finish: +{n} points',
+      routine_paid: '{title} done: +{n} points', routine_all: 'All done for today.',
       done_label: 'Done: {title}', call: 'Call {name}', ticked: 'Done: {title}', undo: 'Undo', dismiss: 'Close',
       undone: "Undone. It's back on your list.",
       already: 'That was already ticked off. The list is up to date now.',
@@ -169,7 +171,7 @@
       hw_school_assigned: 'assigned {day}', hw_school_due: 'Due', hw_school_need_due: 'Choose the due date first.',
       hw_school_bad_due: 'Choose a due date from the day it was assigned to 4 months from today.',
       hw_cash_btn: 'Get it now', hw_cash_sure: 'Yes, get it · −{n}', hw_cashed_toast: 'Got it: {title}. Tell a parent.', hw_instant: 'instant',
-      hw_got: 'Got it', hw_k_milestone_done: 'Milestone done', hw_cash_none: 'No more instant rewards today: ask a parent.',
+      hw_got: 'Got it', hw_k_milestone_done: 'Milestone done', hw_k_routine: 'Routine', hw_cash_none: 'No more instant rewards today: ask a parent.',
       // 0007: his screen when a tutor link of his has the coach view on ({coach}: its label's first word).
       hw_who_sees_coach: '{tutor} and the grown-ups in your family see your plan and your notes. The grown-ups and {coach} see your points and rewards, your focus sessions, your own calendar and your daily tasks.',
       // His path (docs/v1.3-homework.md §21): the heading over his paths on #homework and the fold after the first three;
@@ -214,6 +216,8 @@
       my_day: 'Mi día', hi: 'Hola, {name}', today: 'Hoy', tomorrow: 'Mañana', yesterday: 'Ayer', late: 'Atrasado',
       nothing_today: 'Nada planeado para hoy.', nothing_tomorrow: 'Nada planeado para mañana.',
       all_day: 'Todo el día', any_time: 'Sin hora', skipped: 'Saltada', bring: 'Llevar:',
+      routine: 'Mi rutina', routine_count: '{done} de {total}', routine_points: 'Cada sección que termines: +{n} puntos',
+      routine_paid: '{title} hecho: +{n} puntos', routine_all: 'Todo hecho por hoy.',
       done_label: 'Hecho: {title}', call: 'Llamar a {name}', ticked: 'Hecho: {title}', undo: 'Deshacer', dismiss: 'Cerrar',
       undone: 'Deshecho. Vuelve a estar en tu lista.',
       already: 'Eso ya estaba marcado. La lista ya está al día.',
@@ -293,7 +297,7 @@
       hw_school_assigned: 'asignada {day}', hw_school_due: 'Para', hw_school_need_due: 'Elige primero la fecha de entrega.',
       hw_school_bad_due: 'Elige una fecha de entrega desde el día en que se asignó hasta dentro de 4 meses.',
       hw_cash_btn: 'Conseguir ya', hw_cash_sure: 'Sí, conseguirlo · −{n}', hw_cashed_toast: 'Conseguido: {title}. Avisa a tus padres.', hw_instant: 'al momento',
-      hw_got: 'Conseguido', hw_k_milestone_done: 'Hito hecho', hw_cash_none: 'Hoy no quedan premios al momento: pídeselo a tus padres.',
+      hw_got: 'Conseguido', hw_k_milestone_done: 'Hito hecho', hw_k_routine: 'Rutina', hw_cash_none: 'Hoy no quedan premios al momento: pídeselo a tus padres.',
       hw_who_sees_coach: '{tutor} y los adultos de tu familia ven tu plan y tus notas. Los adultos y {coach} ven tus puntos y premios, tus sesiones de concentración, tu propio calendario y tus tareas diarias.',
       hw_paths: 'Tu camino', hw_paths_more: '+{n} más',
       coach_title: 'Coach', coach_lead: 'La familia de {kid} te deja ver sus puntos, premios, sesiones de concentración, su propio calendario y sus tareas diarias. Solo lectura.',
@@ -570,6 +574,78 @@
   }
 
   // ============================================
+  // THE ROUTINE (v1.3, 0019: get_person_day's routine key, only for a kid with one)
+  // His day as parts he ticks, top to bottom, the same every day; it starts again each day. The first part not
+  // finished is open and the others are folded, each with its count; a part he opens or folds by hand stays so until
+  // he ticks. A tick is routine_tick_by_token, which answers the whole day (and 'paid': the bonus a finished part paid).
+  // ============================================
+  let routineOpen = null;   // a part he opened ('<id>') or folded ('-<id>') by hand; null: the first not finished
+  function routineHTML() {
+    const r = state && state.routine;
+    const parts = r && Array.isArray(r.sections) ? r.sections : [];
+    if (!parts.length) return '';
+    const done = parts.reduce((n, x) => n + (Number(x.done) || 0), 0);
+    const total = parts.reduce((n, x) => n + (Number(x.total) || 0), 0);
+    const first = parts.find((x) => Number(x.done) < Number(x.total));
+    const isOpen = (x) => (routineOpen === x.id ? true : routineOpen === `-${x.id}` ? false : !!first && first.id === x.id);
+    const points = Number(r.points) || 0;
+    const body = parts.map((x) => {
+      let part = null;
+      const items = (Array.isArray(x.items) ? x.items : []).map((it) => {
+        const head = it.part && it.part !== part ? `<p class="rt-part">${esc(it.part)}</p>` : '';
+        part = it.part || null;
+        return `${head}<button type="button" class="irow-check rt-item" role="checkbox" aria-checked="${it.done ? 'true' : 'false'}" data-act="rt-tick" data-item="${esc(it.id)}">`
+          + `<span class="irow-box">${ICON.check}</span><span class="rt-text">${esc(it.title)}</span>${it.tag ? `<span class="rt-tag">${esc(it.tag)}</span>` : ''}</button>`;
+      }).join('');
+      const finished = Number(x.done) >= Number(x.total);
+      return `<details class="rt-sec${finished ? ' is-done' : ''}" data-sec="${esc(x.id)}"${isOpen(x) ? ' open' : ''}>
+        <summary data-act="rt-sec"><span class="rt-title">${esc(x.title)}</span>${x.note ? `<span class="rt-note">${esc(x.note)}</span>` : ''}`
+        + `<span class="rt-count">${finished ? '✓ ' : ''}${esc(t('routine_count', { done: x.done, total: x.total }))}${x.paid && points ? ` · +${points}` : ''}</span></summary>
+        <div class="rt-items">${items}</div></details>`;
+    }).join('');
+    return `<section class="hw-card rt-card" aria-labelledby="rt-h">
+      <div class="hw-card-top"><h2 class="hw-card-head" id="rt-h">${esc(t('routine'))}</h2><span class="rt-total">${esc(done >= total ? t('routine_all') : t('routine_count', { done, total }))}</span></div>
+      ${points ? `<p class="rt-hint">${esc(t('routine_points', { n: points }))}</p>` : ''}
+      ${body}</section>`;
+  }
+  // Open or fold a part by hand.
+  function routinePart(el) {
+    const d = el.closest('.rt-sec');
+    if (!d) return;
+    routineOpen = d.open ? `-${d.dataset.sec}` : d.dataset.sec;
+    renderDay(true);
+  }
+  async function routineTick(el) {
+    if (el.disabled) return;
+    const on = el.getAttribute('aria-checked') !== 'true';
+    const sec = (state.routine.sections || []).find((x) => (x.items || []).some((it) => it.id === el.dataset.item));
+    el.setAttribute('aria-checked', String(on));
+    el.disabled = true;
+    busy++;
+    try {
+      const day = await rpc(one(() => sb.rpc('routine_tick_by_token', { p_token: token, p_item: el.dataset.item, p_done: on })));
+      if (!day) { linkGone(); return; }
+      const paid = Number(day.paid) || 0;
+      delete day.paid;
+      lastLoad = Date.now();
+      accept(day);
+      routineOpen = null;   // after a tick the first part not finished is open again
+      if (paid > 0) {
+        const c = day.homework;
+        if (c && c.points != null) cheer = { from: Number(c.points) - paid, to: Number(c.points) };
+        toast(t('routine_paid', { title: sec ? sec.title : t('routine'), n: paid }));
+      }
+    } catch (err) {
+      el.setAttribute('aria-checked', String(!on));
+      toast(friendly(err), { error: true });
+    } finally {
+      busy--;
+      el.disabled = false;
+    }
+    if (view === 'day') renderDay(true);
+  }
+
+  // ============================================
   // TICK AND UNDO
   // ============================================
   async function tick(box) {
@@ -815,7 +891,7 @@
     // v1.2: a helper with the list on her My day gets its button under the greeting.
     const listButton = count == null ? ''
       : `<p class="day-actions day-shop"><a class="btn day-big day-list-btn" href="#list">${esc(t('shopping_list'))} · ${count} ›</a></p>`;
-    root.innerHTML = `${headerHTML(true)}${cardHTML()}${listButton}${hintHTML()}
+    root.innerHTML = `${headerHTML(true)}${routineHTML()}${cardHTML()}${listButton}${hintHTML()}
       ${notice ? `<p class="banner banner-warn day-notice" role="status">${esc(notice)}</p>` : ''}
       ${parts.join('')}
       ${footerHTML()}`;
@@ -2119,7 +2195,7 @@
     const waiting = (hv.asks || []).filter((q) => q.status === 'waiting');
     const decided = (hv.asks || []).filter((q) => q.status === 'approved' || q.status === 'declined' || q.status === 'cashed');
     const asked = new Set(waiting.map((q) => q.reward_id));
-    const kindWord = { focus: 'hw_k_focus', on_time: 'hw_k_on_time', milestone_done: 'hw_k_milestone_done', milestone: 'hw_k_milestone', given: 'hw_k_given',
+    const kindWord = { routine: 'hw_k_routine', focus: 'hw_k_focus', on_time: 'hw_k_on_time', milestone_done: 'hw_k_milestone_done', milestone: 'hw_k_milestone', given: 'hw_k_given',
       void: 'hw_k_void', trade: 'hw_k_trade' };
     const signed = (n) => (n < 0 ? `−${-n}` : `+${n}`);
     // An instant reward he can cash: "Get it now", then "Yes, get it · −15" (one more tap, so a slip can't spend
@@ -3400,6 +3476,12 @@
   root.addEventListener('click', (e) => {
     if (view === 'tutor') return;   // plan.js's tutor view listens for its own
     if (hwClick(e)) return;
+    const rt = e.target.closest('[data-act="rt-tick"], [data-act="rt-sec"]');
+    if (rt && root.contains(rt)) {
+      if (rt.dataset.act === 'rt-tick') routineTick(rt);
+      else { e.preventDefault(); routinePart(rt); }
+      return;
+    }
     const box = e.target.closest('.day-check');
     if (box) { tick(box); return; }
     const row = e.target.closest('.lrow[data-i]');

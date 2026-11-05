@@ -255,6 +255,14 @@ When the school's feed dates each assignment by the day it was given, **Paste du
 
 **Turning it on:** merge. Nothing to run.
 
+### The routine (v1.3, migration 0019)
+
+A kid's day as a checklist on his My day, the way a poster on the wall has it: sections (Morning, Home time, After school, Before bed) of items he ticks top to bottom, the same every day; it starts again each day. Items can carry a tag ("30 min early"), sit in a group ("Pack up"), or show only on school days. Finishing a whole section can pay a few points, once a section a day. Details: [docs/v1.3-homework.md §24](docs/v1.3-homework.md#24-the-routine-migration-0019).
+
+**Turning it on** (after the merge):
+1. **About 2 minutes:** run [`supabase/migrations/0019_routine.sql`](supabase/migrations/0019_routine.sql) in the Supabase SQL editor. "isn't installed" means 0018 is missing; "already installed" means it's done.
+2. **About 10 minutes:** Homework → Switches → Routine → **Write the routine**: each section's title and its items, one a line, then the points for each finished section.
+
 ### Keeping what the school gave (v1.3, migration 0018)
 
 On a link dated by the day each assignment was given, an assignment nobody added in its first 10 days used to drop off New from school and be deleted 4 days later, and homework added from one stopped following the school after 14 days. From 0018 New from school keeps what was given in the last 30 days, and homework added from one keeps following the school while it's open: a changed description reaches it, and one taken off the school site shows as "no longer on the school site". When it runs, anything that had already left New from school is put on its hidden list instead of coming back. Details: [docs/v1.3-homework.md §23.6](docs/v1.3-homework.md#236-keeping-what-the-school-gave-migration-0018).

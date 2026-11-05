@@ -299,6 +299,9 @@ async function tokenRpcs(page, db) {
   await until(page, () => document.querySelectorAll('.toasts .toast').length > 0, 3000);
   check('turning it on with no word never to send: refused ("Add the school\'s name to Words never to send first.")',
     (await toasts(page)).some((x) => /Add the school's name to Words never to send first\./.test(x)) && db.household[0].homework_ai === false, JSON.stringify(await toasts(page)));
+  // The refusal's toast comes before the page has read the household again; a form sent while it is busy is
+  // ignored, so wait for it (on a loaded machine the word was otherwise never sent).
+  await settle(page);
   await page.fill(`${row} form[data-form="never"] input[name="word"]`, 'North Field School');
   await page.click(`${row} form[data-form="never"] button[type="submit"]`);
   await settle(page);
