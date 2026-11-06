@@ -21,8 +21,9 @@
 //      sent: today's date, the time zone and the email are all it sees. Each event is checked here (a real date from
 //      yesterday to 400 days ahead, times HH:MM, an end after the start or on the next day, a title of 1 to 100).
 //   7. The events go in (service role) with created_by "<first name> (email)": the person in charge is the first person
-//      the email names who is on the family list, else the sender; the others it names come along. The calendar job
-//      copies them to Google as it does any event.
+//      the email names who is on the family list, and the others it names come along. An email that names no one makes
+//      an event with nobody in charge and nobody along, which the calendar job copies to Family (the wall's Family
+//      column), as it does any such event.
 //   8. The answer, to the sender, as a reply (In-Reply-To): what was added, with the calendar's link, or why nothing
 //      was. job_runs gets ok and sent (the events added).
 // Privacy: console lines are fixed codes; the email, its sender and Claude's answer are never logged or kept, except
@@ -357,7 +358,7 @@ async function handleEmail(deps: Deps, emailId: string): Promise<void> {
   const added: InboxEvent[] = [];
   for (const e of events) {
     const named = matchPeople(e.people, people);
-    const lead = named[0] || me;
+    const lead = named[0] || null;   // no one named: nobody in charge, so it goes on Family
     const row = {
       title: e.title, start_date: e.start_date, end_date: e.end_date, start_time: e.start_time, end_time: e.end_time,
       ends_next_day: e.ends_next_day, location: e.location, notes: 'Added by email',

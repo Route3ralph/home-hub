@@ -199,7 +199,9 @@ const claudeHits = (s: ReturnType<typeof setup>) => s.hits.filter((h) => h.url =
   {
     const s = setup({ claude: jsonRes(200, answer([{ ...DINNER, people: [] }])) });
     await run(s, webhook());
-    check('no one named: the sender is in charge', inserts(s, 'events')[0]?.responsible_id === ALEX);
+    const e = inserts(s, 'events')[0];
+    check('no one named: nobody in charge and nobody along (Google copies it to Family), still created by the sender',
+      e?.responsible_id === null && e.participant_ids.length === 0 && e.created_by === 'Alex (email)');
   }
   {
     const s = setup({ claude: jsonRes(200, answer([{ ...DINNER, people: ['taylor', 'Sam Lee', 'Grandma'] }])) });
@@ -229,7 +231,7 @@ const claudeHits = (s: ReturnType<typeof setup>) => s.hits.filter((h) => h.url =
     await run(s, webhook());
     const e = inserts(s, 'events')[0];
     const rep = replies(s);
-    check('INBOX_ALSO_FROM: a second address counts as the member (created_by, in charge when no one is named)', e?.created_by === 'Alex (email)'
+    check('INBOX_ALSO_FROM: a second address counts as the member (created_by)', e?.created_by === 'Alex (email)'
       && inserts(s, 'events').length === 1);
     check('INBOX_ALSO_FROM: the reply goes to the address that wrote', rep.length === 1 && rep[0].to[0] === 'alex.lee@work.example');
   }
