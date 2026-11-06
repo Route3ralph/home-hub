@@ -249,6 +249,14 @@ A page of its own, **Watch**, for the movies and shows the family wants to see: 
 1. `tests/run.sh` ends with `0 failed`; merge. Nothing changes until step 2: the page shows only on schema 22.
 2. **About 2 minutes:** run [`supabase/migrations/0022_watch_list.sql`](supabase/migrations/0022_watch_list.sql) in the Supabase SQL editor, after 0021. "isn't installed" means 0021 is missing; "already installed" means it's done; either way nothing was changed.
 
+### Missing and Graded: what the school says (v1.3, migration 0023)
+
+On an assignment's page (Homework → the assignment), **Missing** and **Graded…** mark it as the school's portal shows it; **Graded…** asks for the grade ("92", "B+"), or leave it empty for just "Graded". The Homework list then shows "Missing" or "Graded: B+" on its row; **Clear mark** takes it off. You and the coach mark them; nobody else sees them (not his My day or the tutor link). The hub doesn't read the portal: the school's feed has no grades.
+
+**Turning it on** (no Edge Function and no `cron.sql` change):
+1. `tests/run.sh` ends with `0 failed`; merge. Nothing changes until step 2: the buttons show only on schema 23.
+2. **About 2 minutes:** run [`supabase/migrations/0023_school_marks.sql`](supabase/migrations/0023_school_marks.sql) in the Supabase SQL editor, after 0022. "isn't installed" means 0022 is missing; "already installed" means it's done; either way nothing was changed.
+
 ### The coach: a grown-up who runs the kids' homework (v1.3, migration 0021)
 
 A box on an adult's card, **Can manage the kids' homework, rewards and routine** (Family → Edit; off by default), lets Sam, once he can sign in, do on the Homework page what you do for the kids: assignments and lessons, plans and the AI planner, To check, Answer, To approve, rewards, **Give points** (at most 200 a week to a kid from Sam; yours have no limit) and **Void**, New from school, and the routine (its points stay yours). Everything he does shows as his.

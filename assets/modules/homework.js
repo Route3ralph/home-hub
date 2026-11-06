@@ -185,6 +185,9 @@
   // ============================================
   const A_COLS = 'id,kid_id,kind,added_by,title,subject,due_date,details,stretch,status,done_at,given_at,given_by,plan_rev,created_at,created_by,updated_at,updated_by,'
     + 'ai_state,ai_stop,ai_draft,ai_prev,ai_at';
+  // From 0023 (docs/v1.3-homework.md §26): what the school says about it, Missing or Graded (with an optional grade).
+  const aCols = () => (core.schemaVersion >= 23 ? `${A_COLS},school_mark,grade` : A_COLS);
+  const markWord = (a) => (a.school_mark === 'missing' ? 'Missing' : a.school_mark === 'graded' ? (a.grade ? `Graded: ${a.grade}` : 'Graded') : '');
   // The AI's runs (PR B), the parents' only: this month's and any still open; and the last Test, whenever it was.
   const RUN_COLS = 'id,kind,status,stop,model,asked_by,assignment_id,link_id,started_at,lease_until,finished_at,cents';
 
@@ -290,7 +293,7 @@
       const ids = fresh.times.map((t) => t.event_id);
       const [events, assignments, sessions, ledger, rewards, asks, week, school, coach, routine] = await Promise.all([
         ids.length ? q(sb().from('events').select('id,title,start_date,start_time,end_time,repeat,repeat_weekdays,repeat_until').in('id', ids)) : Promise.resolve([]),
-        q(sb().from('assignments').select(A_COLS).eq('kid_id', kid).order('due_date')),
+        q(sb().from('assignments').select(aCols()).eq('kid_id', kid).order('due_date')),
         q(sb().from('focus_sessions').select('*').eq('kid_id', kid).order('started_at', { ascending: false })),
         // All of his rows (the balance is their sum), shown newest first.
         readAll(() => sb().from('points_ledger').select('*').eq('kid_id', kid).order('at').order('id')).then((rows) => rows.reverse()),
@@ -487,7 +490,7 @@
     if (!aiOn(st) && !row.ai_draft && !row.ai_state) return null;
     const id = row.id;
     const fresh = async () => {
-      const rows = await q(sb().from('assignments').select(A_COLS).eq('id', id));
+      const rows = await q(sb().from('assignments').select(aCols()).eq('id', id));
       const x = rows && rows[0];
       if (!x) return { gone: true };
       const i = st.assignments.findIndex((y) => y.id === id);
@@ -734,7 +737,8 @@
       const ed = editorAssignment(st, a.id);
       bars = P.bars(ed.minutes_left, ed.time_left, { lang: 'en', horizon: ed.horizon, no_time: ed.no_time });
     }
-    return `<li><a class="hw-arow" href="#/homework/${esc(a.id)}"><span class="hw-arow-title">${esc(a.title)}</span>`
+    const mark = markWord(a) ? ` <span class="hw-mark hw-mark-${esc(a.school_mark)}">${esc(markWord(a))}</span>` : '';
+    return `<li><a class="hw-arow" href="#/homework/${esc(a.id)}"><span class="hw-arow-title">${esc(a.title)}${mark}</span>`
       + `<span class="hw-arow-sub">${esc(sub.filter(Boolean).join(' · '))}</span><span class="hw-arow-state">${esc(state)}</span></a>${bars}</li>`;
   }
 
@@ -1575,6 +1579,7 @@
     else if (a.added_by === 'tutor') bits.push(`added by ${tutor || 'the tutor'}`);
     else if (a.added_by === 'school') bits.push(...schoolMarks(st, a));
     bits.push({ open: 'Open', done: 'Done', dropped: 'Dropped' }[a.status]);
+    bits.push(markWord(a));
     return bits.filter(Boolean).join(' · ');
   }
 
@@ -1594,7 +1599,9 @@
     const head = `<a class="back" href="#/homework">‹ All homework</a><header class="hw-a-head"><p class="eyebrow">${a.kind === 'lesson' ? 'Lesson' : 'Assignment'}</p>`
       + `<h1>${esc(a.title)}</h1><p class="meta hw-a-meta">${esc(aMeta(st, a))}</p></header>`;
     const status = admin ? `<div class="hw-a-acts">${a.status === 'open' ? btn('mark-done', 'Mark done') : btn('reopen', 'Open again')}`
-      + `${a.status === 'dropped' ? '' : btn('drop', 'Drop')}${a.kind === 'lesson' ? btn('copy-week', 'Copy to next week') : ''}${btn('delete-assignment', 'Delete…', '', 'btn-danger')}</div>` : '';
+      + `${a.status === 'dropped' ? '' : btn('drop', 'Drop')}${a.kind === 'lesson' ? btn('copy-week', 'Copy to next week') : ''}`
+      + `${core.schemaVersion >= 23 ? `${a.school_mark === 'missing' ? '' : btn('mark-missing', 'Missing')}${btn('mark-graded', a.school_mark === 'graded' ? 'Change grade…' : 'Graded…')}${a.school_mark ? btn('clear-mark', 'Clear mark') : ''}` : ''}`
+      + `${btn('delete-assignment', 'Delete…', '', 'btn-danger')}</div>` : '';
     const ro = admin ? '' : `${a.details ? `<div class="hw-card hw-a-text">${esc(a.details)}</div>` : ''}${a.stretch ? `<p class="hw-a-stretch">${esc(`Optional: ${a.stretch}`)}</p>` : ''}`;
     let root = main.querySelector('.hw-a[data-id]');
     if (!root || root.dataset.id !== a.id) {
@@ -2231,6 +2238,24 @@
     }, () => toast({ done: `Done: ${a.title}`, open: `Open again: ${a.title}`, dropped: `Dropped: ${a.title}` }[status]));
   }
 
+  // Missing or Graded (0023, §26): what the school's portal says about it, marked by a parent or the coach. Graded asks for
+  // the grade, which may be left empty ("Graded" alone); Clear mark takes either off.
+  function setMark(st, mark) {
+    const a = assignmentOf(st, st.params.id);
+    if (!a) return;
+    let grade = null;
+    if (mark === 'graded') {
+      const typed = window.prompt('The grade, as the school shows it (for example 92 or B+). Leave it empty for just "Graded".', a.grade || '');
+      if (typed === null) return;
+      grade = P.clean(typed, 21) || null;
+      if (grade && Array.from(grade).length > 20) { toast('That grade is too long: 20 characters at most.', { error: true }); return; }
+    }
+    write(st, async () => {
+      const rows = await q(sb().from('assignments').update({ school_mark: mark, grade }).eq('id', a.id).select('id'));
+      if (!rows || !rows.length) throw new Error('That wasn\'t saved: only a parent can change it, or it was deleted.');
+    }, () => toast(mark === 'missing' ? `Marked missing: ${a.title}` : mark === 'graded' ? `Graded${grade ? ` (${grade})` : ''}: ${a.title}` : `Mark cleared: ${a.title}`));
+  }
+
   function deleteAssignment(st) {
     const a = assignmentOf(st, st.params.id);
     if (!a || !window.confirm(`Delete ${a.title}? Its plan, questions and notes go too. His blocks and points stay.`)) return;
@@ -2359,6 +2384,9 @@
       case 'mark-done': setStatus(st, 'done'); break;
       case 'reopen': setStatus(st, 'open'); break;
       case 'drop': setStatus(st, 'dropped'); break;
+      case 'mark-missing': setMark(st, 'missing'); break;
+      case 'mark-graded': setMark(st, 'graded'); break;
+      case 'clear-mark': setMark(st, null); break;
       case 'delete-assignment': deleteAssignment(st); break;
       case 'copy-week': copyWeek(st); break;
       default:
