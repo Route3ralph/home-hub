@@ -16,8 +16,9 @@
 --   • watch_add_by_token(p_token text, p_title text, p_kind text, p_place text, p_key uuid) (a kid's My day): adds
 --     one, written as "<his first name> (My day)"; one of his My day changes (30 a day). Answers watch_by_token's.
 --   • Replaced, with the same signature and grants: public.get_person_day(text) (0019's, renamed
---     private.get_person_day_v21 and kept as it is, for nobody) is a wrapper that adds, for an active kid, 'watch': how
---     many are still to watch, so his My day shows its button only from 22. Every other answer is exactly 21's.
+--     private.get_person_day_v21 and kept as it is, for nobody) is a wrapper that adds, for an active kid once the list
+--     has anything on it, 'watch': how many are still to watch, so his My day shows its button only from 22 and only
+--     once someone has added one. Every other answer, and every answer while the list is empty, is exactly 21's.
 --   • hub_schema_version() (22). The Watch page and his My day's card show only on 22.
 --
 -- Rules
@@ -212,7 +213,8 @@ begin
 end;
 $$;
 
--- His day: 21's answer, plus for an active kid 'watch', how many are still to watch (his My day's button).
+-- His day: 21's answer, plus for an active kid, once the list has anything on it, 'watch': how many are still to watch
+-- (his My day's button). While the list is empty every answer is exactly 21's.
 alter function public.get_person_day(text) rename to get_person_day_v21;
 alter function public.get_person_day_v21(text) set schema private;
 create function public.get_person_day(p_token text)
@@ -230,7 +232,7 @@ begin
     return null;
   end if;
   me := private.person_by_token(p_token);
-  if me.id is not null and me.role = 'kid' then
+  if me.id is not null and me.role = 'kid' and exists (select 1 from public.watch_items) then
     d := d || jsonb_build_object('watch', (select count(*) from public.watch_items w where w.watched_at is null));
   end if;
   return d;

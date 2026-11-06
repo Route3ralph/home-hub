@@ -52,6 +52,9 @@ select test.ok(not has_table_privilege('anon', 'public.watch_items', 'select') a
                and has_column_privilege('authenticated', 'public.watch_items', 'watched_at', 'update'),
                'grants: anon and service_role nothing; members select, delete and the table''s own columns, never the audit columns');
 
+-- An empty list: every day exactly 21's (no watch key yet).
+select test.is(get_person_day(pg_temp.tok('Taylor')), private.get_person_day_v21(pg_temp.tok('Taylor')), 'with nothing on the list, a kid''s day is exactly 21''s (no watch key)');
+
 -- ---------------------------------------------------------------------
 -- Members: add, change, watch, delete
 -- ---------------------------------------------------------------------

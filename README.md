@@ -243,7 +243,7 @@ To stop it, untick **Can manage rewards**: it stops at once. If the hub can't be
 
 ### Watch: movies and shows to see (v2, migration 0022)
 
-A page of its own, **Watch**, for the movies and shows the family wants to see: on Netflix, another streaming service, in the cinema or at a theatre. Every grown-up who signs in adds, changes and deletes them: a title, movie or show, where, which one ("Disney+", "AMC"), the last day it's showing, a link (the trailer or the tickets) and a note. A cinema or theatre one turns red in its last week. **Watched ✓** folds it into **Seen**; **Plan it** opens the Calendar with "Movie night: …" at 7pm, so it reaches everyone's day and the wall once you save it. The kids add their own from their My day (**Movies and shows**), and the page says who added each one.
+A page of its own, **Watch**, for the movies and shows the family wants to see: on Netflix, another streaming service, in the cinema or at a theatre. Every grown-up who signs in adds, changes and deletes them: a title, movie or show, where, which one ("Disney+", "AMC"), the last day it's showing, a link (the trailer or the tickets) and a note. A cinema or theatre one turns red in its last week. **Watched ✓** folds it into **Seen**; **Plan it** opens the Calendar with "Movie night: …" at 7pm, so it reaches everyone's day and the wall once you save it. Once the list has anything on it, the kids add their own from their My day (**Movies and shows**), and the page says who added each one.
 
 **Turning it on** (no Edge Function and no `cron.sql` change):
 1. `tests/run.sh` ends with `0 failed`; merge. Nothing changes until step 2: the page shows only on schema 22.

@@ -85,10 +85,10 @@ const probeModule = ({ name = 'probe', min = 1, max = 1, nav = null, root = fals
   const scripts = await page.$$eval('script[src]', (s) => s.map((x) => ({ src: x.getAttribute('src'), async: x.async || x.defer })));
   const order = scripts.map((s) => s.src.replace(/\?.*$/, '').replace(/^https:\/\/cdn\.jsdelivr\.net\/.*\/supabase\.js$/, 'supabase-js'));
   // shoplist.js (the shopping list's shared pieces, schema 4) and plan.js (homework's, schema 5) right after the
-  // core; Food, then Homework, after the other pages. (v1.3 adds plan.js and homework.js, on purpose.)
+  // core; Food, Watch (0022), then Homework, after the other pages. (v1.3 adds plan.js and homework.js, on purpose.)
   const expected = ['config.js', 'supabase-js', 'assets/gantt.js', 'assets/hub.js', 'assets/shoplist.js', 'assets/plan.js',
     'assets/modules/home.js', 'assets/modules/projects.js', 'assets/modules/contractors.js', 'assets/modules/family.js',
-    ...['today', 'calendar', 'tasks', 'directory', 'people', 'settings', 'food', 'homework'].map((m) => `assets/modules/${m}.js`)];
+    ...['today', 'calendar', 'tasks', 'directory', 'people', 'settings', 'food', 'watch', 'homework'].map((m) => `assets/modules/${m}.js`)];
   check('scripts load core first, then each module, in a fixed order', JSON.stringify(order) === JSON.stringify(expected), order.join(', '));
   check('no script is async or deferred', scripts.every((s) => !s.async));
   const versions = new Set(scripts.concat(await page.$$eval('link[rel=stylesheet]', (l) => l.map((x) => ({ src: x.getAttribute('href') }))))
