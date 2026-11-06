@@ -369,7 +369,7 @@ One Edge Function, `hub-jobs` (verify_jwt off; each action authorizes itself; `s
 1. `preflight.sql` (read-only checks) and `list_migrations`.
 2. Merge PR A, then PR B (site stays in v1 mode until step 3).
 3. Apply migration 0002 (site switches to v2 on next load).
-4. Deploy `hub-jobs` from main with verify_jwt false (`supabase/config.toml` pins it for the CLI; the dashboard and the MCP's `deploy_edge_function` need it turned off by hand). Secrets: `HUB_CRON_SECRET` (≥ 32 chars), `SITE_URL` (required: the site's address, for the links in the emails; without it every run stops with `stop: 'config'` and Preview answers 503), `RESEND_API_KEY` and `EMAIL_FROM` (required) and `EMAIL_FROM_NAME`, shared with `send-email`; and `HEALTHCHECK_URL`, which is optional. For v1.1, `GOOGLE_SA_JSON` (optional: the Google service-account key; without it the calendar job stops with `not_set_up` and the morning email is unchanged). For v1.3's AI planner, `ANTHROPIC_API_KEY` (optional: the key from the family's Anthropic workspace; without it the `homework_ai` action answers `not_set_up` and everything else works; `docs/v1.3-homework.md` §6.12).
+4. Deploy `hub-jobs` from main with verify_jwt false (`supabase/config.toml` pins it for the CLI; the dashboard and the MCP's `deploy_edge_function` need it turned off by hand). Secrets: `HUB_CRON_SECRET` (≥ 32 chars), `SITE_URL` (required: the site's address, for the links in the emails; without it every run stops with `stop: 'config'` and Preview answers 503), `RESEND_API_KEY` and `EMAIL_FROM` (required) and `EMAIL_FROM_NAME`, shared with `send-email`; and `HEALTHCHECK_URL`, which is optional. For v1.1, `GOOGLE_SA_JSON` (optional: the Google service-account key; without it the calendar job stops with `not_set_up` and the morning email is unchanged). For v1.3's AI planner, `ANTHROPIC_API_KEY` (optional: the key from the family's Anthropic workspace; without it the `homework_ai` action answers `not_set_up` and everything else works; `docs/v1.3-homework.md` §6.12). For the calendar inbox (§28), `RESEND_WEBHOOK_SECRET` and `INBOX_ADDRESS` (optional: without them the webhook answers 503 `not_set_up` or ignores the mail).
 5. Create the two Vault secrets by hand (`hub_cron_secret`, the same value as `HUB_CRON_SECRET`, and `hub_jobs_url`, the function's address), then run `cron.sql` (enables pg_cron/pg_net; refuses a missing or placeholder secret; idempotent). Run `cron.sql` again after a release that changes it: v1.1 adds the `hub-calendar` job, and v1.3's school feed (migration 0006) the `hub-school` job.
 6. Smoke checks: no header → 401; preview → rendered JSON; Settings shows the last run; next morning `notification_log` has sent rows.
 7. Ops hardening: Auth email rate limit ≈ 6/hour; the signup hook stays on; Resend click/open tracking off.
@@ -1566,3 +1566,30 @@ create table public.watch_items (
 - My day (`assets/day.js`): a kid whose day has `watch` (from the first one on the list) gets **Movies and shows · 2 ›** under his cards (none for anyone else, and no request without the key); `#watch` shows his list (`watch_by_token`) and one box to add (title, movie or show, where; `watch_add_by_token` with a key, so a resend adds nothing more). English and Spanish.
 
 Undoing it isn't needed (with nothing on the list every page is as on 21). If wanted, in one go, as the migration's header writes it out: drop the two token functions and `private.watch_view`, put 0021's `get_person_day` back in `public` with its grant, drop `watch_items` and `private.watch_tidy`; then 0021's `hub_schema_version()`. 0022 can then run again.
+
+## 28. v2: the calendar inbox
+
+A parent who won't open the calendar can still put something on it: an email to the hub's own address ("Dinner at the Parks Fri Dec 4, 6-8") becomes an event, and the hub answers with what it added. No migration and no page change: it is `hub-jobs` (`supabase/functions/hub-jobs/inbox.ts`) behind Resend's receiving webhook.
+
+### 28.1 The path
+1. Resend receives mail at the family's `<id>.resend.app` address (or a domain of theirs with Resend's MX record) and POSTs `email.received` to `hub-jobs`. `handle()` sends every POST with a `svix-id` header to `inbox()`, before any action is read.
+2. The Svix signature (`svix-id`, `svix-timestamp`, `svix-signature`; HMAC-SHA256 of `<id>.<timestamp>.<raw body>` with the key in `RESEND_WEBHOOK_SECRET`, a timestamp within five minutes) or 401. Without the secret: 503 `{stop: 'not_set_up'}`.
+3. Only mail to `INBOX_ADDRESS` (in `to` or `cc`) is read: the address carries a random part, so it can't be guessed. Another event type, or another address: 200 `{ignored}`. Then 200 `{ok}` at once; the rest runs in the background.
+4. One run per email: a `job_runs` row (`action` 'inbox', `detail` 'email <email_id>'); a resend of the same email finds it and stops. The run ends with `ok` and `sent` (the events added).
+5. The message (`GET https://api.resend.com/emails/receiving/<email_id>`, `RESEND_API_KEY`). The sender must be a `members` address; an `Authentication-Results` header with `dmarc=fail`, or `spf=fail` without `dkim=pass`, drops it. Neither gets an answer.
+6. At most 20 events by email in 24 hours (`events.created_by` like '% (email)'); past that, an answer that says so.
+7. Claude (`claude-opus-5-5`, effort low, a JSON schema, fallbacks 'default') reads today's date and weekday in `household.tz`, the subject and the email's own text (quoted lines and everything after "On … wrote:" left out; HTML read as text when there's no text part), up to 6,000 characters. No family name, address or id is sent. It answers up to five events: title, date, end_date, start_time, end_time, ends_next_day, location and the people as the email names them, or a problem.
+8. Each event is checked: a real date from yesterday to 400 days ahead; HH:MM times (a bad one makes it all day); an end before the start ends the next day, an equal one is dropped; end_date only for an all-day event, up to 60 days; a title of 1 to 100. Then inserted (service role) with `created_by` and `updated_by` "<first name> (email)" and notes "Added by email": the first person named who is on the family list (by full or first name) is in charge, else the sender; the others named come along. The calendar job copies them to Google like any event.
+9. The answer goes to the sender as a reply (`In-Reply-To` the message id): each event added ("Dinner at the Parks · Fri Dec 4, 6:00pm–8:00pm") and the calendar's link (`SITE_URL#/calendar/<first date>`); or why nothing was added, or a sorry when Claude or the insert failed.
+
+### 28.2 Privacy
+Console lines are fixed codes (`inbox: added 1`). The email, its sender and Claude's answer are kept nowhere but in the events themselves. A stranger or a forged sender never hears from the hub.
+
+### 28.3 Going live (needs the Resend and Supabase dashboards)
+1. Deploy `hub-jobs` from main (verify_jwt false).
+2. Resend → Emails → Receiving: note the `<id>.resend.app` domain; the address is `cal-<random>@<id>.resend.app` (any name at that domain is received; the random part is the lock).
+3. Resend → Webhooks → Add: the `hub-jobs` URL, event `email.received`; copy its signing secret.
+4. Supabase → Edge Functions → Secrets: `RESEND_WEBHOOK_SECRET` (the `whsec_…` secret) and `INBOX_ADDRESS` (the address).
+5. Send a test from a family sign-in address; the reply comes within a minute, and Settings' runs show the `inbox` row.
+Undo: delete the webhook in Resend (or the `INBOX_ADDRESS` secret). Events already added stay, like any other.
+
