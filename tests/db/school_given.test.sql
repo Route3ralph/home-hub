@@ -49,7 +49,7 @@ create or replace function private.school_host_suffix() returns text language sq
 -- ---------------------------------------------------------------------
 -- The schema, the signature and its grants
 -- ---------------------------------------------------------------------
-select test.is(hub_schema_version(), 21, 'hub_schema_version is 21 (0018 made it 18, 0019 19, 0020 20, 0021 21)');
+select test.is(hub_schema_version(), 22, 'hub_schema_version is 22 (0018 made it 18, 0019 19, 0020 20, 0021 21, 0022 22)');
 select test.is((select string_agg(p.oid::regprocedure::text, ' | ' order by p.oid::regprocedure::text) from pg_proc p where p.proname in ('school_store', 'school_kept')),
                'private.school_kept(uuid,jsonb,date,date) | school_store(uuid,uuid,jsonb,text,integer,date)',
                'school_store takes p_from (the old signature is gone); school_kept is new');

@@ -120,6 +120,9 @@
       hint_ios: 'Keep this page handy: tap the Share button, then "Add to Home Screen".',
       hint_android: 'Keep this page handy: tap the ⋮ menu, then "Add to Home screen".',
       // v1.2: meals and the shopping list (docs/v1.2-kitchen.md §7.4)
+      watch_btn: 'Movies and shows · {n}', watch_title: 'Movies and shows', watch_ph: 'A movie or show you want to see', watch_add: 'Add',
+      watch_movie: 'Movie', watch_show: 'Show', watch_netflix: 'Netflix', watch_streaming: 'Streaming', watch_cinema: 'Cinema', watch_theatre: 'Theatre',
+      watch_mine: 'yours', watch_added: 'Added: {title}', watch_empty: 'Nothing on the list yet. Add one!', watch_hint: 'The family sees it on the Watch page.',
       shopping_list: 'Shopping list', back_to_day: '‹ My day', add_placeholder: 'Add something…', add: 'Add',
       bought_today: 'Bought today', buy_again: 'Buy again', bought_toast: 'Bought: {title}', add_again: 'Add it again?',
       already_on_list: 'Already on the list', already_as: 'Already on the list as {name}', back_on_list: 'Back on the list',
@@ -251,6 +254,9 @@
       hint_label: 'Consejo',
       hint_ios: 'Tenla a mano: toca el botón Compartir y luego "Agregar a inicio".',
       hint_android: 'Tenla a mano: toca el menú ⋮ y luego "Agregar a la pantalla principal".',
+      watch_btn: 'Pelis y series · {n}', watch_title: 'Pelis y series', watch_ph: 'Una peli o serie que quieres ver', watch_add: 'Añadir',
+      watch_movie: 'Peli', watch_show: 'Serie', watch_netflix: 'Netflix', watch_streaming: 'Streaming', watch_cinema: 'Cine', watch_theatre: 'Teatro',
+      watch_mine: 'tuya', watch_added: 'Añadida: {title}', watch_empty: 'Todavía no hay nada. ¡Añade una!', watch_hint: 'La familia la ve en la página Ver.',
       shopping_list: 'Lista de compras', back_to_day: '‹ Mi día', add_placeholder: 'Añadir algo…', add: 'Añadir',
       bought_today: 'Comprado hoy', buy_again: 'Comprar otra vez', bought_toast: 'Comprado: {title}', add_again: '¿Añadir otra vez?',
       already_on_list: 'Ya está en la lista', already_as: 'Ya está en la lista como {name}', back_on_list: 'Otra vez en la lista',
@@ -891,7 +897,10 @@
     // v1.2: a helper with the list on her My day gets its button under the greeting.
     const listButton = count == null ? ''
       : `<p class="day-actions day-shop"><a class="btn day-big day-list-btn" href="#list">${esc(t('shopping_list'))} · ${count} ›</a></p>`;
-    root.innerHTML = `${headerHTML(true)}${routineHTML()}${cardHTML()}${listButton}${hintHTML()}
+    // 0022: a kid's movies and shows (get_person_day's watch: how many are still to watch).
+    const watchButton = state.watch == null ? ''
+      : `<p class="day-actions day-watch"><a class="btn day-big day-watch-btn" href="#watch">${esc(t('watch_btn', { n: Number(state.watch) || 0 }))} ›</a></p>`;
+    root.innerHTML = `${headerHTML(true)}${routineHTML()}${cardHTML()}${listButton}${watchButton}${hintHTML()}
       ${notice ? `<p class="banner banner-warn day-notice" role="status">${esc(notice)}</p>` : ''}
       ${parts.join('')}
       ${footerHTML()}`;
@@ -1417,6 +1426,83 @@
     try { history.replaceState(null, '', dayHref); } catch (e) { /* the hash stays */ }
     if (state) render();
     else start();
+  }
+
+  // ============================================
+  // MOVIES AND SHOWS (0022, docs/v2-design.md §27): #watch, for a kid whose day has get_person_day's watch key.
+  // The list not yet watched (watch_by_token: titles, kind and where, "yours" on his own) and one box to add one
+  // (watch_add_by_token, with a key so a resend adds nothing more). The family sees it on the Watch page.
+  // ============================================
+  let watchList = null;   // watch_by_token's last answer
+  const WATCH_PLACES = ['netflix', 'streaming', 'cinema', 'theatre'];
+  const newKey = () => {
+    if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+    const b = crypto.getRandomValues(new Uint8Array(16));
+    b[6] = (b[6] & 0x0f) | 0x40; b[8] = (b[8] & 0x3f) | 0x80;
+    const h = [...b].map((x) => x.toString(16).padStart(2, '0')).join('');
+    return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+  };
+  function watchBody() {
+    const items = watchList && Array.isArray(watchList.items) ? watchList.items : null;
+    if (!items) return `<p class="loading">${esc(t('loading'))}</p>`;
+    if (!items.length) return `<p class="empty-line">${esc(t('watch_empty'))}</p>`;
+    return `<ul class="watch-items" role="list">${items.map((x) => `<li class="watch-item"><span class="watch-item-title">${esc(x.title)}</span>
+      <small class="watch-item-sub">${esc([t(`watch_${x.kind === 'show' ? 'show' : 'movie'}`), t(`watch_${WATCH_PLACES.includes(x.place) ? x.place : 'netflix'}`)]
+        .concat(x.service ? [x.service] : []).join(' · '))}${x.mine ? ` · <b>${esc(t('watch_mine'))}</b>` : ''}</small></li>`).join('')}</ul>`;
+  }
+  async function renderWatch() {
+    stopViews('watch');
+    view = 'watch';
+    document.title = `${t('watch_title')} · ${t('my_day')}`;
+    const opt = (key, values) => values.map((v) => `<option value="${v}">${esc(t(`watch_${v}`))}</option>`).join('');
+    root.innerHTML = `<header class="day-head list-head">
+        <a class="list-back" href="${esc(dayHref)}" data-act="back">${esc(t('back_to_day'))}</a>
+        <h1>${esc(t('watch_title'))}</h1>
+      </header>
+      <form class="watch-add" autocomplete="off">
+        <input type="text" name="title" class="list-input" maxlength="100" autocapitalize="sentences" enterkeyhint="done" required
+          placeholder="${esc(t('watch_ph'))}" aria-label="${esc(t('watch_ph'))}">
+        <select name="kind" aria-label="${esc(t('watch_movie'))} / ${esc(t('watch_show'))}">${opt('kind', ['movie', 'show'])}</select>
+        <select name="place" aria-label="Netflix / ${esc(t('watch_cinema'))}">${opt('place', WATCH_PLACES)}</select>
+        <button type="submit" class="btn btn-primary">${esc(t('watch_add'))}</button>
+      </form>
+      <p class="watch-hint">${esc(t('watch_hint'))}</p>
+      <div class="watch-body">${watchBody()}</div>
+      ${footerHTML()}`;
+    try {
+      const got = await rpc(one(() => sb.rpc('watch_by_token', { p_token: token })));
+      if (view !== 'watch') return;
+      if (!got) { backToDay(); return; }
+      watchList = got;
+    } catch (err) {
+      if (view === 'watch') toast(friendly(err), { error: true });
+      return;
+    }
+    const body = root.querySelector('.watch-body');
+    if (body) body.innerHTML = watchBody();
+  }
+  async function watchAdd(form) {
+    const title = String(form.elements.title.value || '').replace(/\s+/g, ' ').trim();
+    if (!title) { form.elements.title.focus(); return; }
+    const btn = form.querySelector('[type="submit"]');
+    btn.disabled = true;
+    const key = form.dataset.key || (form.dataset.key = newKey());
+    try {
+      const got = await rpc(one(() => sb.rpc('watch_add_by_token', { p_token: token, p_title: title, p_kind: form.elements.kind.value,
+        p_place: form.elements.place.value, p_key: key })));
+      if (!got) { linkGone(); return; }
+      watchList = got;
+      delete form.dataset.key;
+      form.elements.title.value = '';
+      if (state) state.watch = (got.items || []).length;
+      toast(t('watch_added', { title }));
+      const body = root.querySelector('.watch-body');
+      if (body) body.innerHTML = watchBody();
+    } catch (err) {
+      toast(friendly(err), { error: true });
+    } finally {
+      btn.disabled = false;
+    }
   }
 
   // ============================================
@@ -3050,6 +3136,7 @@
   }
   root.addEventListener('submit', (e) => {
     const form = e.target;
+    if (form.classList.contains('watch-add')) { e.preventDefault(); watchAdd(form); return; }
     if (form.classList.contains('hw-add-form')) { e.preventDefault(); addHomework(form); } else if (form.classList.contains('hw-suggest-form')) { e.preventDefault(); suggest(form); } else if (form.classList.contains('hw-sheet-form')) {
       e.preventDefault();
       sheetSend(form.elements.text.value);
@@ -3437,14 +3524,15 @@
   // ============================================
   // START
   // ============================================
-  const viewFromHash = () => ({ '#confirm': 'confirm', '#stop': 'stop', '#list': 'list', '#homework': 'homework', '#focus': 'focus', '#points': 'points' }[location.hash]
+  const viewFromHash = () => ({ '#confirm': 'confirm', '#stop': 'stop', '#list': 'list', '#homework': 'homework', '#focus': 'focus', '#points': 'points', '#watch': 'watch' }[location.hash]
     || (planIdFromHash() ? 'plan' : 'day'));
 
   function render() {
     const v = viewFromHash();
     if (v === 'list' && canList()) renderList();
     else if (HW_VIEWS.has(v) && canHomework()) renderHomeworkView(v);
-    else if (v === 'day' || v === 'list' || HW_VIEWS.has(v)) renderDay(true);   // #list or #homework without it on the day: the day
+    else if (v === 'watch' && state && state.watch != null) renderWatch();
+    else if (v === 'day' || v === 'list' || v === 'watch' || HW_VIEWS.has(v)) renderDay(true);   // #list or #homework without it on the day: the day
     else renderAsk(v);
   }
 
@@ -3549,6 +3637,7 @@
       return;
     }
     if (view === 'list' && !state) { start(); return; }   // back from the saved list: try the day again
+    if (viewFromHash() === 'watch') fromDay = view === 'day';
     if (state && view !== 'problem') render();
   });
   window.addEventListener('focus', refreshSoon);

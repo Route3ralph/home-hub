@@ -418,3 +418,17 @@
 .cm-form .form-actions .btn { min-height: 44px; }
 .cm-give small { color: var(--text-3); }
 .cm-error { margin: 8px 0; }
+
+/* Movies and shows (0022, #watch): a kid's watch list and one box to add. */
+.day-watch { margin-top: 8px; }
+.watch-add { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0 0; }
+.watch-add .list-input { flex: 1 1 100%; }
+.watch-add select { flex: 1 1 120px; min-height: 48px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); color: var(--text); font-size: 16px; }
+.watch-add .btn { flex: 0 0 auto; min-height: 48px; }
+.watch-hint { margin: 8px 2px 14px; color: var(--text-3); font-size: 14px; }
+.watch-items { list-style: none; margin: 0; padding: 0; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
+.watch-item { display: grid; gap: 2px; padding: 12px 14px; border-top: 1px solid var(--border); }
+.watch-item:first-child { border-top: 0; }
+.watch-item-title { font-weight: 650; font-size: 17px; overflow-wrap: anywhere; }
+.watch-item-sub { color: var(--text-3); }
+.day .watch-add input[type="text"] { min-width: 0; width: auto; min-height: 48px; font-size: 16px; }   /* 16px: phones don't zoom */

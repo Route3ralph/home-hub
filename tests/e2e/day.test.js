@@ -230,7 +230,28 @@ const FAKES = {
     const person = (db.people || []).find((p) => p.day_token === b.p_token);
     // With withHomeworkTokens (schema 5): get_person_day's homework key, for a kid with homework on.
     if (person && db.homework_kids) personDayHomework(db, person, out);
+    // From 0022 (docs/v2-design.md §27), with db.watch (the list) and db.watchKids (kids' tokens): watch, how many
+    // are still to watch, for a kid only.
+    if (db.watch && (db.watchKids || []).includes(b.p_token)) out.watch = db.watch.filter((x) => !x.watched).length;
     return person && db.shopping_items ? personDayFood(db, person, out) : out;
+  },
+  // 0022: a kid's list (null for anyone else) and his add (a resent key adds nothing; "<name> (My day)").
+  watch_by_token: (db, b) => {
+    if (!db.watch) return fail(404, 'PGRST202', 'Could not find the function public.watch_by_token(p_token) in the schema cache');
+    if (!(db.watchKids || []).includes(b.p_token)) return null;
+    const who = db.my[b.p_token];
+    const me = `${who.person.name.split(' ')[0]} (My day)`;
+    return { items: db.watch.filter((x) => !x.watched).slice().reverse().map((x) => ({ id: x.id, title: x.title, kind: x.kind, place: x.place, service: x.service || null,
+      showing_until: null, mine: x.by === me })) };
+  },
+  watch_add_by_token: (db, b) => {
+    if (!db.watch) return fail(404, 'PGRST202', 'Could not find the function');
+    if (!(db.watchKids || []).includes(b.p_token)) return null;
+    const who = db.my[b.p_token];
+    const title = String(b.p_title || '').replace(/\s+/g, ' ').trim();
+    if (!title) return fail(400, '22023', 'Write what you want to watch.');
+    if (!db.watch.some((x) => x.id === b.p_key)) db.watch.push({ id: b.p_key, title, kind: b.p_kind, place: b.p_place, by: `${who.person.name.split(' ')[0]} (My day)` });
+    return FAKES.watch_by_token(db, { p_token: b.p_token });
   },
   get_list_by_token: (db, b) => foodRpc.get_list_by_token(db, b),
   add_to_list_by_token: listWrite('add_to_list_by_token'),
@@ -3560,6 +3581,46 @@ const HW_AUDIO_DROP = `(${HW_STUBS})(); (${HW_CLOCKED})(); (${HW_WAKE_DROP})();`
     td[0].find((x) => x.item_id === ID.piano).bring = `Cleats${'-and-shin-guards'.repeat(12)}`;
     ({ page } = await open({ label: 'bring-390', path: `/day.html?t=${TAYLOR}`, db: bdb, ctx: phone() }));
     check('bring 390px: a long Bring wraps, with no sideways page scroll', await noSideScroll(page));
+    await page.context().close();
+  }
+
+  // =====================================================================
+  // Movies and shows (0022, docs/v2-design.md §27): a kid's button (get_person_day's watch), #watch with his list
+  // and one box to add (watch_add_by_token, keyed); none for a helper, and no request without the key.
+  // =====================================================================
+  {
+    const wdb = dayDb();
+    wdb.watch = [{ id: 'aaaa0000-0000-4000-8000-000000000001', title: 'Paddington in Peru', kind: 'movie', place: 'cinema', service: 'AMC', by: 'alex@example.com' }];
+    wdb.watchKids = [JORDAN];
+    let { page, db } = await open({ label: 'watch-kid', path: `/day.html?t=${JORDAN}`, db: wdb });
+    check('watch: Jordan (a kid, Spanish) has the button with the count: "Pelis y series · 1 ›"', (await text(page, '.day-watch-btn')) === 'Pelis y series · 1 ›', await text(page, '.day-watch-btn'));
+    check('... and the day made no watch request', calls(db, 'watch_by_token').length === 0);
+    await page.click('.day-watch-btn');
+    await until(async () => (await texts(page, '.watch-item-title')).length === 1);
+    check('#watch: his list from watch_by_token: the title, "Peli · Cine · AMC"', same(await texts(page, '.watch-item-title'), ['Paddington in Peru'])
+      && (await text(page, '.watch-item-sub')) === 'Peli · Cine · AMC', await text(page, '.watch-item-sub'));
+    await page.fill('.watch-add input[name="title"]', '  Wild   Robot ');
+    await page.selectOption('.watch-add select[name="place"]', 'netflix');
+    await page.click('.watch-add [type="submit"]');
+    await until(async () => (await texts(page, '.watch-item-title')).length === 2);
+    const add = calls(db, 'watch_add_by_token').map((c) => c.body);
+    check('Add: watch_add_by_token with his token, the title, movie, netflix and a new key', add.length === 1 && add[0].p_token === JORDAN && add[0].p_title === 'Wild Robot'
+      && add[0].p_kind === 'movie' && add[0].p_place === 'netflix' && UUID.test(add[0].p_key), JSON.stringify(add));
+    check('... his list now has it, marked "tuya", and the box is empty', (await texts(page, '.watch-item-sub')).some((x) => /tuya/.test(x))
+      && (await page.inputValue('.watch-add input[name="title"]')) === '', JSON.stringify(await texts(page, '.watch-item-sub')));
+    await page.click('[data-act="back"]');
+    await until(async () => !!(await page.$('.day-watch-btn')));
+    check('back to the day: the button says 2', (await text(page, '.day-watch-btn')) === 'Pelis y series · 2 ›', await text(page, '.day-watch-btn'));
+    await page.context().close();
+    ({ page, db } = await open({ label: 'watch-helper', path: `/day.html?t=${TAYLOR}`, db: wdb }));
+    check('watch: Taylor (a helper) has no button', !(await page.$('.day-watch-btn')));
+    await page.context().close();
+    ({ page, db } = await open({ label: 'watch-21', path: `/day.html?t=${JORDAN}` }));
+    check('watch: before 0022 (no watch key): no button and no watch request', !(await page.$('.day-watch-btn')) && calls(db, 'watch_by_token').length === 0);
+    await page.context().close();
+    ({ page, db } = await open({ label: 'watch-390', path: `/day.html?t=${JORDAN}#watch`, db: wdb, ctx: phone() }));
+    await until(async () => (await texts(page, '.watch-item-title')).length > 0);
+    check('#watch at 390px: the list and the box, with no sideways page scroll', (await texts(page, '.watch-item-title')).length > 0 && await noSideScroll(page));
     await page.context().close();
   }
 
