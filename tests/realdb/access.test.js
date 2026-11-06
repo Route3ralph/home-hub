@@ -717,6 +717,30 @@ const emptyLists = (b) => !!b && typeof b === 'object' && !Array.isArray(b)
     await fn('set_tutor_coach', admin, { p_link: LINK, p_coach: false });
     const offAgain = [await fn('coach_view_by_token', null, { p_token: PAT }), await fn('tutor_view_by_token', null, { p_token: PAT, p_assignment: null, p_part: 'all' })];
     check('turned off again: no coach view, and Pat\'s view has no coach key', offAgain[0].status === 200 && offAgain[0].body === null && !('coach' in offAgain[1].body));
+
+    // The coach (0021, docs/v1.3-homework.md §25): Alex ticks Sam's box; Sam then adds an assignment through the API
+    // (the policy), gives points up to 200 this week, and still can't turn homework off; box off again: refused.
+    const samId = (await sql("select id from people where name like 'Sam%'"))[0].id;
+    await sql(`update homework_kids set points_on = true where kid_id = '${jordan.id}'`);
+    const c0 = await fn('can_coach', member, {});
+    const boxSam = await fn('set_coach', member, { p_person: samId, p_on: true });
+    const boxAlex = await fn('set_coach', admin, { p_person: samId, p_on: true });
+    const c1 = await fn('can_coach', member, {});
+    check('the coach: can_coach false for Sam; Sam can\'t tick his own box (403); Alex can; then can_coach true',
+      c0.status === 200 && c0.body === false && boxSam.status === 403 && boxAlex.status < 300 && c1.status === 200 && c1.body === true, [c0.body, boxSam.status, boxAlex.status, c1.body]);
+    const asg = await ask('/rest/v1/assignments', member, { kid_id: jordan.id, kind: 'assignment', title: 'Map of the river', subject: 'Science', due_date: '2026-11-20' }, 'POST');
+    const g1 = await fn('give_points', member, { p_kid: jordan.id, p_points: 150, p_note: 'Great week', p_key: 'e0000000-0000-4000-8000-000000000091' });
+    const g2 = await fn('give_points', member, { p_kid: jordan.id, p_points: 60, p_note: 'More', p_key: 'e0000000-0000-4000-8000-000000000092' });
+    const sw = await fn('save_homework_kid', member, { p_kid: jordan.id, p_active: false });
+    check('the coach adds an assignment (201), gives 150 points, 60 more refused (200 a week), and can\'t turn homework off (403)',
+      asg.status === 201 && (await sql("select count(*) as n from assignments where title = 'Map of the river'"))[0].n === '1'
+      && g1.status === 200 && g2.status >= 400 && /200 points this week from you/.test((g2.body && g2.body.message) || '') && sw.status === 403
+      && (await sql(`select active from homework_kids where kid_id = '${jordan.id}'`))[0].active === 't', [asg.status, g1.status, g2.status, g2.body, sw.status]);
+    await fn('set_coach', admin, { p_person: samId, p_on: false });
+    const g3 = await fn('give_points', member, { p_kid: jordan.id, p_points: 1, p_note: 'One', p_key: 'e0000000-0000-4000-8000-000000000093' });
+    const asg2 = await ask('/rest/v1/assignments', member, { kid_id: jordan.id, kind: 'assignment', title: 'Second map', due_date: '2026-11-21' }, 'POST');
+    check('box off again: give_points refused (403) and no assignment added', g3.status === 403 && asg2.status >= 400
+      && (await sql("select count(*) as n from assignments where title = 'Second map'"))[0].n === '0', [g3.status, asg2.status]);
   });
 
   // Recipes (migration 0013, docs/v1.2-kitchen.md §19), with a row in the table and a Recipes folder set: signed out,

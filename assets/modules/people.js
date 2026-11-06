@@ -44,6 +44,8 @@
   // HELPERS
   // ============================================
   const isAdmin = () => !!(core.me && core.me.role === 'admin');
+  // The coach box (0021, docs/v1.3-homework.md §25): on an adult's card, from schema 21.
+  const hasCoach = () => core.schemaVersion >= 21;
   const myEmail = () => String((core.me && core.me.email) || '').toLowerCase();
   const isMe = (p) => !!p && ((!!v2.mePerson && v2.mePerson.id === p.id) || (!!p.email && p.email === myEmail()));
   const canLogin = (role) => role === 'parent' || role === 'adult';
@@ -203,6 +205,7 @@
     const tags = [
       `<span class="pill ppl-role r-${esc(p.role)}">${esc(role.label)}</span>`,
       login ? `<span class="pill ppl-signin">Can sign in${login.role === 'admin' ? ' · admin' : ''}</span>` : '',
+      hasCoach() && p.coach && p.role === 'adult' && login && p.active !== false ? '<span class="pill ppl-coach">Manages homework</span>' : '',
       cantSignIn ? `<span class="pill ppl-cant">Can't sign in yet${admin ? ' (Edit to turn on)' : ''}</span>` : '',
       p.language === 'es' ? '<span class="pill">Español</span>' : '',
       p.active === false ? '<span class="pill ppl-off">Not active</span>' : '',
@@ -318,6 +321,8 @@
         <small>For signing in and the daily email.</small></label>
       <label class="check ppl-check" data-ref="signin"><input type="checkbox" name="can_sign_in"${hadLogin ? ' checked' : ''}${lock}>
         <span>Can sign in <small>With a code emailed to them. Parents can change Family and Settings; adults can see and add everything else.</small></span></label>
+      ${hasCoach() ? `<label class="check ppl-check" data-ref="coach"><input type="checkbox" name="coach"${p.coach ? ' checked' : ''}>
+        <span>Can manage the kids' homework, rewards and routine <small>On the Homework page they do what a parent does for the kids: assignments, plans, rewards and points, the routine. Never Family, Settings or anyone's links. Needs Can sign in.</small></span></label>` : ''}
       <p class="ppl-nosignin" data-ref="inactiveNote" hidden>Someone who isn't active can't sign in. Tick Active again to let them.</p>
       <p class="ppl-nosignin" data-ref="nosignin">Kids and helpers don't sign in. Send them their My day link instead (on their card).</p>
       <label class="field"><span>Phone</span><input type="tel" name="phone" value="${esc(p.phone || '')}" maxlength="40" autocomplete="off" placeholder="(201) 555-0100">
@@ -379,6 +384,7 @@
         digestWas = digest;
       }
       ref('signin').hidden = !canLogin(role);
+      if (ref('coach')) ref('coach').hidden = role !== 'adult' || off;
       ref('nosignin').hidden = canLogin(role);
       ref('digestMore').hidden = digest === 'off';
       ref('everyone').hidden = role !== 'parent';
@@ -411,6 +417,12 @@
       try {
         const row = editing ? Object.assign({ id: p.id }, read.row) : Object.assign(read.row, { sort_order: nextSortOrder() });
         const saved = await call('save_person', { p: row, p_can_sign_in: read.canSignIn });
+        // The coach box (0021): its own call, once the sign-in it needs is saved. Off whenever it can't count.
+        if (el.coach) {
+          const want = el.coach.checked && checked('role') === 'adult' && read.canSignIn;
+          const id = (saved && saved.id) || p.id;
+          if (id && want !== !!p.coach) await call('set_coach', { p_person: id, p_on: want });
+        }
         formDialog.close();
         toast(`${editing ? 'Saved' : 'Added'} ${(saved && saved.name) || read.row.name}`);
         after1();

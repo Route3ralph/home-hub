@@ -1494,3 +1494,35 @@ create table public.family_board (
 - Settings (`assets/modules/settings.js`), gated on `core.schemaVersion >= 20`, parents only: the **Family board** card: what it shows, **Make the board link**; then the link with **Copy link**, **Open the board**, **New link** (asks first: the old link stops at once) and **Turn off** (asks first), all through `board_link`.
 
 Undoing it isn't needed (nothing shows until a parent makes the link). If wanted, in one go, as the migration's header writes it out: drop the board's eight functions and `family_board`; then 0019's `hub_schema_version()`. Ticks made on the board stay, as any tick does. 0020 can then run again.
+
+## 26. v1.3: the coach
+
+A parent ticks one box on an adult's card on the Family page; that adult, while active and able to sign in, then does on the Homework page what a parent does for the kids, and nothing else. Its migration is `supabase/migrations/0021_coach.sql` (the contract is `docs/v1.3-homework.md` §25). Fresh install = `schema.sql`, then `0002` to `0021`. One transaction; it refuses to run without 0020 ("The family board (migration 0020) isn't installed"), twice ("already installed"), on a database set back to 20 ("set back to 20"), or on one that isn't as 0020 left it (`family_board`, `private.monday`, `today_local`, the six "Parents add/change/remove" policies on `assignments` and `rewards`, and each body below holding the check it rewrites exactly once). The site and `hub-jobs` go live first, then 0021; no `cron.sql` change. A coach is a member: `whoami()` and `private.is_member()` are unchanged, and a project guest is never a coach.
+
+### Tables
+```sql
+alter table public.people add column coach boolean not null default false;
+```
+- `people.coach`: the box. It counts only while the person is an active adult who can sign in (a `members` row); people's existing grants and policies cover it (members read it, nobody writes it but `set_coach`).
+
+### Functions
+- `private.is_coach_email(p_email text) returns boolean` (stable, a definer; revoked from public, anon and authenticated): a parent who can sign in (`members.role = 'admin'`), or an active adult with `coach` on and a `members` row.
+- `private.is_coach() returns boolean` (stable, a definer; authenticated, as the policies ask it; revoked from public and anon): `is_coach_email` of the caller.
+- `can_coach() returns boolean` (authenticated; revoked from public, anon and service_role; with the caller's rights): `private.is_coach()`, for the Homework page and hub-jobs.
+- `set_coach(p_person uuid, p_on boolean) returns void` (authenticated, parents only: 42501 "Only an admin can change the family list."; a definer): on needs an active adult (22023 "Only an adult on the family list can manage the kids' homework.") who can sign in (22023 "Tick Can sign in first."); off always works; null 22023 "Choose on or off."; an unknown id 22023 "That person is gone.".
+- `private.coach_rewrite(p_undo boolean) returns void` (a definer; revoked from public, anon, authenticated and service_role): in the bodies of `save_homework_plan`, `homework_step`, `decide_reward`, `give_points`, `void_points`, `homework_ai_preview`, `homework_ai_draft`, `school_item_action` and `save_routine`, `private.is_admin()` becomes `private.is_coach()` (from `pg_get_functiondef`, nothing else changed, line ends kept); in `homework_ai_start`, the email's check takes the coach for a plan or a revision, never `'test'`. Each body must hold what it replaces exactly once, or it raises "This database isn't as migration 0020 left it". `p_undo` true puts each back (the undo).
+- `give_points(p_kid uuid, p_points int, p_note text, p_key uuid) returns jsonb` (authenticated, a definer): 0005's, rewritten, is renamed `give_points_v20` and moved to `private` (`private.give_points_v20`, for nobody); the new one is the coach's check, then for a coach who isn't a parent at most 200 points given by that email to a kid in a household week (Mon–Sun, `private.monday`; a resent key answers as it was; P0001 "That's more than 200 points this week from you. A parent can give more."), then `private.give_points_v20`.
+- `save_routine(p_kid uuid, p_sections jsonb, p_points int) returns jsonb` (authenticated, a definer): 0019's, rewritten, is renamed `save_routine_v20` and moved to `private` (`private.save_routine_v20`, for nobody); the new one is the coach's check, then for a coach who isn't a parent `p_points` must be the routine's points as they are (42501 "Only a parent can change the routine's points."), then `private.save_routine_v20`.
+- Policies: "Parents add assignments", "Parents change assignments", "Parents remove assignments", "Parents add rewards", "Parents change rewards" and "Parents remove rewards" ask `private.is_coach()` (`alter policy`, names kept).
+- `hub_schema_version()` returns 21.
+
+Stays the parents': Family, Settings, the My day and board links, project guests, Hearth tags, tutor links and their switches, school links and Change dates, the AI planner's switch, never-send words and Test, homework on or off, points on or off and their values and caps, homework time, the routine's points, Erase; the AI runs and the tutor's notes stay the parents' to read.
+
+### hub-jobs
+- `homework_ai` (`supabase/functions/hub-jobs/homework.ts`): a signed-in caller whose `whoami` isn't admin may ask for a plan or a revision when `can_coach()` answers true (Test stays 403); before 0021 `can_coach` doesn't exist, so it is refused as before. Deploy with verify_jwt false, as always.
+
+### Client
+- Family (`assets/modules/people.js`), gated on `core.schemaVersion >= 21`, parents only: on an adult's form, **Can manage the kids' homework, rewards and routine** (hidden for other roles and while not active); saved with `set_coach` after `save_person`, on only with Can sign in; the card says **Manages homework**.
+- Homework (`assets/modules/homework.js`), gated on `core.schemaVersion >= 21`: a non-parent asks `can_coach` on each load; the coach gets the parents' buttons for the kids (assignments and lessons, the plan editor and the AI's, To approve, To check, Answer, Give points, Void, rewards, Print, the routine with its points field locked: "Only a parent changes the points."), and under Switches his **New from school** (Add to homework, Hide). The other switches stay disabled ("Only parents change the other switches."); no tutor links, AI row, school links, homework time or Erase.
+
+Undoing it isn't needed (with the box off for everyone every answer is 20's). If wanted, in one go, as the migration's header writes it out: drop the two wrappers and move `give_points_v20` and `save_routine_v20` back to `public` under their old names with their grant, `coach_rewrite` with `p_undo` true, the six policies back to `private.is_admin()`, drop the coach's functions and `people.coach`; then 0020's `hub_schema_version()`. 0021 can then run again.

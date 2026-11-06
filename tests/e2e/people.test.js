@@ -201,7 +201,7 @@ const stubModule = (name, s) => `;(function () {
         try { Object.defineProperty(navigator, 'clipboard', { value: { writeText: () => Promise.reject(new Error('NotAllowedError')) } }); } catch (e) {}
       });
     }
-    await install(page, db, log, { rpc: opts.v1 ? {} : v2Rpc });
+    await install(page, db, log, { rpc: opts.v1 ? {} : (opts.rpc || v2Rpc) });
     // whoami in v2 also says which person row is the caller's.
     if (!opts.v1) {
       await page.route((url) => url.host === 'test.supabase.co' && url.pathname === '/rest/v1/rpc/whoami', (route) => {
@@ -674,6 +674,40 @@ const stubModule = (name, s) => `;(function () {
   check('v1: the old tabs; #/family is still the v1 Family page', same(v1tabs, ['Home', 'Projects', 'Contractors', 'Family']) && (await tc(page, 'h1')) === 'Family'
     && !!(await page.$('[data-act="add-member"]')) && !(await page.$('.ppl-card')), v1tabs.join(','));
   await page.context().close();
+
+  // =====================================================================
+  // The coach box (0021, docs/v1.3-homework.md §25): on an adult's form from schema 21; ticked, set_coach after
+  // save_person; the card says "Manages homework"; a kid's form hides it; none on schema 2.
+  // =====================================================================
+  {
+    const { withCoachAdult, coachAdultRpc } = require('./mock');
+    const RPC21 = Object.assign({}, v2Rpc, { hub_schema_version: () => 21 }, coachAdultRpc);
+    ({ page, db } = await open({ label: 'coach-2' }));
+    await editOf(page, ID.sam);
+    check('coach box: none on schema 2', !(await page.$('#formDialog input[name="coach"]')));
+    await page.context().close();
+    ({ page, db } = await open({ label: 'coach-21', db: withCoachAdult(peopleDb()), rpc: RPC21 }));
+    await editOf(page, ID.sam);
+    check('coach box: on schema 21, Sam\'s form has it, unticked, with what it allows',
+      (await visible(page, '#formDialog input[name="coach"]')) && !(await page.isChecked('#formDialog input[name="coach"]'))
+      && /Can manage the kids' homework, rewards and routine/.test(await tc(page, '#formDialog [data-ref="coach"]')), await tc(page, '#formDialog [data-ref="coach"]'));
+    await page.check('#formDialog input[name="coach"]');
+    await submit(page);
+    check('coach box: ticked and saved: save_person, then set_coach(Sam, true)', same(rpcCalls(db, 'set_coach').map((c) => c.body), [{ p_person: ID.sam, p_on: true }])
+      && db.people.find((p) => p.id === ID.sam).coach === true, JSON.stringify(rpcCalls(db, 'set_coach')));
+    check('coach box: Sam\'s card says "Manages homework"', /Manages homework/.test(await tc(page, card(ID.sam))), await tc(page, card(ID.sam)));
+    await editOf(page, ID.sam);
+    await submit(page);
+    check('coach box: saved again unchanged: no second set_coach', rpcCalls(db, 'set_coach').length === 1);
+    await editOf(page, ID.sam);
+    await page.uncheck('#formDialog input[name="can_sign_in"]');
+    await submit(page);
+    check('coach box: Can sign in taken away: set_coach(Sam, false) too', same(rpcCalls(db, 'set_coach').map((c) => c.body).slice(-1), [{ p_person: ID.sam, p_on: false }]),
+      JSON.stringify(rpcCalls(db, 'set_coach')));
+    await editOf(page, ID.jordan);
+    check('coach box: hidden for a kid', !(await visible(page, '#formDialog input[name="coach"]')));
+    await page.context().close();
+  }
 
   await browser.close();
   await server.close();
