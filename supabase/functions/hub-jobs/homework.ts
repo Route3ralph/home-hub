@@ -7,7 +7,8 @@
 //             shown? (a plan or a revision: previewSeal of What Claude will see as the page showed it) }
 //   1. shape: a bad kind or key, no assignment or no seal for a plan or a revision, an over-long request or answer → 400
 //   2. who: a token (Pat's link) that isn't 32 hex characters → 200 {stop: 'not_found'} with no SQL; a well-formed one
-//      goes to SQL as it is (Test with a token → 403); otherwise the caller's sign-in → whoami must say admin (401
+//      goes to SQL as it is (Test with a token → 403); otherwise the caller's sign-in → whoami must say admin, or (from
+//      0021) can_coach must say true for a plan or a revision, never Test (401
 //      with no Authorization, 403 otherwise)
 //   3. no ANTHROPIC_API_KEY → 200 {stop: 'not_set_up'} (the database can't see the secret; the page offers the starter
 //      plans)
@@ -384,8 +385,15 @@ export async function homeworkAi(req: Request, body: Record<string, unknown>, de
   } else {
     const authorization = req.headers.get('Authorization') || '';
     if (!/^Bearer\s+\S+/.test(authorization)) return json(401, { error: 'Sign in first.' });
-    const { data: me, error } = await deps.user(authorization).rpc('whoami');
-    if (error || !me || me.role !== 'admin' || typeof me.email !== 'string') return json(403, { error: 'Only family admins can do this.' });
+    const user = deps.user(authorization);
+    const { data: me, error } = await user.rpc('whoami');
+    if (error || !me || typeof me.email !== 'string') return json(403, { error: 'Only family admins can do this.' });
+    if (me.role !== 'admin') {
+      // The coach (0021): a plan or a revision, never Test. Before 0021, can_coach doesn't exist: refused, as before.
+      if (kind === 'test') return json(403, { error: 'Only family admins can do this.' });
+      const { data: coach, error: notCoach } = await user.rpc('can_coach');
+      if (notCoach || coach !== true) return json(403, { error: 'Only family admins can do this.' });
+    }
     email = me.email.trim().toLowerCase();
   }
 

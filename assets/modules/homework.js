@@ -83,6 +83,15 @@
   // ============================================
   const sb = () => core.sb;
   const isAdmin = () => !!(core.me && core.me.role === 'admin');
+  // The coach (0021, §25): an adult whose box a parent ticked on the Family page does on this page what a parent does for
+  // the kids (assignments, plans, the AI, To check, answers, rewards and points, New from school, the routine but its
+  // points). The switches, homework time, tutor and school links and Erase stay the parents'. Read on every load.
+  let coachOn = false;
+  const canCoach = () => isAdmin() || coachOn;
+  async function readCoach() {
+    if (isAdmin() || !(core.schemaVersion >= 21)) { coachOn = false; return; }
+    try { coachOn = (await run(sb().rpc('can_coach'))) === true; } catch (err) { coachOn = false; }
+  }
   const myEmail = () => String((core.me && core.me.email) || '').toLowerCase();
   const sum = (rows, f) => rows.reduce((n, r) => n + (Number(f(r)) || 0), 0);
   const cap = (s) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
@@ -233,7 +242,7 @@
     } catch (err) { return { routine: null, failed: true }; }
   }
   async function readSchool(kid) {
-    if (!(core.schemaVersion >= 6) || !isAdmin()) return { status: null, failed: false };
+    if (!(core.schemaVersion >= 6) || !canCoach()) return { status: null, failed: false };
     try {
       return { status: schoolStatus(await run(sb().rpc('school_feed_status', { p_kid: kid }))), failed: false };
     } catch (err) { return { status: null, failed: true }; }
@@ -250,13 +259,14 @@
 
   async function load(st) {
     const today = dates.today();
+    await readCoach();
     // An assignment's address opens it whoever's it is: its kid becomes the one on screen.
     const [kids, times, links, owner, house, runs, tests] = await Promise.all([
       q(sb().from('homework_kids').select('*')),
       q(sb().from('homework_times').select('event_id,kid_id')),
       isAdmin() ? q(sb().from('tutor_links').select('*').order('created_at')) : Promise.resolve([]),
       st.params.id && !st.loaded ? q(sb().from('assignments').select('kid_id').eq('id', st.params.id)) : Promise.resolve([]),
-      isAdmin() ? q(sb().from('household').select('*').limit(1)) : Promise.resolve([]),
+      canCoach() ? q(sb().from('household').select('*').limit(1)) : Promise.resolve([]),
       isAdmin() ? q(sb().from('ai_runs').select(RUN_COLS).or(`started_at.gte.${today.slice(0, 8)}01,status.eq.running`).order('started_at', { ascending: false }))
         : Promise.resolve([]),
       isAdmin() ? q(sb().from('ai_runs').select(RUN_COLS).eq('kind', 'test').order('started_at', { ascending: false }).limit(1)) : Promise.resolve([]),
@@ -473,7 +483,7 @@
   }
   // plan.js's editor's AI parts for one assignment, or null (Sam, or the AI off with nothing to show).
   function aiOpts(st, row) {
-    if (!isAdmin() || !row || !st.row || !st.row.active) return null;
+    if (!canCoach() || !row || !st.row || !st.row.active) return null;
     if (!aiOn(st) && !row.ai_draft && !row.ai_state) return null;
     const id = row.id;
     const fresh = async () => {
@@ -647,7 +657,7 @@
   }
 
   function approveHTML(st) {
-    const admin = isAdmin();
+    const admin = canCoach();
     const kid = kidName(st);
     const asks = st.asks.filter((x) => x.status === 'waiting');
     const sugg = st.rewards.filter((r) => r.suggested && r.cost == null);
@@ -666,7 +676,7 @@
   }
 
   function checkHTML(st) {
-    const admin = isAdmin();
+    const admin = canCoach();
     const rows = [];
     st.assignments.filter((a) => recent(st, a)).forEach((a) => stepsOf(st, a.id).filter((s) => s.kind === 'milestone' && s.done_at && !s.checked_at)
       .forEach((s) => rows.push({ a, s })));
@@ -687,7 +697,7 @@
   }
 
   function qaHTML(st) {
-    const admin = isAdmin();
+    const admin = canCoach();
     const items = qaItems(st);
     if (!items.length) return '';
     const open = items.filter((x) => x.open).length;
@@ -804,7 +814,7 @@
   }
 
   function assignmentsHTML(st) {
-    const admin = isAdmin();
+    const admin = canCoach();
     const open = st.assignments.filter((a) => a.status === 'open').sort((a, b) => (a.due_date < b.due_date ? -1 : a.due_date > b.due_date ? 1 : 0));
     const closed = st.assignments.filter((a) => a.status !== 'open' && recent(st, a));
     // Print, for the parents (the page has no buttons for the other grown-ups).
@@ -828,7 +838,7 @@
     set: (n) => { try { localStorage.setItem(TL_KEY, String(n)); } catch (e) { /* no storage: this visit only */ } },
   };
   function tlDays(st) {
-    if (!isAdmin()) return 21;
+    if (!canCoach()) return 21;
     if (st.tlDays == null) st.tlDays = tlStore.get() || 21;
     return st.tlDays;
   }
@@ -837,7 +847,7 @@
     const days = tlDays(st);
     const html = P.overview(items, { today: st.today, days, lang: 'en', link: (id) => `#/homework/${id}` });
     const title = (TL_RANGES.find((r) => r[0] === days) || TL_RANGES[3])[1];
-    const pick = isAdmin() ? `<div class="hw-tl-pick"><select class="hw-tl-range" name="tl-range" data-act="tl-range" aria-label="How far ahead">${TL_RANGES.map(([n, label]) =>
+    const pick = canCoach() ? `<div class="hw-tl-pick"><select class="hw-tl-range" name="tl-range" data-act="tl-range" aria-label="How far ahead">${TL_RANGES.map(([n, label]) =>
       `<option value="${n}"${n === days ? ' selected' : ''}>${esc(label)}</option>`).join('')}</select></div>` : '';
     return html ? section('timeline', title, `${pick}<div class="hw-card hw-tl">${html}</div>`) : '';
   }
@@ -868,11 +878,11 @@
   }
 
   function pointsHTML(st) {
-    const admin = isAdmin();
+    const admin = canCoach();
     const k = st.row;
     const kid = kidName(st);
     if (!k.points_on) {
-      return section('points', 'Points and rewards', `<p class="hw-card empty-line hw-empty">Points are off for ${esc(kid)}: nothing is earned, and his My day shows no points or rewards.${admin ? ' Turn them on under Switches.' : ''}</p>`);
+      return section('points', 'Points and rewards', `<p class="hw-card empty-line hw-empty">Points are off for ${esc(kid)}: nothing is earned, and his My day shows no points or rewards.${isAdmin() ? ' Turn them on under Switches.' : ''}</p>`);
     }
     const mon = mondayOf(st.today);
     const today = sum(st.ledger.filter((l) => l.day === st.today && (l.kind === 'focus' || l.kind === 'on_time')), (l) => l.delta);
@@ -1029,12 +1039,13 @@
         <div class="hw-rt-acts">${i > 0 ? btn('routine-up', 'Move up', ` data-i="${i}"`) : ''}${n > 1 ? btn('routine-del', 'Remove section', ` data-i="${i}"`) : ''}</div></fieldset>`).join('')}
       ${n < 8 ? btn('routine-add', '+ Section') : ''}
       <label class="field hw-rt-points"><span>Points for each section he finishes (paid once a day; 0 for none)</span>
-        <input type="number" name="rt_points" min="0" max="10" step="1" inputmode="numeric" value="${esc(d.points)}"></label>
+        <input type="number" name="rt_points" min="0" max="10" step="1" inputmode="numeric" value="${esc(d.points)}"${isAdmin() ? '' : ' disabled'}></label>
+        ${isAdmin() ? '' : '<small class="hw-switch-line">Only a parent changes the points.</small>'}
       <p class="form-error" role="alert" hidden></p>
       <div class="form-actions"><button type="button" class="btn" data-act="routine-cancel">Cancel</button><button type="submit" class="btn btn-primary">Save</button></div></form>`;
   }
   function routineRowHTML(st) {
-    const admin = isAdmin();
+    const admin = canCoach();
     const kid = kidName(st);
     const r = st.routine;
     const head = '<p class="hw-switch-title">Routine</p>';
@@ -1103,6 +1114,11 @@
           ${admin ? btn('change-time', 'Change', ` data-event="${esc(e.id)}"`) : ''}</li>`).join('')}</ul>` : `<p class="hw-switch-line">${esc(times || 'No homework time set')}</p>`}
         ${admin && st.events.length ? `<details class="hw-addtime"><summary>Add another time</summary>${timeFormHTML(false)}</details>` : ''}</div>`);
       if (core.schemaVersion >= 19) rows.push(routineRowHTML(st));
+      // The coach (0021): his New from school, to add or hide; the links themselves stay the parents'.
+      if (!admin && canCoach() && core.schemaVersion >= 6 && st.school && st.school.feeds && st.school.feeds.length) {
+        rows.push(`<div class="hw-switch-row" data-row="school"><p class="hw-switch-title">New from school</p>${schoolItemsHTML(st)
+          || `<p class="hw-switch-line">${esc(`Nothing new from school for ${kid}.`)}</p>`}</div>`);
+      }
       if (admin) {
         rows.push(`<div class="hw-switch-row" data-row="links"><p class="hw-switch-title">Tutor links</p>
           <small class="hw-switch-line">A link with no sign-in that shows only ${esc(kid)}'s homework. Send it to the tutor; it ends after 180 days. New link stops the old one at once.</small>
@@ -1114,7 +1130,7 @@
           <small class="hw-switch-line">Deletes all of it, for good. His homework-time events stay on the calendar.</small></div>`);
       }
     }
-    if (!admin) rows.push('<p class="hw-switch-note">Only parents can change these.</p>');
+    if (!admin) rows.push(`<p class="hw-switch-note">${canCoach() ? 'Only parents change the other switches.' : 'Only parents can change these.'}</p>`);
     return section('switches', 'Switches', `<div class="hw-card hw-switches">${rows.join('')}</div>`);
   }
 
@@ -1518,7 +1534,7 @@
 
   // The steps' questions, answers and notes (qa_log too), with who and when.
   function stepQaHTML(st, a) {
-    const admin = isAdmin();
+    const admin = canCoach();
     const kid = kidName(st);
     const tutor = tutorFirst(st);
     const items = [];
@@ -1568,7 +1584,7 @@
     const main = st.main;
     const id = st.params.id;
     const a = st.kid ? assignmentOf(st, id) : null;
-    const admin = isAdmin();
+    const admin = canCoach();
     if (!a) {
       stopEditor(st);
       main.innerHTML = `<div class="hw-a"><a class="back" href="#/homework">‹ All homework</a><p class="hw-card empty-line hw-empty">${st.failed
@@ -2272,7 +2288,7 @@
       case 'change': { const s = st.steps.find((x) => x.id === d.step); open(`step:${d.step}`, 'answer', d.step, s ? s.answer : ''); break; }
       case 'clear': stepAction(st, d.step, 'clear', d.which); break;
       case 'cancel-note': st.form = null; draw(st); break;
-      case 'print': if (isAdmin()) printForm(st); break;
+      case 'print': if (canCoach()) printForm(st); break;
       case 'add-assignment': newAssignment(st, 'assignment'); break;
       case 'add-lesson': newAssignment(st, 'lesson'); break;
       case 'give': giveDialog(st); break;

@@ -1466,6 +1466,11 @@ function hwCall(name, args, defaults, run) {
   };
 }
 const parentOnly = (db, email) => { if (!hwAdmin(db, email)) throw new Raise('42501', PARENT_ONLY); };
+// Schema 21 (0021_coach.sql, docs/v1.3-homework.md §25): the coach, an active adult who can sign in and whose box a
+// parent ticked (people.coach, with withCoachAdult(db)), may do what the ten rewritten functions allow; a parent too.
+const hwCoach = (db, email) => hwAdmin(db, email) || (!!db.coachAdult && !!db.members.find((m) => m.email === email)
+  && (db.people || []).some((p) => p.email === email && p.role === 'adult' && p.active !== false && p.coach));
+const coachOnly = (db, email) => { if (!hwCoach(db, email)) throw new Raise('42501', PARENT_ONLY); };
 
 const homeworkRpc = {
   homework_week: hwCall('homework_week', ['p_kid', 'p_from'], ['p_days'], (db, b) => {
@@ -1525,17 +1530,17 @@ const homeworkRpc = {
     return ev.id;
   }),
   save_homework_plan: hwCall('save_homework_plan', ['p_assignment', 'p_steps', 'p_rev'], ['p_give'], (db, b, email) => {
-    parentOnly(db, email);
+    coachOnly(db, email);
     return hwPlanSave(db, b.p_assignment, b.p_steps, !!b.p_give, b.p_rev, email);
   }),
   homework_step: hwCall('homework_step', ['p_step', 'p_action'], ['p_text'], (db, b, email) => {
-    parentOnly(db, email);
+    coachOnly(db, email);
     if (b.p_text != null && Array.from(String(b.p_text)).length > (b.p_action === 'answer' ? 200 : 160)) throw new Raise('22023', 'That\'s too long.');
     if (!db.homework_steps.some((s) => s.id === b.p_step)) throw new Raise('22023', 'That step is gone.');
     return hwStepAct(db, b.p_step, b.p_action, b.p_text, email);
   }),
   decide_reward: hwCall('decide_reward', ['p_ask', 'p_approve'], ['p_note'], (db, b, email) => {
-    parentOnly(db, email);
+    coachOnly(db, email);
     if (b.p_note != null && Array.from(String(b.p_note)).length > 120) throw new Raise('22023', 'That\'s too long.');
     if (b.p_approve == null) throw new Raise('22023', 'Choose Yes or Not now.');
     const x = db.reward_asks.find((r) => r.id === b.p_ask);
@@ -1553,7 +1558,7 @@ const homeworkRpc = {
     return { ask: Object.assign({}, x), balance: hwBalance(db, x.kid_id).balance };
   }),
   give_points: hwCall('give_points', ['p_kid', 'p_points', 'p_note', 'p_key'], [], (db, b, email) => {
-    parentOnly(db, email);
+    coachOnly(db, email);
     if (!Number.isInteger(b.p_points) || b.p_points < 1 || b.p_points > 200) throw new Raise('22023', 'Give 1 to 200 points.');
     if (b.p_note != null && Array.from(String(b.p_note)).length > 120) throw new Raise('22023', 'That\'s too long.');
     const note = cleanText(b.p_note, 120);
@@ -1563,13 +1568,19 @@ const homeworkRpc = {
     if (l && (l.kid_id !== b.p_kid || l.kind !== 'given')) throw new Raise('22023', 'That id is taken.');
     if (!l) {
       if (!db.homework_kids.some((k) => k.kid_id === b.p_kid && k.points_on)) throw new Raise('42501', 'Points are off.');
+      if (!hwAdmin(db, email)) {   // the coach: at most 200 a household week (Mon–Sun) to a kid
+        const mon = homePlan().addDays(hwToday(db), -((new Date(`${hwToday(db)}T12:00:00Z`).getUTCDay() + 6) % 7));
+        const used = db.points_ledger.filter((x) => x.kid_id === b.p_kid && x.kind === 'given' && x.who === email && x.day >= mon && x.day <= homePlan().addDays(mon, 6))
+          .reduce((a, x) => a + x.delta, 0);
+        if (used + b.p_points > 200) throw new Raise('P0001', 'That\'s more than 200 points this week from you. A parent can give more.');
+      }
       l = ledgerRow({ id: b.p_key, kid_id: b.p_kid, at: foodStamp(db), day: hwToday(db), kind: 'given', delta: b.p_points, note, who: email });
       db.points_ledger.push(l);
     }
     return { entry: { id: l.id, delta: l.delta, note: l.note }, balance: hwBalance(db, b.p_kid).balance };
   }),
   void_points: hwCall('void_points', ['p_entry', 'p_note'], [], (db, b, email) => {
-    parentOnly(db, email);
+    coachOnly(db, email);
     if (b.p_note != null && Array.from(String(b.p_note)).length > 120) throw new Raise('22023', 'That\'s too long.');
     const note = cleanText(b.p_note, 120);
     if (!note) throw new Raise('22023', 'Say why.');
@@ -1665,6 +1676,30 @@ function withCoachRewards(db) {
   (db.tutor_links || []).forEach((l) => { if (l.rewards === undefined) l.rewards = false; });
   return db;
 }
+// withCoachAdult(db) is for a schema-21 database: people.coach (false unless set), coachAdultRpc's can_coach() and the
+// parents' set_coach(p_person, p_on), and the coach let through the ten functions above. Without it both answer 404.
+function withCoachAdult(db) {
+  db.coachAdult = true;
+  (db.people || []).forEach((p) => { if (p.coach === undefined) p.coach = false; });
+  return db;
+}
+const notFound = (name, b) => ({ __status: 404, body: { code: 'PGRST202', message: `Could not find the function public.${name}(${Object.keys(b || {}).sort().join(', ')}) in the schema cache`, details: null, hint: null } });
+const coachAdultRpc = {
+  can_coach: (db, b, email) => (db.coachAdult ? hwCoach(db, email) : notFound('can_coach', b)),
+  set_coach: (db, b, email) => {
+    if (!db.coachAdult) return notFound('set_coach', b);
+    if (!hwAdmin(db, email)) return { __status: 403, body: { code: '42501', message: 'Only an admin can change the family list.', details: null, hint: null } };
+    const fail = (m) => ({ __status: 400, body: { code: '22023', message: m, details: null, hint: null } });
+    if (b.p_on == null) return fail('Choose on or off.');
+    const p = (db.people || []).find((x) => x.id === b.p_person);
+    if (!p) return fail('That person is gone.');
+    if (b.p_on && (p.role !== 'adult' || p.active === false)) return fail('Only an adult on the family list can manage the kids\' homework.');
+    if (b.p_on && !db.members.some((m) => m.email === p.email)) return fail('Tick Can sign in first.');
+    p.coach = !!b.p_on;
+    (db.coachSets = db.coachSets || []).push({ person: p.id, on: !!b.p_on, by: email });
+    return null;
+  },
+};
 const coachNoteRow = (o) => Object.assign({ id: uuid(), link_id: null, note: '', written_by: 'Pat Lee, tutor (tutor link)', created_at: now(), done_at: null, done_by: null }, o);
 const coachCall = (name, args, run) => {
   const call = hwCall(name, args, [], run);
@@ -1974,7 +2009,7 @@ const schoolRpc = {
     return null;
   }),
   school_item_action: scCall('school_item_action', ['p_item', 'p_action'], ['p_due'], (db, b, email) => {
-    parentOnly(db, email);
+    coachOnly(db, email);
     if (!['add', 'hide', 'show'].includes(b.p_action)) throw new Raise('22023', 'Choose add, hide or show.');
     const i = db.school_items.find((x) => x.id === b.p_item);
     const f = i && scFeed(db, i.feed_id);
@@ -2131,7 +2166,7 @@ function aiJob(db, body, email) {
   } else {
     const m = db.members.find((x) => x.email === email);
     if (!m) return { status: 401, body: { error: 'Sign in first.' } };
-    if (m.role !== 'admin') return { status: 403, body: { error: 'Only family admins can do this.' } };
+    if (m.role !== 'admin' && (kind === 'test' || !hwCoach(db, email))) return { status: 403, body: { error: 'Only family admins can do this.' } };
     who = email;
   }
   if (db.aiMode === 'not_set_up') return { status: 200, body: { stop: 'not_set_up' } };
@@ -2182,7 +2217,7 @@ function aiDraftAct(db, a, action) {
 }
 const aiRpc = {
   homework_ai_preview: hwCall('homework_ai_preview', ['p_assignment'], ['p_kind', 'p_request', 'p_answers'], (db, b, email) => {
-    parentOnly(db, email);
+    coachOnly(db, email);
     const kind = b.p_kind || 'plan';
     if (!['plan', 'revise', 'test'].includes(kind)) throw new Raise('22023', 'Choose plan, revise or test.');
     if (Array.from(b.p_request || '').length > 200 || (b.p_answers || []).length > 3 || (b.p_answers || []).some((x) => Array.from(x || '').length > 200)) throw new Raise('22023', 'That\'s too long.');
@@ -2192,7 +2227,7 @@ const aiRpc = {
     return aiMessage(db, a, kind, b.p_request, b.p_answers, 'parent');
   }),
   homework_ai_draft: hwCall('homework_ai_draft', ['p_assignment', 'p_action'], [], (db, b, email) => {
-    parentOnly(db, email);
+    coachOnly(db, email);
     if (!['undo', 'dismiss'].includes(b.p_action)) throw new Raise('22023', 'Choose undo or dismiss.');
     const a = db.assignments.find((x) => x.id === b.p_assignment);
     if (!a) throw new Raise('22023', 'That assignment is gone.');
@@ -3992,4 +4027,4 @@ module.exports = { makeDb, install, signIn, expectedConsoleError, SUPA, withCale
   withFood, mealRow, shopItem, foodRpc, personDayFood, foodStamp, withRecipes, recipeRow,
   withHomework, homeworkRpc, homePlan, hwKidRow, tutorLinkRow, assignmentRow, stepRow, sessionRow, rewardRow, askRow, ledgerRow,
   withHomeworkTokens, homeworkTokenRpc, personDayHomework, tkKidRow, tkLinkRow, tkAssignmentRow, tkStepRow, tkSessionRow, tkRewardRow, tkLedgerRow, stubShare,
-  withSchool, withSchoolCheck, withSchoolAssigned, schoolRpc, schoolFeedRow, schoolItemRow, schoolUrlOf, withCoach, coachRpc, coachNoteRow, withCoachRewards, aiRpc, aiJob, aiMessage, aiComplete };
+  withSchool, withSchoolCheck, withSchoolAssigned, schoolRpc, schoolFeedRow, schoolItemRow, schoolUrlOf, withCoach, coachRpc, coachNoteRow, withCoachRewards, withCoachAdult, coachAdultRpc, hwCoach, aiRpc, aiJob, aiMessage, aiComplete };

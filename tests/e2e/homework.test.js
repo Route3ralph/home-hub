@@ -974,6 +974,57 @@ const emailOf = (req) => {
   await page.context().close();
 
   // =====================================================================
+  // 5b. The coach (0021, docs/v1.3-homework.md §25): Sam, an adult whose box a parent ticked, gets the parents' buttons
+  //     for the kids (assignments, the plan editor, To approve, To check, Answer, points and rewards, the routine but its
+  //     points); the switches, homework time, tutor links, the AI row, school links and Erase stay the parents'.
+  // =====================================================================
+  {
+    const { withCoachAdult, coachAdultRpc } = require('./mock');
+    const RPC21 = Object.assign({}, RPC, { hub_schema_version: () => 21, routine_status: () => ({ points: 0, sections: [], today: null }) }, schoolRpc, coachAdultRpc);
+    const enabled = (page) => page.$$eval('#main button:not([disabled]), #main input:not([disabled]), #main select:not([disabled])', (es) => es.map((e) => e.dataset.act || e.name || e.className));
+    // Schema 21, the box off: as before, read only; can_coach asked.
+    ({ page, db } = await open({ label: 'coach-off', db: withCoachAdult(fullDb()), rpc: RPC21, email: 'sam@example.com' }));
+    check('coach, box off (schema 21): Sam still has no button, and the page asked can_coach', (await enabled(page)).length === 0 && calls(db, 'can_coach').length >= 1,
+      JSON.stringify(await enabled(page)));
+    await page.context().close();
+    // Schema 20: can_coach isn't asked at all.
+    ({ page, db } = await open({ label: 'coach-20', db: fullDb(), rpc: Object.assign({}, RPC, { hub_schema_version: () => 20, routine_status: () => ({ points: 0, sections: [], today: null }) }), email: 'sam@example.com' }));
+    check('coach, schema 20: no can_coach call, no button', calls(db, 'can_coach').length === 0 && (await enabled(page)).length === 0);
+    await page.context().close();
+    // The box on.
+    const cdb = withCoachAdult(withSchool(fullDb()));
+    cdb.people.find((p) => p.id === ID.sam).coach = true;
+    const cfa = schoolFeedRow({ kid_id: ID.jordan, kind: 'assignments', url_end: 'a1b2', last_ok_at: at(TODAY, '10:23'), last_count: 1, checked: true });
+    cdb.school_feeds.push(cfa);
+    cdb.school_items.push(schoolItemRow({ feed_id: cfa.id, title: 'Map of the river', subject: 'Science', due_date: '2026-11-12' }));
+    ({ page, db } = await open({ label: 'coach-on', db: cdb, rpc: RPC21, email: 'sam@example.com' }));
+    const acts = await enabled(page);
+    check('the coach: + Assignment, + Lesson, Give points, + Reward, Yes and Not now on his ask, Answer, Looks done, the routine',
+      ['add-assignment', 'add-lesson', 'give', 'add-reward', 'yes', 'not-now', 'answer', 'routine-edit'].every((a) => acts.includes(a)), JSON.stringify(acts));
+    check('the coach: the switches stay the parents\' (homework on and points disabled), "Only parents change the other switches."',
+      !!(await page.$('[data-act="kid-on"][disabled]')) && !!(await page.$('[data-act="points-on"][disabled]'))
+      && /Only parents change the other switches\./.test(await tc(page, '[data-sec="switches"]')), await tc(page, '[data-sec="switches"]'));
+    check('the coach: no tutor links, no AI row, no school links, no Erase, no points values, no homework time to change',
+      !(await page.$('.hw-link')) && !(await page.$('[data-row="links"]')) && !(await page.$('[data-row="erase"]')) && !(await page.$('form[data-form="values"]'))
+      && !(await page.$('[data-act="change-time"]')) && !(await page.$('.hw-timelink')));
+    check('the coach: his New from school with Add to homework and Hide, and nothing of the links themselves',
+      /New from school for Jordan \(1\)/.test(await tc(page, '[data-row="school"]')) && !!(await page.$('[data-row="school"] [data-act="school-item"][data-do="add"]'))
+      && !(await page.$('[data-row="school"] .hw-feeds')) && !(await page.$('[data-act="school-now"]')), await tc(page, '[data-row="school"]'));
+    await page.click('.hw-ask [data-act="yes"]');
+    await settle(page);
+    check('the coach says Yes to his ask: decide_reward, as Sam', same(calls(db, 'decide_reward').map((c) => [c.body.p_approve, c.email]), [[true, 'sam@example.com']]),
+      JSON.stringify(calls(db, 'decide_reward')));
+    await page.click('[data-act="routine-edit"]');
+    await sleep(200);
+    check('the coach writes the routine, its points field locked: "Only a parent changes the points."', !!(await page.$('input[name="rt_points"][disabled]'))
+      && /Only a parent changes the points\./.test(await tc(page, '[data-row="routine"]')), await tc(page, '[data-row="routine"]'));
+    await go(page, `#/homework/${SCI}`);
+    check('the coach on an assignment: the plan editor and the fields, as a parent has', !!(await page.$('.plan-editor')) && !!(await page.$('form.hw-afields'))
+      && !(await page.$('.hw-steps-ro')));
+    await page.context().close();
+  }
+
+  // =====================================================================
   // 6. A hostile title and text are drawn as text; two kids
   // =====================================================================
   const evil = fullDb();

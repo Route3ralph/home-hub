@@ -9,7 +9,7 @@
 
 :as_owner
 set hub.now = '2026-11-04 17:30 America/New_York';
-select test.is(hub_schema_version(), 20, 'hub_schema_version is 20 (0014 made it 14, 0015 15, 0016 16, 0017 17, 0018 18, 0019 19, 0020 makes it 20)');
+select test.is(hub_schema_version(), 21, 'hub_schema_version is 21 (0014 made it 14, 0015 15, 0016 16, 0017 17, 0018 18, 0019 19, 0020 20, 0021 makes it 21)');
 -- Runs a statement and keeps what it did: 'ok', or the error's code and message.
 create function pg_temp.run(p_sql text) returns text language plpgsql as $$
 begin

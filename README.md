@@ -241,6 +241,20 @@ Each change shows as Pat's ("Pat Lee, tutor (tutor link)"), on the Homework page
 
 To stop it, untick **Can manage rewards**: it stops at once. If the hub can't be reached: `update public.tutor_links set rewards = false;` in the SQL editor.
 
+### The coach: a grown-up who runs the kids' homework (v1.3, migration 0021)
+
+A box on an adult's card, **Can manage the kids' homework, rewards and routine** (Family → Edit; off by default), lets Sam, once he can sign in, do on the Homework page what you do for the kids: assignments and lessons, plans and the AI planner, To check, Answer, To approve, rewards, **Give points** (at most 200 a week to a kid from Sam; yours have no limit) and **Void**, New from school, and the routine (its points stay yours). Everything he does shows as his.
+
+It never gives him the switches (homework on or off, points and what they're worth, homework time, tutor links, school links, the AI's switch and Test, Erase) or anything outside the Homework page: not Family, not Settings, not anyone's link.
+
+**Turning it on** (the site and `hub-jobs` first, no `cron.sql` change):
+1. `tests/run.sh` ends with `0 failed`; merge. Nothing changes until step 3: the box shows only on schema 21.
+2. **About 5 minutes:** deploy `hub-jobs` from main with verify_jwt false (so the coach can use the AI planner).
+3. **About 2 minutes:** run [`supabase/migrations/0021_coach.sql`](supabase/migrations/0021_coach.sql) in the Supabase SQL editor, after 0020. "isn't installed" means 0020 is missing; "already installed" means it's done; either way nothing was changed.
+4. **About 1 minute:** Family → Sam's card → **Edit** → tick **Can sign in** (if it isn't) and **Can manage the kids' homework, rewards and routine** → **Save**. His card says **Manages homework**.
+
+To stop it, untick the box: it stops at once. If the hub can't be reached: `update public.people set coach = false;` in the SQL editor.
+
 ### The first-import check when nothing is due yet (v1.3, migration 0008)
 
 The school links' first-import check (**Check the dates**) used to show only assignments still to come. A link added over a weekend or a holiday may hold only past ones (the hub keeps those due in the last 14 days), so the card had nothing to ask, and nothing from the link could reach Jordan or Pat until the school posted something new. From 0008 the card shows the next five, or, when nothing is due yet, the five latest, each marked "was due …" (with fewer than five to come, the latest past ones fill it), and says so; answer it as before. When it is still empty it says why: not read yet, read with nothing in it, or everything on it already past; and, for a link that is paused or whose last read needs **Replace**, to do that first. A link removed and added again shows as not read until its first read.

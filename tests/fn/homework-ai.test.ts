@@ -43,6 +43,8 @@ const PAT = 'abcdef0123456789abcdef0123456789';
 const MARKER = 'MARKER-7f3a-river';                         // in the teacher's text: never in a console line
 const ADMIN_JWT = 'Bearer eyJ.admin.sig';
 const MEMBER_JWT = 'Bearer eyJ.member.sig';
+const COACH_JWT = 'Bearer eyJ.coach.sig';                  // an adult whose coach box is on (0021)
+const OLD_COACH_JWT = 'Bearer eyJ.oldcoach.sig';           // the same, on a database before 0021 (no can_coach)
 const ANON_KEY = 'Bearer sb_publishable_made_up';
 
 // What homework_ai_start hands over: the fields and the one message (already scrubbed by private.ai_input).
@@ -136,9 +138,15 @@ function setup(opts: { start?: any; finishFail?: number; env?: Record<string, st
     user: (authorization: string) => ({
       rpc: (fn: string) => {
         calls.push({ fn, args: null, via: 'user' });
+        if (fn === 'can_coach') {
+          if (authorization === OLD_COACH_JWT) return Promise.resolve({ data: null, error: { code: 'PGRST202', message: 'Could not find the function public.can_coach' } });
+          return Promise.resolve({ data: authorization === COACH_JWT || authorization === ADMIN_JWT, error: null });
+        }
         if (fn !== 'whoami') return Promise.resolve({ data: null, error: null });
         if (authorization === ADMIN_JWT) return Promise.resolve({ data: { email: 'Alex@Example.com', role: 'admin' }, error: null });
         if (authorization === MEMBER_JWT) return Promise.resolve({ data: { email: 'sam@example.com', role: 'member' }, error: null });
+        if (authorization === COACH_JWT) return Promise.resolve({ data: { email: 'Riley@Example.com', role: 'member' }, error: null });
+        if (authorization === OLD_COACH_JWT) return Promise.resolve({ data: { email: 'riley@example.com', role: 'member' }, error: null });
         return Promise.resolve({ data: null, error: null });
       },
     }),
@@ -282,6 +290,21 @@ const keepAlive = setInterval(() => { /* waiting */ }, 1000);
     s = setup();
     r = await run(s, post(ask(), MEMBER_JWT));
     check('a member who isn\'t an admin → 403, no SQL and no call', r.status === 403 && !starts(s).length && s.hits.length === 0, r);
+    s = setup({ start: { data: { stop: 'off' }, error: null } });
+    r = await run(s, post(ask(), COACH_JWT));
+    check('the coach (0021: can_coach true) → homework_ai_start with the coach\'s email, lower-cased, as a parent\'s',
+      r.status === 200 && r.body.stop === 'off' && same(starts(s)[0], { p_token: null, p_email: 'riley@example.com', p_assignment: ASG, p_kind: 'plan', p_request: null, p_answers: null, p_key: REQ_KEY })
+      && s.calls.some((c) => c.fn === 'can_coach' && c.via === 'user'), [r, starts(s)]);
+    s = setup();
+    r = await run(s, post(ask({ kind: 'test', assignment_id: undefined }), COACH_JWT));
+    check('the coach\'s Test → 403 (the parents\' only), no SQL, can_coach not even asked', r.status === 403 && !starts(s).length && s.hits.length === 0
+      && !s.calls.some((c) => c.fn === 'can_coach'), r);
+    s = setup();
+    r = await run(s, post(ask(), OLD_COACH_JWT));
+    check('before 0021 (no can_coach): an adult → 403, as before', r.status === 403 && !starts(s).length && s.hits.length === 0, r);
+    s = setup({ start: { data: { stop: 'off' }, error: null } });
+    r = await run(s, post(ask(), ADMIN_JWT));
+    check('a parent: whoami alone, can_coach never asked', r.status === 200 && !s.calls.some((c) => c.fn === 'can_coach'), r);
     s = setup();
     r = await run(s, post(ask(), ANON_KEY));
     check('the publishable key alone (no sign-in) → 403', r.status === 403 && !starts(s).length, r);
