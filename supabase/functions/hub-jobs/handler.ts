@@ -32,6 +32,9 @@
 //            draft plan from Claude is written to the assignment in the background (homework.ts,
 //            docs/v1.3-homework.md §6). Without ANTHROPIC_API_KEY: 200 {stop: 'not_set_up'}. 503 {stop: 'no_schema'}
 //            until migration 0005 is applied.
+//   (inbox)  not an action: Resend's email.received webhook, told apart by its svix-id header and checked by its
+//            signature (RESEND_WEBHOOK_SECRET). An email from a family member's own address to INBOX_ADDRESS becomes
+//            events on the calendar, and the sender gets a reply (inbox.ts, docs/v2-design.md §28).
 //
 // Secrets (Supabase dashboard → Edge Functions → Secrets):
 //   HUB_CRON_SECRET  at least 32 random characters; the same value as the Vault secret hub_cron_secret
@@ -41,6 +44,8 @@
 //   GOOGLE_SA_JSON   optional: the Google service-account key file, for the calendar (read in calendar.ts)
 //   ANTHROPIC_API_KEY  optional: the AI planner's key at Anthropic (read in homework.ts; never logged). Without it the
 //                    homework_ai action answers not_set_up and everything else works.
+//   RESEND_WEBHOOK_SECRET, INBOX_ADDRESS  optional: the inbox's webhook signing secret (whsec_…) and the hub's address
+//                    with its random part (inbox.ts). Without them the webhook answers 503 not_set_up, or ignores the mail.
 // The school feed needs no secret of its own: the links are in the database (private.school_feed_urls).
 // Supabase provides SUPABASE_URL, the publishable key and the secret (service-role) key.
 
@@ -51,6 +56,7 @@ import type { Db, Deps } from './util.ts';
 import { runCalendar, testCalendar } from './calendar.ts';
 import { runSchool } from './school.ts';
 import { homeworkAi } from './homework.ts';
+import { inbox } from './inbox.ts';
 
 // What the tests and index.ts import from here.
 export { CORS, sameSecret };
@@ -132,9 +138,12 @@ export async function handle(req: Request, deps: Deps): Promise<Response> {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS });
   if (req.method !== 'POST') return json(405, { error: 'Use POST.' });
 
+  const raw = await req.text();
+  // Resend's webhook (an email to the family's hub address, inbox.ts): signed by Svix, no action of its own.
+  if (req.headers.has('svix-id')) return inbox(req, raw, deps);
   let body: Record<string, unknown> = {};
   try {
-    const parsed = JSON.parse((await req.text()) || '{}');
+    const parsed = JSON.parse(raw || '{}');
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) body = parsed;
   } catch { /* a digest request ignores its body; the others need none to be refused */ }
   const action = body.action ?? 'digest';

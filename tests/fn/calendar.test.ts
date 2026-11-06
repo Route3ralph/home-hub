@@ -1244,9 +1244,9 @@ const calendarCalls = (s: ReturnType<typeof setup>) => s.G.calls.filter((c) => c
   const src = Object.fromEntries(readdirSync(dir).filter((f) => f.endsWith('.ts')).map((f) => [f, readFileSync(new URL(f, dir), 'utf8')]));
   const code = (f: string) => src[f].replace(/\/\/.*$/gm, '');
   // v1.3's school feed (migration 0006) adds school.ts and ical.ts on purpose (docs/v1.3-homework.md §12), and its AI
-  // planner (PR B) homework.ts (§2.2).
-  check('the hub-jobs files are index, handler, render, util, google, calendar, school, ical and homework',
-    Object.keys(src).sort().join() === 'calendar.ts,google.ts,handler.ts,homework.ts,ical.ts,index.ts,render.ts,school.ts,util.ts', Object.keys(src));
+  // planner (PR B) homework.ts (§2.2), and v2's calendar inbox inbox.ts (docs/v2-design.md §28).
+  check('the hub-jobs files are index, handler, render, util, google, calendar, school, ical, homework and inbox',
+    Object.keys(src).sort().join() === 'calendar.ts,google.ts,handler.ts,homework.ts,ical.ts,inbox.ts,index.ts,render.ts,school.ts,util.ts', Object.keys(src));
   check('the Google helper is gcal(…); nothing calls call(\'…\') (the contract check would read it as a database function)',
     /\bgcal\(/.test(code('google.ts')) && /\bgcal\(/.test(code('calendar.ts')) && Object.keys(src).every((f) => !/(^|[^\w.])call\s*\(\s*['"`]/.test(code(f))));
   check('GOOGLE_SA_JSON is read with a literal deps.env(\'GOOGLE_SA_JSON\'), and no other Google secret is read',
@@ -1254,8 +1254,9 @@ const calendarCalls = (s: ReturnType<typeof setup>) => s.G.calls.filter((c) => c
   check('google.ts imports nothing from outside the function', [...code('google.ts').matchAll(/^import .* from '([^']+)'/gm)].every((m) => m[1].startsWith('./')));
   check('handler.ts and calendar.ts don\'t import each other', !/from '\.\/handler\.ts'/.test(src['calendar.ts']) && !/from '\.\/calendar\.ts'/.test(src['util.ts'] + src['google.ts']));
   // The AI planner logs one fixed code and its counts per run, and "finish failed" (docs/v1.3-homework.md §6.2, §6.5,
-  // §14); tests/fn/homework-ai.test.ts checks that those are its only console lines. Every other file writes nothing.
-  check('nothing is written to the console (but homework.ts\'s fixed codes)', Object.keys(src).filter((f) => f !== 'homework.ts').every((f) => !/\bconsole\./.test(code(f))));
+  // §14); tests/fn/homework-ai.test.ts checks that those are its only console lines. The inbox logs "inbox: <code> <n>"
+  // (tests/fn/inbox.test.ts checks those). Every other file writes nothing.
+  check('nothing is written to the console (but homework.ts\'s and inbox.ts\'s fixed codes)', Object.keys(src).filter((f) => f !== 'homework.ts' && f !== 'inbox.ts').every((f) => !/\bconsole\./.test(code(f))));
   check('every Google call has a timeout of at most 15 seconds (cut to what is left of a read\'s deadline)',
     /signal: AbortSignal\.timeout\(ms\)/.test(code('google.ts')) && /until == null \? CALL_TIMEOUT_MS : Math\.max\(1, Math\.min\(CALL_TIMEOUT_MS,/.test(code('google.ts'))
     && /CALL_TIMEOUT_MS = 15000/.test(code('google.ts')));
