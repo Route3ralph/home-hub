@@ -343,13 +343,13 @@ check(`docs/v2-design.md "Anonymous token functions" lists every function anon c
 // 0006 (v1.3's school feed): his New from school (one); 0007 (the coach view): the coach's view and note (two);
 // 0012 (the coach's rewards): the coach's changes to rewards and points (one); 0014 (My day's language switch):
 // English | Español on a My day link (one); 0019 (the routine): his ticks on My day (one); 0020 (the family board):
-// board.html's read, its two ticks and Undo (four).
+// board.html's read, its two ticks and Undo (four); 0022 (the watch list): a kid's list and his add on My day (two).
 const ANON = ['add_to_list_by_token', 'assignment_by_token', 'board_by_token', 'board_routine_by_token', 'board_tick_by_token', 'board_undo_by_token',
   'buy_item_by_token', 'coach_note_by_token', 'coach_reward_by_token', 'coach_view_by_token',
   'complete_by_token', 'confirm_digest', 'focus_by_token',
   'get_list_by_token', 'get_person_day', 'homework_by_token', 'homework_prefs_by_token', 'plan_by_token', 'reward_by_token', 'routine_tick_by_token',
   'school_item_by_token', 'set_language_by_token', 'step_by_token', 'stop_digest', 'tutor_assignment_by_token', 'tutor_plan_by_token', 'tutor_step_by_token',
-  'tutor_view_by_token', 'undo_by_token'];
+  'tutor_view_by_token', 'undo_by_token', 'watch_add_by_token', 'watch_by_token'];
 check(`the migrations let anon call exactly the ${ANON.length} token functions this check knows`, [...anon].sort().join() === ANON.join(), [...anon].sort());
 // They are day.html's (My day, and from v1.3 the tutor link's mode) and, from 0020, board.html's four, and CLAUDE.md
 // names each page's.

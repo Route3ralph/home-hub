@@ -20,7 +20,7 @@ const TOKEN_FNS = ['get_person_day', 'complete_by_token', 'undo_by_token', 'conf
   'homework_by_token', 'step_by_token', 'plan_by_token', 'focus_by_token', 'reward_by_token', 'assignment_by_token', 'homework_prefs_by_token',
   'tutor_view_by_token', 'tutor_assignment_by_token', 'tutor_plan_by_token', 'tutor_step_by_token', 'school_item_by_token',
   'coach_view_by_token', 'coach_note_by_token', 'coach_reward_by_token', 'routine_tick_by_token',
-  'board_by_token', 'board_tick_by_token', 'board_undo_by_token', 'board_routine_by_token'];
+  'board_by_token', 'board_tick_by_token', 'board_undo_by_token', 'board_routine_by_token', 'watch_by_token', 'watch_add_by_token'];
 // What any signed-in account may learn, by design: its own email, the household's date, clock and
 // time zone, and the schema version (sign-up is limited to the family list by the auth hook).
 const HARMLESS = ['current_email', 'clock', 'today_local', 'hub_schema_version'];
@@ -741,6 +741,17 @@ const emptyLists = (b) => !!b && typeof b === 'object' && !Array.isArray(b)
     const asg2 = await ask('/rest/v1/assignments', member, { kid_id: jordan.id, kind: 'assignment', title: 'Second map', due_date: '2026-11-21' }, 'POST');
     check('box off again: give_points refused (403) and no assignment added', g3.status === 403 && asg2.status >= 400
       && (await sql("select count(*) as n from assignments where title = 'Second map'"))[0].n === '0', [g3.status, asg2.status]);
+
+    // The watch list (0022, docs/v2-design.md §27): Sam adds through the API (the policy); Jordan's My day token reads the
+    // list and adds his own (written as "Jordan (My day)"); his day carries watch; signed out, nothing.
+    const wAdd = await ask('/rest/v1/watch_items', member, { title: 'Paddington in Peru', place: 'cinema', service: 'AMC' }, 'POST');
+    const wAnon = await ask('/rest/v1/watch_items?select=*', null);
+    const kidAdd = await fn('watch_add_by_token', null, { p_token: jordan.day_token, p_title: 'Wild Robot', p_kind: 'movie', p_place: 'netflix', p_key: 'e0000000-0000-4000-8000-000000000095' });
+    const kidDay = await fn('get_person_day', null, { p_token: jordan.day_token });
+    check('watch list: Sam adds one (201); signed out reads nothing; Jordan\'s token adds his, written as his; his day says watch 2',
+      wAdd.status === 201 && (wAnon.status >= 400 || (Array.isArray(wAnon.body) && !wAnon.body.length)) && kidAdd.status === 200 && kidAdd.body.items.length === 2
+      && (await sql("select created_by from watch_items where title = 'Wild Robot'"))[0].created_by === 'Jordan (My day)' && kidDay.body.watch === 2,
+    [wAdd.status, wAnon.status, kidAdd.status, kidDay.body && kidDay.body.watch]);
   });
 
   // Recipes (migration 0013, docs/v1.2-kitchen.md §19), with a row in the table and a Recipes folder set: signed out,

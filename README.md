@@ -241,6 +241,14 @@ Each change shows as Pat's ("Pat Lee, tutor (tutor link)"), on the Homework page
 
 To stop it, untick **Can manage rewards**: it stops at once. If the hub can't be reached: `update public.tutor_links set rewards = false;` in the SQL editor.
 
+### Watch: movies and shows to see (v2, migration 0022)
+
+A page of its own, **Watch**, for the movies and shows the family wants to see: on Netflix, another streaming service, in the cinema or at a theatre. Every grown-up who signs in adds, changes and deletes them: a title, movie or show, where, which one ("Disney+", "AMC"), the last day it's showing, a link (the trailer or the tickets) and a note. A cinema or theatre one turns red in its last week. **Watched ✓** folds it into **Seen**; **Plan it** opens the Calendar with "Movie night: …" at 7pm, so it reaches everyone's day and the wall once you save it. The kids add their own from their My day (**Movies and shows**), and the page says who added each one.
+
+**Turning it on** (no Edge Function and no `cron.sql` change):
+1. `tests/run.sh` ends with `0 failed`; merge. Nothing changes until step 2: the page shows only on schema 22.
+2. **About 2 minutes:** run [`supabase/migrations/0022_watch_list.sql`](supabase/migrations/0022_watch_list.sql) in the Supabase SQL editor, after 0021. "isn't installed" means 0021 is missing; "already installed" means it's done; either way nothing was changed.
+
 ### The coach: a grown-up who runs the kids' homework (v1.3, migration 0021)
 
 A box on an adult's card, **Can manage the kids' homework, rewards and routine** (Family → Edit; off by default), lets Sam, once he can sign in, do on the Homework page what you do for the kids: assignments and lessons, plans and the AI planner, To check, Answer, To approve, rewards, **Give points** (at most 200 a week to a kid from Sam; yours have no limit) and **Void**, New from school, and the routine (its points stay yours). Everything he does shows as his.
