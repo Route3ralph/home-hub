@@ -244,3 +244,8 @@
 /* Next 3 weeks: how far ahead (a parent's choice) */
 .hw-tl-pick { display: flex; justify-content: flex-end; margin: 0 0 8px; }
 .hw-tl-range { min-height: 44px; min-width: 44px; padding: 0 10px; font: inherit; font-size: 14px; border-radius: 10px; border: 1px solid var(--border, #d6d3cc); background: var(--surface, #fff); color: inherit; }
+
+/* Missing and Graded (0023, docs/v1.3-homework.md §26). */
+.hw-mark { display: inline-block; margin-left: 6px; padding: 1px 8px; border-radius: 999px; font-size: 12px; font-weight: 650; vertical-align: 1px; }
+.hw-mark-missing { background: var(--danger-soft); color: var(--danger); }
+.hw-mark-graded { background: var(--accent-soft); color: var(--accent); }

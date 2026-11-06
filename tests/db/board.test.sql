@@ -85,7 +85,7 @@ select color as tcolor from people where name = 'Taylor' \gset
 -- ---------------------------------------------------------------------
 -- The schema, the signatures, their grants and row-level security
 -- ---------------------------------------------------------------------
-select test.is(hub_schema_version(), 22, 'hub_schema_version is 22 (0020 made it 20, 0021 21, 0022 22)');
+select test.is(hub_schema_version(), 23, 'hub_schema_version is 23 (0020 made it 20, 0021 21, 0022 22, 0023 23)');
 select test.ok((select bool_and(has_function_privilege('anon', f, 'execute') and has_function_privilege('authenticated', f, 'execute')
                                 and not has_function_privilege('service_role', f, 'execute'))
                 from unnest(array['public.board_by_token(text, text)', 'public.board_tick_by_token(text, uuid, date, text)',
@@ -189,7 +189,7 @@ select test.is((pg_temp.col(:'b'::jsonb, 'Alex') -> 'items' -> 0) - 'item_id' - 
 select test.ok(position('Doctor' in :'b') = 0 and position('Bloodwork' in :'b') = 0 and position('Clinic' in :'b') = 0 and position('Pills' in :'b') = 0,
                'never the private event''s title, notes or place, nor the health task''s title');
 select test.ok(position('Work trip' in :'b') = 0, 'never an event from a calendar the hub only reads for one person');
-select test.ok(position('555-' in :'b') = 0 and position('Rivera' in :'b') = 0 and position('green book' in :'b') = 0 and position('Blue bin' in :'b') = 0
+select test.ok(position('555-' in regexp_replace(:'b', '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', '', 'g')) = 0 and position('Rivera' in :'b') = 0 and position('green book' in :'b') = 0 and position('Blue bin' in :'b') = 0
                and position('Double the beans' in :'b') = 0 and position('Surprise' in :'b') = 0,
                'never a phone number, a contractor, an event''s or task''s notes, a meal''s note or a locked meal''s title');
 select test.is(:'b'::jsonb -> 'meals',

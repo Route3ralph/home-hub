@@ -243,7 +243,8 @@ const emailOf = (req) => {
     });
     page.on('dialog', (d) => {
       (db.dialogs = db.dialogs || []).push(d.message());
-      return db.confirm === false ? d.dismiss() : d.accept();
+      if (db.confirm === false) return d.dismiss();
+      return d.type() === 'prompt' ? d.accept(db.promptText == null ? '' : db.promptText) : d.accept();
     });
     const log = [];
     await install(page, db, log, { rpc: opts.rpc || RPC });
@@ -1021,6 +1022,83 @@ const emailOf = (req) => {
     await go(page, `#/homework/${SCI}`);
     check('the coach on an assignment: the plan editor and the fields, as a parent has', !!(await page.$('.plan-editor')) && !!(await page.$('form.hw-afields'))
       && !(await page.$('.hw-steps-ro')));
+    await page.context().close();
+  }
+
+  // =====================================================================
+  // 5c. Missing and Graded (0023, docs/v1.3-homework.md §26): on an assignment's page a parent or the coach marks it as the
+  //     school's portal says, Missing, or Graded with an optional grade; the list shows it. Only on 23.
+  // =====================================================================
+  {
+    const { withCoachAdult, coachAdultRpc } = require('./mock');
+    const base = { routine_status: () => ({ points: 0, sections: [], today: null }) };
+    const RPC22m = Object.assign({}, RPC, base, { hub_schema_version: () => 22 }, schoolRpc, coachAdultRpc);
+    const RPC23 = Object.assign({}, RPC, base, { hub_schema_version: () => 23 }, schoolRpc, coachAdultRpc);
+    const markBtns = (page) => page.$$eval('.hw-a-acts button', (bs) => bs.map((b) => b.dataset.act).filter((a) => /mark-missing|mark-graded|clear-mark/.test(a)));
+    // Schema 22: no buttons, no columns asked for.
+    ({ page, db, log } = await open({ label: 'marks-22', db: withCoachAdult(withCoach(withSchool(fullDb()))), rpc: RPC22m, path: `/#/homework/${SCI}` }));
+    check('marks, schema 22: no Missing or Graded on an assignment', (await markBtns(page)).length === 0, JSON.stringify(await markBtns(page)));
+    check('... and the page doesn\'t ask for school_mark', !log.some((l) => /school_mark/.test(l)), JSON.stringify(log.filter((l) => /assignments/.test(l)).slice(0, 2)));
+    await page.context().close();
+    // Schema 23, a parent.
+    const mdb = withCoachAdult(withCoach(withSchool(fullDb())));
+    mdb.schoolMarks = true;
+    ({ page, db } = await open({ label: 'marks-23', db: mdb, rpc: RPC23, path: `/#/homework/${SCI}` }));
+    check('marks, schema 23: Missing and Graded…, no Clear mark while unmarked', same(await markBtns(page), ['mark-missing', 'mark-graded']), JSON.stringify(await markBtns(page)));
+    await page.click('[data-act="mark-missing"]');
+    await settle(page);
+    check('Missing: one update of the two columns, grade null', same(writes(db, 'assignments', 'PATCH').map((w) => w.body), [{ school_mark: 'missing', grade: null }]),
+      JSON.stringify(writes(db, 'assignments')));
+    check('... "Marked missing: …", the meta says Missing, and Missing gives way to Clear mark',
+      (await lastToast(page)) === 'Marked missing: Science project: river poster' && /· Missing$/.test(await tc(page, '.hw-a-meta'))
+      && same(await markBtns(page), ['mark-graded', 'clear-mark']), `${await lastToast(page)} | ${await tc(page, '.hw-a-meta')} | ${JSON.stringify(await markBtns(page))}`);
+    db.promptText = '  B+  ';
+    await page.click('[data-act="mark-graded"]');
+    await settle(page);
+    check('Graded…: asks for the grade, sends it cleaned', /The grade, as the school shows it/.test((db.dialogs || []).slice(-1)[0] || '')
+      && same(writes(db, 'assignments', 'PATCH').slice(-1)[0].body, { school_mark: 'graded', grade: 'B+' }), JSON.stringify(writes(db, 'assignments').slice(-1)));
+    check('... "Graded (B+): …", the meta says "Graded: B+", the button reads Change grade…',
+      (await lastToast(page)) === 'Graded (B+): Science project: river poster' && /· Graded: B\+$/.test(await tc(page, '.hw-a-meta'))
+      && /Change grade…/.test(await tc(page, '[data-act="mark-graded"]')), `${await lastToast(page)} | ${await tc(page, '.hw-a-meta')}`);
+    db.confirm = false;
+    await page.click('[data-act="mark-graded"]');
+    await settle(page);
+    db.confirm = true;
+    check('Change grade… cancelled: nothing sent', writes(db, 'assignments', 'PATCH').length === 2);
+    db.promptText = '1234567890123456789012';
+    await page.click('[data-act="mark-graded"]');
+    await settle(page);
+    check('a grade over 20 characters: "That grade is too long", nothing sent', /That grade is too long/.test(await lastToast(page)) && writes(db, 'assignments', 'PATCH').length === 2,
+      await lastToast(page));
+    db.promptText = '';
+    await go(page, '#/homework');
+    check('the list: the row says "Graded: B+"', (await texts(page, '.hw-arow .hw-mark-graded')).includes('Graded: B+'), JSON.stringify(await texts(page, '.hw-mark')));
+    await go(page, `#/homework/${SCI}`);
+    await page.click('[data-act="clear-mark"]');
+    await settle(page);
+    check('Clear mark: both columns null, "Mark cleared: …", the list without a mark',
+      same(writes(db, 'assignments', 'PATCH').slice(-1)[0].body, { school_mark: null, grade: null }) && (await lastToast(page)) === 'Mark cleared: Science project: river poster'
+      && !/Missing|Graded/.test(await tc(page, '.hw-a-meta')), `${await lastToast(page)} | ${await tc(page, '.hw-a-meta')}`);
+    db.promptText = '';
+    await page.click('[data-act="mark-graded"]');
+    await settle(page);
+    check('Graded… with the grade left empty: "Graded" alone', same(writes(db, 'assignments', 'PATCH').slice(-1)[0].body, { school_mark: 'graded', grade: null })
+      && (await lastToast(page)) === 'Graded: Science project: river poster' && /· Graded$/.test(await tc(page, '.hw-a-meta')), await lastToast(page));
+    await page.context().close();
+    // Schema 23, Sam: not the coach, no buttons; the coach, the buttons.
+    const sdb = withCoachAdult(withCoach(withSchool(fullDb())));
+    sdb.schoolMarks = true;
+    ({ page, db } = await open({ label: 'marks-sam', db: sdb, rpc: RPC23, email: 'sam@example.com', path: `/#/homework/${SCI}` }));
+    check('marks, Sam (not the coach): no Missing or Graded', (await markBtns(page)).length === 0);
+    await page.context().close();
+    const cdb = withCoachAdult(withCoach(withSchool(fullDb())));
+    cdb.schoolMarks = true;
+    cdb.people.find((p) => p.id === ID.sam).coach = true;
+    ({ page, db } = await open({ label: 'marks-coach', db: cdb, rpc: RPC23, email: 'sam@example.com', path: `/#/homework/${SCI}` }));
+    check('marks, the coach: Missing and Graded…', same(await markBtns(page), ['mark-missing', 'mark-graded']), JSON.stringify(await markBtns(page)));
+    await page.click('[data-act="mark-missing"]');
+    await settle(page);
+    check('... and he marks it missing, as Sam', db.assignments.find((a) => a.id === SCI).school_mark === 'missing' && db.assignments.find((a) => a.id === SCI).updated_by === 'sam@example.com');
     await page.context().close();
   }
 

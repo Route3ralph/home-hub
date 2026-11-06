@@ -1593,3 +1593,25 @@ Console lines are fixed codes (`inbox: added 1`). The email, its sender and Clau
 5. Send a test from a family sign-in address; the reply comes within a minute, and Settings' runs show the `inbox` row.
 Undo: delete the webhook in Resend (or the `INBOX_ADDRESS` secret). Events already added stay, like any other.
 
+
+## 29. v1.3: Missing and Graded
+
+The school's portal says an assignment is missing, or graded, and the hub didn't. A parent or the coach marks it by hand on the assignment's page; the Homework list shows it. Nothing reads the portal for it: the school's feed carries no grades. Its migration is `0023_school_marks.sql` (after 0022); the plan is `docs/v1.3-homework.md` §26.
+
+### Tables
+```sql
+alter table public.assignments
+  add column school_mark text check (school_mark in ('missing', 'graded')),
+  add column grade text check (grade is null or (char_length(grade) between 1 and 20 and grade !~ '[[:cntrl:]]' and grade = btrim(grade))),
+  add constraint assignments_grade_graded check (grade is null or school_mark is not distinct from 'graded');
+grant update (school_mark, grade) on public.assignments to authenticated;
+```
+- `assignments.school_mark`: 'missing', 'graded' or null (unmarked). `assignments.grade`: the grade as the school shows it ("92", "B+"), one line of 1 to 20 characters, only with 'graded'.
+- Who changes them is the table's own policies ("Parents change assignments", `private.is_coach()` from 0021): a parent or the coach. Members read them as the rest of the row.
+- No function reads them: not a kid's My day or homework, not the tutor link, the board, the wall, Google or an email.
+- `hub_schema_version()` returns 23.
+
+### Client
+- Homework (`assets/modules/homework.js`), gated on `core.schemaVersion >= 23`: the page reads the two columns; an assignment's page has **Missing**, **Graded…** (asks for the grade; empty means "Graded" alone; **Change grade…** once graded) and **Clear mark**, for a parent or the coach. The list's row and the assignment's line say "Missing", "Graded" or "Graded: B+".
+
+Undoing it isn't needed (with nothing marked every page is as on 22). If wanted, as the migration's header writes it out: drop the two columns, then 0022's `hub_schema_version`.

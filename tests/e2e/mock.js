@@ -1056,6 +1056,8 @@ const HW_TABLES = ['homework_kids', 'homework_times', 'tutor_links', 'assignment
 const HW_KID_UPDATE = ['active', 'points_on', 'focus_minutes', 'pts_focus', 'pts_on_time', 'pts_milestone', 'pts_day_cap', 'pts_milestone_week',
   'instant_day'];
 const HW_ASSIGNMENT_INSERT = ['kid_id', 'kind', 'title', 'subject', 'due_date', 'details', 'stretch', 'status'];
+// 0023 (docs/v1.3-homework.md §26): Missing and Graded, a column grant of update on the two, with the table's policies.
+const HW_ASSIGNMENT_MARK = ['school_mark', 'grade'];
 const HW_REWARD_INSERT = ['kid_id', 'title', 'cost', 'active', 'instant', 'sort_order'];
 let homePlanCache = null;
 // assets/plan.js (window.HomePlan) in a vm, for its placement and dates.
@@ -1089,7 +1091,7 @@ const tutorLinkRow = (o) => Object.assign({
 const assignmentRow = (o) => Object.assign({
   id: uuid(), kid_id: null, kind: 'assignment', added_by: 'family', title: '', subject: null, due_date: null, details: null, stretch: null,
   status: 'open', done_at: null, dropped_at: null, given_at: null, given_by: null, plan_rev: 0, ai_state: null, ai_stop: null, ai_draft: null, ai_prev: null,
-  ai_at: null, created_at: now(), created_by: null, updated_at: now(), updated_by: null,
+  ai_at: null, school_mark: null, grade: null, created_at: now(), created_by: null, updated_at: now(), updated_by: null,
 }, o);
 const stepRow = (o) => Object.assign({
   id: uuid(), assignment_id: null, pos: 1, kind: 'step', title: '', done_looks_like: null, minutes: 20, day: null, moved_from: null,
@@ -2266,6 +2268,11 @@ function assignmentProblem(r) {
   if (!r.title || Array.from(r.title).length > 120) return hwCheck('assignments', 'assignments_title_check');
   if (!r.due_date || !/^\d{4}-\d{2}-\d{2}$/.test(r.due_date)) return new Raise('23502', 'null value in column "due_date" of relation "assignments" violates not-null constraint');
   if (!['open', 'done', 'dropped'].includes(r.status)) return hwCheck('assignments', 'assignments_status_check');
+  if (r.school_mark != null && !['missing', 'graded'].includes(r.school_mark)) return hwCheck('assignments', 'assignments_school_mark_check');
+  if (r.grade != null && (Array.from(r.grade).length < 1 || Array.from(r.grade).length > 20 || /[\u0000-\u001f\u007f]/.test(r.grade) || r.grade !== r.grade.trim())) {
+    return hwCheck('assignments', 'assignments_grade_check');
+  }
+  if (r.grade != null && r.school_mark !== 'graded') return hwCheck('assignments', 'assignments_grade_graded');
   return null;
 }
 function rewardProblem(r) {
@@ -2323,9 +2330,10 @@ function homeworkTables(db, table, method, body, member, rows) {
       return denied;
     }
     if (table === 'assignments') {
+      const coach = hwCoach(db, email);   // 0021: the policies ask private.is_coach() (a parent, or the coach)
       if (method === 'POST') {
         if (!only(HW_ASSIGNMENT_INSERT)) return denied;
-        if (!admin) return rls;
+        if (!coach) return rls;
         const made = items.map((r) => {
           const t = foodStamp(db);
           const row = assignmentRow(Object.assign(tidyAssignment(Object.assign({ kind: 'assignment', status: 'open' }, r)), { created_at: t, created_by: email, updated_at: t, updated_by: email }));
@@ -2339,8 +2347,9 @@ function homeworkTables(db, table, method, body, member, rows) {
         return { status: 201, rows: made };
       }
       if (method === 'PATCH') {
-        if (!only(HW_ASSIGNMENT_INSERT.slice(1))) return denied;
-        if (!admin) return { status: 200, rows: [] };
+        const marks = db.schoolMarks ? HW_ASSIGNMENT_MARK : [];   // a test on schema 23 sets db.schoolMarks
+        if (!only(HW_ASSIGNMENT_INSERT.slice(1).concat(marks))) return denied;
+        if (!coach) return { status: 200, rows: [] };
         const next = rows.map((r) => {
           const n = Object.assign({}, r, tidyAssignment(body, r), { updated_at: foodStamp(db), updated_by: email });
           if (n.status === 'done' && !n.done_at) n.done_at = n.updated_at;
@@ -2353,7 +2362,7 @@ function homeworkTables(db, table, method, body, member, rows) {
         return { status: 200, rows };
       }
       if (method === 'DELETE') {
-        if (!admin) return { status: 204, rows: [] };
+        if (!coach) return { status: 204, rows: [] };
         const ids = new Set(rows.map((r) => r.id));
         const steps = new Set(db.homework_steps.filter((s) => ids.has(s.assignment_id)).map((s) => s.id));
         db.homework_steps = db.homework_steps.filter((s) => !steps.has(s.id));
