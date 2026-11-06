@@ -9,7 +9,7 @@
 import { handle } from '../../supabase/functions/hub-jobs/handler.ts';
 import {
   INBOX_MODEL, INBOX_DAY_MAX, INBOX_EVENTS_MAX, INBOX_PROMPT, verifySignature, address, checkEvents, emailText, htmlText,
-  matchPeople, eventLine, forged, today,
+  matchPeople, eventLine, forged, today, alsoFrom,
 } from '../../supabase/functions/hub-jobs/inbox.ts';
 import { ANTHROPIC } from '../../supabase/functions/hub-jobs/homework.ts';
 import { createHmac } from 'node:crypto';
@@ -225,6 +225,31 @@ const claudeHits = (s: ReturnType<typeof setup>) => s.hits.filter((h) => h.url =
     check('a sender who can\'t sign in: nothing added, no answer, no Claude', !inserts(s, 'events').length && !replies(s).length && !claudeHits(s).length);
   }
   {
+    const s = setup({ mail: received({ from: 'Alex at work <Alex.Lee@Work.example>' }), env: { INBOX_ALSO_FROM: 'alex.lee@work.example=alex@example.com, x@y.example=sam@example.com' } });
+    await run(s, webhook());
+    const e = inserts(s, 'events')[0];
+    const rep = replies(s);
+    check('INBOX_ALSO_FROM: a second address counts as the member (created_by, in charge when no one is named)', e?.created_by === 'Alex (email)'
+      && inserts(s, 'events').length === 1);
+    check('INBOX_ALSO_FROM: the reply goes to the address that wrote', rep.length === 1 && rep[0].to[0] === 'alex.lee@work.example');
+  }
+  {
+    const s = setup({ mail: received({ from: 'Alex at work <alex.lee@work.example>' }), env: { INBOX_ALSO_FROM: 'other@work.example=alex@example.com' } });
+    await run(s, webhook());
+    check('an address INBOX_ALSO_FROM doesn\'t name is still a stranger: nothing added, no answer', !inserts(s, 'events').length && !replies(s).length);
+  }
+  {
+    const s = setup({ mail: received({ from: 'Mallory <x@work.example>' }), env: { INBOX_ALSO_FROM: 'x@work.example=nobody@example.com' } });
+    await run(s, webhook());
+    check('INBOX_ALSO_FROM pointing at an address that can\'t sign in: nothing added, no answer', !inserts(s, 'events').length && !replies(s).length);
+  }
+  {
+    const s = setup({ mail: received({ from: 'Alex at work <alex.lee@work.example>', headers: { 'authentication-results': 'mx.example; dmarc=fail' } }),
+      env: { INBOX_ALSO_FROM: 'alex.lee@work.example=alex@example.com' } });
+    await run(s, webhook());
+    check('INBOX_ALSO_FROM: a forged second address is still dropped', !inserts(s, 'events').length && !replies(s).length);
+  }
+  {
     const s = setup({ mail: received({ headers: { 'authentication-results': 'mx.example; spf=pass; dkim=fail; dmarc=fail' } }) });
     await run(s, webhook());
     check('a forged sender (dmarc=fail): nothing added, no answer', !inserts(s, 'events').length && !replies(s).length && !claudeHits(s).length);
@@ -278,6 +303,9 @@ const claudeHits = (s: ReturnType<typeof setup>) => s.hits.filter((h) => h.url =
 
   // ---- Helpers
   check('address: from a display name, lower case', address('Alex Lee <Alex@Example.com>') === 'alex@example.com' && address('sam@example.com') === 'sam@example.com' && address('nobody') === '');
+  check('alsoFrom: pairs by comma, semicolon or line, display names and case aside; junk and self-maps left out',
+    [...alsoFrom('A@Work.example=Alex <alex@example.com>; b@w.example = sam@example.com\nnot a pair, c@x.example=c@x.example, =d@e.example').entries()].map((x) => x.join('>')).join() === 'a@work.example>alex@example.com,b@w.example>sam@example.com'
+    && alsoFrom(undefined).size === 0);
   check('emailText drops quoted lines and what follows "On … wrote:"', emailText('a\n> b\nc\nOn Mon, Nov 2, 2026 at 9:00 AM Sam <s@example.com> wrote:\nd') === 'a\nc');
   check('htmlText reads tags and entities', htmlText('<p>Tea &amp; cake</p><style>x{}</style><br>at 4') === 'Tea & cake\n\nat 4');
   check('matchPeople: by first or full name, ignoring case and accents', matchPeople(['SAM', 'taylor', 'Zoë'], [...PEOPLE, { id: 'z', name: 'Zoe', email: null }]).map((p) => p.id).join() === `${SAM},${TAYLOR},z`);

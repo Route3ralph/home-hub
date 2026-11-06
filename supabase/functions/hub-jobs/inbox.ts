@@ -10,7 +10,9 @@
 //   3. One run per email: a job_runs row (action 'inbox', detail 'email <id>') is written first; a resend of the same
 //      email finds it and stops.
 //   4. The email (GET /emails/receiving/<id>, with RESEND_API_KEY). Its sender must be a members address (who can sign
-//      in), and an Authentication-Results header that reads dmarc=fail (or spf=fail with no dkim=pass) drops it. Neither
+//      in), or an address INBOX_ALSO_FROM maps to one ("work@example.org=home@example.com", several separated by commas:
+//      a second address the person sends from, which counts as them; the reply goes to the address that wrote), and
+//      an Authentication-Results header that reads dmarc=fail (or spf=fail with no dkim=pass) drops it. Neither
 //      gets an answer: a stranger, or a forged sender, never hears from the hub.
 //   5. At most INBOX_DAY_MAX events added by email in 24 hours (the created_by "… (email)" rows); past that, an answer
 //      that says so and nothing added.
@@ -111,6 +113,19 @@ export async function verifySignature(secret: string, id: string, timestamp: str
     if (version === 'v1' && value && sameSecret(value, expected)) ok = true;
   }
   return ok;
+}
+
+// INBOX_ALSO_FROM: "other@example.org=member@example.com, …" → other → member, both lower case. A pair that isn't two
+// addresses is left out.
+export function alsoFrom(raw: string | undefined): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const pair of String(raw ?? '').split(/[,;\n]+/)) {
+    const [from, to] = pair.split('=');
+    const a = address(from);
+    const b = address(to);
+    if (a && b && a !== b) map.set(a, b);
+  }
+  return map;
 }
 
 // "Alex Lee <alex@example.com>" or "alex@example.com" → "alex@example.com" (lower case), or '' when there's none.
@@ -298,15 +313,17 @@ async function handleEmail(deps: Deps, emailId: string): Promise<void> {
   if (!mail || typeof mail !== 'object') return finish(false, 0, 'no_email');
 
   const sender = address(mail.from);
+  // Who it counts as: the sender, or the member INBOX_ALSO_FROM names for that address.
+  const owner = alsoFrom(deps.env('INBOX_ALSO_FROM')).get(sender) ?? sender;
   const { data: members } = await db.from('members').select('email');
   const memberSet = new Set(((members || []) as { email?: string }[]).map((m) => String(m.email ?? '').trim().toLowerCase()));
-  if (!sender || !memberSet.has(sender)) return finish(false, 0, 'not_family');
+  if (!sender || !memberSet.has(owner)) return finish(false, 0, 'not_family');
   if (forged(mail.headers)) return finish(false, 0, 'forged');
 
   const { data: peopleRows } = await db.from('people').select('id, name, email, active').eq('active', true);
   const people = ((peopleRows || []) as Person[]).filter((p) => p && p.id && p.name);
-  const me = people.find((p) => String(p.email ?? '').trim().toLowerCase() === sender) || null;
-  const who = `${firstWord(me ? me.name : sender.split('@')[0]).slice(0, 40)} (email)`;
+  const me = people.find((p) => String(p.email ?? '').trim().toLowerCase() === owner) || null;
+  const who = `${firstWord(me ? me.name : owner.split('@')[0]).slice(0, 40)} (email)`;
   const subject = oneLine(mail.subject).slice(0, 200);
   const reply = (text: string, html: string) => sendReply(deps, sender, subject, mail.message_id ?? mail.headers?.['message-id'], text, html, emailId);
 

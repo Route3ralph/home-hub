@@ -46,6 +46,7 @@
 //                    homework_ai action answers not_set_up and everything else works.
 //   RESEND_WEBHOOK_SECRET, INBOX_ADDRESS  optional: the inbox's webhook signing secret (whsec_…) and the hub's address
 //                    with its random part (inbox.ts). Without them the webhook answers 503 not_set_up, or ignores the mail.
+//   INBOX_ALSO_FROM  optional: "other@…=member@…" pairs, a second address a member sends to the inbox from (inbox.ts).
 // The school feed needs no secret of its own: the links are in the database (private.school_feed_urls).
 // Supabase provides SUPABASE_URL, the publishable key and the secret (service-role) key.
 
