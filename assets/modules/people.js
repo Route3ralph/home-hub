@@ -417,14 +417,20 @@
       try {
         const row = editing ? Object.assign({ id: p.id }, read.row) : Object.assign(read.row, { sort_order: nextSortOrder() });
         const saved = await call('save_person', { p: row, p_can_sign_in: read.canSignIn });
+        const name = (saved && saved.name) || read.row.name;
         // The coach box (0021): its own call, once the sign-in it needs is saved. Off whenever it can't count.
+        // The person is saved by now, so a failed box closes the form and says so (an Add again would add them twice).
+        let coachErr = null;
         if (el.coach) {
           const want = el.coach.checked && checked('role') === 'adult' && read.canSignIn;
           const id = (saved && saved.id) || p.id;
-          if (id && want !== !!p.coach) await call('set_coach', { p_person: id, p_on: want });
+          if (id && want !== !!p.coach) {
+            try { await call('set_coach', { p_person: id, p_on: want }); } catch (err) { coachErr = err; }
+          }
         }
         formDialog.close();
-        toast(`${editing ? 'Saved' : 'Added'} ${(saved && saved.name) || read.row.name}`);
+        if (coachErr) toast(`${editing ? 'Saved' : 'Added'} ${name}, but Can manage the kids' homework wasn't saved: ${friendly(coachErr)} Edit ${name} to try again.`, { error: true });
+        else toast(`${editing ? 'Saved' : 'Added'} ${name}`);
         after1();
       } catch (err) {
         showError(friendly(err));

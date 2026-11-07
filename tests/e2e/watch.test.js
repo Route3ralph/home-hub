@@ -133,11 +133,14 @@ const RPC = (v) => ({ hub_schema_version: () => v, clock: (db) => Object.assign(
   await sleep(300);
   check('+ Add with a link that isn\'t https: refused in the form, nothing saved', /https/.test(await tc(page, '#formDialog .form-error'))
     && db.watch_items.length === 5, await tc(page, '#formDialog .form-error'));
-  await page.fill('#formDialog input[name="url"]', 'https://tickets.example/wicked');
+  // Typed without https:// (as people do): the browser lets it through, and the page adds https://.
+  check('the link box is text with the URL keyboard (the browser\'s own URL check would refuse "tickets.example/…")',
+    (await page.$eval('#formDialog input[name="url"]', (i) => [i.type, i.inputMode].join(' '))) === 'text url');
+  await page.fill('#formDialog input[name="url"]', 'tickets.example/wicked');
   await page.click('#formDialog [type="submit"]');
   await sleep(500);
   const added = db.watch_items.find((x) => /Wicked/.test(x.title));
-  check('+ Add: saved cleaned, its https link kept, toast "Added Wicked: For Good"', !!added && added.title === 'Wicked: For Good' && added.place === 'cinema' && added.service === 'Regal'
+  check('+ Add: saved cleaned, its link made https, toast "Added Wicked: For Good"', !!added && added.title === 'Wicked: For Good' && added.place === 'cinema' && added.service === 'Regal'
     && added.showing_until === '2026-12-01' && added.url === 'https://tickets.example/wicked' && (await lastToast(page)) === 'Added Wicked: For Good', JSON.stringify(added));
   check('... and on the list', (await openTitles(page)).includes('Wicked: For Good'));
 

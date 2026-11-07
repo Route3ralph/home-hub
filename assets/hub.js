@@ -273,7 +273,11 @@
       return `<div class="field" data-field="${f.name}"><span>${esc(f.label)}</span><div class="checks">${body || '<small>Nothing to choose yet.</small>'}</div>${help}</div>`;
     } else {
       const min = f.min != null ? ` min="${f.min}"` : '';
-      control = `<input type="${f.type || 'text'}" name="${f.name}" value="${esc(val)}"${req}${ph}${min}${f.type === 'number' ? ' inputmode="numeric"' : ''}>`;
+      // A link is typed as text with the URL keyboard: the browser's own URL check would refuse "netflix.com/…" before
+      // the page could add https://, and every link field checks what it takes itself.
+      const type = f.type === 'url' ? 'text' : (f.type || 'text');
+      const mode = f.type === 'number' ? ' inputmode="numeric"' : f.type === 'url' ? ' inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false"' : '';
+      control = `<input type="${type}" name="${f.name}" value="${esc(val)}"${req}${ph}${min}${mode}>`;
     }
     return `<label class="field" data-field="${f.name}"><span>${esc(f.label)}</span>${control}${help}</label>`;
   }

@@ -12,7 +12,8 @@
 //   4. The email (GET /emails/receiving/<id>, with RESEND_API_KEY). Its sender must be a members address (who can sign
 //      in), or an address INBOX_ALSO_FROM maps to one ("work@example.org=home@example.com", several separated by commas:
 //      a second address the person sends from, which counts as them; the reply goes to the address that wrote), and
-//      an Authentication-Results header that reads dmarc=fail (or spf=fail with no dkim=pass) drops it. Neither
+//      the receiving server's Authentication-Results header (the first) that reads dmarc=fail, or spf=fail with no
+//      dkim=pass for the sender's own domain, drops it. Neither
 //      gets an answer: a stranger, or a forged sender, never hears from the hub.
 //   5. At most INBOX_DAY_MAX events added by email in 24 hours (the created_by "… (email)" rows); past that, an answer
 //      that says so and nothing added.
@@ -171,7 +172,8 @@ export function emailText(text: string): string {
   return out.join('\n').replace(/\u0000/g, '').trim().slice(0, INBOX_TEXT_MAX);
 }
 
-// The Authentication-Results values, from a headers object or a list of {name, value}.
+// The Authentication-Results values, from a headers object or a list of {name, value}, in the order given (the
+// receiving server adds its own on top, so the first is the one to trust; a sender can add more below it).
 function authResults(headers: unknown): string[] {
   const found: string[] = [];
   if (Array.isArray(headers)) {
@@ -185,12 +187,19 @@ function authResults(headers: unknown): string[] {
   }
   return found;
 }
-// A forged sender: dmarc=fail, or spf=fail with no dkim=pass. No header at all is let through (the address is secret).
-export function forged(headers: unknown): boolean {
-  const all = authResults(headers).join(' ').toLowerCase();
-  if (!all) return false;
-  if (/\bdmarc=fail\b/.test(all)) return true;
-  return /\bspf=(fail|softfail)\b/.test(all) && !/\bdkim=pass\b/.test(all);
+// Whether a signing domain belongs to the sender's: the same, or a parent of it (mail.family.example → family.example).
+const aligned = (d: string, from: string) => !!d && !!from && (from === d || from.endsWith(`.${d}`));
+// A forged sender, from the receiving server's own header (the first): dmarc=fail, or spf=fail or softfail with no
+// dkim=pass signed by the sender's own domain (a pass for some other domain proves nothing about the From).
+// No header at all is let through (the address is secret).
+export function forged(headers: unknown, fromAddress = ''): boolean {
+  const first = (authResults(headers)[0] || '').toLowerCase();
+  if (!first) return false;
+  if (/\bdmarc=fail\b/.test(first)) return true;
+  if (!/\bspf=(fail|softfail)\b/.test(first)) return false;
+  const from = fromAddress.trim().toLowerCase().split('@')[1] || '';
+  const passes = [...first.matchAll(/\bdkim=pass\b[^;]*?\bheader\.d=([a-z0-9.-]+)/g)].map((m) => m[1].replace(/\.$/, ''));
+  return !passes.some((d) => aligned(d, from));
 }
 
 // Claude's answer, checked: only what can be saved, at most INBOX_EVENTS_MAX.
@@ -319,7 +328,7 @@ async function handleEmail(deps: Deps, emailId: string): Promise<void> {
   const { data: members } = await db.from('members').select('email');
   const memberSet = new Set(((members || []) as { email?: string }[]).map((m) => String(m.email ?? '').trim().toLowerCase()));
   if (!sender || !memberSet.has(owner)) return finish(false, 0, 'not_family');
-  if (forged(mail.headers)) return finish(false, 0, 'forged');
+  if (forged(mail.headers, sender)) return finish(false, 0, 'forged');
 
   const { data: peopleRows } = await db.from('people').select('id, name, email, active').eq('active', true);
   const people = ((peopleRows || []) as Person[]).filter((p) => p && p.id && p.name);
@@ -331,7 +340,8 @@ async function handleEmail(deps: Deps, emailId: string): Promise<void> {
   // The day's limit
   const since = new Date(now() - 86400000).toISOString();
   const { count } = await db.from('events').select('id', { count: 'exact', head: true }).like('created_by', '% (email)').gte('created_at', since);
-  if ((count ?? 0) >= INBOX_DAY_MAX) {
+  const left = INBOX_DAY_MAX - (count ?? 0);
+  if (left <= 0) {
     await reply(`Nothing was added: the hub takes ${INBOX_DAY_MAX} events a day by email, and today's are used up. Add it on the calendar instead.`, '');
     return finish(false, 0, 'day_max');
   }
@@ -346,7 +356,10 @@ async function handleEmail(deps: Deps, emailId: string): Promise<void> {
     await reply('Sorry, the hub couldn\'t read that email just now. Try again in a little while, or add it on the calendar.', '');
     return finish(false, 0, `ai_${asked.stop}`);
   }
-  const { events, problem } = checkEvents(asked.answer, day.date);
+  const checked = checkEvents(asked.answer, day.date);
+  const { problem } = checked;
+  const events = checked.events.slice(0, left);   // never past the day's limit
+  const over = checked.events.length - events.length;
   const site = siteBase(deps.env('SITE_URL'));
   if (!events.length) {
     const why = problem || 'I couldn\'t find a day to put it on.';
@@ -376,9 +389,11 @@ async function handleEmail(deps: Deps, emailId: string): Promise<void> {
   const link = site ? `${site}#/calendar/${added[0].start_date}` : '';
   const lines = added.map(eventLine);
   const text = `Added to the calendar:\n${lines.map((l) => `• ${l}`).join('\n')}${added.length < events.length ? '\n\n(One or more couldn\'t be saved.)' : ''}`
+    + `${over ? `\n\n(${over} more didn't fit: the hub takes ${INBOX_DAY_MAX} events a day by email. Add ${over === 1 ? 'it' : 'them'} on the calendar.)` : ''}`
     + `${link ? `\n\nSee it or change it: ${link}` : ''}`;
   const html = `<p>Added to the calendar:</p><ul>${lines.map((l) => `<li>${escHtml(l)}</li>`).join('')}</ul>`
     + `${added.length < events.length ? '<p>(One or more couldn\'t be saved.)</p>' : ''}`
+    + `${over ? `<p>(${over} more didn't fit: the hub takes ${INBOX_DAY_MAX} events a day by email. Add ${over === 1 ? 'it' : 'them'} on the calendar.)</p>` : ''}`
     + `${link ? `<p><a href="${escHtml(link)}">See it or change it</a></p>` : ''}`;
   await reply(text, html);
   return finish(true, added.length, 'added');
