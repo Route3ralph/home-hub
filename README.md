@@ -49,6 +49,7 @@ Every date and time is in the household's time zone, wherever your phone is.
 | Add or change a schedule task | Open the project, click **+ Schedule task**, or click any task, then **Edit task**. |
 | Record progress | Click a schedule task, then **Mark done** or **Mark in progress**. |
 | Lock in a contractor's date | Edit the task and set **Confirmed start date**. Later tasks reflow automatically. |
+| Move a task by dragging | On the Timeline, drag its bar to the new day (a finger works too). That sets its **Confirmed start date**; the tasks that wait on it move with it, and **Undo** puts it back. A tap still opens the task. |
 | Link a contractor to a trade | Project → **Trades & contractors** |
 | Send a contractor their dates | Project → **Share** → turn on, copy the link. On the shared page, tap a trade to get a link showing only that trade. |
 | Add someone to the family | **Family → Add person** (admins only) |

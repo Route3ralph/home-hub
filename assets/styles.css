@@ -321,6 +321,14 @@ button.g-label:hover, button.g-label:focus-visible { background: var(--surface-2
   transition: opacity 0.15s;
 }
 .g-bar:hover { filter: brightness(1.08); }
+/* The hub's project page: a bar can be dragged to a new start day (gantt.js, onTaskMove). */
+.g-bar.g-drag { cursor: grab; touch-action: none; }
+.g-bar.dragging { cursor: grabbing; transition: none; z-index: 3; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25); }
+.g-drag-tip {
+  position: absolute; top: -18px; z-index: 4; pointer-events: none; white-space: nowrap;
+  padding: 2px 6px; border-radius: 6px; font-size: 12px; line-height: 1.3;
+  background: var(--text); color: var(--surface);
+}
 .g-bar.wait {
   background-color: transparent;
   background-image: repeating-linear-gradient(135deg, color-mix(in srgb, var(--c) 45%, transparent) 0 2px, transparent 2px 6px);
