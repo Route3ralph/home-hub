@@ -169,6 +169,16 @@ for (const page of ['index.html', 'day.html', 'board.html']) {
 }
 const all = new Set(Object.values(versions).flat());
 check('index.html, day.html and board.html carry one and the same ?v= (CLAUDE.md: bump them together)', all.size === 1 && !all.has(''), versions);
+// Every page has a browser-tab icon (the house, assets/icons/icon.svg, with a PNG for browsers without SVG icons).
+{
+  const pages = ['index.html', 'day.html', 'board.html', 'share.html'];
+  const missing = pages.filter((f) => {
+    const html = fs.readFileSync(path.join(ROOT, f), 'utf8');
+    const icons = [...html.matchAll(/<link rel="icon" href="([^"]+)"/g)].map((m) => m[1]);
+    return !icons.includes('assets/icons/icon.svg') || !icons.every((h) => fs.existsSync(path.join(ROOT, h)));
+  });
+  check('every page links the browser-tab icon, and the icon files exist', !missing.length, missing.join(', '));
+}
 check('CLAUDE.md says day.html and board.html carry the same ?v= as index.html', /day\.html[^\n]*board\.html[^\n]*\?v=|\?v=[^\n]*day\.html[^\n]*board\.html/.test(clientSec));
 
 // CLAUDE.md "Client code" says what index.html and day.html load, in order: each script either page loads
