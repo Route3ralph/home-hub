@@ -821,6 +821,17 @@ const detailOf = (s: ReturnType<typeof setup>) => JSON.parse(s.runs()[0]?.detail
   check('status never shows addresses, names or Resend\'s replies', !/example\.com|Alex|Sam|Morgan|domain is not verified|Resend email-1|"detail"/.test(body), body.slice(0, 200));
   check('status reads the logs with the caller\'s own sign-in (row-level security applies)',
     s.st.ops.filter((q: any) => q.table === 'job_runs' || q.table === 'notification_log').every((q: any) => q.who === 'user:Bearer admin-jwt'));
+  // An emailed event (the calendar inbox's own job_runs row) is not the morning email.
+  s = setup({ tables: { job_runs: [
+    { id: 'in1', action: 'inbox', started_at: new Date(NOW - 5 * 60000).toISOString(), finished_at: new Date(NOW - 5 * 60000 + 2000).toISOString(), ok: true, sent: 2, detail: 'email em_1' },
+    { id: 'in2', action: 'inbox', started_at: new Date(NOW - 3 * 60000).toISOString(), finished_at: new Date(NOW - 3 * 60000 + 2000).toISOString(), ok: false, sent: 0, detail: 'email em_2' },
+    runRow(15, 0, true, { due: 0, sent: 0, skipped: 0, failed: 0, busy: 0, stop: null }),
+    runRow(600, 3, true, { due: 3, sent: 3, skipped: 0, failed: 0, busy: 0, stop: null })] } });
+  res = await handle(asUser({ action: 'status' }), s.deps);
+  out = await res.json();
+  check('status: the inbox\'s rows are not the morning email\'s (last run, last sent, the runs, no "Last run:" warning)',
+    out.last_run.started_at === new Date(NOW - 15 * 60000).toISOString() && out.last_sent.sent === 3 && out.runs.every((r: any) => r.action === 'digest')
+    && !out.messages.some((m: string) => m.startsWith('Last run:')), JSON.stringify(out).slice(0, 300));
   s = setup();
   res = await handle(asUser({ action: 'status' }), s.deps);
   out = await res.json();

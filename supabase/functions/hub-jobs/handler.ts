@@ -522,10 +522,11 @@ async function status(db: Db, deps: Deps): Promise<Response> {
   const now = deps.now ? deps.now() : Date.now();
   const { data: today, error: tErr } = await db.rpc('today_local');
   if (tErr || !isDate(today)) return json(500, { error: `Could not read the household's date: ${message(tErr)}` });
-  const runsQ = await db.from('job_runs').select('action, started_at, finished_at, ok, sent, detail')
+  // The morning email's runs only: an inbox row's sent counts events, not emails (docs/v2-design.md §28).
+  const runsQ = await db.from('job_runs').select('action, started_at, finished_at, ok, sent, detail').eq('action', 'digest')
     .order('started_at', { ascending: false }).limit(10);
   if (runsQ.error) return json(500, { error: `Could not read job_runs: ${message(runsQ.error)}` });
-  const sentQ = await db.from('job_runs').select('started_at, sent').gt('sent', 0)
+  const sentQ = await db.from('job_runs').select('started_at, sent').eq('action', 'digest').gt('sent', 0)
     .order('started_at', { ascending: false }).limit(1);
   if (sentQ.error) return json(500, { error: `Could not read job_runs: ${message(sentQ.error)}` });
   const logQ = await db.from('notification_log').select('kind, status').eq('local_date', today);

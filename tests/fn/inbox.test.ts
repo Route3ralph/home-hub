@@ -266,6 +266,14 @@ const claudeHits = (s: ReturnType<typeof setup>) => s.hits.filter((h) => h.url =
       && x.filters.some((f) => f[0] === 'like' && f[2] === '% (email)') && x.filters.some((f) => f[0] === 'gte' && f[2] === new Date(NOW - 86400000).toISOString())));
   }
   {
+    const five = Array.from({ length: 5 }, (_, i) => ({ ...DINNER, title: `Game ${i + 1}`, date: `2026-12-0${i + 1}` }));
+    const s = setup({ count: INBOX_DAY_MAX - 2, claude: jsonRes(200, answer(five)) });
+    await run(s, webhook());
+    const rep = replies(s);
+    check(`${INBOX_DAY_MAX - 2} already today and an email with 5: only 2 added, never past ${INBOX_DAY_MAX}`, inserts(s, 'events').length === 2, String(inserts(s, 'events').length));
+    check('... and the reply says 3 more didn\'t fit', rep.length === 1 && rep[0].text.includes(`3 more didn't fit`) && rep[0].html.includes(`3 more didn't fit`), rep[0]?.text);
+  }
+  {
     const s = setup({ claude: jsonRes(200, answer([], 'I couldn\'t tell which day you meant.')) });
     await run(s, webhook());
     const rep = replies(s);
@@ -313,8 +321,17 @@ const claudeHits = (s: ReturnType<typeof setup>) => s.hits.filter((h) => h.url =
   check('matchPeople: by first or full name, ignoring case and accents', matchPeople(['SAM', 'taylor', 'Zoë'], [...PEOPLE, { id: 'z', name: 'Zoe', email: null }]).map((p) => p.id).join() === `${SAM},${TAYLOR},z`);
   check('eventLine: all day, several days, a place', eventLine({ title: 'Camp', start_date: '2026-12-01', end_date: '2026-12-03', start_time: null, end_time: null, ends_next_day: false, location: 'Lake', people: [] }) === 'Camp · Tue Dec 1 to Thu Dec 3 · Lake'
     && eventLine({ title: 'Fair', start_date: '2026-12-05', end_date: null, start_time: null, end_time: null, ends_next_day: false, location: null, people: [] }) === 'Fair · Sat Dec 5, all day');
-  check('forged: dmarc=fail, or spf=fail without dkim=pass; no header passes', forged({ 'Authentication-Results': 'dmarc=fail' })
-    && forged([{ name: 'authentication-results', value: 'spf=fail; dkim=none' }]) && !forged({ 'authentication-results': 'spf=fail; dkim=pass' }) && !forged({}));
+  check('forged: dmarc=fail, or spf=fail without dkim=pass for the sender\'s domain; no header passes', forged({ 'Authentication-Results': 'dmarc=fail' })
+    && forged([{ name: 'authentication-results', value: 'spf=fail; dkim=none' }])
+    && !forged({ 'authentication-results': 'mx.example; spf=fail; dkim=pass header.d=example.com' }, 'alex@example.com')
+    && !forged({ 'authentication-results': 'mx.example; spf=fail; dkim=pass header.i=@mail.example.com header.d=example.com' }, 'alex@mail.example.com') && !forged({}));
+  check('forged: a dkim=pass signed by some other domain doesn\'t save a failed SPF (a spoofed From with dmarc=none)',
+    forged({ 'authentication-results': 'mx.example; spf=fail smtp.mailfrom=attacker.example; dkim=pass header.d=attacker.example; dmarc=none' }, 'alex@example.com')
+    && forged({ 'authentication-results': 'mx.example; spf=softfail; dkim=pass' }, 'alex@example.com')
+    && forged({ 'authentication-results': 'mx.example; spf=fail; dkim=pass header.d=notexample.com' }, 'alex@example.com'));
+  check('forged: only the receiving server\'s own header (the first) counts, never one the sender added below it',
+    forged([{ name: 'Authentication-Results', value: 'mx.example; spf=fail; dkim=none; dmarc=none' }, { name: 'Authentication-Results', value: 'x; dkim=pass header.d=example.com; dmarc=pass' }], 'alex@example.com')
+    && forged({ 'authentication-results': ['mx.example; dmarc=fail', 'x; dmarc=pass'] }, 'alex@example.com'));
   check('today in the household\'s time zone', today(Date.parse('2026-11-07T03:00:00Z'), 'America/New_York').date === '2026-11-06'
     && today(Date.parse('2026-11-07T03:00:00Z'), 'America/New_York').weekday === 'Friday');
 
