@@ -634,6 +634,7 @@
       const paid = Number(day.paid) || 0;
       delete day.paid;
       lastLoad = Date.now();
+      dayAt = perfNow();   // the answer's ends_in_s counts from now
       accept(day);
       routineOpen = null;   // after a tick the first part not finished is open again
       if (paid > 0) {
@@ -781,6 +782,7 @@
     }
     if (!day || typeof day !== 'object') { linkGone(); return; }
     lastLoad = Date.now();
+    dayAt = perfNow();   // the answer's ends_in_s counts from now
     accept(day);
     if (view === 'day') { renderDay(true); focusLang(lang); }
     afterDay(day);
@@ -1073,8 +1075,20 @@
   function makeOutbox() {
     if (!shop) return Promise.resolve();
     return shop.tokenOwner(token).then((owner) => {
+      // One saved list per My day link on this device: another link opened here never sees, or wipes, this one's
+      // waiting changes. A list saved before under the shared key moves to this link's own, if it is this link's.
+      const key = owner ? `${shop.KEYS.day}.${owner}` : shop.KEYS.day;
+      if (owner) {
+        try {
+          const old = JSON.parse(localStorage.getItem(shop.KEYS.day) || 'null');
+          if (old && old.owner === owner) {
+            if (!localStorage.getItem(key)) localStorage.setItem(key, JSON.stringify(old));
+            localStorage.removeItem(shop.KEYS.day);
+          }
+        } catch (err) { /* nothing was kept */ }
+      }
       outbox = shop.outbox({
-        key: shop.KEYS.day, owner, send: sendList, mine: (r) => !!r.undo,
+        key, owner, send: sendList, mine: (r) => !!r.undo,
         onChange: listChanged,
         onReply: listReply,
         onRefused: (op, err) => { toast(friendly(err), { error: true }); pollList(); },
@@ -1486,13 +1500,17 @@
     if (!title) { form.elements.title.focus(); return; }
     const btn = form.querySelector('[type="submit"]');
     btn.disabled = true;
-    const key = form.dataset.key || (form.dataset.key = newKey());
+    // A retry of the same add keeps its key (a lost answer adds nothing twice); anything else typed is a new add.
+    const what = JSON.stringify([title, form.elements.kind.value, form.elements.place.value]);
+    if (form.dataset.keyFor !== what) { form.dataset.key = newKey(); form.dataset.keyFor = what; }
+    const key = form.dataset.key;
     try {
       const got = await rpc(one(() => sb.rpc('watch_add_by_token', { p_token: token, p_title: title, p_kind: form.elements.kind.value,
         p_place: form.elements.place.value, p_key: key })));
       if (!got) { linkGone(); return; }
       watchList = got;
       delete form.dataset.key;
+      delete form.dataset.keyFor;
       form.elements.title.value = '';
       if (state) state.watch = (got.items || []).length;
       toast(t('watch_added', { title }));

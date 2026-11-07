@@ -707,6 +707,16 @@ const stubModule = (name, s) => `;(function () {
     await editOf(page, ID.jordan);
     check('coach box: hidden for a kid', !(await visible(page, '#formDialog input[name="coach"]')));
     await page.context().close();
+    // The person saves but the box doesn't: the form closes (an Add again would add them twice) and the toast says so.
+    const failing = Object.assign({}, RPC21, { set_coach: () => ({ __status: 500, body: { code: 'XX000', message: 'Database restarting', details: null, hint: null } }) });
+    ({ page, db } = await open({ label: 'coach-fail', db: withCoachAdult(peopleDb()), rpc: failing, allowConsole: /status of 500/ }));
+    await editOf(page, ID.sam);
+    await page.check('#formDialog input[name="coach"]');
+    await submit(page);
+    await page.waitForTimeout(300);
+    check('coach box fails after the person saved: the form closes, one save_person, and the toast says the box wasn\'t saved',
+      !(await formOpen(page)) && rpcCalls(db, 'save_person').length === 1 && /wasn't saved/.test(await lastToast(page)) && /Edit Sam/.test(await lastToast(page)), await lastToast(page));
+    await page.context().close();
   }
 
   await browser.close();

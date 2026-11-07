@@ -59,6 +59,8 @@
 // ahead of the household's: anything using the device's date or zone shows the wrong day.
 // Run alone with: node tests/e2e/day.test.js
 const fs = require('fs');
+// What My day saved of a shopping list on this device (one key per link: homehub.shop.day.<owner>), or null.
+const SAVED_LIST = () => { const ks = Object.keys(localStorage).filter((k) => k.startsWith('homehub.shop.day')); return ks.length ? ks.map((k) => localStorage.getItem(k)).join('\n') : null; };
 const crypto = require('crypto');
 const { chromium } = require('playwright');
 const { makeDb, install, signIn, SUPA, withFood, foodRpc, personDayFood, shopItem, mealRow, withHomeworkTokens, homeworkTokenRpc: homeworkRpc,
@@ -1210,7 +1212,7 @@ const HW_AUDIO_DROP = `(${HW_STUBS})(); (${HW_CLOCKED})(); (${HW_WAKE_DROP})();`
     && same(calls(db, 'get_list_by_token')[0].body, { p_token: TAYLOR }) && calls(db, 'get_list_by_token')[0].at >= calls(db, 'get_person_day')[0].done,
     JSON.stringify(db.calls.map((c) => [c.name, c.at, c.done])));
   let saved = null;
-  await until(async () => { saved = await page.evaluate(() => localStorage.getItem('homehub.shop.day')); return !!saved && /Cebollas/.test(saved); });
+  await until(async () => { saved = await page.evaluate(SAVED_LIST); return !!saved && /Cebollas/.test(saved); });
   check('background read: the list is saved on the phone under the token\'s hash, never the token, with nothing locked',
     !!saved && JSON.parse(saved).owner === hashOf(TAYLOR) && !saved.includes(TAYLOR) && !/Pregnancy|Vitamins/.test(saved)
     && same(JSON.parse(saved).snap.items.map((r) => r.name), ['Cebollas', 'Cilantro', 'Milk', 'Tortillas']), String(saved).slice(0, 200));
@@ -1240,13 +1242,13 @@ const HW_AUDIO_DROP = `(${HW_STUBS})(); (${HW_CLOCKED})(); (${HW_WAKE_DROP})();`
 
   db = withList(foodDb());
   ({ page, db } = await open({ label: 'list-off', db, path: `/day.html?t=${TAYLOR}` }));
-  await until(async () => /Cebollas/.test(await page.evaluate(() => localStorage.getItem('homehub.shop.day') || '')));
+  await until(async () => /Cebollas/.test(await page.evaluate(SAVED_LIST)));
   db.household[0].helper_list = 'off';
   await page.reload();
   await page.waitForSelector('.day-sec');
   await page.waitForTimeout(300);
   check('the switch Off: no button, no list request, and the list saved for this link is removed',
-    !(await page.$('.day-list-btn')) && calls(db, 'get_list_by_token').length === 1 && (await page.evaluate(() => localStorage.getItem('homehub.shop.day'))) === null,
+    !(await page.$('.day-list-btn')) && calls(db, 'get_list_by_token').length === 1 && (await page.evaluate(SAVED_LIST)) === null,
     db.calls.map((c) => c.name).join(','));
   await page.context().close();
 
@@ -1735,7 +1737,7 @@ const HW_AUDIO_DROP = `(${HW_STUBS})(); (${HW_CLOCKED})(); (${HW_WAKE_DROP})();`
   db.people.find((p) => p.id === P.taylor).day_token = 'abcabcabcabcabcabcabcabcabcabcab';
   await page.clock.fastForward('00:10');
   check('a null answer: "Este enlace no funciona…", and the list saved for the link is removed',
-    await until(async () => /Este enlace no funciona/.test(await text(page, '.day-problem'))) && (await page.evaluate(() => localStorage.getItem('homehub.shop.day'))) === null,
+    await until(async () => /Este enlace no funciona/.test(await text(page, '.day-problem'))) && (await page.evaluate(SAVED_LIST)) === null,
     await text(page, 'main'));
   await page.context().close();
 
@@ -1745,7 +1747,7 @@ const HW_AUDIO_DROP = `(${HW_STUBS})(); (${HW_CLOCKED})(); (${HW_WAKE_DROP})();`
   // =====================================================================
   db = withList(foodDb());
   ({ page, db } = await open({ label: 'list-saved', db, path: `/day.html?t=${TAYLOR}`, ctx: phone(), allowConsole: LIST_ERRORS }));
-  await until(async () => /Cebollas/.test(await page.evaluate(() => localStorage.getItem('homehub.shop.day') || '')));
+  await until(async () => /Cebollas/.test(await page.evaluate(SAVED_LIST)));
   db.offline = true;
   await page.reload();
   await page.waitForSelector('.day-problem');
@@ -1775,10 +1777,15 @@ const HW_AUDIO_DROP = `(${HW_STUBS})(); (${HW_CLOCKED})(); (${HW_WAKE_DROP})();`
     && await until(async () => !(await page.$('.list-offline, .lrow-unsent, .lrow.is-new')) && (await listView(page)).toBuy.some((r) => r.name === 'Limones')), await text(page, '.list-banners'));
   await page.click('.list-back');
   check('‹ Mi día: the day loads now', await until(async () => (await text(page, '.day-head h1')) === 'Hola, Taylor' && !!(await page.$('.day-list-btn'))), await text(page, 'main'));
-  check('the list stays saved for this link', /Limones/.test(await page.evaluate(() => localStorage.getItem('homehub.shop.day') || '')));
+  check('the list stays saved for this link', /Limones/.test(await page.evaluate(SAVED_LIST)));
   await page.goto(`${BASE}/day.html?t=${JORDAN}`);
   await page.waitForSelector('.day-sec');
-  check('another link on the same phone: the list saved for Taylor\'s link is removed unread', (await page.evaluate(() => localStorage.getItem('homehub.shop.day'))) === null);
+  const kept = await page.evaluate(() => Object.keys(localStorage).filter((k) => k.startsWith('homehub.shop.day')));
+  check('another link on the same phone: Taylor\'s saved list is never read there, and is kept for her link (one saved list per link)',
+    kept.length === 1 && /^homehub\.shop\.day\.[0-9a-f]+$/.test(kept[0]) && !/Limones/.test(await text(page, 'main')), JSON.stringify(kept));
+  await page.goto(`${BASE}/day.html?t=${TAYLOR}`);
+  await page.waitForSelector('.day-sec');
+  check('... and it is still there when her link opens again', /Limones/.test(await page.evaluate(SAVED_LIST) || ''));
   await page.context().close();
 
   // =====================================================================
@@ -2210,6 +2217,23 @@ const HW_AUDIO_DROP = `(${HW_STUBS})(); (${HW_CLOCKED})(); (${HW_WAKE_DROP})();`
     await page.click('.hw-end [data-act="hw-end"][data-result="done"]');
     check('over the daily cap: "+2 · 20 minutes · Today\'s limit reached."', await until(async () => (await hwText(page, '.hw-points-line')) === '+2 · 20 minutes · Today\'s limit reached.'), await hwText(page, '.hw-end'));
     // While a block runs, the card says how long is left.
+    await page.context().close();
+  }
+  {
+    // Four minutes on, the language switch answers with a fresh day (its ends_in_s counts from now): 8 min left, not 4.
+    const d = hwDb();
+    d.focus_sessions.push(sessionRow({ id: hid(99), kid_id: P.jordan, assignment_id: H.math, step_id: H.m1, minutes: 20, started_at: hwStamp(d.hwNow - 8 * 60000),
+      ends_at: hwStamp(d.hwNow + 12 * 60000), on_time: true }));
+    ({ page, db } = await open({ label: 'hw-running-lang', path: `/day.html?t=${JORDAN}`, db: d, device: HW_DEVICE, init: HW_STUBS, allowConsole: /ERR_INTERNET_DISCONNECTED/ }));
+    await hwTick(page, db, 4 * 60000);
+    const langBtn = await page.$('[data-act="set-lang"]:not([aria-pressed="true"])');
+    if (langBtn) {
+      await langBtn.click();
+      await until(async () => calls(db, 'set_language_by_token').length === 1 && !(await page.$('[data-act="set-lang"][disabled]')));
+      await page.waitForTimeout(100);
+      check('after a language switch 4 minutes on, the card counts from the fresh answer: 8 min left (not 4)',
+        /\b8 min\b/.test(await hwText(page, '.hw-card a.hw-card-focus')), await hwText(page, '.hw-card a.hw-card-focus'));
+    } else check('the running-block day has a language switch (for the time-left check)', false);
     await page.context().close();
   }
   {
@@ -3592,7 +3616,7 @@ const HW_AUDIO_DROP = `(${HW_STUBS})(); (${HW_CLOCKED})(); (${HW_WAKE_DROP})();`
     const wdb = dayDb();
     wdb.watch = [{ id: 'aaaa0000-0000-4000-8000-000000000001', title: 'Paddington in Peru', kind: 'movie', place: 'cinema', service: 'AMC', by: 'alex@example.com' }];
     wdb.watchKids = [JORDAN];
-    let { page, db } = await open({ label: 'watch-kid', path: `/day.html?t=${JORDAN}`, db: wdb });
+    let { page, db } = await open({ label: 'watch-kid', path: `/day.html?t=${JORDAN}`, db: wdb, allowConsole: /ERR_INTERNET_DISCONNECTED/ });
     check('watch: Jordan (a kid, Spanish) has the button with the count: "Pelis y series · 1 ›"', (await text(page, '.day-watch-btn')) === 'Pelis y series · 1 ›', await text(page, '.day-watch-btn'));
     check('... and the day made no watch request', calls(db, 'watch_by_token').length === 0);
     await page.click('.day-watch-btn');
@@ -3611,6 +3635,26 @@ const HW_AUDIO_DROP = `(${HW_STUBS})(); (${HW_CLOCKED})(); (${HW_WAKE_DROP})();`
     await page.click('[data-act="back"]');
     await until(async () => !!(await page.$('.day-watch-btn')));
     check('back to the day: the button says 2', (await text(page, '.day-watch-btn')) === 'Pelis y series · 2 ›', await text(page, '.day-watch-btn'));
+    // A failed add keeps its key for a retry of the same thing, and a different title gets a new one (the server
+    // takes a key it already has as "already added", so reusing it would drop the new title and still say Added).
+    await page.click('.day-watch-btn');
+    await until(async () => (await texts(page, '.watch-item-title')).length === 2);
+    const keyOf = () => page.$eval('.watch-add', (f) => f.dataset.key || '');
+    db.offline = true;
+    await page.fill('.watch-add input[name="title"]', 'Movie A');
+    await page.click('.watch-add [type="submit"]');
+    await until(async () => !!(await keyOf()) && !(await page.$('.watch-add [type="submit"][disabled]')));
+    const k1 = await keyOf();
+    await page.click('.watch-add [type="submit"]');
+    await until(async () => !(await page.$('.watch-add [type="submit"][disabled]')));
+    const k2 = await keyOf();
+    await page.fill('.watch-add input[name="title"]', 'Movie B');
+    db.offline = false;
+    await page.click('.watch-add [type="submit"]');
+    await until(async () => (await texts(page, '.watch-item-title')).includes('Movie B'));
+    const sent = calls(db, 'watch_add_by_token').slice(-1)[0].body;
+    check('a failed add: the same title retries with the same key; a new title is a new add, with a new key, and is added',
+      !!k1 && k1 === k2 && sent.p_title === 'Movie B' && UUID.test(sent.p_key) && sent.p_key !== k1 && db.watch.some((x) => x.title === 'Movie B'), JSON.stringify([k1, k2, sent]));
     await page.context().close();
     ({ page, db } = await open({ label: 'watch-helper', path: `/day.html?t=${TAYLOR}`, db: wdb }));
     check('watch: Taylor (a helper) has no button', !(await page.$('.day-watch-btn')));
