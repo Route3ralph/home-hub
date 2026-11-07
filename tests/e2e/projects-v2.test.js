@@ -650,6 +650,57 @@ const emailOf = (req) => {
   check('v1: the trades form links #/contractors', (await page.getAttribute('#formDialog .meta a', 'href')) === '#/contractors');
   await page.context().close();
 
+  // ---------------------------------------------------------------------
+  // Dragging a bar on the timeline: it sets that task's confirmed start date, the tasks that wait on it move too,
+  // Undo puts it back, and a tap is still a tap.
+  // ---------------------------------------------------------------------
+  {
+    const { page, db } = await open({ label: 'drag' });
+    await page.waitForSelector('.g-bar.g-drag[data-id="design"]');
+    check('drag: the hint says bars can be dragged', /drag a bar to move it/.test(await tc(page, '[data-ref="schedule"] .card-sub')), await tc(page, '[data-ref="schedule"] .card-sub'));
+    const model = (sched) => page.evaluate((s) => {
+      const M = window.HomeGantt.buildModel(s, { today: '2026-10-25' });
+      const iso = (n) => window.HomeGantt.toISO(n);
+      return Object.fromEntries([...M.byId.values()].map((r) => [r.id, iso(r.start)]));
+    }, sched);
+    const kitchenOf = () => db.projects.find((p) => p.id === 'p-kitchen').schedule;
+    const before = await model(kitchenOf());
+    const dayW = await page.$eval('.g-week', (w) => w.getBoundingClientRect().width / 7);
+    await page.$eval('.g-bar[data-id="design"]', (b) => b.scrollIntoView({ block: 'center' }));
+    const box = await page.$eval('.g-bar[data-id="design"]', (b) => { const r = b.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; });
+    await page.mouse.move(box.x, box.y);
+    await page.mouse.down();
+    await page.mouse.move(box.x + 8, box.y, { steps: 2 });
+    await page.mouse.move(box.x + 7 * dayW + 1, box.y, { steps: 6 });
+    const tip = await tc(page, '.g-drag-tip');
+    await page.mouse.up();
+    await page.waitForTimeout(700);
+    const design = () => (kitchenOf().phases.flatMap((p) => p.tasks).find((t) => t.id === 'design') || {});
+    const after = await model(kitchenOf());
+    check('drag a week later: the tip shows the new start while dragging', /^Starts \w{3}, \w{3} \d{1,2}$/.test(tip), tip);
+    check('... dropped: the task\'s confirmed start date is a week later (to the working day)', design().start && design().start > before.design
+      && design().start === after.design, JSON.stringify([before.design, design().start]));
+    check('... the tasks that wait on it moved later too', ['appliances', 'sel-cabinets', 'sel-fixtures', 'permit'].every((id) => after[id] > before[id]),
+      JSON.stringify(['appliances', 'sel-cabinets', 'sel-fixtures', 'permit'].map((id) => [before[id], after[id]])));
+    check('... no task detail opened (a drag isn\'t a tap)', !(await page.evaluate(() => document.getElementById('detail').open)));
+    const toast = await tc(page, '.toasts .toast-action');
+    check('... "Moved "Design consult & final layout" to …" with Undo', /^Moved "Design consult & final layout" to \w{3}, \w{3} \d{1,2}\s*Undo$/.test(toast), toast);
+    await page.click('.toasts .toast-action .toast-btn');
+    await page.waitForTimeout(700);
+    check('Undo: the confirmed start date is gone again, and the schedule is as before', !('start' in design()) && same(await model(kitchenOf()), before),
+      JSON.stringify(design()));
+    // A press that barely moves is a tap: the task's details.
+    await page.$eval('.g-bar[data-id="design"]', (b) => b.scrollIntoView({ block: 'center' }));
+    const box2 = await page.$eval('.g-bar[data-id="design"]', (b) => { const r = b.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; });
+    await page.mouse.move(box2.x, box2.y);
+    await page.mouse.down();
+    await page.mouse.move(box2.x + 2, box2.y);
+    await page.mouse.up();
+    await page.waitForTimeout(400);
+    check('a tap on a bar (moved 2px) still opens the task, and changes nothing', await page.evaluate(() => document.getElementById('detail').open) && !('start' in design()));
+    await page.context().close();
+  }
+
   console.log(results.join('\n'));
   console.log(`\n${results.filter((r) => r.startsWith('PASS')).length}/${results.length} passed`);
   console.log('PAGE ERRORS:', errors.length ? '\n' + errors.join('\n') : 'none');

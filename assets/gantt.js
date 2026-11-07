@@ -305,7 +305,11 @@
   // ============================================
   // VIEW
   // opts: { schedule, phaseName?, dialog, onTaskClick?(id, M), contactFor?(tradeKey),
-  //         tradeLinks?: bool (sync ?trade= and offer "Copy link"), emptyHTML?, today? }
+  //         tradeLinks?: bool (sync ?trade= and offer "Copy link"), emptyHTML?, today?,
+  //         onTaskMove?(id, startISO, M) }
+  // With onTaskMove (the hub's project page; never the public share page), a timeline bar can be dragged sideways:
+  // it snaps to days (to the next working day on a weekend or holiday) and, dropped on a new day, onTaskMove gets the
+  // task's new confirmed start date. A press that moves less than a few pixels is still a tap (the task's details).
   // ============================================
   function createView(root, opts) {
     const params = new URLSearchParams(location.search);
@@ -315,6 +319,10 @@
     const ref = (name) => root.querySelector(`[data-ref="${name}"]`);
     const phaseName = (i) => (M.data.phases[i] ? M.data.phases[i].name : '');
     const visible = () => M.items.filter((r) => !state.trade || r.task.trade === state.trade);
+    let geo = null;          // the drawn timeline's day width and first day, for dragging
+    let drag = null;         // the bar being dragged: { id, bar, x0, left0, days, moved, pointerId, tip }
+    let noClick = false;     // the click that ends a drag isn't a tap
+    const DRAG_PX = 5;       // a press that moves less than this is a tap
 
     root.innerHTML = `
       <div class="banner banner-error" role="alert" data-ref="error" hidden></div>
@@ -326,7 +334,7 @@
           <ul class="items" data-ref="upcoming"></ul>
         </section>
         <section class="card" data-ref="schedule">
-          <div class="card-head"><h2>Schedule</h2><span class="card-sub">Tap any task for details</span></div>
+          <div class="card-head"><h2>Schedule</h2><span class="card-sub">${opts.onTaskMove ? 'Tap a task for details, or drag a bar to move it' : 'Tap any task for details'}</span></div>
           <div class="toolbar">
             <div class="chips" data-ref="chips" role="group" aria-label="Filter by trade"></div>
             <div class="toolbar-right">
@@ -411,6 +419,7 @@
       const dayW = Math.max(narrow ? 7 : 9, Math.min(30, Math.floor(((width - labelW - 2) / days) * 2) / 2));
       const W = days * dayW;
       const x = (n) => (n - c0) * dayW;
+      geo = { dayW, c0 };
 
       let months = '';
       for (let n = c0; n <= c1;) {
@@ -441,7 +450,7 @@
         const tr = M.trades[r.task.trade];
         const st = statusOf(M, r);
         const isCrit = M.crit.has(r.id);
-        const cls = ['g-bar', r.milestone ? 'ms' : '', r.wait ? 'wait' : '', `st-${st.key}`, isCrit ? 'crit' : ''].join(' ');
+        const cls = ['g-bar', r.milestone ? 'ms' : '', r.wait ? 'wait' : '', `st-${st.key}`, isCrit ? 'crit' : '', opts.onTaskMove ? 'g-drag' : ''].join(' ');
         const left = x(r.start);
         const w = (r.end - r.start + 1) * dayW;
         const tip = esc(`${r.task.name} · ${rangeLong(r)} · ${st.label}`);
@@ -545,7 +554,55 @@
       setTimeout(() => t.remove(), 1800);
     }
 
+    // Dragging a bar (onTaskMove only): pointer events, so a mouse, a pen and a finger all work. The bar's own
+    // touch-action is none (projects.css), so a finger on a bar drags it; the timeline still scrolls from anywhere else.
+    root.addEventListener('pointerdown', (e) => {
+      if (!opts.onTaskMove || !M || !geo || drag || (e.pointerType === 'mouse' && e.button !== 0)) return;
+      const bar = e.target.closest('.g-bar.g-drag');
+      if (!bar || !M.byId.has(bar.dataset.id)) return;
+      drag = { id: bar.dataset.id, bar, x0: e.clientX, left0: parseFloat(bar.style.left) || 0, days: 0, moved: false, pointerId: e.pointerId, tip: null };
+      try { bar.setPointerCapture(e.pointerId); } catch (err) { /* the move events still reach root */ }
+      if (e.pointerType === 'mouse') e.preventDefault();   // no text selection while dragging
+    });
+    root.addEventListener('pointermove', (e) => {
+      if (!drag || e.pointerId !== drag.pointerId) return;
+      const dx = e.clientX - drag.x0;
+      if (!drag.moved && Math.abs(dx) < DRAG_PX) return;
+      drag.moved = true;
+      const r = M.byId.get(drag.id);
+      drag.days = Math.round(dx / geo.dayW);
+      drag.bar.style.left = `${drag.left0 + drag.days * geo.dayW}px`;
+      drag.bar.classList.add('dragging');
+      if (!drag.tip) {
+        drag.tip = document.createElement('span');
+        drag.tip.className = 'g-drag-tip';
+        drag.bar.parentNode.appendChild(drag.tip);
+      }
+      drag.tip.style.left = `${drag.left0 + drag.days * geo.dayW}px`;
+      drag.tip.textContent = `Starts ${fmtDay(M.cal.onOrAfter(r.start + drag.days))}`;
+    });
+    const endDrag = async (e, dropped) => {
+      if (!drag || (e && e.pointerId !== drag.pointerId)) return;
+      const d = drag;
+      drag = null;
+      if (d.tip) d.tip.remove();
+      if (!d.moved) return;                 // a tap: the click that follows opens the task
+      noClick = true;
+      setTimeout(() => { noClick = false; }, 400);
+      const r = M.byId.get(d.id);
+      const start = r ? M.cal.onOrAfter(r.start + d.days) : null;
+      if (!dropped || !r || start === r.start) { renderSchedule(); return; }
+      try {
+        await opts.onTaskMove(d.id, toISO(start), M);
+      } catch (err) {
+        renderSchedule();                   // put the bar back; the page says what went wrong
+      }
+    };
+    root.addEventListener('pointerup', (e) => endDrag(e, true));
+    root.addEventListener('pointercancel', (e) => endDrag(e, false));
+
     root.addEventListener('click', async (e) => {
+      if (noClick && e.target.closest('.g-bar')) { noClick = false; return; }
       const tradeBtn = e.target.closest('[data-trade]');
       if (tradeBtn) {
         setTrade(tradeBtn.dataset.trade);

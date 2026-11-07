@@ -259,6 +259,8 @@
       contactFor: (key) => contactFor(current, key),
       teamActions: (key) => (reachable(contractorFor(current, key)) ? `<button type="button" class="btn btn-sm" data-msg="${esc(key)}">Message</button>` : ''),
       onTaskClick: (tid, M) => openTaskDetail(tid, M),
+      // Dragging a bar sets that task's confirmed start date; the tasks that wait on it follow (gantt.js).
+      onTaskMove: (tid, startISO) => moveTask(tid, startISO),
       emptyHTML: `<div class="card empty-state"><p>This project has no tasks yet.</p>
         <button class="btn btn-primary" data-act="add-task">+ Add the first task</button></div>`,
     }, isV2() ? {
@@ -357,6 +359,29 @@
   function refreshProject() {
     renderProjectHead();
     view.setSchedule(resolvedSchedule(current));
+  }
+
+  // A bar dropped on a new day: that task's confirmed start date becomes that day, and everything waiting on it moves
+  // with it. Undo puts back the date it had (or none). A failed save says why and redraws the schedule as it was.
+  async function moveTask(taskId, startISO) {
+    const t = allTasks(current.schedule || {}).find((x) => x.id === taskId);
+    if (!t) return;
+    const before = t.start || null;
+    const setStart = (value) => (s) => {
+      const x = allTasks(s).find((y) => y.id === taskId);
+      if (!x) return;
+      if (value) x.start = value; else delete x.start;
+    };
+    try {
+      await saveSchedule(setStart(startISO));
+    } catch (err) {
+      toast(friendly(err), { error: true });
+      refreshProject();
+      throw err;
+    }
+    toast(`Moved "${t.name}" to ${G.fmtDay(G.parseDate(startISO))}`, { action: { label: 'Undo', onClick: async () => {
+      await saveSchedule(setStart(before), `Put "${t.name}" back`);
+    } } });
   }
 
   // Apply a change to the stored schedule, check it still makes sense, then save.
