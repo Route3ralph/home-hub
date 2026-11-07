@@ -701,6 +701,45 @@ const emailOf = (req) => {
     await page.context().close();
   }
 
+  // ---------------------------------------------------------------------
+  // The task form shows a task timed from a later one ("Happens before" and how many working days), and saves it.
+  // ---------------------------------------------------------------------
+  {
+    const { page, db } = await open({ label: 'before' });
+    const taskOf = (id) => (db.projects.find((p) => p.id === 'p-kitchen').schedule.phases.flatMap((p) => p.tasks).find((t) => t.id === id) || {});
+    await page.click('.g-label[data-id="prep"]');
+    await page.waitForSelector('#detail [data-task-act="edit"]');
+    await page.click('#detail [data-task-act="edit"]');
+    await page.waitForSelector('#formDialog select[name="before"]');
+    check('task form: "Happens before" shows the task it\'s timed from, and the working days before',
+      (await page.inputValue('#formDialog select[name="before"]')) === 'demo' && (await page.inputValue('#formDialog input[name="lead"]')) === '1'
+      && /Happens before/.test(await tc(page, '#formDialog')), await page.inputValue('#formDialog select[name="before"]'));
+    check('... it doesn\'t offer the task itself', !(await page.$('#formDialog select[name="before"] option[value="prep"]')));
+    await page.fill('#formDialog input[name="lead"]', '2');
+    await page.click('#formDialog button[type="submit"]');
+    await page.waitForTimeout(700);
+    check('saved with 2 working days before', taskOf('prep').before === 'demo' && taskOf('prep').lead === 2, JSON.stringify(taskOf('prep')));
+    await page.click('.g-label[data-id="prep"]');
+    await page.waitForSelector('#detail [data-task-act="edit"]');
+    await page.click('#detail [data-task-act="edit"]');
+    await page.waitForSelector('#formDialog select[name="before"]');
+    await page.selectOption('#formDialog select[name="before"]', '');
+    check('... "No task" hides the working days', !(await page.isVisible('#formDialog input[name="lead"]')));
+    await page.click('#formDialog button[type="submit"]');
+    await page.waitForTimeout(700);
+    check('"No task": the link and its days are removed', !('before' in taskOf('prep')) && !('lead' in taskOf('prep')), JSON.stringify(taskOf('prep')));
+    // Another task with its own link keeps it when saved untouched.
+    await page.click('.g-label[data-id="demo"]');
+    await page.waitForSelector('#detail [data-task-act="edit"]');
+    await page.click('#detail [data-task-act="edit"]');
+    await page.waitForSelector('#formDialog select[name="before"]');
+    await page.click('#formDialog button[type="submit"]');
+    await page.waitForTimeout(700);
+    check('a task saved without changes keeps its link (demolition: 15 working days before the cabinets arrive)',
+      taskOf('demo').before === 'cabinets-arrive' && taskOf('demo').lead === 15, JSON.stringify(taskOf('demo')));
+    await page.context().close();
+  }
+
   console.log(results.join('\n'));
   console.log(`\n${results.filter((r) => r.startsWith('PASS')).length}/${results.length} passed`);
   console.log('PAGE ERRORS:', errors.length ? '\n' + errors.join('\n') : 'none');

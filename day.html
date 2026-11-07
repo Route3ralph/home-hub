@@ -8,15 +8,17 @@
   <meta name="robots" content="noindex, nofollow">
   <meta name="referrer" content="no-referrer">
   <title>My day</title>
+  <link rel="icon" href="assets/icons/icon.svg" type="image/svg+xml">
+  <link rel="icon" href="assets/icons/icon-192.png" sizes="192x192" type="image/png">
   <!-- No manifest on purpose: the hub's manifest would install the hub. Without one, "Add to Home
        Screen" keeps this page's own address (with its code), which is what a helper or kid needs. -->
   <link rel="apple-touch-icon" href="assets/icons/apple-touch-icon.png">
   <meta name="apple-mobile-web-app-title" content="My day">
   <meta name="theme-color" content="#f6f4f0" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#121110" media="(prefers-color-scheme: dark)">
-  <link rel="stylesheet" href="assets/styles.css?v=20261107c">
-  <link rel="stylesheet" href="assets/css/day.css?v=20261107c">
-  <link rel="stylesheet" href="assets/css/plan.css?v=20261107c">
+  <link rel="stylesheet" href="assets/styles.css?v=20261107d">
+  <link rel="stylesheet" href="assets/css/day.css?v=20261107d">
+  <link rel="stylesheet" href="assets/css/plan.css?v=20261107d">
 </head>
 <body>
   <main id="app" class="page day"><p class="loading">Loading…</p></main>
@@ -24,10 +26,10 @@
   <!-- The public My day page (and the tutor's link, day.html?h=): config.js, supabase-js, the shopping
        list's helpers (shoplist.js) and homework's plan editor and timer (plan.js), neither with database
        calls of its own, never the hub. -->
-  <script src="config.js?v=20261107c"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.3/dist/umd/supabase.js?v=20261107c"></script>
-  <script src="assets/shoplist.js?v=20261107c"></script>
-  <script src="assets/plan.js?v=20261107c"></script>
-  <script src="assets/day.js?v=20261107c"></script>
+  <script src="config.js?v=20261107d"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.3/dist/umd/supabase.js?v=20261107d"></script>
+  <script src="assets/shoplist.js?v=20261107d"></script>
+  <script src="assets/plan.js?v=20261107d"></script>
+  <script src="assets/day.js?v=20261107d"></script>
 </body>
 </html>

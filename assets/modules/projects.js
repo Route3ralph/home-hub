@@ -719,6 +719,15 @@
         { name: 'after', label: 'Waits on', type: 'checks', value: t.after || [],
           help: 'Tick the tasks that must finish before this one can start.',
           groups: phases.map((p) => ({ label: p.name, items: (p.tasks || []).filter((x) => x.id !== taskId).map((x) => [x.id, x.name]) })) },
+        // The other way round: this task is timed from a later one ("empty the cabinets the day before the doors come
+        // off"), so it moves when that one does. Saved as before + lead (working days); gantt.js schedules it.
+        { type: 'row', fields: [
+          { name: 'before', label: 'Happens before (optional)', type: 'select', value: t.before || '',
+            options: [['', 'No task'], ...allTasks(s).filter((x) => x.id !== taskId).map((x) => [x.id, x.name])],
+            help: 'For a task timed from a later one, such as clearing a room the day before work starts. It moves when that task moves.' },
+          { name: 'lead', label: 'How many working days before', type: 'number', min: 0, value: t.before ? String(t.lead || 0) : '1',
+            help: '0 is the same day.', showIf: (v) => !!v.before },
+        ] },
         { type: 'row', fields: [
           { name: 'start', label: 'Confirmed start date', type: 'date', value: t.start || '', help: 'Leave blank to schedule automatically.' },
           { name: 'status', label: 'Status', type: 'select', options: TASK_STATUSES, value: t.status || '' },
@@ -754,6 +763,8 @@
           setOrDrop('start', v.start);
           setOrDrop('status', v.status);
           setOrDrop('lag', Math.max(0, parseInt(v.lag, 10) || 0));
+          setOrDrop('before', v.before && ids.has(v.before) && v.before !== nt.id ? v.before : null);
+          setOrDrop('lead', nt.before ? Math.max(0, parseInt(v.lead, 10) || 0) : null);
           setOrDrop('notes', v.notes);
           setOrDrop('private_notes', v.private_notes);
 
