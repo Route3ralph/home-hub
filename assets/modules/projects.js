@@ -52,6 +52,7 @@
   // v1.4 (schema 11): the documents link and Guest access; core.guest is set while a project guest is signed in.
   const isV11 = () => core.schemaVersion >= 11;
   const isGuest = () => !!core.guest;
+  const hasSelections = () => core.schemaVersion >= 24;
   const isAdmin = () => !!(core.me && core.me.role === 'admin');
   const DRIVE = /^https:\/\/drive\.google\.com\/[^\s<>"']*$/;
   const { v2, q } = core;
@@ -247,9 +248,11 @@
     }
     current = project;
     // v2: the Tasks card sits between the heading and the schedule (not for a guest: its to-dos name the family).
+    // From 0024 the Selections card sits under the schedule, for the family and the project's guest alike.
+    const sel = hasSelections() ? '<div data-ref="sel"></div>' : '';
     main.innerHTML = isV2() && !isGuest()
-      ? '<div class="proj2"><div data-ref="head"></div><div data-ref="ptasks"></div><div id="gv"></div></div>'
-      : '<div data-ref="head"></div><div id="gv"></div>';
+      ? `<div class="proj2"><div data-ref="head"></div><div data-ref="ptasks"></div><div id="gv"></div>${sel}</div>`
+      : `<div data-ref="head"></div><div id="gv"></div>${sel}`;
     renderProjectHead();
     view = G.createView(main.querySelector('#gv'), Object.assign({
       dialog: detailDialog,
@@ -273,7 +276,16 @@
       });
       drawTasksCard();
     }
+    if (hasSelections()) {
+      Object.assign(actions, {
+        'sel-add': () => selectionForm(null),
+        'sel-retry': () => drawSelections(),
+      });
+      drawSelections();
+    }
     main.onclick = (e) => {
+      const selAct = e.target.closest('[data-sel]');
+      if (selAct) { selectionAction(selAct.dataset.sel, selAct.dataset.id); return; }
       const msg = e.target.closest('[data-msg]');
       if (msg) {
         const c = contractorFor(current, msg.dataset.msg);
@@ -996,6 +1008,180 @@
         refreshProject();
         toast(c ? 'Contractor saved' : `${saved.name} is on this project`);
         setTimeout(contactsDialog, 0);
+      },
+    });
+    markForm();
+  }
+
+  // ============================================
+  // SELECTIONS (0024, docs/v1.4-project-guests.md §9)
+  // The finishes for a project, by room: a paint color, the cabinet knobs, a faucet, with the product, finish, links,
+  // price and where each stands. The family and the project's guest add and change them; approving or turning one
+  // down is a parent's (the database refuses anyone else), and a change to an approved one by anyone else sends it
+  // back to Proposed.
+  // ============================================
+  const SEL_STATUSES = [['proposed', 'Proposed'], ['approved', 'Approved'], ['ordered', 'Ordered'], ['installed', 'Installed'], ['rejected', 'Not this one']];
+  const SEL_LABEL = Object.fromEntries(SEL_STATUSES);
+  const SEL_PARENT_ONLY = ['approved', 'rejected'];
+  const SEL_COLS = 'id,project_id,room,item,product,finish,url,photo_url,price,quantity,status,note,created_at,created_by,updated_at,updated_by';
+  let selRows = [];
+  let selLoads = 0;
+  const selClean = (s, max) => String(s || '').replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max);
+  // A link as the database keeps it: https only, printable ASCII. '' for nothing typed, null for one that can't be saved.
+  function selLink(typed) {
+    const t = String(typed || '').trim();
+    if (!t) return '';
+    let u;
+    try { u = new URL(/^[a-z][a-z0-9+.-]*:/i.test(t) ? t : `https://${t}`); } catch (e) { return null; }
+    if (u.protocol !== 'https:') return null;
+    return /^https:\/\/[!#-;=?-~]{4,}$/.test(u.href) && u.href.length <= 508 ? u.href : null;
+  }
+  const money = (n) => `$${Number(n).toLocaleString('en-US', { minimumFractionDigits: Number(n) % 1 ? 2 : 0, maximumFractionDigits: 2 })}`;
+
+  function selectionsCardHTML(count, body, total) {
+    return `<section class="card psel" aria-labelledby="psel-title">
+      <div class="card-head">
+        <h2 id="psel-title">Selections</h2>${count ? `<span class="sec-count">${count}</span>` : ''}
+        <span class="card-sub">Colors, fixtures and finishes${total ? ` · approved so far ${esc(money(total))}` : ''}</span>
+        <span class="ptasks-tools"><button type="button" class="btn btn-primary" data-act="sel-add">+ Selection</button></span>
+      </div>
+      ${body}
+    </section>`;
+  }
+
+  function selectionRowHTML(r) {
+    const sub = [r.product, r.finish].filter(Boolean).join(' · ');
+    const cost = r.price != null ? `${money(r.price)}${r.quantity && r.quantity > 1 ? ` × ${r.quantity}` : ''}` : (r.quantity ? `× ${r.quantity}` : '');
+    const links = [r.url ? `<a href="${esc(r.url)}" target="_blank" rel="noopener noreferrer">Product</a>` : '',
+      r.photo_url ? `<a href="${esc(r.photo_url)}" target="_blank" rel="noopener noreferrer">Photo</a>` : ''].filter(Boolean).join(' · ');
+    const decide = isAdmin() && r.status === 'proposed'
+      ? `<button type="button" class="btn btn-sm" data-sel="approve" data-id="${esc(r.id)}">Approve</button>
+         <button type="button" class="btn btn-sm" data-sel="reject" data-id="${esc(r.id)}">Not this one</button>` : '';
+    return `<li class="psel-row" data-id="${esc(r.id)}">
+      <div class="psel-main">
+        <div class="psel-title"><strong>${esc(r.item)}</strong> <span class="pill psel-st psel-${esc(r.status)}">${esc(SEL_LABEL[r.status] || r.status)}</span></div>
+        ${sub ? `<div class="meta psel-sub">${esc(sub)}</div>` : ''}
+        ${cost || links ? `<div class="meta psel-more">${[cost ? esc(cost) : '', links].filter(Boolean).join(' · ')}</div>` : ''}
+        ${r.note ? `<div class="meta psel-note">${esc(r.note)}</div>` : ''}
+      </div>
+      <div class="psel-acts">${decide}<button type="button" class="btn btn-sm" data-sel="edit" data-id="${esc(r.id)}">Edit</button></div>
+    </li>`;
+  }
+
+  async function drawSelections() {
+    const box = $('[data-ref="sel"]');
+    if (!box || !current) return null;
+    const id = current.id;
+    const seq = ++selLoads;
+    const gone = () => seq !== selLoads || !current || current.id !== id || !box.isConnected;
+    if (!box.firstElementChild) box.innerHTML = selectionsCardHTML(0, '<p class="empty-line">Loading selections…</p>');
+    let rows;
+    try {
+      rows = (await core.q(core.sb.from('project_selections').select(SEL_COLS).eq('project_id', id).order('created_at').order('id'))) || [];
+    } catch (err) {
+      if (gone()) return null;
+      box.innerHTML = selectionsCardHTML(0, `<div class="ptasks-body"><p class="form-error" role="alert">Couldn't load the selections. ${esc(friendly(err))}</p>
+        <button type="button" class="btn" data-act="sel-retry">Try again</button></div>`);
+      return null;
+    }
+    if (gone()) return null;
+    selRows = rows;
+    // By room, in the order each room first appears; no room last.
+    const rooms = [];
+    rows.forEach((r) => { const k = r.room || ''; if (!rooms.includes(k)) rooms.push(k); });
+    rooms.sort((a, b) => (a === '' ? 1 : b === '' ? -1 : 0));
+    const total = rows.filter((r) => ['approved', 'ordered', 'installed'].includes(r.status) && r.price != null)
+      .reduce((t, r) => t + Number(r.price) * (r.quantity || 1), 0);
+    const body = rows.length
+      ? rooms.map((k) => `<div class="psel-room"><h3 class="psel-room-name">${esc(k || 'No room')}</h3>
+          <ul class="psel-list" role="list">${rows.filter((r) => (r.room || '') === k).map(selectionRowHTML).join('')}</ul></div>`).join('')
+      : `<p class="empty-line">No selections yet. Add the paint colors, hardware, fixtures and finishes${isGuest() ? ' for the family to approve' : ''}.</p>`;
+    box.innerHTML = selectionsCardHTML(rows.length, body, total);
+    return rows;
+  }
+
+  async function selectionAction(act, id) {
+    const r = selRows.find((x) => x.id === id);
+    if (!r) return;
+    if (act === 'edit') { selectionForm(r); return; }
+    const status = act === 'approve' ? 'approved' : act === 'reject' ? 'rejected' : null;
+    if (!status) return;
+    try {
+      const saved = await core.q(core.sb.from('project_selections').update({ status }).eq('id', r.id).select('id'));
+      if (!saved || !saved.length) throw new Error('That wasn\'t saved: it may have been deleted.');
+      toast(`${status === 'approved' ? 'Approved' : 'Not this one'}: ${r.item}`);
+    } catch (err) {
+      toast(friendly(err), { error: true });
+    }
+    drawSelections();
+  }
+
+  function selectionForm(r) {
+    const x = r || {};
+    const admin = isAdmin();
+    // Approved and Not this one are a parent's to pick; anyone else sees the current one, but can't choose it.
+    const options = SEL_STATUSES.filter(([v]) => admin || !SEL_PARENT_ONLY.includes(v) || v === x.status);
+    const rooms = [...new Set(selRows.map((s) => s.room).filter(Boolean))];
+    openForm({
+      title: r ? `Edit ${x.item}` : 'Add a selection',
+      fields: [
+        { type: 'row', fields: [
+          { name: 'what', label: 'What', required: true, value: x.item || '', placeholder: 'Cabinet knobs' },   // not 'item': form.elements.item is a method
+          { name: 'room', label: 'Room (optional)', value: x.room || (rooms.length === 1 ? rooms[0] : ''), placeholder: 'Kitchen' },
+        ] },
+        { name: 'product', label: 'Product (optional)', value: x.product || '', placeholder: 'Round knob 1-1/4 in' },
+        { name: 'finish', label: 'Color or finish (optional)', value: x.finish || '', placeholder: 'Satin brass, or SW 7008 Alabaster' },
+        { type: 'row', fields: [
+          { name: 'price', label: 'Price each (optional)', value: x.price != null ? String(x.price) : '', placeholder: '12.50' },
+          { name: 'quantity', label: 'How many (optional)', type: 'number', min: 1, value: x.quantity != null ? String(x.quantity) : '' },
+        ] },
+        { name: 'url', label: 'Product link (optional)', type: 'url', value: x.url || '', placeholder: 'https://…' },
+        { name: 'photo_url', label: 'Photo link (optional)', type: 'url', value: x.photo_url || '', placeholder: 'https://…',
+          help: 'A photo or sample in the project\'s Documents folder (in Drive: Share → Copy link), or on the maker\'s site.' },
+        { name: 'status', label: 'Status', type: 'select', value: x.status || 'proposed', options,
+          help: admin ? '' : 'A parent approves it. Changing an approved one sends it back to Proposed.' },
+        { name: 'note', label: 'Note (optional)', type: 'textarea', value: x.note || '', placeholder: 'Order 2 spare' },
+      ],
+      submitLabel: r ? 'Save' : 'Add',
+      extraActions: r ? [{ label: 'Delete', danger: true, onClick: async () => {
+        if (!window.confirm(`Delete "${x.item}" from the selections?`)) return false;
+        await core.q(core.sb.from('project_selections').delete().eq('id', r.id));
+        toast(`Deleted ${x.item}`);
+        await drawSelections();
+        return true;
+      } }] : [],
+      async onSubmit(v) {
+        const item = selClean(v.what, 80);
+        if (!item) throw new Error('Say what it is, for example Cabinet knobs.');
+        const url = selLink(v.url);
+        const photo = selLink(v.photo_url);
+        if (url === null || photo === null) throw new Error('A link has to be a web address starting with https://.');
+        const priceText = String(v.price || '').replace(/[$,\s]/g, '');
+        if (priceText && !/^\d{1,8}(\.\d{1,2})?$/.test(priceText)) throw new Error('Write the price as a number, for example 12.50.');
+        const qty = String(v.quantity || '').trim();
+        if (qty && !/^\d{1,4}$/.test(qty)) throw new Error('How many is a whole number, 1 to 9999.');
+        const status = options.some(([s]) => s === v.status) ? v.status : 'proposed';
+        const row = {
+          item,
+          room: selClean(v.room, 40) || null,
+          product: selClean(v.product, 120) || null,
+          finish: selClean(v.finish, 80) || null,
+          price: priceText ? Number(priceText) : null,
+          quantity: qty && Number(qty) > 0 ? Number(qty) : null,
+          url: url || null,
+          photo_url: photo || null,
+          status,
+          note: String(v.note || '').replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, '').trim().slice(0, 500) || null,
+        };
+        if (r) {
+          const saved = await core.q(core.sb.from('project_selections').update(row).eq('id', r.id).select('id,status'));
+          if (!saved || !saved.length) throw new Error('That wasn\'t saved: it may have been deleted.');
+          toast(x.status === 'approved' && saved[0].status === 'proposed' ? `Saved ${item}: back to Proposed for a parent to approve` : `Saved ${item}`);
+        } else {
+          await core.q(core.sb.from('project_selections').insert(Object.assign({ project_id: current.id }, row)));
+          toast(`Added ${item}`);
+        }
+        await drawSelections();
       },
     });
     markForm();
