@@ -59,8 +59,11 @@ const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
     check('... the schedule names the linked contractors, never an account number or a directory note',
       /Pat Lee/.test(html) && /Example Water Co/.test(html) && !/5555 0101 9876|Licensed master electrician/.test(html));
     const paths = [...new Set((await h.requests()).map((r) => r.path).filter((x) => x.startsWith('/rest/')))].sort();
-    check('... the site asked only for the guest\'s things', same(paths, ['/rest/v1/projects', '/rest/v1/rpc/clock', '/rest/v1/rpc/guest_contacts', '/rest/v1/rpc/guest_whoami',
+    // From 0024 the project's Selections card reads project_selections (its RLS: the guest's own project only).
+    check('... the site asked only for the guest\'s things', same(paths, ['/rest/v1/project_selections', '/rest/v1/projects', '/rest/v1/rpc/clock', '/rest/v1/rpc/guest_contacts', '/rest/v1/rpc/guest_whoami',
       '/rest/v1/rpc/hub_schema_version', '/rest/v1/rpc/whoami']), paths);
+
+    check('... and the Kitchen\'s Selections card, empty, from the real table', /No selections yet/.test(await tc(page, '.psel')), await tc(page, '.psel'));
 
     await page.click('[data-act="contacts"]');
     await page.waitForSelector('#formDialog .contact-list');
