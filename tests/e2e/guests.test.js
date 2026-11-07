@@ -6,7 +6,7 @@
 // guestRpc, with the migration's rules). Riley Designer (riley@example.com) is the made-up designer.
 // Run alone with: node tests/e2e/guests.test.js
 const { chromium } = require('playwright');
-const { makeDb, install, signIn, withGuests } = require('./mock');
+const { makeDb, install, signIn, withGuests, withSelections } = require('./mock');
 const { serve } = require('./server');
 
 const SHOTS = __dirname + '/shots/';
@@ -80,6 +80,7 @@ const rpcFor = (version) => ({ hub_schema_version: () => version, clock: (db) =>
   const formOpen = (page) => page.evaluate(() => document.getElementById('formDialog').open);
   const toastText = (page) => texts(page, '.toasts .toast').then((t) => t.join(' | '));
   const noSideScroll = (page) => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth);
+  let p2, c2;
 
   // ---------------------------------------------------------------------
   // 1. A guest with one project: straight to it, and nothing of the family's
@@ -303,6 +304,70 @@ const rpcFor = (version) => ({ hub_schema_version: () => version, clock: (db) =>
     check('a stranger (neither family nor guest): Not on the list yet', /Not on the list yet/.test(await text(page, '#app')) && !(db.rpcCalls || []).some((c) => c.name === 'guest_contacts'),
       await text(page, '#app'));
     await context.close();
+  }
+
+  // ---------------------------------------------------------------------
+  // Selections (0024, docs/v1.4-project-guests.md §9): the guest proposes, a parent approves, a change to an approved
+  // one goes back to Proposed; only on 24.
+  // ---------------------------------------------------------------------
+  {
+    const { page, context } = await open({ label: 'selections 23', version: 23 });
+    check('schema 23: no Selections card', !(await page.$('.psel')));
+    await context.close();
+  }
+  {
+    const sdb = withSelections(guestDb());
+    sdb.project_selections.push({ id: 'se-paint', project_id: 'p-kitchen', room: 'Kitchen', item: 'Wall paint', product: null, finish: '<img src=x onerror="window.__pwned=1">',
+      url: null, photo_url: null, price: null, quantity: null, status: 'approved', note: null, created_at: T, created_by: 'alex@example.com', updated_at: T, updated_by: 'alex@example.com' });
+    sdb.project_selections.push({ id: 'se-deck', project_id: 'p-pool', room: 'Pool', item: 'Pool tile', product: null, finish: null,
+      url: null, photo_url: null, price: null, quantity: null, status: 'proposed', note: null, created_at: T, created_by: 'alex@example.com', updated_at: T, updated_by: 'alex@example.com' });
+    const { page, db, context, expect } = await open({ label: 'guest selections', version: 24, db: sdb });
+    check('guest, schema 24: the Selections card, with the Kitchen\'s only (never another project\'s), its finish drawn as text',
+      !!(await page.$('.psel')) && same(await texts(page, '.psel-row strong'), ['Wall paint']) && /<img src=x/.test(await text(page, '.psel'))
+      && !(await page.evaluate(() => window.__pwned)), await text(page, '.psel'));
+    check('guest: no Approve button', !(await page.$('[data-sel="approve"]')));
+    await page.click('[data-act="sel-add"]');
+    await page.waitForTimeout(300);
+    const opts = await page.$$eval('#formDialog select[name="status"] option', (os) => os.map((o) => o.value));
+    check('guest\'s form: Approved and Not this one aren\'t offered', same(opts, ['proposed', 'ordered', 'installed']), opts);
+    await page.fill('#formDialog [name="what"]', 'Cabinet knobs');
+    await page.fill('#formDialog [name="finish"]', 'Satin brass');
+    await page.fill('#formDialog [name="price"]', '$12.50');
+    await page.fill('#formDialog [name="quantity"]', '24');
+    await page.fill('#formDialog [name="url"]', 'hardware.example/knob');
+    await page.click('#formDialog button[type="submit"]');
+    await page.waitForTimeout(600);
+    check('guest\'s add: the form closes', !(await formOpen(page)), await text(page, '#formDialog .form-error'));
+    if (await formOpen(page)) await page.keyboard.press('Escape');
+    const knobs = db.project_selections.find((r) => r.item === 'Cabinet knobs');
+    check('guest adds cabinet knobs: Proposed, Kitchen (the one room), $12.50 × 24, the link made https, written as Riley',
+      !!knobs && knobs.status === 'proposed' && knobs.room === 'Kitchen' && knobs.price === 12.5 && knobs.quantity === 24
+      && knobs.url === 'https://hardware.example/knob' && knobs.created_by === RILEY && /\$12\.50 × 24/.test(await text(page, '.psel')), knobs);
+    await page.click('[data-sel="edit"][data-id="se-paint"]');
+    await page.waitForTimeout(300);
+    await page.fill('#formDialog [name="finish"]', 'Soft white');
+    await page.click('#formDialog button[type="submit"]');
+    await page.waitForTimeout(600);
+    check('guest changes the approved paint: back to Proposed, and the toast says so',
+      (db.project_selections.find((r) => r.id === 'se-paint') || {}).status === 'proposed' && /back to Proposed/.test(await toastText(page)), await toastText(page));
+    await context.close();
+    ({ page: p2, context: c2 } = await open({ label: 'guest selections phone', version: 24, db, ctx: phone }));
+    check('guest selections at 390px: no sideways scroll', await noSideScroll(p2));
+    await p2.screenshot({ path: SHOTS + 'guest-selections-phone.png', fullPage: true });
+    await c2.close();
+    // A parent approves the knobs with one tap.
+    const parent = await open({ label: 'parent selections', version: 24, db, email: 'alex@example.com', path: '/#/projects/p-kitchen' });
+    const knobId = (db.project_selections.find((r) => r.item === 'Cabinet knobs') || {}).id;
+    if (knobId) await parent.page.click(`[data-sel="approve"][data-id="${knobId}"]`);
+    await parent.page.waitForTimeout(600);
+    check('parent: Approve sets it approved, "Approved: Cabinet knobs", and the total shows $300',
+      (db.project_selections.find((r) => r.id === knobId) || {}).status === 'approved' && /Approved: Cabinet knobs/.test(await toastText(parent.page))
+      && /approved so far \$300/.test(await text(parent.page, '.psel .card-sub')), await text(parent.page, '.psel .card-sub'));
+    await parent.page.click('[data-act="sel-add"]');
+    await parent.page.waitForTimeout(300);
+    const popts = await parent.page.$$eval('#formDialog select[name="status"] option', (os) => os.map((o) => o.value));
+    check('parent\'s form offers every status', same(popts, ['proposed', 'approved', 'ordered', 'installed', 'rejected']), popts);
+    await parent.context.close();
   }
 
   await browser.close();

@@ -1615,3 +1615,38 @@ grant update (school_mark, grade) on public.assignments to authenticated;
 - Homework (`assets/modules/homework.js`), gated on `core.schemaVersion >= 23`: the page reads the two columns; an assignment's page has **Missing**, **Graded…** (asks for the grade; empty means "Graded" alone; **Change grade…** once graded) and **Clear mark**, for a parent or the coach. The list's row and the assignment's line say "Missing", "Graded" or "Graded: B+".
 
 Undoing it isn't needed (with nothing marked every page is as on 22). If wanted, as the migration's header writes it out: drop the two columns, then 0022's `hub_schema_version`.
+
+## 30. v1.4: a project's selections
+
+A project's finishes, by room: paint colors, hardware, fixtures, with the product, finish, links, price and status. The family and the project's guest keep them; a parent approves. Its migration is `0024_project_selections.sql` (after 0023); the plan is `docs/v1.4-project-guests.md` §9.
+
+### Tables
+```sql
+create table public.project_selections (
+  id          uuid primary key default gen_random_uuid(),
+  project_id  uuid not null references public.projects (id) on delete cascade,
+  room        text check (room is null or char_length(room) between 1 and 40),
+  item        text not null check (char_length(item) between 1 and 80),
+  product     text check (product is null or char_length(product) between 1 and 120),
+  finish      text check (finish is null or char_length(finish) between 1 and 80),
+  url         text check (url is null or (url ~ '^https://[!#-;=?-~]{4,}$' and char_length(url) <= 508)),
+  photo_url   text check (photo_url is null or (photo_url ~ '^https://[!#-;=?-~]{4,}$' and char_length(photo_url) <= 508)),
+  price       numeric(10, 2) check (price is null or (price >= 0 and price <= 99999999)),
+  quantity    int check (quantity is null or quantity between 1 and 9999),
+  status      text not null default 'proposed' check (status in ('proposed', 'approved', 'ordered', 'installed', 'rejected')),
+  note        text check (note is null or char_length(note) between 1 and 500),
+  created_at  timestamptz not null default now(),
+  created_by  text,
+  updated_at  timestamptz not null default now(),
+  updated_by  text
+);
+```
+- `project_selections`: index `project_selections_project` on `(project_id, room, created_at)`. Triggers `project_selections_stamp` and `project_selections_tidy` (`private.selection_tidy()`: text on one line, `''` becomes null; from anyone but a parent, a status of 'approved' or 'rejected' is refused with 42501 "Only a parent approves or turns down a selection.", and a change to an approved row's item, product, finish, url, photo_url or price sets it back to 'proposed').
+- RLS: "Family manages selections" (`private.is_member()`) and "A project's guest manages its selections" (`private.is_guest_of(p_project)` of the row's project), for all.
+- Grants: anon and service_role nothing; signed-in users select and delete, insert of `id, project_id, room, item, product, finish, url, photo_url, price, quantity, status, note` and update of the same less `id` and `project_id` (never the audit columns). `private.selection_tidy()` is revoked from public, anon and authenticated.
+- `hub_schema_version()` returns 24.
+
+### Client
+- Projects (`assets/modules/projects.js`), gated on `core.schemaVersion >= 24`, for the family and the project's guest: a Selections card under the schedule, grouped by room, with + Selection, Edit (with Delete), and for the parents Approve and Not this one on a proposed row. A non-parent's form offers neither of those two statuses.
+
+Undoing it isn't needed (with nothing on the list every page is as on 23). If wanted, as the migration's header writes it out: drop the table and `private.selection_tidy()`, then 0023's `hub_schema_version`.

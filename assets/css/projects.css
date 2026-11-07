@@ -66,3 +66,23 @@
 .contact-list li > div { min-width: 0; overflow-wrap: anywhere; }
 .contact-list .btn { flex: none; min-height: 44px; }
 .proj-form input[type="email"], .proj-form input[type="url"], .proj-form input[type="tel"] { min-height: 44px; }
+
+/* Selections (0024): by room, each with its status. */
+.psel { margin-top: 16px; }
+.psel-room + .psel-room { margin-top: 12px; }
+.psel-room-name { font-size: 0.95rem; margin: 8px 0 4px; color: var(--text-3); font-weight: 600; }
+.psel-list { list-style: none; margin: 0; padding: 0; }
+.psel-row { display: flex; gap: 12px; align-items: flex-start; justify-content: space-between; padding: 10px 0; border-top: 1px solid var(--line); }
+.psel-main { min-width: 0; flex: 1; }
+.psel-title { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.psel-sub, .psel-more, .psel-note { overflow-wrap: anywhere; }
+.psel-acts { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
+.psel-st { font-size: 0.75rem; }
+.psel-approved, .psel-installed { background: var(--accent-soft); color: var(--accent); }
+.psel-ordered { background: var(--accent-soft); color: var(--text); }
+.psel-rejected { background: var(--danger-soft); color: var(--danger); text-decoration: line-through; }
+@media (max-width: 560px) {
+  .psel-row { flex-direction: column; }
+  .psel-acts { justify-content: flex-start; }
+  .psel-acts .btn { min-height: 44px; }
+}

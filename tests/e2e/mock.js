@@ -258,6 +258,11 @@ const calendarRpc = { google_items: googleItems, calendar_preview: calendarPrevi
 // nothing else. guests and project_guests: admins read; project_contacts: members read; nobody signed in writes them
 // (the functions do). guestRpc has guest_whoami, guest_contacts, guest_save_contact, add_project_guest,
 // remove_project_guest and remove_guest, with the migration's checks and messages.
+// withSelections(db) adds 0024's project_selections (empty): a test on schema 24 sets it.
+function withSelections(db) {
+  db.project_selections = db.project_selections || [];
+  return db;
+}
 function withGuests(db) {
   db.guests = db.guests || [];
   db.project_guests = db.project_guests || [];
@@ -2559,6 +2564,64 @@ async function install(page, db, log, opts = {}) {
     // ---- Tables (row-level security: members only)
     const table = path.replace('/rest/v1/', '');
     if (!db[table]) return reply(404, { message: 'not found' });
+    // 0024: a project's selections. Members, and a guest of that project, read and change them; approving or turning
+    // one down is a parent's; anyone else's change to what an approved one is sends it back to Proposed.
+    if (table === 'project_selections') {
+      const can = (pid) => !!member || (db.guests && guestIn(db, email) && isGuestOf(db, email, pid));
+      const sFilters = [...url.searchParams].filter(([k]) => !['select', 'order', 'limit', 'offset', 'columns', 'on_conflict'].includes(k));
+      const rows = db.project_selections.filter((r) => can(r.project_id) && sFilters.every(([k, v]) => matchFilter(r[k], v)));
+      const admin = !!member && member.role === 'admin';
+      const fail = (status, code, message) => reply(status, { code, message, details: null, hint: null });
+      const COLS = ['id', 'project_id', 'room', 'item', 'product', 'finish', 'url', 'photo_url', 'price', 'quantity', 'status', 'note'];
+      const one = (x, max) => (x == null ? null : String(x).replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max) || null);
+      const tidy = (n, old) => {
+        Object.assign(n, { room: one(n.room, 40), item: one(n.item, 80) || '', product: one(n.product, 120), finish: one(n.finish, 80), note: one(n.note, 500) });
+        if (!n.item) return '23514 project_selections_item_check';
+        if (['url', 'photo_url'].some((k) => n[k] != null && !/^https:\/\/[!#-;=?-~]{4,}$/.test(n[k]))) return '23514 project_selections_url_check';
+        if (!['proposed', 'approved', 'ordered', 'installed', 'rejected'].includes(n.status)) return '23514 project_selections_status_check';
+        if (!admin) {
+          const what = ['item', 'product', 'finish', 'url', 'photo_url', 'price'];
+          if (old && old.status === 'approved' && n.status === 'approved' && what.some((k) => String(n[k] ?? '') !== String(old[k] ?? ''))) n.status = 'proposed';
+          if (['approved', 'rejected'].includes(n.status) && (!old || n.status !== old.status)) return 'PARENT';
+        }
+        return null;
+      };
+      const refuse = (why) => (why === 'PARENT' ? fail(403, '42501', 'Only a parent approves or turns down a selection.')
+        : fail(400, '23514', `new row for relation "project_selections" violates check constraint "${why.split(' ')[1]}"`));
+      if (method === 'GET') return reply(200, rows.slice().sort((a, b) => (a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : 0)));
+      if (method === 'POST') {
+        const items = Array.isArray(body) ? body : [body || {}];
+        if (items.some((r) => Object.keys(r).some((k) => !COLS.includes(k)))) return fail(403, '42501', 'permission denied for table project_selections');
+        const made = [];
+        for (const r of items) {
+          if (!can(r.project_id)) return fail(403, '42501', 'new row violates row-level security policy for table "project_selections"');
+          const n = Object.assign({ id: crypto.randomUUID(), room: null, product: null, finish: null, url: null, photo_url: null, price: null, quantity: null, status: 'proposed', note: null }, r,
+            { created_at: now(), created_by: email, updated_at: now(), updated_by: email });
+          const why = tidy(n, null);
+          if (why) return refuse(why);
+          made.push(n);
+        }
+        db.project_selections.push(...made);
+        return reply(201, made);
+      }
+      if (method === 'PATCH') {
+        if (Object.keys(body || {}).some((k) => !COLS.includes(k) || k === 'id' || k === 'project_id')) return fail(403, '42501', 'permission denied for table project_selections');
+        const next = [];
+        for (const r of rows) {
+          const n = Object.assign({}, r, body, { updated_at: now(), updated_by: email });
+          const why = tidy(n, r);
+          if (why) return refuse(why);
+          next.push(n);
+        }
+        rows.forEach((r, i) => Object.assign(r, next[i]));
+        (db.selectionWrites = db.selectionWrites || []).push({ method, body, email });
+        return reply(200, rows);
+      }
+      if (method === 'DELETE') {
+        db.project_selections = db.project_selections.filter((r) => !rows.includes(r));
+        return route.fulfill({ status: 204, headers: CORS });
+      }
+    }
     // Schema 11: a project guest reads and updates only their own projects; every other table answers nothing.
     const guest = !member && guestIn(db, email);
     if (guest && table === 'projects' && (method === 'GET' || method === 'PATCH')) {
@@ -4031,7 +4094,7 @@ function stubShare(page) {
 }
 
 module.exports = { makeDb, install, signIn, expectedConsoleError, SUPA, withCalendars, calendarRow, linkRow, googleEventRow, calendarRpc, md5uuid,
-  withGuests, guestRpc,
+  withGuests, guestRpc, withSelections,
   withHearth, hearthTagRow, hearthRpc,
   withFood, mealRow, shopItem, foodRpc, personDayFood, foodStamp, withRecipes, recipeRow,
   withHomework, homeworkRpc, homePlan, hwKidRow, tutorLinkRow, assignmentRow, stepRow, sessionRow, rewardRow, askRow, ledgerRow,

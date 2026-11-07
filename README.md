@@ -249,6 +249,14 @@ A page of its own, **Watch**, for the movies and shows the family wants to see: 
 1. `tests/run.sh` ends with `0 failed`; merge. Nothing changes until step 2: the page shows only on schema 22.
 2. **About 2 minutes:** run [`supabase/migrations/0022_watch_list.sql`](supabase/migrations/0022_watch_list.sql) in the Supabase SQL editor, after 0021. "isn't installed" means 0021 is missing; "already installed" means it's done; either way nothing was changed.
 
+### Selections: a project's colors, hardware and fixtures (v1.4, migration 0024)
+
+On a project's page, under the schedule, **Selections** lists the finishes by room: a paint color, the cabinet knobs, a faucet, with the product, color or finish, price and how many, a product link and a photo link, and where each stands (Proposed, Approved, Ordered, Installed, Not this one). You, the family and the project's guest (the designer) add and change them; **Approve** and **Not this one** are yours (the parents'), and if anyone else changes an approved one it goes back to Proposed. The heading adds up what's approved. Photos and samples go in the project's Documents folder; paste the file's Drive link as the photo link.
+
+**Turning it on** (no Edge Function and no `cron.sql` change):
+1. `tests/run.sh` ends with `0 failed`; merge. Nothing changes until step 2: the card shows only on schema 24.
+2. **About 2 minutes:** run [`supabase/migrations/0024_project_selections.sql`](supabase/migrations/0024_project_selections.sql) in the Supabase SQL editor, after 0023. "isn't installed" means 0023 is missing; "already installed" means it's done; either way nothing was changed.
+
 ### Missing and Graded: what the school says (v1.3, migration 0023)
 
 On an assignment's page (Homework → the assignment), **Missing** and **Graded…** mark it as the school's portal shows it; **Graded…** asks for the grade ("92", "B+"), or leave it empty for just "Graded". The Homework list then shows "Missing" or "Graded: B+" on its row; **Clear mark** takes it off. You and the coach mark them; nobody else sees them (not his My day or the tutor link). The hub doesn't read the portal: the school's feed has no grades.
