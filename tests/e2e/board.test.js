@@ -124,6 +124,8 @@ async function boardRpcs(page, db) {
     if (db.offline) return route.abort('internetdisconnected');
     const body = JSON.parse(req.postData() || '{}');
     db.calls.push({ name, body, auth: req.headers()['authorization'] || '' });
+    // db.hold = { name, until: <a promise> }: the next call of that name waits for it (a slow answer).
+    if (db.hold && db.hold.name === name) { const h = db.hold; db.hold = null; await h.until; }
     const out = FAKES[name](db, body);
     const reply = (status, payload) => route.fulfill({ status, headers: { ...CORS, 'content-type': 'application/json' }, body: JSON.stringify(payload) });
     return out && out.__status ? reply(out.__status, out.body) : reply(200, out === undefined ? null : out);
@@ -277,6 +279,25 @@ async function boardRpcs(page, db) {
       await page.reload();
       await page.waitForFunction(() => !document.querySelector('#app > .loading'), null, { timeout: 5000 });
       check('... kept after a reload (this screen\'s choice)', await text(page, '.bd-name') === 'Familia' && calls(db, 'board_by_token').slice(-1)[0].body.p_lang === 'es');
+      await context.close();
+    }
+
+    // ---- A switch while a read is on its way: the board ends all in the new language, not a mix
+    {
+      const { page, db, context } = await open({ label: 'board-lang-race' });
+      let release;
+      db.hold = { name: 'board_by_token', until: new Promise((r) => { release = r; }) };
+      const n = calls(db, 'board_by_token').length;
+      await page.clock.runFor(61 * 1000);   // the minute's read, in English, held on its way
+      await until(async () => calls(db, 'board_by_token').length > n);
+      await page.click('[data-act="lang"]');
+      release();
+      await until(async () => (await text(page, `${col(P.alex)} .bd-item`)) === '10:00 Asunto privado');
+      check('a switch to Español while an English read is on its way: Spanish everywhere once it lands (the English answer isn\'t drawn, a Spanish read follows)',
+        await text(page, '.bd-name') === 'Familia' && await text(page, `${col(P.alex)} .bd-item`) === '10:00 Asunto privado'
+        && same(await texts(page, '.bd-meal'), ['Almuerzo: Asunto privado', 'Cena: Tacos (Sam)'])
+        && same(calls(db, 'board_by_token').slice(n).map((c) => c.body.p_lang), ['en', 'es']),
+        `${await text(page, `${col(P.alex)} .bd-item`)} ${JSON.stringify(calls(db, 'board_by_token').slice(n).map((c) => c.body.p_lang))}`);
       await context.close();
     }
 

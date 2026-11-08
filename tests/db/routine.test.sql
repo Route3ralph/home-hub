@@ -203,3 +203,47 @@ update public.homework_kids set active = false where kid_id = test.person('Taylo
 :as_anon
 select test.ok(not (get_person_day(test.token('Taylor')) ? 'routine'), 'homework off: no routine on My day');
 select test.is(routine_tick_by_token(test.token('Taylor'), pg_temp.item('Make bed'), true), null, '... and his ticks answer null');
+
+-- ---------------------------------------------------------------------
+-- Two ticks at the same moment finish a section (his My day on two phones, or My day and the board): the bonus is
+-- paid once, not missed. Each tick counts a write first (private.count_homework, one row a kid a day), so the second
+-- waits for the first, then sees its tick when it checks the section.
+-- ---------------------------------------------------------------------
+select exists (select 1 from pg_available_extensions where name = 'dblink') as have_dblink \gset
+\if :have_dblink
+:as_owner
+update public.homework_kids set active = true, points_on = true, routine_points = 3 where kid_id = test.person('Taylor');
+set hub.now = '2026-12-15 20:00 America/New_York';   -- a Tuesday
+create extension if not exists dblink schema test;
+select test.dblink_connect('other', format('host=%s port=%s dbname=%s user=postgres', current_setting('unix_socket_directories'),
+                                           current_setting('port'), current_database()));
+select test.dblink_exec('other', format('set hub.now = %L', current_setting('hub.now')));
+select test.dblink_exec('other', $$set request.jwt.claims = '{"role": "anon"}'$$);
+select test.dblink_exec('other', 'set role anon');
+select format('select (public.routine_tick_by_token(%L, %L, true) ->> ''paid'')', test.token('Taylor'), pg_temp.item('Bag packed, books too')) as other_tick \gset
+begin;
+:as_anon
+select test.is(routine_tick_by_token(test.token('Taylor'), pg_temp.item('Lights out'), true) ->> 'paid', '0',
+               'two at once: Lights out ticked (not yet committed), Bag packed, books too still open: nothing paid');
+:as_owner
+select test.dblink_send_query('other', :'other_tick');
+do $$
+begin
+  for i in 1 .. 200 loop
+    exit when exists (select 1 from pg_stat_activity
+                      where pid <> pg_backend_pid() and wait_event_type = 'Lock' and query like '%routine_tick_by_token%');
+    perform pg_sleep(0.05);
+  end loop;
+end;
+$$;
+select test.ok(exists (select 1 from pg_stat_activity where pid <> pg_backend_pid() and wait_event_type = 'Lock' and query like '%routine_tick_by_token%'),
+               '... Bag packed, books too, at the same moment, waits for it');
+commit;
+select test.is((select r from test.dblink_get_result('other') as t (r text)), '3',
+               '... and, once Lights out is in, finds Before bed finished: its bonus, 3');
+select test.is((select count(*) || ' ' || sum(delta) from public.points_ledger where kind = 'routine' and day = '2026-12-15'), '1 3',
+               '... one routine entry that day');
+select test.dblink_disconnect('other');
+\else
+do $$ begin raise notice 'SKIP  two ticks at once: the dblink extension isn''t installed'; end $$;
+\endif
