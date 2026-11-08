@@ -184,14 +184,22 @@
     line = p.then(() => {}, () => {});
     return p;
   }
+  // One read at a time, shared by whoever asks while it runs, but only in the language asked for: after a switch, a
+  // read still on its way in the other language isn't shared, and a new one follows it.
+  let loadingLang = null;
   function fetchBoard() {
-    if (!loading) {
-      loading = rpc(one(() => sb.rpc('board_by_token', { p_token: token, p_lang: lang })))
+    if (!loading || loadingLang !== lang) {
+      const want = lang;
+      const p = rpc(one(() => sb.rpc('board_by_token', { p_token: token, p_lang: want })))
         .then((b) => { lastLoad = Date.now(); return b && typeof b === 'object' ? b : null; })
-        .finally(() => { loading = null; });
+        .finally(() => { if (loading === p) loading = null; });
+      loadingLang = want;
+      loading = p;
     }
     return loading;
   }
+  // An answer in the language the screen no longer shows (it left before a switch).
+  const otherLang = (b) => !!(b && b.lang && b.lang !== lang);
   function accept(b) {
     state = b;
     if (Number.isFinite(Number(b.now))) offset = Number(b.now) - Date.now();
@@ -216,6 +224,7 @@
       return;
     }
     if (!b) { linkGone(); return; }
+    if (otherLang(b)) return;   // the read the switch asked for draws it
     const had = !!notice;
     notice = '';
     accept(b);
@@ -410,6 +419,7 @@
     notice = '';
     accept(b);
     render(true);
+    if (otherLang(b)) refresh();
     if (logId) {
       toast(t('done_toast', { title }), { ms: UNDO_MS, action: { label: t('undo'), onClick: () => undoTask(logId) } });
     }
@@ -429,6 +439,7 @@
     if (!b) { linkGone(); return; }
     accept(b);
     render(true);
+    if (otherLang(b)) refresh();
     toast(t('undone'));
   }
 
@@ -456,6 +467,7 @@
     routineOpen.delete(kid);   // a tick: the first section not finished opens again
     accept(b);
     render(true);
+    if (otherLang(b)) refresh();
     const after = sectionOf(kid, section);
     if (toDone && before && after && Number(before.done) < Number(before.total) && Number(after.done) >= Number(after.total)) {
       toast(t('section_done', { title: after.title }));
