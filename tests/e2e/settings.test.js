@@ -1550,12 +1550,12 @@ const emailOf = (req) => {
       return d;
     };
     // Schema 24: no card.
-    // On 24 the board and guests cards (schema 20 and 11) read what this file's fakes don't have: 404s, as for any card it doesn't test.
+    // From 20 and 11 the board and guests cards read what this file's fakes don't have: 404s, as for any card it doesn't test.
     ({ page } = await open({ label: 'weekly-24', allowConsole: /status of 404/, db: weeklyDb(), rpc: Object.assign({}, v3Rpc, hearthRpc, { hub_schema_version: () => 24 }) }));
     check('Sunday sheets: no card on schema 24', !(await page.$('#setWeekly')));
     await page.context().close();
 
-    ({ page, db } = await open({ label: 'weekly', db: weeklyDb(), rpc: v25Rpc, allowConsole: /status of (503)/ }));
+    ({ page, db } = await open({ label: 'weekly', db: weeklyDb(), rpc: v25Rpc, allowConsole: /status of (404|503)/ }));
     check('Sunday sheets: the card on schema 25, off to start, Sunday at 4:00pm suggested',
       (await tc(page, '#setWeekly')) === 'Sunday sheets' && !(await page.isChecked('.set-weekly input[name="on"]'))
       && (await page.inputValue('.set-weekly input[name="at"]')) === '16:00');
@@ -1615,12 +1615,12 @@ const emailOf = (req) => {
     await page.context().close();
 
     // A member sees no card.
-    ({ page } = await open({ label: 'weekly-member', db: weeklyDb(), rpc: v25Rpc, email: 'sam@example.com' }));
+    ({ page } = await open({ label: 'weekly-member', allowConsole: /status of 404/, db: weeklyDb(), rpc: v25Rpc, email: 'sam@example.com' }));
     check('Sunday sheets: a member who isn\'t an admin sees no card', !(await page.$('#setWeekly')));
     await page.context().close();
 
     // Phone, at 320px: no sideways scroll.
-    ({ page } = await open({ label: 'weekly-phone', db: weeklyDb({ weekly_at: '16:00:00', weekly_to: [ID.alex], weekly_sheets: [{ who: 'family', lang: 'en' }] }), rpc: v25Rpc,
+    ({ page } = await open({ label: 'weekly-phone', allowConsole: /status of 404/, db: weeklyDb({ weekly_at: '16:00:00', weekly_to: [ID.alex], weekly_sheets: [{ who: 'family', lang: 'en' }] }), rpc: v25Rpc,
                              ctx: { viewport: { width: 320, height: 700 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true } }));
     check('Sunday sheets (320px): no sideways scroll, saved settings shown', await noSideScroll(page) && (await page.isChecked('.set-weekly input[name="on"]'))
       && (await page.isChecked('.set-weekly input[name="sheet"][value="family"]')));
