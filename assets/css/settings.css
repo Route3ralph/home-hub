@@ -165,3 +165,14 @@ dialog:has(> .set-gform), dialog:has(> .set-gcheck) { width: min(620px, calc(100
 }
 /* v1.4: Project guests (the parents): one row per guest. */
 .set-guests { list-style: none; margin: 0; padding: 0; }
+/* v2: Sunday sheets (schema 25): each sheet a tick and a language; who it goes to. */
+.set-weekly-set { margin: 0; padding: 0; border: 0; min-width: 0; }
+.set-weekly-set legend { padding: 0; margin: 0 0 4px; font-weight: 600; font-size: 14px; }
+.set-weekly-list { list-style: none; margin: 0; padding: 0; }
+.set-weekly-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; min-height: 44px; border-top: 1px solid var(--line); }
+.set-weekly-row:first-child { border-top: 0; }
+.set-check { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; min-width: 0; overflow-wrap: anywhere; }
+.set-check input { width: 20px; height: 20px; flex: none; }
+.set-weekly-lang { margin-left: auto; min-height: 36px; }
+.set-weekly-time { max-width: 160px; }
+.set-weekly-note { flex-basis: 100%; margin: -8px 0 6px 28px; color: var(--text-3); }

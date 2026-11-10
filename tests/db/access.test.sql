@@ -4,6 +4,9 @@
 -- and the table and column privileges of 0003's, 0004's and 0005's tables.
 \ir roles.sql
 \ir fixtures.sql
+-- The household's clock: Mon Nov 2, 2026, the week this file's tasks are written for. Without it the file ran on the
+-- real clock, and once Nov 9 had come Trash (weekly from Nov 2) had moved on, so ticking Nov 2 was "already completed".
+set hub.now = '2026-11-02 09:00 America/New_York';
 
 -- ---------------------------------------------------------------------
 -- The migration's starting data
@@ -43,7 +46,7 @@ select test.is((whoami() -> 'person' ->> 'id')::uuid, test.person('Alex'), 'whoa
 -- people under Calendars to read, and asks for hearth_tags and calendars.sort_by_guest, only on 10.
 -- Migration 0011 (project guests) changes it on purpose again: the client shows a guest their projects, and the parents
 -- Guest access, the Guests card and the Documents link, only on 11 (guests.test.sql).
-select test.is(hub_schema_version(), 24, 'hub_schema_version is 24');
+select test.is(hub_schema_version(), 25, 'hub_schema_version is 25');
 -- 0009 replaces private.school_rows with the same signature: still not a definer function, stable, search_path = '',
 -- and no API role may call it (as 0006 revoked it; 0009 revokes it again). Its private.school_rekey (run once by 0009,
 -- again only by the owner) runs as the owner too, and no API role may call it either.

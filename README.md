@@ -356,6 +356,17 @@ One screen for the whole house, made for a monitor on the wall (an old computer 
 
 **Setting it up (about 15 minutes).** On **Settings → Family board** (parents only), press **Make the board link**, then **Copy link**. On the screen's computer, open the link in Chrome and press **F11** for full screen. To have it come back by itself after a restart, start Chrome with the link in kiosk mode (`chrome --kiosk "<the link>"`) from the computer's start-up programs, and set the computer never to sleep. **New link** makes a new one (the old link stops at once: open the new one on the screen) and **Turn off** stops the board. The design is [`docs/v2-design.md`](docs/v2-design.md) §25.
 
+## The Sunday sheets: the week, printed (migration 0025)
+
+On Sunday afternoon the hub emails the coming week, Monday to Sunday, ready to print, one sheet to a page (print it landscape).
+
+- **The family's week.** Seven columns for the fridge, with each person's colour down the side of their items and a key at the foot. It shows what the Hearth wall shows: private items and health tasks read "Private item", and there are no notes or phone numbers.
+- **A person's week.** What their My day shows, day by day. The helper's has her rides and chores (with the place, who's along and what to bring) and the shopping list. A kid's has his events, each day's homework steps with boxes to tick, the homework due that week, and his routine as a grid to tick each day.
+- **Languages.** Each sheet is in the language you pick for it (English or Español), whatever the email is in.
+- **Who gets it.** The people you tick, once they've confirmed their email address (the morning email's confirmation does it).
+
+**Setting it up (about 5 minutes).** On **Settings → Sunday sheets** (parents only), tick **Send them on Sundays at** and pick the time, tick the sheets and each one's language, tick who it goes to, and **Save**. **Open this week to print** (or next week's) opens the sheets in a new window to print now, with what's ticked, saved or not. The design is [`docs/v2-design.md`](docs/v2-design.md) §31.
+
 ## Project guests: a designer's own login (v1.4, migration 0011)
 
 A **project guest** is someone outside the family, such as an interior designer, who manages one of your projects in the hub. They sign in with an emailed code, like the family, but see only the projects you give them: the schedule, the trades and the contractors on it (names, phones and emails; never account numbers). They never see the calendar, tasks, the family, homework, school, food, settings, emails or the rest of the Directory. They get no email from the hub besides their sign-in code, and their messages to contractors go from their own phone or email.

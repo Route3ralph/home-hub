@@ -227,6 +227,100 @@
   }
 
   // ============================================
+  // THE SUNDAY SHEETS (schema 25, the parents; docs/v2-design.md §31)
+  // The coming week, printed: on Sundays at weekly_at, hub-jobs emails the chosen sheets (the family's, and one for
+  // each person picked, each in a language) to the people on weekly_to. Saved on the household row like the rest;
+  // "Open to print" asks hub-jobs (weekly_preview) for the sheets as they'd go, with what's ticked here, saved or not.
+  // ============================================
+  const LANGS = [['en', 'English'], ['es', 'Español']];
+  function drawWeekly(box, ctx, getHousehold, onSaved) {
+    const hh = getHousehold();
+    const people = v2.people().filter((p) => p.active !== false);
+    const saved = Array.isArray(hh.weekly_sheets) ? hh.weekly_sheets : [];
+    const sheetOf = (who) => saved.find((x) => x && x.who === who);
+    const to = Array.isArray(hh.weekly_to) ? hh.weekly_to : [];
+    const on = !!hh.weekly_at;
+    const langSelect = (name, value) => `<select name="${esc(name)}" class="set-weekly-lang" aria-label="Language">${LANGS.map(([v, l]) =>
+      `<option value="${v}"${v === value ? ' selected' : ''}>${l}</option>`).join('')}</select>`;
+    const sheetRow = (who, label, lang) => {
+      const s = sheetOf(who);
+      return `<li class="set-weekly-row"><label class="set-check"><input type="checkbox" name="sheet" value="${esc(who)}"${s ? ' checked' : ''}> ${esc(label)}</label>
+        ${langSelect(`lang:${who}`, (s && s.lang) || lang)}</li>`;
+    };
+    const kinds = { parent: 'parent', adult: 'adult', kid: 'kid: events, homework and routine', helper: 'helper: rides, chores and shopping list' };
+    box.innerHTML = `<p class="set-help">On Sunday afternoon the hub emails the coming week, Monday to Sunday, ready to print: each sheet on its own page. The family's week is for the fridge and shows what the wall does (private items read "Private item", with no notes or phone numbers). A person's sheet shows what their My day does.</p>
+      <form class="form set-form set-weekly" novalidate>
+        <label class="set-check"><input type="checkbox" name="on"${on ? ' checked' : ''}> Send them on Sundays at</label>
+        <label class="field set-weekly-time"><span class="sr-only">Time</span><input type="time" name="at" value="${esc(hhmm(hh.weekly_at) || '16:00')}"></label>
+        <fieldset class="set-weekly-set"><legend>Sheets</legend><ul class="set-weekly-list">
+          ${sheetRow('family', 'Family week', 'en')}
+          ${people.map((p) => sheetRow(p.id, `${p.name} (${kinds[p.role] || p.role})`, p.language === 'es' ? 'es' : 'en')).join('')}
+        </ul></fieldset>
+        <fieldset class="set-weekly-set"><legend>Send to</legend><ul class="set-weekly-list">
+          ${people.filter((p) => p.email).map((p) => `<li class="set-weekly-row"><label class="set-check"><input type="checkbox" name="to" value="${esc(p.id)}"${to.includes(p.id) ? ' checked' : ''}> ${esc(p.name)}</label>
+            ${p.email_verified_at ? '' : '<small class="set-weekly-note">hasn\'t confirmed their email yet, so nothing goes until they do</small>'}</li>`).join('')
+            || '<li class="set-help">Nobody on the family list has an email address yet (Family page).</li>'}
+        </ul></fieldset>
+        <p class="form-error" role="alert" hidden></p>
+        <div class="form-actions">
+          <button type="submit" class="btn btn-primary set-btn">Save</button>
+          <button type="button" class="btn set-btn" data-weekly="this">Open this week to print</button>
+          <button type="button" class="btn set-btn" data-weekly="next">Open next week to print</button>
+        </div>
+      </form>`;
+    const form = box.querySelector('form');
+    const errBox = form.querySelector('.form-error');
+    const fail = (msg) => { errBox.textContent = msg; errBox.hidden = false; };
+    const chosen = () => [...form.querySelectorAll('input[name="sheet"]:checked')].map((c) => ({
+      who: c.value, lang: form.elements[`lang:${c.value}`].value === 'es' ? 'es' : 'en' }));
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      errBox.hidden = true;
+      const sheets = chosen();
+      const ids = [...form.querySelectorAll('input[name="to"]:checked')].map((c) => c.value);
+      const turnOn = form.elements.on.checked;
+      const at = form.elements.at.value;
+      if (turnOn && !at) { fail('Pick the time on Sunday they go out.'); return; }
+      if (turnOn && !sheets.length) { fail('Tick at least one sheet.'); return; }
+      if (turnOn && !ids.length) { fail('Tick who they go to.'); return; }
+      if (ids.length > 6) { fail('They can go to at most 6 people.'); return; }
+      const btn = form.querySelector('[type="submit"]');
+      btn.disabled = true;
+      try {
+        const row = await saveHousehold(getHousehold(), { weekly_at: turnOn ? at : null, weekly_sheets: sheets, weekly_to: ids });
+        if (ctx.stale()) return;
+        toast(turnOn ? `Sunday sheets on: ${sheets.length === 1 ? '1 sheet' : `${sheets.length} sheets`} on Sundays at ${fmt.time(at)}` : 'Sunday sheets off');
+        onSaved(row);
+      } catch (err) {
+        btn.disabled = false;
+        fail(friendly(err));
+      }
+    });
+    form.querySelectorAll('[data-weekly]').forEach((b) => b.addEventListener('click', async () => {
+      errBox.hidden = true;
+      const sheets = chosen();
+      if (!sheets.length) { fail('Tick at least one sheet to print.'); return; }
+      // The window opens on the click, so the browser doesn't block it; the sheets go in when they arrive.
+      const win = window.open('', '_blank');
+      if (win) win.document.write('<!doctype html><title>Making the sheets…</title><p style="font-family:sans-serif">Making the sheets…</p>');
+      b.disabled = true;
+      let res;
+      try { res = await core.sb.functions.invoke('hub-jobs', { body: { action: 'weekly_preview', week: b.dataset.weekly, sheets } }); } catch (err) { res = { error: err }; }
+      b.disabled = false;
+      if (res.error || !res.data || typeof res.data.html !== 'string') {
+        if (win) win.close();
+        fail(res.error ? await fnMessage(res.error, 'Couldn\'t make the sheets: the email function isn\'t updated yet.') : 'Couldn\'t make the sheets.');
+        return;
+      }
+      if (!win) { fail('Your browser blocked the new window. Allow pop-ups for the Home Hub, then try again.'); return; }
+      win.document.open();
+      win.document.write(res.data.html);
+      win.document.close();
+      win.focus();
+    }));
+  }
+
+  // ============================================
   // THE PAGE
   // ============================================
   async function renderSettings(main, ctx) {
@@ -268,6 +362,10 @@
           : '<p class="set-help">Each person\'s morning email is set on the Family page. Ask an admin to turn yours on or change it.</p>'}
         </div>
       </section>
+      ${admin && core.schemaVersion >= 25 ? `<section class="card set-card" aria-labelledby="setWeekly">
+        <div class="card-head"><h2 id="setWeekly">Sunday sheets</h2><span class="card-sub">The coming week, printed</span></div>
+        <div class="set-body" data-ref="weekly"></div>
+      </section>` : ''}
       <section class="card set-card" aria-labelledby="setCalendar">
         <div class="card-head"><h2 id="setCalendar">Google Calendar &amp; Hearth</h2></div>
         <div class="set-body" data-ref="calendar">${core.schemaVersion >= 3 ? '<p class="set-status">Checking…</p>'
@@ -591,7 +689,10 @@
       }
     }, { signal: ctx.signal });
 
-    function drawAll() { drawHousehold(); drawDaysOff(); drawStillOn(); }
+    function drawWeeklyCard() {
+      if (ref('weekly') && hh) drawWeekly(ref('weekly'), ctx, () => hh, (row) => { hh = row; drawWeeklyCard(); });
+    }
+    function drawAll() { drawHousehold(); drawDaysOff(); drawStillOn(); drawWeeklyCard(); }
     drawAll();
     // Google Calendar & Hearth loads alongside the admin's reads (schema 3 only).
     const google = core.schemaVersion >= 3 ? googleCard(ref('calendar'), ctx, admin) : null;
