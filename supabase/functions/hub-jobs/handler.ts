@@ -14,9 +14,16 @@
 //            Who can sign in (the members table) decides the links: the hub for them, My day
 //            for everyone else (render.ts). A confirmation email goes once, plus at most one
 //            reminder, per address (CONFIRM_MAX; digest_due offers no more either).
+//            From migration 0025, the same run sends the Sunday sheets (weekly.ts, docs/v2-design.md §31): on a Sunday
+//            from household.weekly_at, each person on weekly_to (weekly_due) gets one email with the coming week's
+//            sheets (weekly_sheet), claimed and finished as the morning email is (kind 'weekly', local_date: the
+//            Monday). Before 0025, weekly_due isn't there and the run carries on as before.
 //   preview  admins (their own sign-in): { date?: 'YYYY-MM-DD', person_id?: uuid } → the rendered
 //            emails, one per person, without sending or logging anything.
 //   status   admins: the last 10 runs and today's emails, as counts and fixed messages.
+//   weekly_preview  admins: { week?: 'this' | 'next', sheets?: [{who, lang}] } → the Sunday email (subject, html,
+//            text) for that week, with the saved sheets or the ones given, and who it would go to. Nothing is sent
+//            or logged. 'next' (the default) is the week Sunday's email covers. 503 {stop: 'no_schema'} before 0025.
 //   calendar pg_cron (supabase/cron.sql) every 5 minutes with x-hub-cron, or an admin's Sync now
 //            (their own sign-in; it also reads every calendar): copies hub items to Google and reads
 //            Google's events back (calendar.ts, docs/v1.1-google-calendar.md §3.4).
@@ -58,6 +65,9 @@ import { runCalendar, testCalendar } from './calendar.ts';
 import { runSchool } from './school.ts';
 import { homeworkAi } from './homework.ts';
 import { inbox } from './inbox.ts';
+import { renderWeekly, sheetChoices } from './weekly.ts';
+import type { Sheet } from './weekly.ts';
+import { noSchema } from './util.ts';
 
 // What the tests and index.ts import from here.
 export { CORS, sameSecret };
@@ -150,18 +160,18 @@ export async function handle(req: Request, deps: Deps): Promise<Response> {
   const action = body.action ?? 'digest';
 
   if (action === 'digest') return digest(req, deps);
-  if (action === 'preview' || action === 'status') {
+  if (action === 'preview' || action === 'status' || action === 'weekly_preview') {
     const authorization = req.headers.get('Authorization') || '';
     if (!/^Bearer\s+\S+/.test(authorization)) return json(401, { error: 'Sign in first.' });
     const userDb = deps.user(authorization);
     const { data: me, error } = await userDb.rpc('whoami');
     if (error || !me || me.role !== 'admin') return json(403, { error: 'Only family admins can do this.' });
-    return action === 'preview' ? preview(body, deps) : status(userDb, deps);
+    return action === 'preview' ? preview(body, deps) : action === 'weekly_preview' ? weeklyPreview(body, deps, me) : status(userDb, deps);
   }
   if (action === 'calendar' || action === 'calendar_test') return calendar(req, action, body, deps);
   if (action === 'school') return school(req, deps);
   if (action === 'homework_ai') return homeworkAi(req, body, deps);
-  return json(400, { error: 'Unknown action. Use digest, preview, status, calendar, calendar_test, school or homework_ai.' });
+  return json(400, { error: 'Unknown action. Use digest, preview, weekly_preview, status, calendar, calendar_test, school or homework_ai.' });
 }
 
 // ---------------------------------------------------------------------
@@ -296,6 +306,29 @@ async function digest(req: Request, deps: Deps): Promise<Response> {
         const fin = await db.rpc('finish_notification', { p_id: claim.data, p_status: outcome.status, p_detail: outcome.detail });
         if (fin.error) throw new Error(`finish_notification: ${message(fin.error)}`);
       }
+
+      // The Sunday sheets (from migration 0025): the same budget, claim and finish, after the morning emails.
+      // Before 0025 weekly_due isn't there, and the run is as it was.
+      if (stop === null) {
+        const wdue = await db.rpc('weekly_due', { p_limit: BATCH });
+        if (wdue.error && !noSchema(wdue.error)) throw new Error(`weekly_due: ${message(wdue.error)}`);
+        const wrows: Row[] = !wdue.error && Array.isArray(wdue.data) ? wdue.data : [];
+        tally.due += wrows.length;
+        for (const row of wrows) {
+          const budget = await db.rpc('email_budget_left');
+          if (budget.error) throw new Error(`email_budget_left: ${message(budget.error)}`);
+          if (!(Number(budget.data) > 0)) { stop = 'budget'; break; }
+
+          const claim = await db.rpc('claim_notification', { p_person: row.person_id, p_local_date: row.local_date, p_kind: 'weekly' });
+          if (claim.error) throw new Error(`claim_notification: ${message(claim.error)}`);
+          if (!claim.data) { tally.busy++; continue; }
+
+          const outcome = await deliver({ ...row, kind: 'weekly' }, db, deps, site!, { apiKey: apiKey!, from: from!, pace, sleep, canSignIn });
+          tally[outcome.status]++;
+          const fin = await db.rpc('finish_notification', { p_id: claim.data, p_status: outcome.status, p_detail: outcome.detail });
+          if (fin.error) throw new Error(`finish_notification: ${message(fin.error)}`);
+        }
+      }
     } catch (err) {
       stop = 'error';
       error = message(err);
@@ -377,6 +410,18 @@ async function deliver(row: Row, db: Db, deps: Deps, site: string, resend: Sende
       // The key changes with the address (its secret), so a corrected address gets its email the same
       // day; Resend refuses a key it has seen with a different payload (a different `to` and link).
       key = `${key}-${await fingerprint(String(c.token))}`;
+    } else if (row.kind === 'weekly') {
+      const { data: p, error } = await db.from('people')
+        .select('id, name, email, language, active, email_verified_at').eq('id', row.person_id).maybeSingle();
+      if (error) return { status: 'failed', detail: `people: ${message(error)}` };
+      if (!p || !p.active) return { status: 'skipped', detail: 'Not on the family list any more.' };
+      if (!p.email) return { status: 'skipped', detail: 'No email address.' };
+      if (!p.email_verified_at) return { status: 'skipped', detail: 'The address isn\'t confirmed.' };
+      const made = await makeSheets(db, null, row.local_date);
+      if ('error' in made) return { status: 'failed', detail: made.error };
+      if (!made.sheets.length) return { status: 'skipped', detail: 'No sheet to send.' };
+      to = p.email;
+      email = renderWeekly(made.sheets, p);
     } else {
       return { status: 'skipped', detail: `Unknown kind ${oneLine(row.kind).slice(0, 20)}.` };
     }
@@ -483,6 +528,58 @@ async function preview(body: Record<string, unknown>, deps: Deps): Promise<Respo
     });
   }
   return json(200, { date: (body.date as string | undefined) ?? today, emails });
+}
+
+// ---------------------------------------------------------------------
+// The Sunday sheets: the ones chosen (household.weekly_sheets, or a preview's own), each from weekly_sheet. A sheet
+// whose person has left the family list (null) is left out.
+// ---------------------------------------------------------------------
+async function makeSheets(db: Db, given: unknown, monday: string): Promise<{ sheets: Sheet[] } | { error: string; schema?: boolean }> {
+  let raw = given;
+  if (raw == null) {
+    const { data, error } = await db.from('household').select('weekly_sheets').eq('id', true).maybeSingle();
+    if (error) return { error: `household: ${message(error)}`, schema: noSchema(error) };
+    raw = data ? data.weekly_sheets : [];
+  }
+  const sheets: Sheet[] = [];
+  for (const c of sheetChoices(raw)) {
+    const { data, error } = await db.rpc('weekly_sheet', { p_who: c.who === 'family' ? null : c.who, p_monday: monday, p_lang: c.lang });
+    if (error) return { error: `weekly_sheet: ${message(error)}`, schema: noSchema(error) };
+    if (data && Array.isArray((data as Sheet).days)) sheets.push(data as Sheet);
+  }
+  return { sheets };
+}
+
+// weekly_preview: the Sunday email for this week or next, as Settings shows it to print. Nothing is sent or logged.
+async function weeklyPreview(body: Record<string, unknown>, deps: Deps, me: { person?: { language?: string } | null } | null): Promise<Response> {
+  if (body.week != null && body.week !== 'this' && body.week !== 'next') return json(400, { error: "week must be 'this' or 'next'." });
+  if (body.sheets != null && !Array.isArray(body.sheets)) return json(400, { error: 'sheets must be a list of {who, lang}.' });
+  if (!deps.env('SUPABASE_URL') || !serviceKey(deps.env)) return json(503, { error: 'The function has no Supabase service key.' });
+  const db = deps.service();
+  const { data: today, error: tErr } = await db.rpc('today_local');
+  if (tErr || !isDate(today)) return json(500, { error: `Could not read the household's date: ${message(tErr)}` });
+  // Monday of this week (ISO: Monday 1 … Sunday 7); 'next' is the Monday after. On a Sunday, 'next' is tomorrow:
+  // the week Sunday's email covers.
+  const dow = new Date(`${today}T00:00:00Z`).getUTCDay() || 7;
+  const thisMonday = addDays(today, 1 - dow);
+  const monday = body.week === 'this' ? thisMonday : addDays(thisMonday, 7);
+  const made = await makeSheets(db, body.sheets ?? null, monday);
+  if ('error' in made) {
+    return made.schema ? json(503, { stop: 'no_schema', error: 'The Sunday sheets need migration 0025.' }) : json(500, { error: made.error });
+  }
+  const { data: hh } = await db.from('household').select('weekly_at, weekly_to').eq('id', true).maybeSingle();
+  const ids: string[] = Array.isArray(hh?.weekly_to) ? hh.weekly_to : [];
+  const { data: people } = ids.length
+    ? await db.from('people').select('id, name, email, language, active, email_verified_at')
+    : { data: [] };
+  const to = ((people || []) as { id: string; name: string; email: string | null; active: boolean; email_verified_at: string | null }[])
+    .filter((p) => ids.includes(p.id))
+    .sort((a, b) => ids.indexOf(a.id) - ids.indexOf(b.id))
+    .map((p) => ({ person_id: p.id, name: oneLine(p.name), would_send: !!(p.active && p.email && p.email_verified_at),
+                   reason: !p.active ? 'inactive' : !p.email ? 'no_email' : !p.email_verified_at ? 'unconfirmed' : null }));
+  const e = renderWeekly(made.sheets, { language: me?.person?.language });
+  return json(200, { monday, sunday: addDays(monday, 6), sheets: made.sheets.length, at: hh?.weekly_at ?? null, to,
+                     subject: e.subject, html: e.html, text: e.text });
 }
 
 // ---------------------------------------------------------------------

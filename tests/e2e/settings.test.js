@@ -267,6 +267,13 @@ const emailOf = (req) => {
         if (mode === 'text') return route.fulfill({ status: 200, headers: { ...CORS, 'content-type': 'text/plain' }, body: 'ok' });
         if (body.action === 'status') return route.fulfill({ status: 200, headers: JSONH, body: JSON.stringify(db.statusBody || STATUS_OK) });
         if (body.action === 'preview') return route.fulfill({ status: 200, headers: JSONH, body: JSON.stringify(db.previewBody || previewOf({})) });
+        // 0025's weekly_preview: the sheets as they'd go (handler.ts's shape), or the 503 before the migration.
+        if (body.action === 'weekly_preview') {
+          if (mode === 'no_schema') return route.fulfill({ status: 503, headers: JSONH, body: JSON.stringify({ stop: 'no_schema', error: 'The Sunday sheets need migration 0025.' }) });
+          const names = (body.sheets || []).map((x) => (x.who === 'family' ? 'Family' : (db.people.find((p) => p.id === x.who) || {}).name)).join(', ');
+          const html = `<!doctype html><html><head><title>Week of Nov 2 – Nov 8: ${names}</title></head><body><h1 id="sheets">Sheets: ${names} (${body.week})</h1></body></html>`;
+          return route.fulfill({ status: 200, headers: JSONH, body: JSON.stringify({ monday: '2026-11-02', sunday: '2026-11-08', sheets: (body.sheets || []).length, at: '16:00:00', to: [], subject: 'Week of Nov 2 – Nov 8', html, text: '' }) });
+        }
         return route.fulfill({ status: 400, headers: JSONH, body: JSON.stringify({ error: 'Unknown action. Use digest, preview or status.' }) });
       });
     }
@@ -1523,6 +1530,102 @@ const emailOf = (req) => {
         await page.context().close();
       }
     }
+  }
+
+  // =====================================================================
+  // 6b. Sunday sheets (schema 25, docs/v2-design.md §31): an admin's card on the household row
+  // =====================================================================
+  {
+    const v25Rpc = Object.assign({}, v3Rpc, hearthRpc, { hub_schema_version: () => 25 });
+    const shotOf = async (page, sel, file) => {
+      const style = await page.addStyleTag({ content: '.topbar, .bottombar { position: static !important; }' });
+      const clip = await page.$eval(sel, (e) => { const r = e.getBoundingClientRect(); return { x: r.left + scrollX, y: r.top + scrollY, width: r.width, height: r.height }; });
+      await page.screenshot({ path: SHOTS + file, fullPage: true, clip });
+      await style.evaluate((e) => e.remove());
+    };
+    const weeklyDb = (extra = {}) => {
+      const d = withHearth(googleDb());
+      d.people.push(person(ID.taylor, 'Taylor Example', 'helper', '#ca8a04', 4, { language: 'es', email: 'taylor@example.com' }));
+      Object.assign(d.household[0], { weekly_at: null, weekly_to: [], weekly_sheets: [] }, extra);
+      return d;
+    };
+    // Schema 24: no card.
+    // On 24 the board and guests cards (schema 20 and 11) read what this file's fakes don't have: 404s, as for any card it doesn't test.
+    ({ page } = await open({ label: 'weekly-24', allowConsole: /status of 404/, db: weeklyDb(), rpc: Object.assign({}, v3Rpc, hearthRpc, { hub_schema_version: () => 24 }) }));
+    check('Sunday sheets: no card on schema 24', !(await page.$('#setWeekly')));
+    await page.context().close();
+
+    ({ page, db } = await open({ label: 'weekly', db: weeklyDb(), rpc: v25Rpc, allowConsole: /status of (503)/ }));
+    check('Sunday sheets: the card on schema 25, off to start, Sunday at 4:00pm suggested',
+      (await tc(page, '#setWeekly')) === 'Sunday sheets' && !(await page.isChecked('.set-weekly input[name="on"]'))
+      && (await page.inputValue('.set-weekly input[name="at"]')) === '16:00');
+    check('... a sheet for the family and for each person on the family list (not one who isn\'t active), none ticked',
+      same(await page.$$eval('.set-weekly input[name="sheet"]', (es) => es.map((e) => e.value + (e.checked ? '+' : ''))), ['family', ID.alex, ID.sam, ID.jordan, ID.taylor]),
+      JSON.stringify(await page.$$eval('.set-weekly input[name="sheet"]', (es) => es.map((e) => e.value))));
+    check('... each labelled with what it holds; the helper\'s in Spanish to start (her language)',
+      same(await texts(page, '.set-weekly-set:first-of-type .set-check'), ['Family week', 'Alex Example (parent)', 'Sam Example (adult)', 'Jordan Example (kid: events, homework and routine)', 'Taylor Example (helper: rides, chores and shopping list)'])
+      && (await page.inputValue(`.set-weekly select[name="lang:${ID.taylor}"]`)) === 'es' && (await page.inputValue('.set-weekly select[name="lang:family"]')) === 'en');
+    check('... Send to: everyone with an address, and who hasn\'t confirmed theirs',
+      same(await page.$$eval('.set-weekly input[name="to"]', (es) => es.map((e) => e.value)), [ID.alex, ID.sam, ID.taylor])
+      && (await texts(page, '.set-weekly-note')).length === 2 && (await tc(page, '.set-weekly-note')) === 'hasn\'t confirmed their email yet, so nothing goes until they do');
+    await page.check('.set-weekly input[name="on"]');
+    await page.click('.set-weekly [type="submit"]');
+    await page.waitForTimeout(300);
+    check('Sunday sheets: on with no sheet ticked → asks for one, saves nothing', (await errorOf(page, '.set-weekly .form-error')) === 'Tick at least one sheet.' && db.hhWrites.length === 0);
+    await page.check('.set-weekly input[name="sheet"][value="family"]');
+    await page.check(`.set-weekly input[name="sheet"][value="${ID.taylor}"]`);
+    await page.click('.set-weekly [type="submit"]');
+    await page.waitForTimeout(300);
+    check('... with no one to send to → asks who, saves nothing', (await errorOf(page, '.set-weekly .form-error')) === 'Tick who they go to.' && db.hhWrites.length === 0);
+    await page.check(`.set-weekly input[name="to"][value="${ID.alex}"]`);
+    await page.selectOption('.set-weekly select[name="lang:family"]', 'es');
+    await page.fill('.set-weekly input[name="at"]', '17:30');
+    await page.click('.set-weekly [type="submit"]');
+    await page.waitForTimeout(600);
+    check('Sunday sheets: Save writes the time, the sheets in order with their languages, and who they go to (only if nobody changed it since)',
+      db.hhWrites.length === 1 && same(db.hhWrites[0].body, { weekly_at: '17:30', weekly_sheets: [{ who: 'family', lang: 'es' }, { who: ID.taylor, lang: 'es' }], weekly_to: [ID.alex] })
+      && db.hhWrites[0].url.includes('updated_at=eq.'), JSON.stringify(db.hhWrites));
+    check('... and says so', (await lastToast(page)) === 'Sunday sheets on: 2 sheets on Sundays at 5:30pm', await lastToast(page));
+    check('... the card shows what was saved', (await page.isChecked('.set-weekly input[name="on"]')) && (await page.inputValue('.set-weekly input[name="at"]')) === '17:30'
+      && (await page.isChecked(`.set-weekly input[name="sheet"][value="${ID.taylor}"]`)) && !(await page.isChecked(`.set-weekly input[name="sheet"][value="${ID.jordan}"]`)));
+    // Open to print: hub-jobs makes the sheets with what's ticked (saved or not); they open in a new window.
+    await page.check(`.set-weekly input[name="sheet"][value="${ID.jordan}"]`);
+    const [popup] = await Promise.all([page.waitForEvent('popup'), page.click('.set-weekly [data-weekly="this"]')]);
+    await popup.waitForSelector('#sheets', { timeout: 3000 });
+    const call = db.fnCalls.filter((c) => c.body.action === 'weekly_preview').slice(-1)[0];
+    check('Sunday sheets: Open this week to print asks hub-jobs (signed in) for what\'s ticked, unsaved too',
+      call && call.auth && call.body.week === 'this' && same(call.body.sheets, [{ who: 'family', lang: 'es' }, { who: ID.jordan, lang: 'en' }, { who: ID.taylor, lang: 'es' }]), JSON.stringify(call));
+    check('... and the sheets open in a new window, to print', (await popup.textContent('#sheets')) === 'Sheets: Family, Jordan Example, Taylor Example (this)');
+    await popup.close();
+    const [popup2] = await Promise.all([page.waitForEvent('popup'), page.click('.set-weekly [data-weekly="next"]')]);
+    await popup2.waitForSelector('#sheets', { timeout: 3000 });
+    check('Sunday sheets: Open next week to print asks for next week', (await popup2.textContent('#sheets')).endsWith('(next)'));
+    await popup2.close();
+    db.fn.weekly_preview = 'no_schema';
+    const [popup3] = await Promise.all([page.waitForEvent('popup'), page.click('.set-weekly [data-weekly="this"]')]);
+    await page.waitForTimeout(600);
+    check('... before the migration reaches hub-jobs: the window closes and the card gives its reason',
+      popup3.isClosed() && (await errorOf(page, '.set-weekly .form-error')) === 'The Sunday sheets need migration 0025.');
+    // Off keeps the choices for next time.
+    await page.uncheck('.set-weekly input[name="on"]');
+    await page.click('.set-weekly [type="submit"]');
+    await page.waitForTimeout(600);
+    check('Sunday sheets: off saves weekly_at null and keeps what\'s ticked', db.hhWrites.length === 2 && db.hhWrites[1].body.weekly_at === null
+      && db.hhWrites[1].body.weekly_sheets.length === 3 && (await lastToast(page)) === 'Sunday sheets off', JSON.stringify(db.hhWrites[1]));
+    await page.context().close();
+
+    // A member sees no card.
+    ({ page } = await open({ label: 'weekly-member', db: weeklyDb(), rpc: v25Rpc, email: 'sam@example.com' }));
+    check('Sunday sheets: a member who isn\'t an admin sees no card', !(await page.$('#setWeekly')));
+    await page.context().close();
+
+    // Phone, at 320px: no sideways scroll.
+    ({ page } = await open({ label: 'weekly-phone', db: weeklyDb({ weekly_at: '16:00:00', weekly_to: [ID.alex], weekly_sheets: [{ who: 'family', lang: 'en' }] }), rpc: v25Rpc,
+                             ctx: { viewport: { width: 320, height: 700 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true } }));
+    check('Sunday sheets (320px): no sideways scroll, saved settings shown', await noSideScroll(page) && (await page.isChecked('.set-weekly input[name="on"]'))
+      && (await page.isChecked('.set-weekly input[name="sheet"][value="family"]')));
+    await shotOf(page, 'section[aria-labelledby="setWeekly"]', 'settings-weekly-phone.png');
+    await page.context().close();
   }
 
   // =====================================================================
