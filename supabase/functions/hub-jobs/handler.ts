@@ -17,7 +17,7 @@
 //            From migration 0025, the same run sends the Sunday sheets (weekly.ts, docs/v2-design.md §31): on a Sunday
 //            from household.weekly_at, each person on weekly_to (weekly_due) gets one email with the coming week's
 //            sheets (weekly_sheet), claimed and finished as the morning email is (kind 'weekly', local_date: the
-//            Monday). Before 0025, weekly_due isn't there and the run carries on as before.
+//            Monday). It asks for them only when hub_schema_version() is 25 or more; before that the run is as it was.
 //   preview  admins (their own sign-in): { date?: 'YYYY-MM-DD', person_id?: uuid } → the rendered
 //            emails, one per person, without sending or logging anything.
 //   status   admins: the last 10 runs and today's emails, as counts and fixed messages.
@@ -308,8 +308,10 @@ async function digest(req: Request, deps: Deps): Promise<Response> {
       }
 
       // The Sunday sheets (from migration 0025): the same budget, claim and finish, after the morning emails.
-      // Before 0025 weekly_due isn't there, and the run is as it was.
-      if (stop === null) {
+      // Asked for only on 25 and up, so a database before 0025 gets no failed request each run; a version that can't
+      // be read is taken as before 25, and the run is as it was.
+      const ver = stop === null ? await db.rpc('hub_schema_version') : null;
+      if (stop === null && ver && !ver.error && Number(ver.data) >= 25) {
         const wdue = await db.rpc('weekly_due', { p_limit: BATCH });
         if (wdue.error && !noSchema(wdue.error)) throw new Error(`weekly_due: ${message(wdue.error)}`);
         const wrows: Row[] = !wdue.error && Array.isArray(wdue.data) ? wdue.data : [];

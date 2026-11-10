@@ -4,6 +4,9 @@
 -- and the table and column privileges of 0003's, 0004's and 0005's tables.
 \ir roles.sql
 \ir fixtures.sql
+-- The household's clock: Mon Nov 2, 2026, the week this file's tasks are written for. Without it the file ran on the
+-- real clock, and once Nov 9 had come Trash (weekly from Nov 2) had moved on, so ticking Nov 2 was "already completed".
+set hub.now = '2026-11-02 09:00 America/New_York';
 
 -- ---------------------------------------------------------------------
 -- The migration's starting data

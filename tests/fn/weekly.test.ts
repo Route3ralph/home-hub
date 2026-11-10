@@ -150,7 +150,7 @@ function fakeDb(who: string, st: any) {
     },
   };
 }
-type Opts = { weeklyDue?: any[] | null; sheets?: any; people?: any[]; budget?: number; failRpc?: Record<string, any>; today?: string; me?: any; sheetFor?: (a: any) => any };
+type Opts = { schema?: number; weeklyDue?: any[] | null; sheets?: any; people?: any[]; budget?: number; failRpc?: Record<string, any>; today?: string; me?: any; sheetFor?: (a: any) => any };
 function setup(o: Opts = {}) {
   const st: any = {
     calls: [] as any[], ops: [] as any[], failRpc: o.failRpc ?? {},
@@ -167,6 +167,7 @@ function setup(o: Opts = {}) {
     },
     rpc: {
       roll_missed_tasks: () => 0,
+      hub_schema_version: () => o.schema ?? 25,
       digest_due: () => [],
       email_budget_left: () => o.budget ?? 60,
       claim_notification: (a: any) => `claim-${a.p_kind}-${a.p_person}`,
@@ -244,6 +245,15 @@ const asUser = (body: unknown, auth: string | null = 'Bearer admin-jwt') => new 
   res = await handle(cron(), s.deps);
   out = await res.json();
   check('before migration 0025 (no weekly_due): the run is as it was', res.status === 200 && out.ok === true && out.sent === 0 && s.sent.length === 0);
+  s = setup({ schema: 24 });
+  res = await handle(cron(), s.deps);
+  out = await res.json();
+  check('on schema 24: weekly_due isn\'t asked for at all (no failed request each run), and the run is as it was',
+    res.status === 200 && out.ok === true && s.sent.length === 0 && s.rpcs('weekly_due').length === 0 && s.rpcs('hub_schema_version').length === 1);
+  s = setup({ failRpc: { hub_schema_version: { message: 'Could not find the function public.hub_schema_version', code: 'PGRST202' } } });
+  res = await handle(cron(), s.deps);
+  out = await res.json();
+  check('a version that can\'t be read (a v1 database): no weekly_due, the run as it was', res.status === 200 && out.ok === true && s.rpcs('weekly_due').length === 0);
   s = setup({ failRpc: { weekly_due: { message: 'permission denied for function weekly_due', code: '42501' } } });
   res = await handle(cron(), s.deps);
   out = await res.json();
