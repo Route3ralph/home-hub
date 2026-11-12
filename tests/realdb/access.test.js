@@ -14,13 +14,14 @@ const { setup, HOMEWORK_TABLES, HOMEWORK_FNS } = require('./lib');
 // The only public functions anon may run: v1's get_shared_project, 0002's five My day functions,
 // 0004's three for the helper's list, 0005's seven for Jordan's homework and four for the tutor link, 0006's
 // one for his New from school, 0007's two for the tutor link's coach view, 0012's one for the coach's rewards, and 0014's
-// one for My day's English | Español, 0019's one for his routine's ticks, and 0020's four for the family board.
+// one for My day's English | Español, 0019's one for his routine's ticks, 0020's four for the family board, 0022's two
+// for his watch list, and 0026's one for his count's +1.
 const TOKEN_FNS = ['get_person_day', 'complete_by_token', 'undo_by_token', 'confirm_digest', 'stop_digest', 'set_language_by_token', 'get_shared_project',
   'get_list_by_token', 'add_to_list_by_token', 'buy_item_by_token',
   'homework_by_token', 'step_by_token', 'plan_by_token', 'focus_by_token', 'reward_by_token', 'assignment_by_token', 'homework_prefs_by_token',
   'tutor_view_by_token', 'tutor_assignment_by_token', 'tutor_plan_by_token', 'tutor_step_by_token', 'school_item_by_token',
   'coach_view_by_token', 'coach_note_by_token', 'coach_reward_by_token', 'routine_tick_by_token',
-  'board_by_token', 'board_tick_by_token', 'board_undo_by_token', 'board_routine_by_token', 'watch_by_token', 'watch_add_by_token'];
+  'board_by_token', 'board_tick_by_token', 'board_undo_by_token', 'board_routine_by_token', 'watch_by_token', 'watch_add_by_token', 'count_by_token'];
 // What any signed-in account may learn, by design: its own email, the household's date, clock and
 // time zone, and the schema version (sign-up is limited to the family list by the auth hook).
 const HARMLESS = ['current_email', 'clock', 'today_local', 'hub_schema_version'];

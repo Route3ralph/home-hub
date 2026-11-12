@@ -1063,6 +1063,8 @@ const HW_KID_UPDATE = ['active', 'points_on', 'focus_minutes', 'pts_focus', 'pts
 const HW_ASSIGNMENT_INSERT = ['kid_id', 'kind', 'title', 'subject', 'due_date', 'details', 'stretch', 'status'];
 // 0023 (docs/v1.3-homework.md §26): Missing and Graded, a column grant of update on the two, with the table's policies.
 const HW_ASSIGNMENT_MARK = ['school_mark', 'grade'];
+// 0026 (§27): a count, a column grant of update on the two, with the table's policies; db.counts is a database at 26.
+const HW_ASSIGNMENT_COUNT = ['count_goal', 'count_done'];
 const HW_REWARD_INSERT = ['kid_id', 'title', 'cost', 'active', 'instant', 'sort_order'];
 let homePlanCache = null;
 // assets/plan.js (window.HomePlan) in a vm, for its placement and dates.
@@ -1096,7 +1098,7 @@ const tutorLinkRow = (o) => Object.assign({
 const assignmentRow = (o) => Object.assign({
   id: uuid(), kid_id: null, kind: 'assignment', added_by: 'family', title: '', subject: null, due_date: null, details: null, stretch: null,
   status: 'open', done_at: null, dropped_at: null, given_at: null, given_by: null, plan_rev: 0, ai_state: null, ai_stop: null, ai_draft: null, ai_prev: null,
-  ai_at: null, school_mark: null, grade: null, created_at: now(), created_by: null, updated_at: now(), updated_by: null,
+  ai_at: null, school_mark: null, grade: null, count_goal: null, count_done: 0, created_at: now(), created_by: null, updated_at: now(), updated_by: null,
 }, o);
 const stepRow = (o) => Object.assign({
   id: uuid(), assignment_id: null, pos: 1, kind: 'step', title: '', done_looks_like: null, minutes: 20, day: null, moved_from: null,
@@ -2278,7 +2280,20 @@ function assignmentProblem(r) {
     return hwCheck('assignments', 'assignments_grade_check');
   }
   if (r.grade != null && r.school_mark !== 'graded') return hwCheck('assignments', 'assignments_grade_graded');
+  if (r.count_goal != null && !(Number.isInteger(r.count_goal) && r.count_goal >= 1 && r.count_goal <= 200)) return hwCheck('assignments', 'assignments_count_goal_check');
+  if (!(Number.isInteger(r.count_done || 0) && (r.count_done || 0) >= 0)) return hwCheck('assignments', 'assignments_count_done_check');
+  if ((r.count_done || 0) > (r.count_goal || 0)) return hwCheck('assignments', 'assignments_count_in_range');
   return null;
+}
+// 0026's trigger (private.assignment_count_status): reaching the count makes an open assignment done; going back below
+// it (a smaller count done) makes a done one open again; an update that sets the status is left as it says.
+function countStatus(n, old, body) {
+  if (body && 'status' in body && body.status !== old.status) return n;
+  const was = old.count_goal != null && (old.count_done || 0) >= old.count_goal;
+  const is = n.count_goal != null && (n.count_done || 0) >= n.count_goal;
+  if (is && !was && n.status === 'open') n.status = 'done';
+  else if (was && !is && n.status === 'done' && n.count_goal != null && (n.count_done || 0) < (old.count_done || 0)) n.status = 'open';
+  return n;
 }
 function rewardProblem(r) {
   if (!r.title || Array.from(r.title).length > 60) return hwCheck('rewards', 'rewards_title_check');
@@ -2352,11 +2367,11 @@ function homeworkTables(db, table, method, body, member, rows) {
         return { status: 201, rows: made };
       }
       if (method === 'PATCH') {
-        const marks = db.schoolMarks ? HW_ASSIGNMENT_MARK : [];   // a test on schema 23 sets db.schoolMarks
+        const marks = (db.schoolMarks || db.counts ? HW_ASSIGNMENT_MARK : []).concat(db.counts ? HW_ASSIGNMENT_COUNT : []);   // schema 23 sets db.schoolMarks, 26 db.counts
         if (!only(HW_ASSIGNMENT_INSERT.slice(1).concat(marks))) return denied;
         if (!coach) return { status: 200, rows: [] };
         const next = rows.map((r) => {
-          const n = Object.assign({}, r, tidyAssignment(body, r), { updated_at: foodStamp(db), updated_by: email });
+          const n = countStatus(Object.assign({}, r, tidyAssignment(body, r), { updated_at: foodStamp(db), updated_by: email }), r, body);
           if (n.status === 'done' && !n.done_at) n.done_at = n.updated_at;
           if (n.status === 'dropped' && !n.dropped_at) n.dropped_at = n.updated_at;
           const bad = assignmentProblem(n);
@@ -3055,7 +3070,7 @@ function tkViewKid6(db, kid) {
       can_ask: balance - held >= r.cost && db.reward_asks.filter((q) => q.kid_id === kid && q.status === 'waiting').length < 3
         && !db.reward_asks.some((q) => q.kid_id === kid && q.reward_id === r.id && q.status === 'waiting'),
       can_cash: !!r.instant && balance - held >= r.cost && cashed < k.instant_day })) : null;
-  return tkWithSchool(db, kid, {
+  return tkWithCounts(db, kid, tkWithSchool(db, kid, {
     language: lang, as_of: tkAsOf(db), today, server_now: tkServerNow(db),
     me: { first_name: String(me.name).split(' ')[0], tutor: tkTutorWord(db, kid), cue: k.cue, if_stuck: k.if_stuck, length: k.focus_minutes,
       lengths: [10, 15, 20, 25], points_on: k.points_on },
@@ -3086,11 +3101,20 @@ function tkViewKid6(db, kid) {
     recent: k.points_on ? ledger.slice().sort((x, y) => tkMs(y.at) - tkMs(x.at)).slice(0, 10).map((l) => ({ day: l.day, kind: l.kind, delta: l.delta, note: l.note })) : null,
     pace: db.hwPace || null,
     week: { focused: focusedIn(mon, tkAdd(mon, 6)), last_week: focusedIn(tkAdd(mon, -7), tkAdd(mon, -1)) },
-  });
+  }));
 }
 // 0006's wrappers of his view and Pat's (private.homework_view_kid, homework_view_tutor; docs/v1.3-homework.md §12.4):
 // the school's marks ({gone, moved_to}) on each assignment made from school, and his from_school once he has a checked
 // Assignments link (scNew). Without withSchool, 0005's views as they were.
+// 0026's wrapper of his view: each assignment with a count says it ({goal, done}).
+function tkWithCounts(db, kid, v) {
+  if (!db.counts || !v || !Array.isArray(v.assignments)) return v;
+  v.assignments = v.assignments.map((x) => {
+    const a = x && db.assignments.find((r) => r.id === x.id);
+    return a && a.count_goal != null ? Object.assign({}, x, { count: { goal: a.count_goal, done: a.count_done || 0 } }) : x;
+  });
+  return v;
+}
 function tkWithSchool(db, kid, v) {
   if (!db.school_feeds || !v) return v;
   const m = scMarks(db, kid);
@@ -3902,6 +3926,24 @@ const homeworkTokenRpc = {
     }
     if (changed) tkCount(db, me.id, 'writes', 150);
     return tkViewKid(db, me.id);
+  }),
+  // 0026 (§27): his +1 or −1 on a count, from the count his screen showed (else nothing changes); reaching it is done.
+  count_by_token: tkCall('count_by_token', ['p_token', 'p_assignment', 'p_from', 'p_delta'], [], (db, b) => {
+    const me = tkKidByToken(db, b.p_token);
+    if (!me) return null;
+    if (![1, -1].includes(b.p_delta) || b.p_from == null || !b.p_assignment) throw new Raise('22023', 'Choose +1 or −1.');
+    const a = db.assignments.find((x) => x.id === b.p_assignment);
+    if (!a || a.kid_id !== me.id) throw new Raise('42501', "That assignment isn't on your list.");
+    if (a.count_goal == null || a.status === 'dropped') throw new Raise('22023', 'That one has no count.');
+    const to = b.p_from + b.p_delta;
+    if ((a.count_done || 0) === b.p_from && to >= 0 && to <= a.count_goal && (a.status === 'open' || b.p_delta < 0)) {
+      tkCount(db, me.id, 'writes', 150);
+      const old = Object.assign({}, a);
+      const n = countStatus(Object.assign({}, a, { count_done: to, updated_by: tkKidWho(db, me), updated_at: tkStamp(db.hwNow) }), old, null);
+      n.done_at = n.status === 'done' ? (old.done_at || n.updated_at) : null;
+      Object.assign(a, n);
+    }
+    return Object.assign({ assignment_id: a.id }, tkViewKid(db, me.id));
   }),
   assignment_by_token: tkCall('assignment_by_token', ['p_token', 'p_action', 'p_assignment'], ['p_title', 'p_subject', 'p_due_date', 'p_minutes'], (db, b) => {
     const me = tkKidByToken(db, b.p_token);

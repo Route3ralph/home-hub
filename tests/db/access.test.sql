@@ -46,7 +46,7 @@ select test.is((whoami() -> 'person' ->> 'id')::uuid, test.person('Alex'), 'whoa
 -- people under Calendars to read, and asks for hearth_tags and calendars.sort_by_guest, only on 10.
 -- Migration 0011 (project guests) changes it on purpose again: the client shows a guest their projects, and the parents
 -- Guest access, the Guests card and the Documents link, only on 11 (guests.test.sql).
-select test.is(hub_schema_version(), 25, 'hub_schema_version is 25');
+select test.is(hub_schema_version(), 26, 'hub_schema_version is 26');
 -- 0009 replaces private.school_rows with the same signature: still not a definer function, stable, search_path = '',
 -- and no API role may call it (as 0006 revoked it; 0009 revokes it again). Its private.school_rekey (run once by 0009,
 -- again only by the owner) runs as the owner too, and no API role may call it either.
@@ -108,13 +108,13 @@ select test.is((select string_agg(p.proname, ', ' order by p.proname) from pg_pr
                 where p.pronamespace = 'public'::regnamespace and has_function_privilege('anon', p.oid, 'execute')),
                'add_to_list_by_token, assignment_by_token, board_by_token, board_routine_by_token, board_tick_by_token, board_undo_by_token, '
                'buy_item_by_token, coach_note_by_token, coach_reward_by_token, coach_view_by_token, complete_by_token, '
-               'confirm_digest, focus_by_token, '
+               'confirm_digest, count_by_token, focus_by_token, '
                'get_list_by_token, get_person_day, get_shared_project, homework_by_token, homework_prefs_by_token, plan_by_token, '
                'reward_by_token, routine_tick_by_token, school_item_by_token, set_language_by_token, step_by_token, stop_digest, tutor_assignment_by_token, tutor_plan_by_token, tutor_step_by_token, '
                'tutor_view_by_token, undo_by_token, watch_add_by_token, watch_by_token',
-               'anon can execute only get_shared_project and the thirty-one token functions (0004 adds the three for the list, 0005 '
+               'anon can execute only get_shared_project and the thirty-two token functions (0004 adds the three for the list, 0005 '
                'Jordan''s seven and the tutor link''s four, 0006 his New from school, 0007 the coach view''s two, 0012 the coach''s rewards, '
-               '0014 My day''s language switch, 0019 his routine''s ticks, 0020 the family board''s four, 0022 his watch list''s two)');
+               '0014 My day''s language switch, 0019 his routine''s ticks, 0020 the family board''s four, 0022 his watch list''s two, 0026 his count''s +1)');
 select test.is(has_schema_privilege('anon', 'private', 'usage'), false, 'anon cannot use the private schema');
 select test.is((select string_agg(n.nspname || '.' || p.proname, ', ') from pg_proc p join pg_namespace n on n.oid = p.pronamespace
                 where n.nspname in ('public', 'private') and not coalesce(p.proconfig, '{}') @> '{"search_path=\"\""}'),
@@ -124,7 +124,7 @@ select test.is((select string_agg(p.proname, ', ' order by p.proname) from pg_pr
                'add_project_guest, add_to_list, add_to_list_by_token, assignment_by_token, board_by_token, board_link, board_routine_by_token, board_tick_by_token, '
                'board_undo_by_token, buy_item, buy_item_by_token, check_school_feed, coach_note_by_token, '
                'coach_note_done, coach_reward_by_token, coach_view_by_token, complete_by_token, complete_task, '
-               'confirm_digest, decide_reward, erase_homework, focus_by_token, get_list_by_token, get_person_day, get_shared_project, '
+               'confirm_digest, count_by_token, decide_reward, erase_homework, focus_by_token, get_list_by_token, get_person_day, get_shared_project, '
                'give_points, guest_contacts, guest_save_contact, guest_whoami, homework_ai_draft, homework_ai_finish, homework_ai_preview, homework_ai_start, homework_by_token, homework_prefs_by_token, '
                'homework_step, hook_family_only_signup, mark_signed_in, new_tutor_token, pause_school_feed, plan_by_token, remove_guest, remove_person, '
                'remove_project_guest, reward_by_token, '
@@ -138,7 +138,7 @@ select test.is((select string_agg(p.proname, ', ' order by p.proname) from pg_pr
                'three school functions; 0007: the coach view''s two token functions and the parents'' switch and Done; 0010: the parents'' '
                'Hearth matches; 0011: the guests'' and the parents'' guest functions; 0012: the coach''s rewards and the parents'' switch; '
                '0014: My day''s language switch; 0019: the routine''s three; 0020: the family board''s four and the parents'' link; '
-               '0021: the parents'' coach box, and the wrappers of give_points and save_routine; 0022: a kid''s watch list on My day)');
+               '0021: the parents'' coach box, and the wrappers of give_points and save_routine; 0022: a kid''s watch list on My day; 0026: his count''s +1)');
 select test.is((select string_agg(p.proname, ', ' order by p.proname) from pg_proc p
                 where p.pronamespace = 'private'::regnamespace and has_function_privilege('authenticated', p.oid, 'execute')
                   and p.proname in ('complete_task', 'undo_task', 'roll_task', 'person_by_token', 'my_day_item', 'digest_item', 'people_confirm_sync',
@@ -294,11 +294,11 @@ select test.is((select string_agg(c.relname || '.' || a.attname, ', ' order by c
                   and c.relname in ('homework_kids', 'homework_times', 'tutor_links', 'assignments', 'homework_steps', 'focus_sessions',
                                     'rewards', 'reward_asks', 'points_ledger', 'ai_runs')
                   and has_column_privilege('authenticated', c.oid, a.attname, 'update')),
-               'assignments.details, assignments.due_date, assignments.grade, assignments.kind, assignments.school_mark, assignments.status, '
+               'assignments.count_done, assignments.count_goal, assignments.details, assignments.due_date, assignments.grade, assignments.kind, assignments.school_mark, assignments.status, '
                'assignments.stretch, assignments.subject, assignments.title, homework_kids.active, homework_kids.focus_minutes, homework_kids.instant_day, homework_kids.points_on, '
                'homework_kids.pts_day_cap, homework_kids.pts_focus, homework_kids.pts_milestone, homework_kids.pts_milestone_week, '
                'homework_kids.pts_on_time, rewards.active, rewards.cost, rewards.instant, rewards.sort_order, rewards.title',
-               '0005''s tables: the columns signed-in users may update (never cue, if_stuck, given_*, plan_rev, done_at or added_by; 0023 adds school_mark and grade)');
+               '0005''s tables: the columns signed-in users may update (never cue, if_stuck, given_*, plan_rev, done_at or added_by; 0023 adds school_mark and grade, 0026 count_goal and count_done)');
 select test.is((select string_agg(t, ', ' order by t)
                 from unnest(array['homework_kids', 'homework_times', 'tutor_links', 'assignments', 'homework_steps', 'focus_sessions',
                                   'rewards', 'reward_asks', 'points_ledger', 'ai_runs']) t

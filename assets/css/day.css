@@ -432,3 +432,8 @@
 .watch-item-title { font-weight: 650; font-size: 17px; overflow-wrap: anywhere; }
 .watch-item-sub { color: var(--text-3); }
 .day .watch-add input[type="text"] { min-width: 0; width: auto; min-height: 48px; font-size: 16px; }   /* 16px: phones don't zoom */
+
+/* 0026 (docs/v1.3-homework.md §27): an assignment's count, "5 of 7 done", with +1 (and −1 for a slip). Big enough to tap. */
+.hw-count { flex: 1 1 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 8px 0 0; }
+.hw-count-num { font-weight: 700; margin-right: 4px; }
+.hw-count .btn { min-height: 44px; min-width: 56px; font-size: 16px; font-weight: 700; }

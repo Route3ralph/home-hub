@@ -186,7 +186,10 @@
   const A_COLS = 'id,kid_id,kind,added_by,title,subject,due_date,details,stretch,status,done_at,given_at,given_by,plan_rev,created_at,created_by,updated_at,updated_by,'
     + 'ai_state,ai_stop,ai_draft,ai_prev,ai_at';
   // From 0023 (docs/v1.3-homework.md §26): what the school says about it, Missing or Graded (with an optional grade).
-  const aCols = () => (core.schemaVersion >= 23 ? `${A_COLS},school_mark,grade` : A_COLS);
+  // From 0026 (§27): a count ("7 topics"), with how many are done.
+  const aCols = () => (core.schemaVersion >= 26 ? `${A_COLS},school_mark,grade,count_goal,count_done`
+    : core.schemaVersion >= 23 ? `${A_COLS},school_mark,grade` : A_COLS);
+  const countWord = (a) => (a.count_goal ? `${a.count_done || 0} of ${a.count_goal}` : '');
   const markWord = (a) => (a.school_mark === 'missing' ? 'Missing' : a.school_mark === 'graded' ? (a.grade ? `Graded: ${a.grade}` : 'Graded') : '');
   // The AI's runs (PR B), the parents' only: this month's and any still open; and the last Test, whenever it was.
   const RUN_COLS = 'id,kind,status,stop,model,asked_by,assignment_id,link_id,started_at,lease_until,finished_at,cents';
@@ -737,7 +740,8 @@
       const ed = editorAssignment(st, a.id);
       bars = P.bars(ed.minutes_left, ed.time_left, { lang: 'en', horizon: ed.horizon, no_time: ed.no_time });
     }
-    const mark = markWord(a) ? ` <span class="hw-mark hw-mark-${esc(a.school_mark)}">${esc(markWord(a))}</span>` : '';
+    const mark = (markWord(a) ? ` <span class="hw-mark hw-mark-${esc(a.school_mark)}">${esc(markWord(a))}</span>` : '')
+      + (countWord(a) ? ` <span class="hw-mark hw-count">${esc(countWord(a))}</span>` : '');
     return `<li><a class="hw-arow" href="#/homework/${esc(a.id)}"><span class="hw-arow-title">${esc(a.title)}${mark}</span>`
       + `<span class="hw-arow-sub">${esc(sub.filter(Boolean).join(' · '))}</span><span class="hw-arow-state">${esc(state)}</span></a>${bars}</li>`;
   }
@@ -1601,7 +1605,7 @@
     const status = admin ? `<div class="hw-a-acts">${a.status === 'open' ? btn('mark-done', 'Mark done') : btn('reopen', 'Open again')}`
       + `${a.status === 'dropped' ? '' : btn('drop', 'Drop')}${a.kind === 'lesson' ? btn('copy-week', 'Copy to next week') : ''}`
       + `${core.schemaVersion >= 23 ? `${a.school_mark === 'missing' ? '' : btn('mark-missing', 'Missing')}${btn('mark-graded', a.school_mark === 'graded' ? 'Change grade…' : 'Graded…')}${a.school_mark ? btn('clear-mark', 'Clear mark') : ''}` : ''}`
-      + `${btn('delete-assignment', 'Delete…', '', 'btn-danger')}</div>` : '';
+      + `${btn('delete-assignment', 'Delete…', '', 'btn-danger')}</div>${countHTML(a)}` : (countWord(a) ? `<p class="hw-count-line">${esc(`Done so far: ${countWord(a)}`)}</p>` : '');
     const ro = admin ? '' : `${a.details ? `<div class="hw-card hw-a-text">${esc(a.details)}</div>` : ''}${a.stretch ? `<p class="hw-a-stretch">${esc(`Optional: ${a.stretch}`)}</p>` : ''}`;
     let root = main.querySelector('.hw-a[data-id]');
     if (!root || root.dataset.id !== a.id) {
@@ -2256,6 +2260,44 @@
     }, () => toast(mark === 'missing' ? `Marked missing: ${a.title}` : mark === 'graded' ? `Graded${grade ? ` (${grade})` : ''}: ${a.title}` : `Mark cleared: ${a.title}`));
   }
 
+  // A count (0026, §27): how many to do ("7 topics"), set by a parent or the coach; he taps +1 on his My day as he finishes
+  // each, and so can they here. Reaching it makes the assignment done (the database's trigger); going back below opens it.
+  function countHTML(a) {
+    if (core.schemaVersion < 26 || a.status === 'dropped') return '';
+    if (!a.count_goal) return `<div class="hw-count-acts">${btn('set-count', 'Count…')}</div>`;
+    const done = a.count_done || 0;
+    return `<div class="hw-count-acts"><span class="hw-count-big" aria-live="polite">${esc(`${done} of ${a.count_goal} done`)}</span>`
+      + `${btn('count-minus', '−1', done > 0 ? '' : ' disabled')}${btn('count-plus', '+1', done < a.count_goal ? '' : ' disabled')}`
+      + `${btn('set-count', 'Change count…')}${btn('clear-count', 'Take count off')}</div>`;
+  }
+  function setCount(st, clear) {
+    const a = assignmentOf(st, st.params.id);
+    if (!a) return;
+    let goal = null;
+    if (!clear) {
+      const typed = window.prompt('How many to do? (for example 7 topics or 20 questions; 1 to 200). He taps +1 on his My day for each one.', a.count_goal || '');
+      if (typed === null) return;
+      goal = Number(String(typed).trim());
+      if (!Number.isInteger(goal) || goal < 1 || goal > 200) { toast('Type a whole number from 1 to 200.', { error: true }); return; }
+    } else if (!window.confirm(`Take the count off ${a.title}? What he has counted goes with it.`)) return;
+    const patch = { count_goal: goal, count_done: goal ? Math.min(a.count_done || 0, goal) : 0 };
+    write(st, async () => {
+      const rows = await q(sb().from('assignments').update(patch).eq('id', a.id).select('id'));
+      if (!rows || !rows.length) throw new Error('That wasn\'t saved: only a parent can change it, or it was deleted.');
+    }, () => toast(goal ? `Count set: ${patch.count_done} of ${goal}` : `Count taken off: ${a.title}`));
+  }
+  function moveCount(st, delta) {
+    const a = assignmentOf(st, st.params.id);
+    if (!a || !a.count_goal) return;
+    const to = (a.count_done || 0) + delta;
+    if (to < 0 || to > a.count_goal) return;
+    write(st, async () => {
+      // Only from the count this page showed: a tap behind his own +1 on My day changes nothing.
+      const rows = await q(sb().from('assignments').update({ count_done: to }).eq('id', a.id).eq('count_done', a.count_done || 0).select('id'));
+      if (!rows || !rows.length) throw new Error('That wasn\'t saved: the count changed meanwhile (reload to see it), or only a parent can change it.');
+    }, () => toast(to === a.count_goal && a.status === 'open' ? `${to} of ${a.count_goal}: done` : `${to} of ${a.count_goal}`));
+  }
+
   function deleteAssignment(st) {
     const a = assignmentOf(st, st.params.id);
     if (!a || !window.confirm(`Delete ${a.title}? Its plan, questions and notes go too. His blocks and points stay.`)) return;
@@ -2387,6 +2429,10 @@
       case 'mark-missing': setMark(st, 'missing'); break;
       case 'mark-graded': setMark(st, 'graded'); break;
       case 'clear-mark': setMark(st, null); break;
+      case 'set-count': setCount(st); break;
+      case 'clear-count': setCount(st, 'clear'); break;
+      case 'count-plus': moveCount(st, 1); break;
+      case 'count-minus': moveCount(st, -1); break;
       case 'delete-assignment': deleteAssignment(st); break;
       case 'copy-week': copyWeek(st); break;
       default:

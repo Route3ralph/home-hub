@@ -1103,6 +1103,94 @@ const emailOf = (req) => {
   }
 
   // =====================================================================
+  // 5d. A count (0026, docs/v1.3-homework.md §27): on an assignment's page a parent or the coach sets how many ("7"), moves
+  //     it −1 / +1 (only from the count the page showed), changes it or takes it off; reaching it is done (the trigger);
+  //     the list says "2 of 7". Only on 26.
+  // =====================================================================
+  {
+    const { withCoachAdult, coachAdultRpc } = require('./mock');
+    const base = { routine_status: () => ({ points: 0, sections: [], today: null }) };
+    const RPC25c = Object.assign({}, RPC, base, { hub_schema_version: () => 25 }, schoolRpc, coachAdultRpc);
+    const RPC26 = Object.assign({}, RPC, base, { hub_schema_version: () => 26 }, schoolRpc, coachAdultRpc);
+    const countBtns = (page) => page.$$eval('.hw-count-acts button', (bs) => bs.map((b) => `${b.dataset.act}${b.disabled ? ' (off)' : ''}`));
+    const sci = (db) => db.assignments.find((a) => a.id === SCI);
+    // Schema 25: no Count…, no columns asked for.
+    ({ page, db, log } = await open({ label: 'count-25', db: withCoachAdult(withCoach(withSchool(fullDb()))), rpc: RPC25c, path: `/#/homework/${SCI}` }));
+    check('count, schema 25: no Count… on an assignment', (await countBtns(page)).length === 0, JSON.stringify(await countBtns(page)));
+    check('... and the page doesn\'t ask for count_goal', !log.some((l) => /count_goal/.test(l)), JSON.stringify(log.filter((l) => /assignments/.test(l)).slice(0, 2)));
+    await page.context().close();
+    // Schema 26, a parent.
+    const kdb = withCoachAdult(withCoach(withSchool(fullDb())));
+    kdb.schoolMarks = true;
+    kdb.counts = true;
+    ({ page, db } = await open({ label: 'count-26', db: kdb, rpc: RPC26, path: `/#/homework/${SCI}` }));
+    check('count, schema 26: Count… while there is none', same(await countBtns(page), ['set-count']), JSON.stringify(await countBtns(page)));
+    db.promptText = 'seven';
+    await page.click('[data-act="set-count"]');
+    await settle(page);
+    check('Count… with a word: "Type a whole number from 1 to 200.", nothing sent', /Type a whole number from 1 to 200/.test(await lastToast(page))
+      && !writes(db, 'assignments', 'PATCH').length, await lastToast(page));
+    db.promptText = ' 7 ';
+    await page.click('[data-act="set-count"]');
+    await settle(page);
+    check('Count… 7: asks how many, one update of the two columns, "Count set: 0 of 7"', /How many to do\?/.test((db.dialogs || []).slice(-1)[0] || '')
+      && same(writes(db, 'assignments', 'PATCH').map((w) => w.body), [{ count_goal: 7, count_done: 0 }]) && (await lastToast(page)) === 'Count set: 0 of 7',
+      `${await lastToast(page)} ${JSON.stringify(writes(db, 'assignments'))}`);
+    check('... "0 of 7 done", −1 off, +1, Change count…, Take count off', (await tc(page, '.hw-count-big')) === '0 of 7 done'
+      && same(await countBtns(page), ['count-minus (off)', 'count-plus', 'set-count', 'clear-count']), JSON.stringify(await countBtns(page)));
+    await page.click('[data-act="count-plus"]');
+    await settle(page);
+    await page.click('[data-act="count-plus"]');
+    await settle(page);
+    check('+1 twice: "2 of 7 done", each from the count shown', (await tc(page, '.hw-count-big')) === '2 of 7 done' && sci(db).count_done === 2
+      && same(writes(db, 'assignments', 'PATCH').slice(-2).map((w) => w.body), [{ count_done: 1 }, { count_done: 2 }])
+      && /count_done=eq\.1/.test(writes(db, 'assignments', 'PATCH').slice(-1)[0].query || writes(db, 'assignments', 'PATCH').slice(-1)[0].url || ''),
+      JSON.stringify(writes(db, 'assignments', 'PATCH').slice(-1)));
+    // His +1 on My day meanwhile: the page's next +1 is from an old count, and changes nothing.
+    sci(db).count_done = 3;
+    await page.click('[data-act="count-plus"]');
+    await settle(page);
+    check('+1 behind his own +1: "the count changed meanwhile", nothing changed', /the count changed meanwhile/.test(await lastToast(page)) && sci(db).count_done === 3, await lastToast(page));
+    await go(page, '#/homework');
+    check('the list: the row says "3 of 7"', (await texts(page, '.hw-arow .hw-count')).includes('3 of 7'), JSON.stringify(await texts(page, '.hw-mark')));
+    await go(page, `#/homework/${SCI}`);
+    db.promptText = '4';
+    await page.click('[data-act="set-count"]');
+    await settle(page);
+    check('Change count… to 4: "Count set: 3 of 4"', (await lastToast(page)) === 'Count set: 3 of 4' && same(writes(db, 'assignments', 'PATCH').slice(-1)[0].body, { count_goal: 4, count_done: 3 }));
+    await page.click('[data-act="count-plus"]');
+    await settle(page);
+    check('+1 to 4 of 4: "4 of 4: done", the assignment done, +1 off', (await lastToast(page)) === '4 of 4: done' && sci(db).status === 'done'
+      && (await tc(page, '.hw-count-big')) === '4 of 4 done' && (await countBtns(page)).includes('count-plus (off)'), `${await lastToast(page)} ${sci(db).status}`);
+    await page.click('[data-act="count-minus"]');
+    await settle(page);
+    check('−1: "3 of 4", open again', (await lastToast(page)) === '3 of 4' && sci(db).status === 'open', `${await lastToast(page)} ${sci(db).status}`);
+    db.confirm = false;
+    await page.click('[data-act="clear-count"]');
+    await settle(page);
+    db.confirm = true;
+    check('Take count off, cancelled: nothing sent', sci(db).count_goal === 4);
+    await page.click('[data-act="clear-count"]');
+    await settle(page);
+    check('Take count off: both columns back (null, 0), "Count taken off: …", Count… again', same(writes(db, 'assignments', 'PATCH').slice(-1)[0].body, { count_goal: null, count_done: 0 })
+      && (await lastToast(page)) === 'Count taken off: Science project: river poster' && same(await countBtns(page), ['set-count']), await lastToast(page));
+    check('a count: no sideways scroll at this size', await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth));
+    await page.context().close();
+    // Sam (not the coach): no buttons; the coach: the buttons.
+    const sdb = withCoachAdult(withCoach(withSchool(fullDb())));
+    sdb.counts = true;
+    ({ page, db } = await open({ label: 'count-sam', db: sdb, rpc: RPC26, email: 'sam@example.com', path: `/#/homework/${SCI}` }));
+    check('count, Sam (not the coach): no Count…', (await countBtns(page)).length === 0);
+    await page.context().close();
+    const cdb = withCoachAdult(withCoach(withSchool(fullDb())));
+    cdb.counts = true;
+    cdb.people.find((p) => p.id === ID.sam).coach = true;
+    ({ page, db } = await open({ label: 'count-coach', db: cdb, rpc: RPC26, email: 'sam@example.com', path: `/#/homework/${SCI}` }));
+    check('count, the coach: Count…', same(await countBtns(page), ['set-count']), JSON.stringify(await countBtns(page)));
+    await page.context().close();
+  }
+
+  // =====================================================================
   // 6. A hostile title and text are drawn as text; two kids
   // =====================================================================
   const evil = fullDb();

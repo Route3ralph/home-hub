@@ -2191,6 +2191,46 @@ const HW_AUDIO_DROP = `(${HW_STUBS})(); (${HW_CLOCKED})(); (${HW_WAKE_DROP})();`
   }
 
   // =====================================================================
+  // 17c. A count (0026, docs/v1.3-homework.md §27): "1 of 3 done" under Due soon, +1 and −1 (count_by_token, from the
+  // count his screen showed); the count reached is done, −1 opens it again; no count, no buttons.
+  // =====================================================================
+  {
+    const d = hwDb();
+    d.counts = true;
+    Object.assign(d.assignments.find((a) => a.id === H.math), { count_goal: 3, count_done: 1 });
+    ({ page, db } = await open({ label: 'hw-count', path: `/day.html?t=${JORDAN}#homework`, db: d, device: HW_DEVICE, init: HW_STUBS }));
+    await page.waitForSelector(`.hw-due .hw-count[data-asg="${H.math}"]`);
+    const row = `.hw-due .hw-asg[data-asg="${H.math}"]`;
+    const title = d.assignments.find((a) => a.id === H.math).title;
+    check('a count: "1 of 3 done" with −1 and +1 under Due soon', (await hwText(page, `${row} .hw-count-num`)) === '1 of 3 done'
+      && same(await hwTexts(page, `${row} .hw-count button`), ['−1', '+1']), await hwText(page, row));
+    check('... the buttons name the assignment for a screen reader', (await page.$eval(`${row} .hw-count-plus`, (b) => b.getAttribute('aria-label'))) === `One more done: ${title}`
+      && (await page.$eval(`${row} .hw-count-minus`, (b) => b.getAttribute('aria-label'))) === `One less: ${title}`);
+    check('no count, no buttons (the others)', (await page.$$('.hw-count')).length === 1);
+    await page.click(`${row} .hw-count-plus`);
+    await until(() => calls(db, 'count_by_token').length === 1);
+    check('+1: count_by_token with his token, the assignment, the count his screen showed and +1',
+      same(calls(db, 'count_by_token')[0].body, { p_token: JORDAN, p_assignment: H.math, p_from: 1, p_delta: 1 }), JSON.stringify(calls(db, 'count_by_token')[0].body));
+    check('... "2 of 3 done", from the answer (no second read)', await until(async () => (await hwText(page, `${row} .hw-count-num`)) === '2 of 3 done')
+      && calls(db, 'homework_by_token').length === 1);
+    await page.click(`${row} .hw-count-plus`);
+    await until(() => calls(db, 'count_by_token').length === 2);
+    check('the count reached: "All 3 done!", the assignment done, only −1 left',
+      await until(async () => (await hwText(page, `.hw-due .hw-count[data-asg="${H.math}"] .hw-count-num`)) === 'All 3 done!')
+      && db.assignments.find((a) => a.id === H.math).status === 'done' && same(await hwTexts(page, `.hw-due .hw-count[data-asg="${H.math}"] button`), ['−1']),
+      await hwText(page, '.hw-due'));
+    await page.click(`.hw-due .hw-count[data-asg="${H.math}"] .hw-count-minus`);
+    await until(() => calls(db, 'count_by_token').length === 3);
+    check('−1 (a slip): from 3, back to "2 of 3 done", and open again', same(calls(db, 'count_by_token')[2].body, { p_token: JORDAN, p_assignment: H.math, p_from: 3, p_delta: -1 })
+      && await until(async () => (await hwText(page, `${row} .hw-count-num`)) === '2 of 3 done') && db.assignments.find((a) => a.id === H.math).status === 'open');
+    homeworkRpc.count_by_token(db, { p_token: JORDAN, p_assignment: H.math, p_from: 1, p_delta: 1 });
+    check('a tap sent again from an old count changes nothing', db.assignments.find((a) => a.id === H.math).count_done === 2);
+    check('a count: no sideways scroll', await noSideScroll(page));
+    await page.screenshot({ path: SHOTS + 'day-hw-count.png', fullPage: true });
+    await page.context().close();
+  }
+
+  // =====================================================================
   // 18. Points earned alike, the daily cap, a lost answer resent, offline Start, Finish the block first
   // =====================================================================
   {
