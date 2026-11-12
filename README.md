@@ -258,6 +258,14 @@ On a project's page, under the schedule, **Selections** lists the finishes by ro
 1. `tests/run.sh` ends with `0 failed`; merge. Nothing changes until step 2: the card shows only on schema 24.
 2. **About 2 minutes:** run [`supabase/migrations/0024_project_selections.sql`](supabase/migrations/0024_project_selections.sql) in the Supabase SQL editor, after 0023. "isn't installed" means 0023 is missing; "already installed" means it's done; either way nothing was changed.
 
+### Counts: "5 of 7 done" (v1.3, migration 0026)
+
+For homework that is a number of things (7 ALEKS topics, 20 IXL questions), an assignment's page (Homework → the assignment) has **Count…**: type how many. The page then shows "0 of 7 done" with **−1** and **+1**, **Change count…** and **Take count off**, and the Homework list shows "5 of 7" on the row. On his My day, under Due soon, he sees "5 of 7 done" with a big **+1** (and **−1** for a slip). When the count is reached the assignment is done; −1 from there opens it again. You and the coach set it; a count pays no points, and nobody else sees it.
+
+**Turning it on** (no Edge Function and no `cron.sql` change):
+1. `tests/run.sh` ends with `0 failed`; merge. Nothing changes until step 2: the counts show only on schema 26.
+2. **About 2 minutes:** run [`supabase/migrations/0026_homework_counts.sql`](supabase/migrations/0026_homework_counts.sql) in the Supabase SQL editor, after 0025. "isn't installed" means 0025 is missing; "already installed" means it's done; either way nothing was changed.
+
 ### Missing and Graded: what the school says (v1.3, migration 0023)
 
 On an assignment's page (Homework → the assignment), **Missing** and **Graded…** mark it as the school's portal shows it; **Graded…** asks for the grade ("92", "B+"), or leave it empty for just "Graded". The Homework list then shows "Missing" or "Graded: B+" on its row; **Clear mark** takes it off. You and the coach mark them; nobody else sees them (not his My day or the tutor link). The hub doesn't read the portal: the school's feed has no grades.

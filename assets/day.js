@@ -169,6 +169,7 @@
       hw_school_planned: 'Planned for {day}: {title}', hw_school_for_pat: 'On your homework, to plan with {tutor}: {title}',
       hw_school_for_pat_none: 'On your homework, to plan with your parents: {title}', hw_school_hidden: 'Hidden: {title}. A parent can bring it back.',
       hw_school_more: '{n} more', hw_school_gone: 'No longer on the school site', hw_school_moved: 'The school moved it to {day}',
+      hw_count: '{d} of {g} done', hw_count_plus: 'One more done: {title}', hw_count_minus: 'One less: {title}', hw_count_all: 'All {g} done!',
       hw_school_not_yours: "That isn't on your list from school any more.", hw_school_already: 'That one is on your homework already.',
       // 0015: an item whose school date is the day it was assigned asks for its due date.
       hw_school_assigned: 'assigned {day}', hw_school_due: 'Due', hw_school_need_due: 'Choose the due date first.',
@@ -299,6 +300,7 @@
       hw_school_planned: 'Planeado para {day}: {title}', hw_school_for_pat: 'En tu tarea, para planear con {tutor}: {title}',
       hw_school_for_pat_none: 'En tu tarea, para planear con tus padres: {title}', hw_school_hidden: 'Oculta: {title}. Tus padres pueden recuperarla.',
       hw_school_more: '{n} más', hw_school_gone: 'Ya no está en el sitio de la escuela', hw_school_moved: 'La escuela la pasó a {day}',
+      hw_count: '{d} de {g} hechos', hw_count_plus: 'Uno más hecho: {title}', hw_count_minus: 'Uno menos: {title}', hw_count_all: '¡Los {g} hechos!',
       hw_school_not_yours: 'Eso ya no está en tu lista de la escuela.', hw_school_already: 'Esa ya está en tu tarea.',
       hw_school_assigned: 'asignada {day}', hw_school_due: 'Para', hw_school_need_due: 'Elige primero la fecha de entrega.',
       hw_school_bad_due: 'Elige una fecha de entrega desde el día en que se asignó hasta dentro de 4 meses.',
@@ -1739,6 +1741,8 @@
   const schoolCall = (action, item, minutes, due) => hwWrite(() => sb.rpc('school_item_by_token', Object.assign({
     p_token: token, p_item: item, p_action: action, p_minutes: minutes,
   }, due ? { p_due: due } : {})));
+  // 0026: his +1 or −1 on an assignment's count, from the count his screen showed (a resend changes nothing).
+  const countCall = (assignment, from, delta) => hwWrite(() => sb.rpc('count_by_token', { p_token: token, p_assignment: assignment, p_from: from, p_delta: delta }));
   const prefsCall = (cue, ifStuck) => hwWrite(() => sb.rpc('homework_prefs_by_token', { p_token: token, p_cue: cue, p_if_stuck: ifStuck, p_minutes: null }));
 
   // ---------- The view's steps ----------
@@ -2046,6 +2050,7 @@
       <span class="hw-noplan-acts"><button type="button" class="btn btn-sm" data-act="hw-quick" data-asg="${esc(a.id)}" aria-expanded="${quickOpen === a.id}">${esc(plan.t('quick', null, lang))}</button>
       <button type="button" class="btn btn-sm" data-act="hw-asg-start" data-asg="${esc(a.id)}">${esc(hw('hw_start'))}</button></span>
       ${chips}
+      ${countHTML(a)}
     </div>`;
   }
   function addFormHTML() {
@@ -2065,6 +2070,22 @@
     const day = lang === 'es' ? `el ${plan.fmt.day(m.day, lang)}` : plan.fmt.day(m.day, lang);
     const line = hw('pick_new_day', { title: m.title, day });
     return `<p class="hw-talk"><button type="button" class="hw-link" data-act="hw-talk" data-step="${esc(ms ? ms.id : '')}" data-text="${esc(line)}">${esc(`${line.replace(/\.$/, '')} ›`)}</button></p>`;
+  }
+  // 0026: an assignment with a count ("7 topics"): how many are done, and +1 (−1 for a slip). Done ones keep −1 only.
+  function countHTML(a) {
+    const c = a && a.count;
+    if (!c || !c.goal || a.status === 'dropped') return '';
+    const done = Number(c.done) || 0;
+    const open = a.status === 'open';
+    return `<p class="hw-count" data-asg="${esc(a.id)}"><span class="hw-count-num">${esc(hw(done >= c.goal ? 'hw_count_all' : 'hw_count', { d: done, g: c.goal }))}</span>
+      ${done > 0 ? `<button type="button" class="btn btn-sm hw-count-minus" data-act="hw-count" data-asg="${esc(a.id)}" data-d="-1" aria-label="${esc(hw('hw_count_minus', { title: a.title }))}">−1</button>` : ''}
+      ${open && done < c.goal ? `<button type="button" class="btn btn-sm btn-primary hw-count-plus" data-act="hw-count" data-asg="${esc(a.id)}" data-d="1" aria-label="${esc(hw('hw_count_plus', { title: a.title }))}">+1</button>` : ''}</p>`;
+  }
+  async function moveCount(id, delta) {
+    const a = asgById(id);
+    if (!a || !a.count || hwBusy) return;
+    await countCall(id, Number(a.count.done) || 0, delta);
+    renderHomework(true);
   }
   function dueRowHTML(a) {
     const bits = [a.subject, a.title];
@@ -2092,6 +2113,7 @@
       .map((s) => `<p class="hw-note">${esc(s.not_yet ? plan.t('not_yet', { note: s.coach.text }, lang) : plan.t('coach_note', { who: whoOf(s.coach.by), note: s.coach.text }, lang))}</p>`).join('') : '';
     return `<div class="hw-asg${a.status !== 'open' ? ' is-closed' : ''}" data-asg="${esc(a.id)}">
       <p class="hw-asg-line">${esc(bits.filter(Boolean).join(' · '))}${tail}</p>
+      ${countHTML(a)}
       ${passed && given ? talkHTML(a, passed) : ''}
       ${given ? plan.bars(a.minutes_left, a.time_left, { lang, horizon: a.horizon, no_time: a.no_time }) : ''}
       ${notes}
@@ -3110,6 +3132,7 @@
         break;
       case 'hw-more': menuOpen = menuOpen === stepId ? null : stepId; renderHomework(true); break;
       case 'hw-done': tickStep(stepId); break;
+      case 'hw-count': moveCount(asg, Number(el.dataset.d) === -1 ? -1 : 1); break;
       case 'hw-not-today': notToday(stepId); break;
       case 'hw-smaller': menuOpen = null; openSheet('smaller', stepId); break;
       case 'hw-ask': menuOpen = null; openSheet('ask', stepId); break;

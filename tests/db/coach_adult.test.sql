@@ -62,7 +62,7 @@ insert into reward_asks (id, kid_id, reward_id, title, cost, status, asked_at) v
 -- ---------------------------------------------------------------------
 -- The schema, the signatures, their grants
 -- ---------------------------------------------------------------------
-select test.is(hub_schema_version(), 25, 'hub_schema_version is 25');
+select test.is(hub_schema_version(), 26, 'hub_schema_version is 26');
 select test.is((select string_agg(name || ' ' || coach, ', ' order by name) from people), 'Alex false, Jordan false, Morgan false, Riley false, Sam false, Taylor false',
                'people.coach is off for everyone');
 select test.ok(has_function_privilege('authenticated', 'public.can_coach()', 'execute') and not has_function_privilege('anon', 'public.can_coach()', 'execute')

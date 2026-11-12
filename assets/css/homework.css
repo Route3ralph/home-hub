@@ -249,3 +249,9 @@
 .hw-mark { display: inline-block; margin-left: 6px; padding: 1px 8px; border-radius: 999px; font-size: 12px; font-weight: 650; vertical-align: 1px; }
 .hw-mark-missing { background: var(--danger-soft); color: var(--danger); }
 .hw-mark-graded { background: var(--accent-soft); color: var(--accent); }
+
+/* A count (0026, docs/v1.3-homework.md §27): "5 of 7" on the list, and −1 / +1 on the assignment's page. */
+.hw-count { background: var(--surface-2); color: var(--text); }
+.hw-count-acts { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 10px 0 0; }
+.hw-count-big { font-weight: 700; font-size: 16px; margin-right: 4px; }
+.hw-count-line { margin: 10px 0 0; font-weight: 650; }

@@ -32,7 +32,7 @@ grant execute on function pg_temp.titles(jsonb) to anon, authenticated;
 -- ---------------------------------------------------------------------
 -- The schema, the signatures, their grants and row-level security
 -- ---------------------------------------------------------------------
-select test.is(hub_schema_version(), 25, 'hub_schema_version is 25 (0021 made it 21, 0022 22, 0023 23, 0024 24, 0025 25)');
+select test.is(hub_schema_version(), 26, 'hub_schema_version is 26 (0021 made it 21, 0022 22, 0023 23, 0024 24, 0025 25, 0026 26)');
 select test.ok((select c.relrowsecurity from pg_class c where c.oid = 'public.watch_items'::regclass), 'watch_items has row-level security');
 select test.ok(has_function_privilege('anon', 'public.watch_by_token(text)', 'execute') and has_function_privilege('authenticated', 'public.watch_by_token(text)', 'execute')
                and not has_function_privilege('service_role', 'public.watch_by_token(text)', 'execute')
