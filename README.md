@@ -258,6 +258,14 @@ On a project's page, under the schedule, **Selections** lists the finishes by ro
 1. `tests/run.sh` ends with `0 failed`; merge. Nothing changes until step 2: the card shows only on schema 24.
 2. **About 2 minutes:** run [`supabase/migrations/0024_project_selections.sql`](supabase/migrations/0024_project_selections.sql) in the Supabase SQL editor, after 0023. "isn't installed" means 0023 is missing; "already installed" means it's done; either way nothing was changed.
 
+### Tasks on the calendar only when you ask (v2, migration 0027)
+
+A task shows on the Calendar page only when its **Show on the calendar** box is ticked (on the task's form, under Repeats). New tasks start unticked, and so does every task you had. A task that isn't on the Calendar still shows everywhere else: Today, the person's My day, the morning and Sunday emails, the Tomorrow message and the family board. A project's own bars still follow its **Show in Home Hub calendar** switch.
+
+**Turning it on** (no Edge Function and no `cron.sql` change):
+1. `tests/run.sh` ends with `0 failed`; merge. Nothing changes until step 2: the box shows only on schema 27.
+2. **About 2 minutes:** run [`supabase/migrations/0027_task_calendar.sql`](supabase/migrations/0027_task_calendar.sql) in the Supabase SQL editor, after 0026. "isn't installed" means 0026 is missing; "already installed" means it's done; either way nothing was changed.
+
 ### Counts: "5 of 7 done" (v1.3, migration 0026)
 
 For homework that is a number of things (7 ALEKS topics, 20 IXL questions), an assignment's page (Homework → the assignment) has **Count…**: type how many. The page then shows "0 of 7 done" with **−1** and **+1**, **Change count…** and **Take count off**, and the Homework list shows "5 of 7" on the row. On his My day, under Due soon, he sees "5 of 7 done" with a big **+1** (and **−1** for a slip). When the count is reached the assignment is done; −1 from there opens it again. You and the coach set it; a count pays no points, and nobody else sees it.

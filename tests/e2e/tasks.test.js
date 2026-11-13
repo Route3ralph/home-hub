@@ -932,6 +932,46 @@ const emailOf = (req) => {
   await page.context().close();
 
   // =====================================================================
+  // 8b. Show on the calendar (0027, docs/v2-design.md §33): on 27 the form has the box, off for a new task, sent with
+  //     the task; editing follows the task's own value. On 26 there is no box and nothing is sent.
+  // =====================================================================
+  ({ page, db } = await open({ label: 'oncal-27', rpc: { hub_schema_version: () => 27 }, path: '/#/tasks' }));
+  await page.evaluate(() => HomeHub.core.use('tasks').openTaskForm({ title: 'Call the plumber', date: '2026-10-28' }));
+  await page.waitForTimeout(400);
+  check('show on the calendar (27): the box is on the form, outside More, not ticked for a new task',
+    !!(await page.$('.tasks-form .tasks-oncal [name="on_calendar"]')) && !(await page.$('.tasks-form .tasks-more [name="on_calendar"]'))
+    && !(await page.isChecked('.tasks-form [name="on_calendar"]')) && /Show on the calendar/.test(await text(page, '.tasks-form .tasks-oncal')));
+  await page.click('.tasks-form [type="submit"]');
+  await page.waitForTimeout(600);
+  check('... saved unticked: on_calendar false is sent with the task', lastWrite(db, 'POST').body.title === 'Call the plumber' && lastWrite(db, 'POST').body.on_calendar === false,
+    JSON.stringify(lastWrite(db, 'POST').body));
+  await page.evaluate(() => HomeHub.core.use('tasks').openTaskForm({ title: 'Dentist forms', date: '2026-10-29' }));
+  await page.waitForTimeout(400);
+  await page.check('.tasks-form [name="on_calendar"]');
+  await page.click('.tasks-form [type="submit"]');
+  await page.waitForTimeout(600);
+  check('... ticked: on_calendar true is sent', lastWrite(db, 'POST').body.title === 'Dentist forms' && lastWrite(db, 'POST').body.on_calendar === true, JSON.stringify(lastWrite(db, 'POST').body));
+  const dentist = db.tasks.find((x) => x.title === 'Dentist forms');
+  await page.evaluate((id) => HomeHub.core.use('tasks').openTaskForm({ id }), dentist.id);
+  await page.waitForTimeout(400);
+  check('... editing it: the box shows the task\'s own value (ticked)', (await text(page, '.tasks-form h3')) === 'Edit task' && await page.isChecked('.tasks-form [name="on_calendar"]'));
+  await page.uncheck('.tasks-form [name="on_calendar"]');
+  await page.click('.tasks-form [type="submit"]');
+  await page.waitForTimeout(600);
+  check('... unticked and saved: on_calendar false', lastWrite(db, 'PATCH').body.on_calendar === false && db.tasks.find((x) => x.id === dentist.id).on_calendar === false,
+    JSON.stringify(lastWrite(db, 'PATCH').body));
+  check('show on the calendar: every row sent fits the tasks table', !db.refused.length, db.refused.join(','));
+  await page.context().close();
+  ({ page, db } = await open({ label: 'oncal-26', rpc: { hub_schema_version: () => 26 }, path: '/#/tasks' }));
+  await page.evaluate(() => HomeHub.core.use('tasks').openTaskForm({ title: 'Call the plumber', date: '2026-10-28' }));
+  await page.waitForTimeout(400);
+  check('show on the calendar (26): no box', !(await page.$('.tasks-form [name="on_calendar"]')));
+  await page.click('.tasks-form [type="submit"]');
+  await page.waitForTimeout(600);
+  check('... and on_calendar is never sent', !('on_calendar' in (lastWrite(db, 'POST').body || {})), JSON.stringify(lastWrite(db, 'POST').body));
+  await page.context().close();
+
+  // =====================================================================
   // 9. Empty states
   // =====================================================================
   db = tasksDb();

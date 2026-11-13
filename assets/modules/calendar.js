@@ -66,6 +66,13 @@
   // A row read with select('*') has the key exactly when the column is there, so an open page that still thinks
   // it is on 16 after the paste offers it too, and never drops a day's Bring it can't see (bringOn(ev)).
   const hasBring = () => core.schemaVersion >= 17;
+  // From 0027 (docs/v2-design.md §33): a task is on the Calendar only when its "Show on the calendar" is ticked
+  // (tasks.on_calendar). Today, My day and the emails still show every task. Before 27, every task is here as before.
+  async function calendarTasks(rows) {
+    if (!(core.schemaVersion >= 27) || !rows.some((it) => it.kind === 'task')) return rows;
+    const on = new Set(((await q(core.sb.from('tasks').select('id').eq('on_calendar', true))) || []).map((t) => t.id));
+    return rows.filter((it) => it.kind !== 'task' || on.has(it.item_id));
+  }
   const bringOn = (row) => hasBring() || !!(row && Object.prototype.hasOwnProperty.call(row, 'bring'));
   const BRING_MAX = 120; // events.bring and event_changes.bring
   const oneLine = (s) => String(s || '').replace(/\s+/g, ' ').trim();
@@ -354,7 +361,7 @@
   async function load(st) {
     const range = rangeOf(st);
     const google = loadGoogle(range);
-    const rows = await v2.withBring(await v2.call('agenda', { p_from: range.from, p_to: range.to }), range.from, range.to);
+    const rows = await calendarTasks(await v2.withBring(await v2.call('agenda', { p_from: range.from, p_to: range.to }), range.from, range.to));
     const g = await google;
     st.window = await st.windowLoad;
     if (st.ctx.stale()) return;
@@ -1437,7 +1444,7 @@
     const lang = v.lang === 'es' || v.lang === 'en' ? v.lang : (person && person.language === 'es' ? 'es' : 'en');
     const range = v.range === 'day' ? { from: v.day, to: v.day } : { from: dates.mondayOf(v.day), to: dates.addDays(dates.mondayOf(v.day), 6) };
     const google = loadGoogle(range);
-    const rows = await v2.withBring(await v2.call('agenda', { p_from: range.from, p_to: range.to }), range.from, range.to);
+    const rows = await calendarTasks(await v2.withBring(await v2.call('agenda', { p_from: range.from, p_to: range.to }), range.from, range.to));
     const g = await google;
     const items = rows.concat(g.items);
     // Seven columns fit a page on its side; the browser's dialog can still change it.
