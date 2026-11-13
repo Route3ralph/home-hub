@@ -1741,3 +1741,28 @@ alter table public.tasks add column on_calendar boolean not null default false;
 - Calendar (`assets/modules/calendar.js`), gated on 27: after `agenda`, one small read of the ticked tasks (`tasks?select=id&on_calendar=eq.true`) and every other task row left out of the month, the week, the day lists and the printed sheet. On 26 every task, and no read.
 
 Undoing it isn't needed (tick every task's box and the Calendar is as on 26). If wanted, as the migration's header writes it out: drop the column, then 0026's `hub_schema_version()`.
+
+## 34. v1.3: Take points
+
+The other side of Give points: a parent or the coach takes points off, with a reason the kid sees. Its migration is `supabase/migrations/0028_take_points.sql` (after 0027); the plan is `docs/v1.3-homework.md` §28. One transaction; it refuses to run without 0027 ("Tasks on the calendar (migration 0027) aren't installed"), twice ("already installed"), on a database set back to 27 ("set back to 27"), or on one that isn't as 0027 left it (`tasks.on_calendar`, `private.is_coach`, `private.is_admin`, `private.points_balance`, `private.monday`, `private.clean_text`, and the ledger's two checks as 0019 left them).
+
+### Tables
+```sql
+alter table public.points_ledger drop constraint points_ledger_kind_check;
+alter table public.points_ledger add constraint points_ledger_kind_check
+  check (kind in ('focus', 'on_time', 'milestone_done', 'milestone', 'given', 'void', 'trade', 'routine', 'taken'));
+alter table public.points_ledger drop constraint points_ledger_check;
+alter table public.points_ledger add constraint points_ledger_check check ((kind in ('void', 'trade', 'taken')) = (delta < 0));
+```
+- `points_ledger.kind` gains `'taken'`: a negative row, its note the reason, its `who` the parent's or coach's email. Like every ledger row it is written only by the functions.
+- `hub_schema_version()` returns 28.
+
+### Functions
+- `take_points(p_kid uuid, p_points int, p_note text, p_key uuid) returns jsonb` (authenticated; a definer; `private.is_coach()`, else 42501 "Only a parent can change homework."): 1 to 200 points (22023 "Take 1 to 200 points."), a reason of 1 to 120 characters (22023 "Say why the points come off." / "That's too long."), `p_key` the ledger row's id (22023 "Points need their id."; a key of another row, "That id is taken."). Refused while points are off (42501 "Points are off."). Never below zero: only his free points (`private.points_balance`'s balance less held) can be taken (P0001 "There are no free points to take." / "Only N points are free to take (the rest are spent or held for a reward he asked for)."). A coach, not a parent, takes at most 200 a household week from a kid (P0001 "That's more than 200 points this week from you. A parent can take more."). A resent key writes nothing more and answers the first entry. Answers `{entry: {id, delta, note}, balance}`, as `give_points`.
+- `void_points` is unchanged: a `'taken'` entry can't be voided.
+
+### Client
+- Homework (`assets/modules/homework.js`), gated on `core.schemaVersion >= 28`: **Take points** beside Give points, for a parent or the coach; the dialog says how many points are free (the page's own sum: the ledger less the waiting asks), and shows the database's refusal in its words. Recent reads "−10 Taken · reason · today"; the week's line "−10 taken".
+- My day (`assets/day.js`): his points' Recent reads "−10 Taken away · reason" ("Quitados" in Spanish).
+
+Undoing it isn't needed (with nothing taken every page is as on 27). If wanted, as the migration's header writes it out: drop `take_points`, delete the `'taken'` rows, put the two checks back as 0019 left them, then 0027's `hub_schema_version()`.

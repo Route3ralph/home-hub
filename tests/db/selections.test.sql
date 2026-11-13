@@ -30,7 +30,7 @@ select add_project_guest(test.project('Kitchen'), 'riley@example.com', 'Riley');
 -- The schema and its grants
 -- ---------------------------------------------------------------------
 :as_owner
-select test.is(hub_schema_version(), 27, 'hub_schema_version is 27');
+select test.is(hub_schema_version(), 28, 'hub_schema_version is 28');
 select test.ok((select c.relrowsecurity from pg_class c where c.oid = 'public.project_selections'::regclass), 'project_selections has row-level security');
 select test.ok(not has_table_privilege('anon', 'public.project_selections', 'select') and not has_table_privilege('service_role', 'public.project_selections', 'select')
                and has_table_privilege('authenticated', 'public.project_selections', 'select') and has_table_privilege('authenticated', 'public.project_selections', 'delete')

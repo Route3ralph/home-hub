@@ -52,7 +52,7 @@ insert into assignments (id, kid_id, kind, title, subject, due_date, status) val
 -- ---------------------------------------------------------------------
 -- The schema and its grants
 -- ---------------------------------------------------------------------
-select test.is(hub_schema_version(), 27, 'hub_schema_version is 27');
+select test.is(hub_schema_version(), 28, 'hub_schema_version is 28');
 select test.is((select string_agg(column_name || ' ' || data_type || ' ' || is_nullable || ' ' || coalesce(column_default, '-'), ', ' order by column_name)
                 from information_schema.columns where table_schema = 'public' and table_name = 'assignments' and column_name in ('count_goal', 'count_done')),
                'count_done integer NO 0, count_goal integer YES -', 'assignments.count_goal (null: no count) and count_done (0 by default)');

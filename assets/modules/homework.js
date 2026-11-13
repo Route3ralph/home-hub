@@ -334,6 +334,8 @@
   const stepsOf = (st, id) => st.steps.filter((s) => s.assignment_id === id).sort((a, b) => a.pos - b.pos || (a.id < b.id ? -1 : 1));
   const assignmentOf = (st, id) => st.assignments.find((a) => a.id === id) || null;
   const balance = (st) => sum(st.ledger, (l) => l.delta);
+  // His free points: his balance less what his waiting asks hold (as private.points_balance), what Take points may take.
+  const freePoints = (st) => balance(st) - sum((st.asks || []).filter((x) => x.status === 'waiting'), (x) => Number(x.cost) || 0);
   const mondayOf = (day) => dates.mondayOf(day);
   // His assignments on the page: open ones, and done or dropped ones of the last 30 days.
   const recent = (st, a) => a.status === 'open' || (a.status === 'done' ? householdDate(a.done_at) || a.due_date : householdDate(a.updated_at)) >= dates.addDays(st.today, -30);
@@ -347,6 +349,7 @@
     const ticked = sum(rows.filter((l) => l.kind === 'milestone_done'), (l) => l.delta);
     const ms = rows.filter((l) => l.kind === 'milestone');
     const given = sum(rows.filter((l) => l.kind === 'given'), (l) => l.delta);
+    const taken = sum(rows.filter((l) => l.kind === 'taken'), (l) => l.delta);
     const voided = sum(rows.filter((l) => l.kind === 'void'), (l) => l.delta);
     const by = [...new Set(ms.map((l) => (viaLink(l.who) ? String(whoName(l.who)).split(/[\s,]+/)[0] : whoName(l.who))))];
     const parts = [];
@@ -354,6 +357,7 @@
     if (ticked) parts.push(`${signed(ticked)} milestones ticked`);
     if (ms.length) parts.push(`${signed(sum(ms, (l) => l.delta))} milestones checked${by.length ? ` by ${by.join(' and ')}` : ''}`);
     if (given) parts.push(`${signed(given)} given`);
+    if (taken) parts.push(`${signed(taken)} taken`);
     if (voided) parts.push(`${signed(voided)} voided`);
     return parts.length ? `this week: ${parts.join(', ')}` : 'nothing earned this week';
   }
@@ -876,7 +880,7 @@
         : esc(blockLine(st, b))}</li>`).join('')}</ul>` : ''}`);
   }
 
-  const LEDGER = { focus: 'Focus', on_time: 'On time', milestone_done: 'Ticked', milestone: 'Checked', given: 'Given', routine: 'Routine' };
+  const LEDGER = { focus: 'Focus', on_time: 'On time', milestone_done: 'Ticked', milestone: 'Checked', given: 'Given', routine: 'Routine', taken: 'Taken' };
   function ledgerLine(st, l) {
     // A trade of an instant reward he cashed himself says so (no parent's yes was needed).
     const cashed = l.kind === 'trade' && l.ask_id && st.asks.some((x) => x.id === l.ask_id && x.status === 'cashed');
@@ -896,7 +900,8 @@
     const today = sum(st.ledger.filter((l) => l.day === st.today && (l.kind === 'focus' || l.kind === 'on_time')), (l) => l.delta);
     const ms = sum(st.ledger.filter((l) => (l.kind === 'milestone' || l.kind === 'milestone_done') && l.day >= mon && l.day <= dates.addDays(mon, 6)), (l) => l.delta);
     const line = `${balance(st)} · today ${signed(today)} of ${k.pts_day_cap} · milestones this week ${ms} of ${k.pts_milestone_week}`;
-    const acts = admin ? `<span class="hw-adds">${btn('give', 'Give points')}${btn('add-reward', '+ Reward')}</span>` : '';
+    // From 0028 (§28): Take points, beside Give points, for a parent and the coach.
+    const acts = admin ? `<span class="hw-adds">${btn('give', 'Give points')}${core.schemaVersion >= 28 ? btn('take', 'Take points') : ''}${btn('add-reward', '+ Reward')}</span>` : '';
     const rewards = st.rewards.filter((r) => r.cost != null);
     const voided = new Set(st.ledger.filter((l) => l.kind === 'void').map((l) => l.void_of));
     const last = st.ledger.slice(0, 10);
@@ -1937,6 +1942,28 @@
     });
   }
 
+  // Take points (0028, §28): the other side of Give points, with a reason he sees on his My day. Never below zero:
+  // only his free points (his balance less what his waiting asks hold) can come off; the database says how many.
+  function takeDialog(st) {
+    const key = P.newId();   // the ledger row's id: a resend writes nothing more
+    const free = Math.max(0, freePoints(st));
+    const form = openDialog(`<form class="form d-inner hw-take" novalidate autocomplete="off">${dialogTop(`Take points from ${kidName(st)}`)}
+      <p class="meta">${esc(`He sees the reason on his My day. ${free ? `${free} points are free to take` : 'He has no free points to take'} (never below zero, and never what's held for a reward he asked for).`)}</p>
+      <label class="field"><span>Points (1 to ${Math.min(200, Math.max(1, free))})</span><input type="number" name="points" min="1" max="${Math.min(200, Math.max(1, free))}" step="1" inputmode="numeric"></label>
+      <label class="field"><span>Why</span><input type="text" name="note" maxlength="120" placeholder="Phone at the dinner table"></label>
+      ${dialogFoot('Take')}</form>`);
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const err = form.querySelector('.form-error');
+      const points = Number(form.elements.points.value);
+      const note = P.clean(form.elements.note.value, 121);
+      if (!Number.isInteger(points) || points < 1 || points > 200) { err.textContent = 'Take 1 to 200 points.'; err.hidden = false; return; }
+      if (!note) { err.textContent = 'Say why the points come off.'; err.hidden = false; return; }
+      if (Array.from(note).length > 120) { err.textContent = 'That\'s too long.'; err.hidden = false; return; }
+      dialogWrite(st, form, () => run(sb().rpc('take_points', { p_kid: st.kid, p_points: points, p_note: note, p_key: key })), () => toast(`−${points} for ${kidName(st)}`));
+    });
+  }
+
   function voidDialog(st, entry) {
     const l = st.ledger.find((x) => x.id === entry);
     if (!l) return;
@@ -2359,6 +2386,7 @@
       case 'add-assignment': newAssignment(st, 'assignment'); break;
       case 'add-lesson': newAssignment(st, 'lesson'); break;
       case 'give': giveDialog(st); break;
+      case 'take': takeDialog(st); break;
       case 'void': voidDialog(st, d.entry); break;
       case 'add-reward': rewardDialog(st, null); break;
       case 'edit-reward': rewardDialog(st, st.rewards.find((r) => r.id === d.reward)); break;

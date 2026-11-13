@@ -1588,6 +1588,35 @@ const homeworkRpc = {
     }
     return { entry: { id: l.id, delta: l.delta, note: l.note }, balance: hwBalance(db, b.p_kid).balance };
   }),
+  // 0028 (§28): Take points, the other side of Give points. Never below zero (only his free points: his balance less
+  // what his waiting asks hold); a coach at most 200 a household week from a kid. db.take is a database at 28.
+  take_points: hwCall('take_points', ['p_kid', 'p_points', 'p_note', 'p_key'], [], (db, b, email) => {
+    if (!db.take) throw new Raise('PGRST202', 'Could not find the function public.take_points in the schema cache');
+    coachOnly(db, email);
+    if (!Number.isInteger(b.p_points) || b.p_points < 1 || b.p_points > 200) throw new Raise('22023', 'Take 1 to 200 points.');
+    if (b.p_note != null && Array.from(String(b.p_note)).length > 120) throw new Raise('22023', 'That\'s too long.');
+    const note = cleanText(b.p_note, 120);
+    if (!note) throw new Raise('22023', 'Say why the points come off.');
+    if (!b.p_key) throw new Raise('22023', 'Points need their id.');
+    let l = db.points_ledger.find((x) => x.id === b.p_key);
+    if (l && (l.kid_id !== b.p_kid || l.kind !== 'taken')) throw new Raise('22023', 'That id is taken.');
+    if (!l) {
+      if (!db.homework_kids.some((k) => k.kid_id === b.p_kid && k.points_on)) throw new Raise('42501', 'Points are off.');
+      const bal = hwBalance(db, b.p_kid);
+      const free = bal.balance - bal.held;
+      if (free <= 0) throw new Raise('P0001', 'There are no free points to take.');
+      if (b.p_points > free) throw new Raise('P0001', `Only ${free} points are free to take (the rest are spent or held for a reward he asked for).`);
+      if (!hwAdmin(db, email)) {
+        const mon = homePlan().addDays(hwToday(db), -((new Date(`${hwToday(db)}T12:00:00Z`).getUTCDay() + 6) % 7));
+        const used = -db.points_ledger.filter((x) => x.kid_id === b.p_kid && x.kind === 'taken' && x.who === email && x.day >= mon && x.day <= homePlan().addDays(mon, 6))
+          .reduce((a, x) => a + x.delta, 0);
+        if (used + b.p_points > 200) throw new Raise('P0001', 'That\'s more than 200 points this week from you. A parent can take more.');
+      }
+      l = ledgerRow({ id: b.p_key, kid_id: b.p_kid, at: foodStamp(db), day: hwToday(db), kind: 'taken', delta: -b.p_points, note, who: email });
+      db.points_ledger.push(l);
+    }
+    return { entry: { id: l.id, delta: l.delta, note: l.note }, balance: hwBalance(db, b.p_kid).balance };
+  }),
   void_points: hwCall('void_points', ['p_entry', 'p_note'], [], (db, b, email) => {
     coachOnly(db, email);
     if (b.p_note != null && Array.from(String(b.p_note)).length > 120) throw new Raise('22023', 'That\'s too long.');

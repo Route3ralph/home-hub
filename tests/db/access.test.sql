@@ -46,7 +46,7 @@ select test.is((whoami() -> 'person' ->> 'id')::uuid, test.person('Alex'), 'whoa
 -- people under Calendars to read, and asks for hearth_tags and calendars.sort_by_guest, only on 10.
 -- Migration 0011 (project guests) changes it on purpose again: the client shows a guest their projects, and the parents
 -- Guest access, the Guests card and the Documents link, only on 11 (guests.test.sql).
-select test.is(hub_schema_version(), 27, 'hub_schema_version is 27');
+select test.is(hub_schema_version(), 28, 'hub_schema_version is 28');
 -- 0009 replaces private.school_rows with the same signature: still not a definer function, stable, search_path = '',
 -- and no API role may call it (as 0006 revoked it; 0009 revokes it again). Its private.school_rekey (run once by 0009,
 -- again only by the owner) runs as the owner too, and no API role may call it either.
@@ -130,7 +130,7 @@ select test.is((select string_agg(p.proname, ', ' order by p.proname) from pg_pr
                'remove_project_guest, reward_by_token, '
                'rotate_day_token, routine_status, routine_tick_by_token, save_homework_kid, save_homework_plan, save_person, save_routine, save_tutor_link, school_begin, school_feed_status, '
                'school_finish, school_item_action, school_item_by_token, school_store, set_coach, set_hearth_tag, set_language_by_token, set_school_feed, set_tutor_coach, set_tutor_rewards, skip_task, step_by_token, '
-               'stop_digest, tutor_assignment_by_token, tutor_plan_by_token, tutor_step_by_token, tutor_view_by_token, undo_by_token, '
+               'stop_digest, take_points, tutor_assignment_by_token, tutor_plan_by_token, tutor_step_by_token, tutor_view_by_token, undo_by_token, '
                'undo_task, void_points, watch_add_by_token, watch_by_token',
                'the only definer functions in public are the RPCs that check membership, admin, a token or the service key '
                '(0005: the parents'' homework actions, the eleven token functions and hub-jobs'' two AI functions; add_homework_time '
@@ -138,7 +138,7 @@ select test.is((select string_agg(p.proname, ', ' order by p.proname) from pg_pr
                'three school functions; 0007: the coach view''s two token functions and the parents'' switch and Done; 0010: the parents'' '
                'Hearth matches; 0011: the guests'' and the parents'' guest functions; 0012: the coach''s rewards and the parents'' switch; '
                '0014: My day''s language switch; 0019: the routine''s three; 0020: the family board''s four and the parents'' link; '
-               '0021: the parents'' coach box, and the wrappers of give_points and save_routine; 0022: a kid''s watch list on My day; 0026: his count''s +1)');
+               '0021: the parents'' coach box, and the wrappers of give_points and save_routine; 0022: a kid''s watch list on My day; 0026: his count''s +1; 0028: Take points)');
 select test.is((select string_agg(p.proname, ', ' order by p.proname) from pg_proc p
                 where p.pronamespace = 'private'::regnamespace and has_function_privilege('authenticated', p.oid, 'execute')
                   and p.proname in ('complete_task', 'undo_task', 'roll_task', 'person_by_token', 'my_day_item', 'digest_item', 'people_confirm_sync',
