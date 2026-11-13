@@ -83,8 +83,8 @@ select test.ok((select bool_and(coalesce(array_to_string(p.proconfig, ','), '') 
                 where p.proname in ('is_coach', 'is_coach_email', 'can_coach', 'set_coach', 'coach_rewrite', 'give_points', 'give_points_v20', 'save_routine', 'save_routine_v20')),
                '... each with set search_path');
 select test.is((select count(*)::int from pg_proc p where p.pronamespace in ('public'::regnamespace, 'private'::regnamespace) and p.prosrc like '%is_coach%'
-                and p.proname not in ('is_coach', 'can_coach')), 13,
-               'is_coach is asked by the ten rewritten functions, the two wrappers and the routine''s wrapped one... (13 bodies)');
+                and p.proname not in ('is_coach', 'can_coach')), 14,
+               'is_coach is asked by the ten rewritten functions, the two wrappers, the routine''s wrapped one... and 0028''s take_points (14 bodies)');
 
 -- ---------------------------------------------------------------------
 -- Off: an adult who signs in is as before
