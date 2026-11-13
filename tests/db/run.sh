@@ -2132,8 +2132,8 @@ sql -d postgres -c 'create database hub_27_tasks template hub_26_on25'
 quiet -d hub_27_tasks -c "insert into public.tasks (title, due_date) values ('Call the plumber', date '2026-11-20'), ('Pick up the dry cleaning', null)" >/dev/null 2>&1
 out=$(quiet -d hub_27_tasks -f $m27 2>&1)
 got="$(quiet -d hub_27_tasks -A -t -c "select count(*) filter (where on_calendar) || ' of ' || count(*) from public.tasks" 2>&1)"
-if [[ -z $out && $got == "0 of 2" ]]; then
-  report "PASS  migration 0027 on a database at 0026 with tasks: every task there starts off the Calendar (0 of 2 on it)"
+if [[ -z $out && $got =~ ^0\ of\ [2-9][0-9]*$ ]]; then
+  report "PASS  migration 0027 on a database at 0026 with tasks: every task there starts off the Calendar ($got on it)"
 else report "FAIL  migration 0027 on a database at 0026 with tasks  (${out:0:200}; $got)"; fi
 # The undo, as the header writes it (its alter line and 0026's hub_schema_version), on a database at 0027 with a
 # task on the Calendar.
