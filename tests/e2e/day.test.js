@@ -2231,6 +2231,28 @@ const HW_AUDIO_DROP = `(${HW_STUBS})(); (${HW_CLOCKED})(); (${HW_WAKE_DROP})();`
   }
 
   // =====================================================================
+  // 17d. Points taken (0028, docs/v1.3-homework.md §28): his points page shows "−10 Taken away · the reason", in
+  //      English and Spanish, and his balance counts it.
+  // =====================================================================
+  {
+    const d = hwDb();
+    d.points_ledger.push(ledgerRow({ kid_id: P.jordan, at: hwStamp(d.hwNow), day: HWT, kind: 'taken', delta: -10, note: 'Phone at the dinner table', who: 'alex@example.com' }));
+    ({ page, db } = await open({ label: 'hw-taken', path: `/day.html?t=${JORDAN}#points`, db: d, device: HW_DEVICE, init: HW_STUBS }));
+    await page.waitForSelector('.hw-balance-big');
+    const lines = await hwTexts(page, '.hw-lines li');
+    check('points taken: "−10 Taken away · Phone at the dinner table · today" in his recent points', lines.some((l) => /^−10 Taken away · Phone at the dinner table · /.test(l)), JSON.stringify(lines));
+    check('... his balance is 10 less (★ 108)', /108/.test(await hwText(page, '.hw-balance-big')), await hwText(page, '.hw-balance-big'));
+    await page.context().close();
+    const e = hwDb();
+    e.people.find((x) => x.id === P.jordan).language = 'es';
+    e.points_ledger.push(ledgerRow({ kid_id: P.jordan, at: hwStamp(e.hwNow), day: HWT, kind: 'taken', delta: -10, note: 'Phone at the dinner table', who: 'alex@example.com' }));
+    ({ page, db } = await open({ label: 'hw-taken-es', path: `/day.html?t=${JORDAN}#points`, db: e, device: HW_DEVICE, init: HW_STUBS }));
+    await page.waitForSelector('.hw-balance-big');
+    check('... in Spanish: "−10 Quitados · …"', (await hwTexts(page, '.hw-lines li')).some((l) => /^−10 Quitados · Phone at the dinner table/.test(l)), JSON.stringify(await hwTexts(page, '.hw-lines li')));
+    await page.context().close();
+  }
+
+  // =====================================================================
   // 18. Points earned alike, the daily cap, a lost answer resent, offline Start, Finish the block first
   // =====================================================================
   {

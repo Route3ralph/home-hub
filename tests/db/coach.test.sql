@@ -701,7 +701,7 @@ select test.is((select string_agg(p.proname || ' ' || r, ', ' order by p.proname
                   and (has_function_privilege(r, p.oid, 'execute') or not coalesce(p.proconfig, '{}') @> '{"search_path=\"\""}')), null,
                '... nobody may call their functions, and each sets search_path = ''''');
 -- 7 since 0007; 0008 (the first-import check's past items) makes it 8, 0009 (the school items' keys) 9, 0010 (Hearth people) 10, and 0011 (project guests) 11.
-select test.is(hub_schema_version(), 27, 'hub_schema_version is 27 (0007 made it 7, 0008 8, 0009 9, 0010 10, 0011 11, 0012 12, 0013 13, 0014 14, 0015 15, 0016 16, 0017 17, 0018 18, 0019 19, 0020 20, 0021 21, 0022 makes it 22, 0023 23, 0024 24, 0025 25, 0026 26, 0027 27)');
+select test.is(hub_schema_version(), 28, 'hub_schema_version is 28 (0007 made it 7, 0008 8, 0009 9, 0010 10, 0011 11, 0012 12, 0013 13, 0014 14, 0015 15, 0016 16, 0017 17, 0018 18, 0019 19, 0020 20, 0021 21, 0022 makes it 22, 0023 23, 0024 24, 0025 25, 0026 26, 0027 27, 0028 28)');
 
 -- ---------------------------------------------------------------------
 -- Erase takes the notes with it

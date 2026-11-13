@@ -1191,6 +1191,68 @@ const emailOf = (req) => {
   }
 
   // =====================================================================
+  // 5e. Take points (0028, docs/v1.3-homework.md §28): beside Give points on 28, for a parent and the coach; the dialog
+  //     says how many are free; take_points with a reason and a new key; "−5 Taken · reason" in Recent; more than
+  //     free refused in the database's words. On 27: no button.
+  // =====================================================================
+  {
+    const { withCoachAdult, coachAdultRpc } = require('./mock');
+    const base = { routine_status: () => ({ points: 0, sections: [], today: null }) };
+    const RPC27t = Object.assign({}, RPC, base, { hub_schema_version: () => 27 }, schoolRpc, coachAdultRpc);
+    const RPC28 = Object.assign({}, RPC, base, { hub_schema_version: () => 28 }, schoolRpc, coachAdultRpc);
+    ({ page, db } = await open({ label: 'take-27', db: withCoachAdult(withCoach(withSchool(fullDb()))), rpc: RPC27t, path: '/#/homework' }));
+    await page.waitForSelector('[data-act="give"]');
+    check('take points, schema 27: Give points, no Take points', !(await page.$('[data-act="take"]')));
+    await page.context().close();
+    const tdb = withCoachAdult(withCoach(withSchool(fullDb())));
+    tdb.schoolMarks = true;
+    tdb.counts = true;
+    tdb.take = true;
+    ({ page, db } = await open({ label: 'take-28', db: tdb, rpc: RPC28, path: '/#/homework', allowConsole: /status of 400/ }));
+    await page.waitForSelector('[data-act="take"]');
+    const bal = db.points_ledger.filter((l) => l.kid_id === ID.jordan).reduce((n, l) => n + l.delta, 0);
+    const held = db.reward_asks.filter((x) => x.kid_id === ID.jordan && x.status === 'waiting').reduce((n, x) => n + x.cost, 0);
+    const free = bal - held;
+    check('take points, schema 28: Take points beside Give points', same(await page.$$eval('[data-sec="points"] .hw-adds button', (bs) => bs.map((b) => b.dataset.act)), ['give', 'take', 'add-reward']),
+      JSON.stringify(await page.$$eval('[data-sec="points"] .hw-adds button', (bs) => bs.map((b) => b.dataset.act))));
+    await page.click('[data-act="take"]');
+    check('the dialog: "Take points from Jordan", the free points and where the reason shows', (await tc(page, '#formDialog form.hw-take h3, #formDialog form.hw-take .d-title')).includes('Take points from Jordan')
+      || /Take points from Jordan/.test(await tc(page, '#formDialog form.hw-take')));
+    check(`... "${free} points are free to take"`, (await tc(page, '#formDialog form.hw-take')).includes(`${free} points are free to take`) && /He sees the reason on his My day/.test(await tc(page, '#formDialog form.hw-take')),
+      await tc(page, '#formDialog form.hw-take'));
+    await page.fill('#formDialog form.hw-take [name="points"]', '5');
+    await page.click('#formDialog form.hw-take button[type="submit"]');
+    await settle(page);
+    check('no reason: "Say why the points come off.", no call', (await tc(page, '#formDialog form.hw-take .form-error')) === 'Say why the points come off.' && !calls(db, 'take_points').length);
+    await page.fill('#formDialog form.hw-take [name="note"]', 'Phone at the dinner table');
+    await page.click('#formDialog form.hw-take button[type="submit"]');
+    await settle(page);
+    const took = lastCall(db, 'take_points').body || {};
+    check('Take: take_points(kid, 5, the reason, a new key); the dialog closes; "−5 for Jordan"', took.p_kid === ID.jordan && took.p_points === 5 && took.p_note === 'Phone at the dinner table'
+      && UUID.test(took.p_key || '') && !(await dialogOpen(page)) && (await lastToast(page)) === '−5 for Jordan', JSON.stringify(took));
+    check('... Recent: "−5 Taken · Phone at the dinner table · today", and the balance 5 less', (await texts(page, '.hw-ledger li .hw-ledger-line'))[0] === '−5 Taken · Phone at the dinner table · today'
+      && (await tc(page, '.hw-points-line')).startsWith(`${bal - 5} ·`), JSON.stringify((await texts(page, '.hw-ledger li .hw-ledger-line')).slice(0, 2)));
+    check('... no Void on a taken entry (Give points puts points back)', !(await page.$('.hw-ledger li:first-child [data-act="void"]')));
+    await page.click('[data-act="take"]');
+    await page.fill('#formDialog form.hw-take [name="points"]', String(Math.min(200, free - 5 + 1)));
+    await page.fill('#formDialog form.hw-take [name="note"]', 'Too many');
+    await page.click('#formDialog form.hw-take button[type="submit"]');
+    await settle(page);
+    const err = await tc(page, '#formDialog form.hw-take .form-error');
+    check('more than his free points: refused in the database\'s words, nothing taken', /are free to take|no free points/.test(err) && (await dialogOpen(page))
+      && db.points_ledger.filter((l) => l.kind === 'taken').length === 1, err);
+    await page.context().close();
+    // The coach has it too.
+    const cdb = withCoachAdult(withCoach(withSchool(fullDb())));
+    cdb.take = true;
+    cdb.people.find((p) => p.id === ID.sam).coach = true;
+    ({ page, db } = await open({ label: 'take-coach', db: cdb, rpc: RPC28, email: 'sam@example.com', path: '/#/homework' }));
+    await page.waitForSelector('[data-act="give"]');
+    check('take points: the coach has Take points too', !!(await page.$('[data-act="take"]')));
+    await page.context().close();
+  }
+
+  // =====================================================================
   // 6. A hostile title and text are drawn as text; two kids
   // =====================================================================
   const evil = fullDb();

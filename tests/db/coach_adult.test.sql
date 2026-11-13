@@ -62,7 +62,7 @@ insert into reward_asks (id, kid_id, reward_id, title, cost, status, asked_at) v
 -- ---------------------------------------------------------------------
 -- The schema, the signatures, their grants
 -- ---------------------------------------------------------------------
-select test.is(hub_schema_version(), 27, 'hub_schema_version is 27');
+select test.is(hub_schema_version(), 28, 'hub_schema_version is 28');
 select test.is((select string_agg(name || ' ' || coach, ', ' order by name) from people), 'Alex false, Jordan false, Morgan false, Riley false, Sam false, Taylor false',
                'people.coach is off for everyone');
 select test.ok(has_function_privilege('authenticated', 'public.can_coach()', 'execute') and not has_function_privilege('anon', 'public.can_coach()', 'execute')
@@ -83,8 +83,8 @@ select test.ok((select bool_and(coalesce(array_to_string(p.proconfig, ','), '') 
                 where p.proname in ('is_coach', 'is_coach_email', 'can_coach', 'set_coach', 'coach_rewrite', 'give_points', 'give_points_v20', 'save_routine', 'save_routine_v20')),
                '... each with set search_path');
 select test.is((select count(*)::int from pg_proc p where p.pronamespace in ('public'::regnamespace, 'private'::regnamespace) and p.prosrc like '%is_coach%'
-                and p.proname not in ('is_coach', 'can_coach')), 13,
-               'is_coach is asked by the ten rewritten functions, the two wrappers and the routine''s wrapped one... (13 bodies)');
+                and p.proname not in ('is_coach', 'can_coach')), 14,
+               'is_coach is asked by the ten rewritten functions, the two wrappers, the routine''s wrapped one... and 0028''s take_points (14 bodies)');
 
 -- ---------------------------------------------------------------------
 -- Off: an adult who signs in is as before

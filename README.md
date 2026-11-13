@@ -258,6 +258,14 @@ On a project's page, under the schedule, **Selections** lists the finishes by ro
 1. `tests/run.sh` ends with `0 failed`; merge. Nothing changes until step 2: the card shows only on schema 24.
 2. **About 2 minutes:** run [`supabase/migrations/0024_project_selections.sql`](supabase/migrations/0024_project_selections.sql) in the Supabase SQL editor, after 0023. "isn't installed" means 0023 is missing; "already installed" means it's done; either way nothing was changed.
 
+### Take points (v1.3, migration 0028)
+
+On the Homework page, **Take points** sits beside **Give points**: how many (1 to 200) and why. He sees it on his My day ("−10 Taken away · Phone at the dinner table"). It never takes him below zero, and never touches points held for a reward he asked for: the dialog says how many are free to take. You and the coach can take points; the coach at most 200 a week. To undo one, give the points back.
+
+**Turning it on** (no Edge Function and no `cron.sql` change):
+1. `tests/run.sh` ends with `0 failed`; merge. Nothing changes until step 2: the button shows only on schema 28.
+2. **About 2 minutes:** run [`supabase/migrations/0028_take_points.sql`](supabase/migrations/0028_take_points.sql) in the Supabase SQL editor, after 0027. "isn't installed" means 0027 is missing; "already installed" means it's done; either way nothing was changed.
+
 ### Tasks on the calendar only when you ask (v2, migration 0027)
 
 A task shows on the Calendar page only when its **Show on the calendar** box is ticked (on the task's form, under Repeats). New tasks start unticked, and so does every task you had. A task that isn't on the Calendar still shows everywhere else: Today, the person's My day, the morning and Sunday emails, the Tomorrow message and the family board. A project's own bars still follow its **Show in Home Hub calendar** switch.
