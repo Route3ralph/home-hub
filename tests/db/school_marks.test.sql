@@ -38,7 +38,7 @@ insert into assignments (id, kid_id, kind, title, subject, due_date, status) val
 -- ---------------------------------------------------------------------
 -- The schema and its grants
 -- ---------------------------------------------------------------------
-select test.is(hub_schema_version(), 26, 'hub_schema_version is 26');
+select test.is(hub_schema_version(), 27, 'hub_schema_version is 27');
 select test.is((select string_agg(column_name || ' ' || data_type || ' ' || is_nullable || ' ' || coalesce(column_default, '-'), ', ' order by column_name)
                 from information_schema.columns where table_schema = 'public' and table_name = 'assignments' and column_name in ('school_mark', 'grade')),
                'grade text YES -, school_mark text YES -', 'assignments.school_mark and grade: text, null by default');

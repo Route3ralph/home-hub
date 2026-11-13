@@ -928,6 +928,8 @@
     const projectId = t ? x.project_id : d.project_id;
     const contactId = t ? x.contractor_id : d.contractor_id;
     const priv = t ? !!x.private : !!d.private;
+    // From 0027 (docs/v2-design.md §33): on the Calendar page only when ticked; off for a new task.
+    const onCal = core.schemaVersion >= 27 ? (t ? x.on_calendar === true : !!d.on_calendar) : null;
     const moreOpen = !!(x.notes || priv || x.lead_days || projectId || contactId);
     const contactOptions = (contacts || []).map((c) => [c.id, c.company && c.company !== c.name ? `${c.name} (${c.company})` : c.name]);
     if (contactId && !contactOptions.some(([id]) => id === contactId)) contactOptions.unshift([contactId, 'The current contact']);
@@ -967,6 +969,7 @@
         <div class="tasks-wdays" data-show="wdays" role="group" aria-label="On these days">${WD.map((w, i) => `<button type="button" class="tasks-wd" data-wd="${i + 1}" aria-label="${WD_LONG[i]}">${w.slice(0, 2)}</button>`).join('')}</div>
         <small class="tasks-hint" data-show="wdays">The due date's day of the week is always included.</small>
       </fieldset>
+      ${onCal === null ? '' : `<label class="check tasks-check tasks-oncal"><input type="checkbox" name="on_calendar"${onCal ? ' checked' : ''}> Show on the calendar <small>Off: it stays on Today, My day and the emails, but not the Calendar page.</small></label>`}
       <details class="tasks-more"${moreOpen ? ' open' : ''}>
         <summary>More: kind, heads-up, project, contact, notes</summary>
         <div class="tasks-more-body">
@@ -1146,6 +1149,7 @@
         notes: val('notes') || null,
         private: el.private.checked,
       };
+      if (el.on_calendar) row.on_calendar = el.on_calendar.checked;
       if (state.mode === 'none') {
         if (state.due && !isIso(state.due)) throw new Error('Pick a valid date, or No date.');
         const time = state.due ? val('due_time') : '';

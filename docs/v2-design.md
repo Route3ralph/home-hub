@@ -1723,3 +1723,21 @@ grant update (count_goal, count_done) on public.assignments to authenticated;
 - My day (`assets/day.js`): under Due soon, and on a Quick row, an assignment with a count says "5 of 7 done" (Spanish "5 de 7 hechos"), with **+1** while it is open and short of the count and **−1** once anything is counted ("All 7 done!" at the count). Each tap sends `count_by_token` with the count his screen showed, and redraws from the answer.
 
 Undoing it isn't needed (with no count set every page is as on 25). If wanted, in one go, as the migration's header writes it out: drop `count_by_token` and the new `private.homework_view_kid`, rename `homework_view_kid_v25` back, drop the trigger and its function, drop the two columns, then 0025's `hub_schema_version()`. What the counts made done stays done.
+
+## 33. v2: a task on the Calendar only when asked
+
+Every task with a date was on the Calendar page: one-off jobs, chores and every task of a project, crowding the family's events. A parent wants a task there only when they ask for it, as a project already has its own "Show in Home Hub calendar" switch (`projects.on_calendar`). Its migration is `supabase/migrations/0027_task_calendar.sql` (after 0026). One transaction; it refuses to run without 0026 ("Homework counts (migration 0026) aren't installed"), twice ("already installed"), on a database set back to 26 ("set back to 26"), or on one that isn't as 0026 left it (`tasks`, `count_by_token`).
+
+### Tables
+```sql
+alter table public.tasks add column on_calendar boolean not null default false;
+```
+- `tasks.on_calendar`: whether the task shows on the Calendar page. False by default, so every task there when 0027 runs starts off the Calendar, and so does every new one unless its box is ticked. Members change it as the rest of a task (the table's policy, "Family manages tasks").
+- Nothing else reads it: `agenda` and everything built on it (Today, My day, the morning and Sunday emails, the Tomorrow message, the family board, Google) show every task as before.
+- `hub_schema_version()` returns 27.
+
+### Client
+- Tasks (`assets/modules/tasks.js`), gated on `core.schemaVersion >= 27`: the task form has **Show on the calendar** under Repeats (outside More), not ticked for a new task; editing shows the task's own value. It is sent with the task; on 26 there is no box and nothing is sent.
+- Calendar (`assets/modules/calendar.js`), gated on 27: after `agenda`, one small read of the ticked tasks (`tasks?select=id&on_calendar=eq.true`) and every other task row left out of the month, the week, the day lists and the printed sheet. On 26 every task, and no read.
+
+Undoing it isn't needed (tick every task's box and the Calendar is as on 26). If wanted, as the migration's header writes it out: drop the column, then 0026's `hub_schema_version()`.

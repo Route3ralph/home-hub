@@ -1565,6 +1565,43 @@ const emailOf = (req) => {
   }
 
   // =====================================================================
+  // 7i. Tasks on the calendar (0027, docs/v2-design.md §33): on 27 a task shows on the Calendar (month, week, its
+  //     printed sheet) only when its "Show on the calendar" is ticked; on 26 every task, as before, with no read.
+  // =====================================================================
+  {
+    const db = withCalendars(calDb());
+    db.tasks.forEach((t) => { t.on_calendar = false; });
+    db.tasks.find((t) => t.title === 'Change furnace filter').on_calendar = true;
+    let log;
+    ({ page, log } = await open({ label: 'task-cal', db, rpc: Object.assign({ hub_schema_version: () => 27 }, calendarRpc) }));
+    await page.click('.cal-cell[data-day="2026-10-29"]');
+    await settle(page);
+    let panel = await rows(page, '.cal-panel');
+    check('tasks on the calendar (27): Water plants (not ticked) is off the day, the events stay',
+      same(panel.map((r) => r.title), ['Electrician visit', 'School pickup', 'Grandparents visit']), JSON.stringify(panel.map((r) => r.title)));
+    await page.click(`.cal-cell[data-day="${TODAY}"]`);
+    await settle(page);
+    panel = await rows(page, '.cal-panel');
+    check('... Change furnace filter (ticked) is on its day', panel.some((r) => r.title === 'Change furnace filter'), JSON.stringify(panel.map((r) => r.title)));
+    check('... read with one small read of the ticked ones', log.some((l) => /^GET \/rest\/v1\/tasks\?select=id&on_calendar=eq\.true/.test(l)), JSON.stringify(log.filter((l) => /tasks/.test(l))));
+    await page.click('[data-view="week"]');
+    await page.waitForSelector('.cal-days');
+    await settle(page);
+    const week = (await page.textContent('.cal-days')) || '';
+    check('... the week shows the ticked one and none of the others', /Change furnace filter/.test(week) && !/Water plants|Heartworm pill/.test(week), week.slice(0, 300));
+    await page.context().close();
+    // Schema 26: every task, as before, and no read of on_calendar.
+    const db26 = withCalendars(calDb());
+    ({ page, log } = await open({ label: 'task-cal-26', db: db26, rpc: Object.assign({ hub_schema_version: () => 26 }, calendarRpc) }));
+    await page.click('.cal-cell[data-day="2026-10-29"]');
+    await settle(page);
+    panel = await rows(page, '.cal-panel');
+    check('tasks on the calendar (26): every task as before (Water plants on its day), and on_calendar never asked for',
+      panel.some((r) => r.title === 'Water plants') && !log.some((l) => /on_calendar/.test(l)), JSON.stringify(panel.map((r) => r.title)));
+    await page.context().close();
+  }
+
+  // =====================================================================
   // 8. Dark mode uses the dark colours
   // =====================================================================
   for (const dark of [false, true]) {
