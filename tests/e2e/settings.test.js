@@ -274,6 +274,12 @@ const emailOf = (req) => {
           const html = `<!doctype html><html><head><title>Week of Nov 2 – Nov 8: ${names}</title></head><body><h1 id="sheets">Sheets: ${names} (${body.week})</h1></body></html>`;
           return route.fulfill({ status: 200, headers: JSONH, body: JSON.stringify({ monday: '2026-11-02', sunday: '2026-11-08', sheets: (body.sheets || []).length, at: '16:00:00', to: [], subject: 'Week of Nov 2 – Nov 8', html, text: '' }) });
         }
+        // 0029's due_preview: this evening's email (handler.ts's shape), or the 503 before the migration.
+        if (body.action === 'due_preview') {
+          if (mode === 'no_schema') return route.fulfill({ status: 503, headers: JSONH, body: JSON.stringify({ stop: 'no_schema', error: 'Due tomorrow needs migration 0029.' }) });
+          const html = '<!doctype html><html><head><title>Due tomorrow</title></head><body><h1 id="due">Due tomorrow (Tue Nov 3): 1 for Jordan</h1></body></html>';
+          return route.fulfill({ status: 200, headers: JSONH, body: JSON.stringify({ day: '2026-11-02', at: '17:30:00', to: [], subject: 'Due tomorrow (Tue Nov 3): 1 for Jordan', html, text: '' }) });
+        }
         return route.fulfill({ status: 400, headers: JSONH, body: JSON.stringify({ error: 'Unknown action. Use digest, preview or status.' }) });
       });
     }
@@ -1625,6 +1631,77 @@ const emailOf = (req) => {
     check('Sunday sheets (320px): no sideways scroll, saved settings shown', await noSideScroll(page) && (await page.isChecked('.set-weekly input[name="on"]'))
       && (await page.isChecked('.set-weekly input[name="sheet"][value="family"]')));
     await shotOf(page, 'section[aria-labelledby="setWeekly"]', 'settings-weekly-phone.png');
+    await page.context().close();
+  }
+
+  // =====================================================================
+  // 6c. Due tomorrow (schema 29, docs/v1.3-homework.md §29): an admin's card on the household row
+  // =====================================================================
+  {
+    const v29Rpc = Object.assign({}, v3Rpc, hearthRpc, { hub_schema_version: () => 29 });
+    const shotOf = async (page, sel, file) => {
+      const style = await page.addStyleTag({ content: '.topbar, .bottombar { position: static !important; }' });
+      const clip = await page.$eval(sel, (e) => { const r = e.getBoundingClientRect(); return { x: r.left + scrollX, y: r.top + scrollY, width: r.width, height: r.height }; });
+      await page.screenshot({ path: SHOTS + file, fullPage: true, clip });
+      await style.evaluate((e) => e.remove());
+    };
+    const dueDb = (extra = {}) => {
+      const d = withHearth(googleDb());
+      d.people.push(person(ID.taylor, 'Taylor Example', 'helper', '#ca8a04', 4, { language: 'es', email: 'taylor@example.com' }));
+      Object.assign(d.household[0], { weekly_at: null, weekly_to: [], weekly_sheets: [], due_at: null, due_to: [] }, extra);
+      return d;
+    };
+    ({ page } = await open({ label: 'due-28', allowConsole: /status of 404/, db: dueDb(), rpc: Object.assign({}, v3Rpc, hearthRpc, { hub_schema_version: () => 28 }) }));
+    check('Due tomorrow: no card on schema 28', !(await page.$('#setDue')) && !!(await page.$('#setWeekly')));
+    await page.context().close();
+
+    ({ page, db } = await open({ label: 'due', db: dueDb(), rpc: v29Rpc, allowConsole: /status of (404|503)/ }));
+    check('Due tomorrow: the card on schema 29, off to start, 5:30pm suggested',
+      (await tc(page, '#setDue')) === 'Due tomorrow' && !(await page.isChecked('.set-due input[name="on"]'))
+      && (await page.inputValue('.set-due input[name="at"]')) === '17:30');
+    check('... Send to: everyone with an email, the unconfirmed ones say so',
+      same(await page.$$eval('.set-due input[name="to"]', (es) => es.map((e) => e.value)), [ID.alex, ID.sam, ID.taylor])
+      && (await texts(page, '.set-due .set-weekly-note')).length === 2);
+    await page.check('.set-due input[name="on"]');
+    await page.click('.set-due [type="submit"]');
+    await page.waitForTimeout(400);
+    check('Due tomorrow: on with no one to send to → asks who, saves nothing', (await errorOf(page, '.set-due .form-error')) === 'Tick who it goes to.' && db.hhWrites.length === 0);
+    await page.check(`.set-due input[name="to"][value="${ID.alex}"]`);
+    await page.check(`.set-due input[name="to"][value="${ID.sam}"]`);
+    await page.click('.set-due [type="submit"]');
+    await page.waitForTimeout(600);
+    check('... with two ticked: due_at 17:30 and due_to saved on the household row, and a toast',
+      db.hhWrites.length === 1 && same(db.hhWrites[0].body, { due_at: '17:30', due_to: [ID.alex, ID.sam] })
+      && (await lastToast(page)) === 'Due tomorrow on: every evening at 5:30pm', JSON.stringify(db.hhWrites[0]));
+    check('... the card shows what was saved', (await page.isChecked('.set-due input[name="on"]')) && (await page.isChecked(`.set-due input[name="to"][value="${ID.sam}"]`))
+      && !(await page.isChecked(`.set-due input[name="to"][value="${ID.taylor}"]`)));
+    const [popup] = await Promise.all([page.waitForEvent('popup'), page.click('.set-due [data-due="preview"]')]);
+    await popup.waitForSelector('#due', { timeout: 3000 });
+    const call = db.fnCalls.filter((c) => c.body.action === 'due_preview').slice(-1)[0];
+    check('Due tomorrow: Preview tonight\'s asks hub-jobs (signed in) and opens the email in a new window',
+      call && call.auth && (await popup.textContent('#due')) === 'Due tomorrow (Tue Nov 3): 1 for Jordan', JSON.stringify(call));
+    await popup.close();
+    db.fn.due_preview = 'no_schema';
+    const [popup2] = await Promise.all([page.waitForEvent('popup'), page.click('.set-due [data-due="preview"]')]);
+    await page.waitForTimeout(600);
+    check('... before the migration reaches hub-jobs: the window closes and the card gives its reason',
+      popup2.isClosed() && (await errorOf(page, '.set-due .form-error')) === 'Due tomorrow needs migration 0029.');
+    await page.uncheck('.set-due input[name="on"]');
+    await page.click('.set-due [type="submit"]');
+    await page.waitForTimeout(600);
+    check('Due tomorrow: off saves due_at null and keeps who\'s ticked', db.hhWrites.length === 2 && db.hhWrites[1].body.due_at === null
+      && same(db.hhWrites[1].body.due_to, [ID.alex, ID.sam]) && (await lastToast(page)) === 'Due tomorrow off', JSON.stringify(db.hhWrites[1]));
+    await page.context().close();
+
+    ({ page } = await open({ label: 'due-member', allowConsole: /status of 404/, db: dueDb(), rpc: v29Rpc, email: 'sam@example.com' }));
+    check('Due tomorrow: a member who isn\'t an admin sees no card', !(await page.$('#setDue')));
+    await page.context().close();
+
+    ({ page } = await open({ label: 'due-phone', allowConsole: /status of 404/, db: dueDb({ due_at: '17:30:00', due_to: [ID.alex] }), rpc: v29Rpc,
+                             ctx: { viewport: { width: 320, height: 700 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true } }));
+    check('Due tomorrow (320px): no sideways scroll, saved settings shown', await noSideScroll(page) && (await page.isChecked('.set-due input[name="on"]'))
+      && (await page.isChecked(`.set-due input[name="to"][value="${ID.alex}"]`)));
+    await shotOf(page, 'section[aria-labelledby="setDue"]', 'settings-due-phone.png');
     await page.context().close();
   }
 

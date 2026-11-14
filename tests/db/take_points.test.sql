@@ -37,7 +37,7 @@ values (test.person('Taylor'), now(), '2026-11-12', 'given', 100, 'Great week', 
 -- ---------------------------------------------------------------------
 -- The schema, the signature, its grants and the ledger's checks
 -- ---------------------------------------------------------------------
-select test.is(hub_schema_version(), 28, 'hub_schema_version is 28');
+select test.is(hub_schema_version(), 29, 'hub_schema_version is 29');
 select test.ok(has_function_privilege('authenticated', 'public.take_points(uuid, integer, text, uuid)', 'execute')
                and not has_function_privilege('anon', 'public.take_points(uuid, integer, text, uuid)', 'execute')
                and not has_function_privilege('service_role', 'public.take_points(uuid, integer, text, uuid)', 'execute'),

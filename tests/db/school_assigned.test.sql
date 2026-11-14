@@ -61,7 +61,7 @@ create or replace function private.school_host_suffix() returns text language sq
 -- ---------------------------------------------------------------------
 -- The schema, the signatures and their grants (§23.2)
 -- ---------------------------------------------------------------------
-select test.is(hub_schema_version(), 28, 'hub_schema_version is 28 (0015 made it 15, 0016 16, 0017 17, 0018 18, 0019 19, 0020 20, 0021 21, 0022 makes it 22, 0023 23, 0024 24, 0025 25, 0026 26, 0027 27, 0028 28)');
+select test.is(hub_schema_version(), 29, 'hub_schema_version is 29 (0015 made it 15, 0016 16, 0017 17, 0018 18, 0019 19, 0020 20, 0021 21, 0022 makes it 22, 0023 23, 0024 24, 0025 25, 0026 26, 0027 27, 0028 28, 0029 29)');
 select test.is((select string_agg(p.oid::regprocedure::text, ' | ' order by p.oid::regprocedure::text)
                 from pg_proc p where p.proname in ('school_item_action', 'school_item_by_token', 'school_assignment')),
                'private.school_assignment(uuid,text,date) | school_item_action(uuid,text,date) | school_item_by_token(text,uuid,text,integer,date)',

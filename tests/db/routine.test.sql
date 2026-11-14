@@ -35,7 +35,7 @@ $$;
 -- ---------------------------------------------------------------------
 -- The schema, the signatures, their grants and row-level security
 -- ---------------------------------------------------------------------
-select test.is(hub_schema_version(), 28, 'hub_schema_version is 28 (0019 made it 19, 0020 20, 0021 21, 0022 22, 0023 23, 0024 24, 0025 25, 0026 26, 0027 27, 0028 28)');
+select test.is(hub_schema_version(), 29, 'hub_schema_version is 29 (0019 made it 19, 0020 20, 0021 21, 0022 22, 0023 23, 0024 24, 0025 25, 0026 26, 0027 27, 0028 28, 0029 29)');
 select test.ok(has_function_privilege('anon', 'public.routine_tick_by_token(text, uuid, boolean)', 'execute')
                and has_function_privilege('authenticated', 'public.routine_tick_by_token(text, uuid, boolean)', 'execute')
                and not has_function_privilege('service_role', 'public.routine_tick_by_token(text, uuid, boolean)', 'execute'),

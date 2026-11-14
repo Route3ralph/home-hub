@@ -1766,3 +1766,32 @@ alter table public.points_ledger add constraint points_ledger_check check ((kind
 - My day (`assets/day.js`): his points' Recent reads "−10 Taken away · reason" ("Quitados" in Spanish).
 
 Undoing it isn't needed (with nothing taken every page is as on 27). If wanted, as the migration's header writes it out: drop `take_points`, delete the `'taken'` rows, put the two checks back as 0019 left them, then 0027's `hub_schema_version()`.
+
+## 35. v1.3: Due tomorrow
+
+An evening email of each homework kid's lists: due tomorrow, not marked done yet, and the 3 days after. Its migration is `supabase/migrations/0029_due_tomorrow.sql` (after 0028); the plan is `docs/v1.3-homework.md` §29. One transaction; it refuses to run without 0028 ("Take points (migration 0028) isn't installed"), twice ("already installed"), on a database set back to 28 ("set back to 28"), or on one that isn't as 0028 left it (`take_points`, `today_local`, `private.day_label`, `private.short_name`, `private.now`, `private.tz`, `homework_kids`, `assignments.count_goal` and `school_mark`, no `due_list` or `due_due` yet, and `notification_log_kind_check` allowing 'digest', 'confirm' and 'weekly' but not 'due').
+
+### Tables
+```sql
+alter table public.household
+  add column due_at time,                                  -- every evening at this time (the household's); null: off
+  add column due_to uuid[] not null default '{}';          -- who gets it
+alter table public.notification_log add constraint notification_log_kind_check check (kind in ('digest', 'confirm', 'weekly', 'due'));
+```
+- `household.due_at` and `household.due_to`: checked by `private.household_due_check()` (a BEFORE INSERT OR UPDATE OF due_at, due_to trigger, `household_due_check`): at most 6 people (22023 "Due tomorrow: send it to at most 6 people."), only people on the family list ("… it can go only to people on the family list."), nobody twice ("… someone is on the list twice."). Admins change them as they change the rest of the household; a person removed later is skipped when it's sent.
+- `notification_log.kind` may be `'due'`: one row per person and evening, `local_date` the day it is sent.
+- `hub_schema_version()` returns 29.
+
+### Functions
+- `due_list(p_day date, p_lang text) returns jsonb` (service_role only; security invoker): the evening of `p_day` in `p_lang` (`'es'`, else English) as `{day, tomorrow, tomorrow_label, coming_to, coming_to_label, kids: [{id, name, tomorrow, late, coming}]}`, one entry per active person with `homework_kids.active`, in the family's order, `name` their short name. Each item is `{title, subject, due, due_label, done, missing, count: {goal, done}}`, nulls left out. `tomorrow`: due on `p_day + 1`, open or done, never dropped. `late`: open, due on or before `p_day` and no more than 30 days before it, or open and `school_mark = 'missing'` (due on or before `p_day`). `coming`: open and due from `p_day + 2` to `p_day + 4`. Each list in due order, then title. It reads `count_goal`, `count_done` and `school_mark`, never `grade`, the text, the plan, points or notes.
+- `due_due(p_limit int) returns table (person_id uuid, local_date date, kind text)` (service_role only): everyone on `due_to` who is active with a confirmed address, once `today + due_at` (the household's zone) has passed, while some active person has homework on; `local_date` today, `kind` `'due'`; rows already sent, skipped, in flight or out of attempts left out, as `digest_due` and `weekly_due`.
+
+### hub-jobs
+- The morning email's run, after the Sunday sheets, on schema 29 and up: `due_due`, then for each row the budget, `claim_notification(person, day, 'due')`, `due_list(day, their language)`, `due.ts`'s email to their address (Resend's Idempotency-Key `due-<person>-<day>`), `finish_notification`. An unconfirmed address by then is skipped; lists that can't be read fail that email. No links in it; every string escaped.
+- `due_preview` (admins, their own sign-in): this evening's email in the admin's language, with `at` and who it would go to (`would_send`, `reason`), nothing sent or logged; 503 `no_schema` before 0029.
+
+### Client
+- Settings (`assets/modules/settings.js`), admins, gated on `core.schemaVersion >= 29`: the **Due tomorrow** card: **Send it every evening at** (17:30 suggested), **Send to** (everyone with an email; an unconfirmed address says so), **Save** (the household row), **Preview tonight's** (`due_preview`, in a new window).
+
+### Going live
+The site and `hub-jobs` (verify_jwt false) go live first; then 0029; then a parent turns it on. `cron.sql` doesn't change. Undoing it isn't needed (with `due_at` null nothing is sent). If wanted, as the migration's header writes it out: drop the two functions, the trigger and its function, delete the 'due' rows, put the kind check back as 0025 left it, drop the two columns, then 0028's `hub_schema_version()`.
