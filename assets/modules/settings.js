@@ -321,6 +321,79 @@
   }
 
   // ============================================
+  // DUE TOMORROW (schema 29, the parents; docs/v1.3-homework.md §29)
+  // Every evening at due_at, hub-jobs emails the people on due_to each homework kid's lists: due tomorrow, not marked
+  // done yet, and the 3 days after. Saved on the household row like the rest; "Preview tonight's" asks hub-jobs
+  // (due_preview) for this evening's email as it would go.
+  // ============================================
+  function drawDue(box, ctx, getHousehold, onSaved) {
+    const hh = getHousehold();
+    const people = v2.people().filter((p) => p.active !== false);
+    const to = Array.isArray(hh.due_to) ? hh.due_to : [];
+    const on = !!hh.due_at;
+    box.innerHTML = `<p class="set-help">Every evening the hub emails the homework of each kid who has homework turned on: what's due tomorrow (ticked when done), what's still not marked done from today or before (and anything marked Missing), and what's due in the 3 days after, so Friday's shows Monday. On an evening with nothing due it still goes, saying so.</p>
+      <form class="form set-form set-due" novalidate>
+        <label class="set-check"><input type="checkbox" name="on"${on ? ' checked' : ''}> Send it every evening at</label>
+        <label class="field set-weekly-time"><span class="sr-only">Time</span><input type="time" name="at" value="${esc(hhmm(hh.due_at) || '17:30')}"></label>
+        <fieldset class="set-weekly-set"><legend>Send to</legend><ul class="set-weekly-list">
+          ${people.filter((p) => p.email).map((p) => `<li class="set-weekly-row"><label class="set-check"><input type="checkbox" name="to" value="${esc(p.id)}"${to.includes(p.id) ? ' checked' : ''}> ${esc(p.name)}</label>
+            ${p.email_verified_at ? '' : '<small class="set-weekly-note">hasn\'t confirmed their email yet, so nothing goes until they do</small>'}</li>`).join('')
+            || '<li class="set-help">Nobody on the family list has an email address yet (Family page).</li>'}
+        </ul></fieldset>
+        <p class="form-error" role="alert" hidden></p>
+        <div class="form-actions">
+          <button type="submit" class="btn btn-primary set-btn">Save</button>
+          <button type="button" class="btn set-btn" data-due="preview">Preview tonight's</button>
+        </div>
+      </form>`;
+    const form = box.querySelector('form');
+    const errBox = form.querySelector('.form-error');
+    const fail = (msg) => { errBox.textContent = msg; errBox.hidden = false; };
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      errBox.hidden = true;
+      const ids = [...form.querySelectorAll('input[name="to"]:checked')].map((c) => c.value);
+      const turnOn = form.elements.on.checked;
+      const at = form.elements.at.value;
+      if (turnOn && !at) { fail('Pick the time it goes out each evening.'); return; }
+      if (turnOn && !ids.length) { fail('Tick who it goes to.'); return; }
+      if (ids.length > 6) { fail('It can go to at most 6 people.'); return; }
+      const btn = form.querySelector('[type="submit"]');
+      btn.disabled = true;
+      try {
+        const row = await saveHousehold(getHousehold(), { due_at: turnOn ? at : null, due_to: ids });
+        if (ctx.stale()) return;
+        toast(turnOn ? `Due tomorrow on: every evening at ${fmt.time(at)}` : 'Due tomorrow off');
+        onSaved(row);
+      } catch (err) {
+        btn.disabled = false;
+        fail(friendly(err));
+      }
+    });
+    form.querySelector('[data-due="preview"]').addEventListener('click', async (e) => {
+      const b = e.currentTarget;
+      errBox.hidden = true;
+      // The window opens on the click, so the browser doesn't block it; the email goes in when it arrives.
+      const win = window.open('', '_blank');
+      if (win) win.document.write('<!doctype html><title>Making the email…</title><p style="font-family:sans-serif">Making the email…</p>');
+      b.disabled = true;
+      let res;
+      try { res = await core.sb.functions.invoke('hub-jobs', { body: { action: 'due_preview' } }); } catch (err) { res = { error: err }; }
+      b.disabled = false;
+      if (res.error || !res.data || typeof res.data.html !== 'string') {
+        if (win) win.close();
+        fail(res.error ? await fnMessage(res.error, 'Couldn\'t make the email: the email function isn\'t updated yet.') : 'Couldn\'t make the email.');
+        return;
+      }
+      if (!win) { fail('Your browser blocked the new window. Allow pop-ups for the Home Hub, then try again.'); return; }
+      win.document.open();
+      win.document.write(res.data.html);
+      win.document.close();
+      win.focus();
+    });
+  }
+
+  // ============================================
   // THE PAGE
   // ============================================
   async function renderSettings(main, ctx) {
@@ -365,6 +438,10 @@
       ${admin && core.schemaVersion >= 25 ? `<section class="card set-card" aria-labelledby="setWeekly">
         <div class="card-head"><h2 id="setWeekly">Sunday sheets</h2><span class="card-sub">The coming week, printed</span></div>
         <div class="set-body" data-ref="weekly"></div>
+      </section>` : ''}
+      ${admin && core.schemaVersion >= 29 ? `<section class="card set-card" aria-labelledby="setDue">
+        <div class="card-head"><h2 id="setDue">Due tomorrow</h2><span class="card-sub">The kids' homework, every evening</span></div>
+        <div class="set-body" data-ref="due"></div>
       </section>` : ''}
       <section class="card set-card" aria-labelledby="setCalendar">
         <div class="card-head"><h2 id="setCalendar">Google Calendar &amp; Hearth</h2></div>
@@ -692,7 +769,10 @@
     function drawWeeklyCard() {
       if (ref('weekly') && hh) drawWeekly(ref('weekly'), ctx, () => hh, (row) => { hh = row; drawWeeklyCard(); });
     }
-    function drawAll() { drawHousehold(); drawDaysOff(); drawStillOn(); drawWeeklyCard(); }
+    function drawDueCard() {
+      if (ref('due') && hh) drawDue(ref('due'), ctx, () => hh, (row) => { hh = row; drawDueCard(); });
+    }
+    function drawAll() { drawHousehold(); drawDaysOff(); drawStillOn(); drawWeeklyCard(); drawDueCard(); }
     drawAll();
     // Google Calendar & Hearth loads alongside the admin's reads (schema 3 only).
     const google = core.schemaVersion >= 3 ? googleCard(ref('calendar'), ctx, admin) : null;

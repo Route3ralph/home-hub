@@ -52,7 +52,7 @@ insert into assignments (id, kid_id, kind, title, subject, due_date, status) val
 -- ---------------------------------------------------------------------
 -- The schema and its grants
 -- ---------------------------------------------------------------------
-select test.is(hub_schema_version(), 28, 'hub_schema_version is 28');
+select test.is(hub_schema_version(), 29, 'hub_schema_version is 29');
 select test.is((select string_agg(column_name || ' ' || data_type || ' ' || is_nullable || ' ' || coalesce(column_default, '-'), ', ' order by column_name)
                 from information_schema.columns where table_schema = 'public' and table_name = 'assignments' and column_name in ('count_goal', 'count_done')),
                'count_done integer NO 0, count_goal integer YES -', 'assignments.count_goal (null: no count) and count_done (0 by default)');
@@ -178,5 +178,6 @@ select test.is(pg_temp.st('c0000000-0000-4000-8000-000000000001'), '2 2 done tru
 -- ---------------------------------------------------------------------
 :as_owner
 select test.is((select count(*)::int from pg_proc p where p.pronamespace in ('public'::regnamespace, 'private'::regnamespace)
-                and p.prosrc ~ '\mcount_(goal|done)\M'), 3, 'only count_by_token, his view and the trigger read the count (not the tutor link, the board, Google or an email)');
+                and p.prosrc ~ '\mcount_(goal|done)\M'), 4, 'only count_by_token, his view, the trigger and (0029) Due tomorrow''s due_list read the count (not the tutor link, the board, Google or another email)');
+select test.ok(exists (select 1 from pg_proc p where p.proname = 'due_list' and p.prosrc ~ '\mcount_goal\M'), '... the fourth is due_list (docs/v1.3-homework.md §29)');
 select test.is((select count(*)::int from points_ledger), 0, 'a count pays no points');

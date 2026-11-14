@@ -18,7 +18,7 @@ v2 turns on by itself once the database is upgraded (see [Upgrading to v2](#upgr
 | **Projects** | As before, plus an **owner** (who gets the project in their morning email), **Show in Home Hub calendar**, and a **Tasks** card for calls, orders and errands. **Put on the schedule** turns one of those into a Gantt task. |
 | **Directory** | Replaces Contractors. Contractors, **accounts and utilities**, services and emergency numbers, with search and one tap to call, text, WhatsApp, email or open the website. Account numbers are for admins only, masked until **Show**. A contract or promo end date gets a reminder 30 days ahead. |
 | **Family** | One list of everyone in the house: parents, adults, kids and helpers, each with a colour, language (English or Spanish), phone and email. Parents and adults can sign in; kids and helpers get a **My day link** (Copy, WhatsApp, Text, New link). |
-| **Settings** | Time zone, the usual morning-email time, days off (school holidays: repeating events can skip them), who new pet and house tasks go to, whether the morning email is running, (v1.1) [Google Calendar and Hearth](#google-calendar-and-hearth), and (migration 0020) the [Family board](#the-family-board-migration-0020)'s link. |
+| **Settings** | Time zone, the usual morning-email time, days off (school holidays: repeating events can skip them), who new pet and house tasks go to, whether the morning email is running, (v1.1) [Google Calendar and Hearth](#google-calendar-and-hearth), (migration 0020) the [Family board](#the-family-board-migration-0020)'s link, and (migration 0029) [Due tomorrow](#due-tomorrow-an-evening-email-of-the-homework-v13-migration-0029). |
 | **Food** (v1.2) | This week's dinners and the family's one shopping list: see [Food](#food-dinners-and-the-shopping-list-v12). |
 | **Homework** (v1.3) | Jordan's assignments in small steps, a focus timer on his My day, points and rewards, and a link for his tutor: see [Homework](#homework-plans-focus-sessions-and-points-v13). |
 
@@ -257,6 +257,15 @@ On a project's page, under the schedule, **Selections** lists the finishes by ro
 **Turning it on** (no Edge Function and no `cron.sql` change):
 1. `tests/run.sh` ends with `0 failed`; merge. Nothing changes until step 2: the card shows only on schema 24.
 2. **About 2 minutes:** run [`supabase/migrations/0024_project_selections.sql`](supabase/migrations/0024_project_selections.sql) in the Supabase SQL editor, after 0023. "isn't installed" means 0023 is missing; "already installed" means it's done; either way nothing was changed.
+
+### Due tomorrow: an evening email of the homework (v1.3, migration 0029)
+
+Every evening at the time you pick (5:30pm, say), the hub emails the people you tick each kid's homework: what's **due tomorrow** (ticked off when done), what's **not marked done yet** from today or before (and anything marked Missing), and what's **coming up** in the 3 days after, so Friday's email shows Monday. On an evening with nothing due it still goes, saying so. Everyone gets the same email, the kid too, in their own language. It is only as right as the due dates on the Homework page.
+
+**Turning it on** (about 10 minutes; no `cron.sql` change):
+1. `tests/run.sh` ends with `0 failed`; merge, and deploy `hub-jobs` (verify_jwt false). Nothing changes until step 2: the card shows only on schema 29.
+2. **About 2 minutes:** run [`supabase/migrations/0029_due_tomorrow.sql`](supabase/migrations/0029_due_tomorrow.sql) in the Supabase SQL editor, after 0028. "isn't installed" means 0028 is missing; "already installed" means it's done; either way nothing was changed.
+3. **Settings → Due tomorrow:** tick **Send it every evening at**, pick the time, tick who gets it, **Save**. **Preview tonight's** shows this evening's email. Each person needs a confirmed email address first (the morning email's confirmation does it).
 
 ### Take points (v1.3, migration 0028)
 

@@ -22,7 +22,7 @@ create function pg_temp.oncal(p_title text) returns text language sql stable sec
 $$;
 grant execute on function pg_temp.oncal(text) to anon, authenticated;
 
-select test.is(hub_schema_version(), 28, 'hub_schema_version is 28');
+select test.is(hub_schema_version(), 29, 'hub_schema_version is 29');
 select test.is((select data_type || ' ' || is_nullable || ' ' || coalesce(column_default, '-') from information_schema.columns
                 where table_schema = 'public' and table_name = 'tasks' and column_name = 'on_calendar'),
                'boolean NO false', 'tasks.on_calendar: boolean, not null, false by default');

@@ -18,12 +18,17 @@
 //            from household.weekly_at, each person on weekly_to (weekly_due) gets one email with the coming week's
 //            sheets (weekly_sheet), claimed and finished as the morning email is (kind 'weekly', local_date: the
 //            Monday). It asks for them only when hub_schema_version() is 25 or more; before that the run is as it was.
+//            From migration 0029, it also sends Due tomorrow (due.ts, docs/v1.3-homework.md §29): every evening from
+//            household.due_at, each person on due_to (due_due) gets one email of each homework kid's lists (due_list,
+//            in their language), kind 'due', local_date: the day it goes. Asked for only on 29 and up.
 //   preview  admins (their own sign-in): { date?: 'YYYY-MM-DD', person_id?: uuid } → the rendered
 //            emails, one per person, without sending or logging anything.
 //   status   admins: the last 10 runs and today's emails, as counts and fixed messages.
 //   weekly_preview  admins: { week?: 'this' | 'next', sheets?: [{who, lang}] } → the Sunday email (subject, html,
 //            text) for that week, with the saved sheets or the ones given, and who it would go to. Nothing is sent
 //            or logged. 'next' (the default) is the week Sunday's email covers. 503 {stop: 'no_schema'} before 0025.
+//   due_preview  admins: {} → this evening's Due tomorrow email (subject, html, text) in the admin's language, and who
+//            it would go to. Nothing is sent or logged. 503 {stop: 'no_schema'} before 0029.
 //   calendar pg_cron (supabase/cron.sql) every 5 minutes with x-hub-cron, or an admin's Sync now
 //            (their own sign-in; it also reads every calendar): copies hub items to Google and reads
 //            Google's events back (calendar.ts, docs/v1.1-google-calendar.md §3.4).
@@ -66,6 +71,8 @@ import { runSchool } from './school.ts';
 import { homeworkAi } from './homework.ts';
 import { inbox } from './inbox.ts';
 import { renderWeekly, sheetChoices } from './weekly.ts';
+import { renderDue } from './due.ts';
+import type { DueList } from './due.ts';
 import type { Sheet } from './weekly.ts';
 import { noSchema } from './util.ts';
 
@@ -160,18 +167,19 @@ export async function handle(req: Request, deps: Deps): Promise<Response> {
   const action = body.action ?? 'digest';
 
   if (action === 'digest') return digest(req, deps);
-  if (action === 'preview' || action === 'status' || action === 'weekly_preview') {
+  if (action === 'preview' || action === 'status' || action === 'weekly_preview' || action === 'due_preview') {
     const authorization = req.headers.get('Authorization') || '';
     if (!/^Bearer\s+\S+/.test(authorization)) return json(401, { error: 'Sign in first.' });
     const userDb = deps.user(authorization);
     const { data: me, error } = await userDb.rpc('whoami');
     if (error || !me || me.role !== 'admin') return json(403, { error: 'Only family admins can do this.' });
-    return action === 'preview' ? preview(body, deps) : action === 'weekly_preview' ? weeklyPreview(body, deps, me) : status(userDb, deps);
+    return action === 'preview' ? preview(body, deps) : action === 'weekly_preview' ? weeklyPreview(body, deps, me)
+      : action === 'due_preview' ? duePreview(deps, me) : status(userDb, deps);
   }
   if (action === 'calendar' || action === 'calendar_test') return calendar(req, action, body, deps);
   if (action === 'school') return school(req, deps);
   if (action === 'homework_ai') return homeworkAi(req, body, deps);
-  return json(400, { error: 'Unknown action. Use digest, preview, weekly_preview, status, calendar, calendar_test, school or homework_ai.' });
+  return json(400, { error: 'Unknown action. Use digest, preview, weekly_preview, due_preview, status, calendar, calendar_test, school or homework_ai.' });
 }
 
 // ---------------------------------------------------------------------
@@ -331,6 +339,29 @@ async function digest(req: Request, deps: Deps): Promise<Response> {
           if (fin.error) throw new Error(`finish_notification: ${message(fin.error)}`);
         }
       }
+
+      // Due tomorrow (from migration 0029): the same budget, claim and finish, after the Sunday sheets. Asked for
+      // only on 29 and up, as above.
+      if (stop === null && ver && !ver.error && Number(ver.data) >= 29) {
+        const ddue = await db.rpc('due_due', { p_limit: BATCH });
+        if (ddue.error && !noSchema(ddue.error)) throw new Error(`due_due: ${message(ddue.error)}`);
+        const drows: Row[] = !ddue.error && Array.isArray(ddue.data) ? ddue.data : [];
+        tally.due += drows.length;
+        for (const row of drows) {
+          const budget = await db.rpc('email_budget_left');
+          if (budget.error) throw new Error(`email_budget_left: ${message(budget.error)}`);
+          if (!(Number(budget.data) > 0)) { stop = 'budget'; break; }
+
+          const claim = await db.rpc('claim_notification', { p_person: row.person_id, p_local_date: row.local_date, p_kind: 'due' });
+          if (claim.error) throw new Error(`claim_notification: ${message(claim.error)}`);
+          if (!claim.data) { tally.busy++; continue; }
+
+          const outcome = await deliver({ ...row, kind: 'due' }, db, deps, site!, { apiKey: apiKey!, from: from!, pace, sleep, canSignIn });
+          tally[outcome.status]++;
+          const fin = await db.rpc('finish_notification', { p_id: claim.data, p_status: outcome.status, p_detail: outcome.detail });
+          if (fin.error) throw new Error(`finish_notification: ${message(fin.error)}`);
+        }
+      }
     } catch (err) {
       stop = 'error';
       error = message(err);
@@ -424,6 +455,18 @@ async function deliver(row: Row, db: Db, deps: Deps, site: string, resend: Sende
       if (!made.sheets.length) return { status: 'skipped', detail: 'No sheet to send.' };
       to = p.email;
       email = renderWeekly(made.sheets, p);
+    } else if (row.kind === 'due') {
+      const { data: p, error } = await db.from('people')
+        .select('id, name, email, language, active, email_verified_at').eq('id', row.person_id).maybeSingle();
+      if (error) return { status: 'failed', detail: `people: ${message(error)}` };
+      if (!p || !p.active) return { status: 'skipped', detail: 'Not on the family list any more.' };
+      if (!p.email) return { status: 'skipped', detail: 'No email address.' };
+      if (!p.email_verified_at) return { status: 'skipped', detail: 'The address isn\'t confirmed.' };
+      const { data: list, error: lErr } = await db.rpc('due_list', { p_day: row.local_date, p_lang: p.language === 'es' ? 'es' : 'en' });
+      if (lErr) return { status: 'failed', detail: `due_list: ${message(lErr)}` };
+      if (!list || !Array.isArray((list as DueList).kids)) return { status: 'failed', detail: 'due_list gave no lists.' };
+      to = p.email;
+      email = renderDue(list as DueList, p);
     } else {
       return { status: 'skipped', detail: `Unknown kind ${oneLine(row.kind).slice(0, 20)}.` };
     }
@@ -582,6 +625,32 @@ async function weeklyPreview(body: Record<string, unknown>, deps: Deps, me: { pe
   const e = renderWeekly(made.sheets, { language: me?.person?.language });
   return json(200, { monday, sunday: addDays(monday, 6), sheets: made.sheets.length, at: hh?.weekly_at ?? null, to,
                      subject: e.subject, html: e.html, text: e.text });
+}
+
+// due_preview: this evening's Due tomorrow email, as Settings shows it. Nothing is sent or logged.
+async function duePreview(deps: Deps, me: { person?: { language?: string } | null } | null): Promise<Response> {
+  if (!deps.env('SUPABASE_URL') || !serviceKey(deps.env)) return json(503, { error: 'The function has no Supabase service key.' });
+  const db = deps.service();
+  const { data: today, error: tErr } = await db.rpc('today_local');
+  if (tErr || !isDate(today)) return json(500, { error: `Could not read the household's date: ${message(tErr)}` });
+  const l = me?.person?.language === 'es' ? 'es' : 'en';
+  const { data: list, error } = await db.rpc('due_list', { p_day: today, p_lang: l });
+  if (error) {
+    return noSchema(error) ? json(503, { stop: 'no_schema', error: 'Due tomorrow needs migration 0029.' }) : json(500, { error: `due_list: ${message(error)}` });
+  }
+  if (!list || !Array.isArray((list as DueList).kids)) return json(500, { error: 'due_list gave no lists.' });
+  const { data: hh } = await db.from('household').select('due_at, due_to').eq('id', true).maybeSingle();
+  const ids: string[] = Array.isArray(hh?.due_to) ? hh.due_to : [];
+  const { data: people } = ids.length
+    ? await db.from('people').select('id, name, email, language, active, email_verified_at')
+    : { data: [] };
+  const to = ((people || []) as { id: string; name: string; email: string | null; active: boolean; email_verified_at: string | null }[])
+    .filter((p) => ids.includes(p.id))
+    .sort((a, b) => ids.indexOf(a.id) - ids.indexOf(b.id))
+    .map((p) => ({ person_id: p.id, name: oneLine(p.name), would_send: !!(p.active && p.email && p.email_verified_at),
+                   reason: !p.active ? 'inactive' : !p.email ? 'no_email' : !p.email_verified_at ? 'unconfirmed' : null }));
+  const e = renderDue(list as DueList, { language: l });
+  return json(200, { day: today, at: hh?.due_at ?? null, to, subject: e.subject, html: e.html, text: e.text });
 }
 
 // ---------------------------------------------------------------------
