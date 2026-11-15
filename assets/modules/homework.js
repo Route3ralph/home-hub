@@ -722,6 +722,37 @@
   }
 
   // One assignment's row: title, its line, and its state; its two bars when its plan is given.
+  // 0032: a class the parents ticked "Check the portal" for (the same words, any case, the spaces at the ends ignored).
+  const norm = (x) => String(x || '').trim().toLowerCase();
+  const portalClass = (st, subject) => !!subject && Array.isArray(st.row && st.row.portal_classes)
+    && st.row.portal_classes.some((c) => norm(c) === norm(subject));
+  // The classes to offer: every class on his assignments, and those already ticked, A to Z.
+  const classesOf = (st) => [...new Map([...st.assignments.map((a) => a.subject), ...((st.row && st.row.portal_classes) || [])]
+    .filter((x) => x && String(x).trim()).map((x) => [norm(x), String(x).trim()])).values()].sort((a, b) => a.localeCompare(b));
+  function portalRowHTML(st) {
+    const ticked = (st.row.portal_classes || []);
+    const list = ticked.length ? `Ticked: ${ticked.join(', ')}.` : 'No class ticked.';
+    return `<div class="hw-switch-row" data-row="portal"><p class="hw-switch-title">Check the portal</p>
+      <small class="hw-switch-line">${esc(`For a class whose assignments often leave things out: each of its assignments says "Check the portal for details" here, on ${kidName(st)}'s My day and in the Due tomorrow email. ${list}`)}</small>
+      ${btn('portal-classes', 'Choose classes')}</div>`;
+  }
+  function portalForm(st) {
+    const classes = classesOf(st);
+    if (!classes.length) { toast('No classes yet: they come from his assignments.'); return; }
+    core.openForm({
+      title: 'Check the portal',
+      intro: 'Tick the classes whose assignments should say "Check the portal for details".',
+      fields: classes.map((c, n) => ({ name: `c${n}`, label: c, type: 'checkbox', value: portalClass(st, c) })),
+      submitLabel: 'Save',
+      onSubmit: async (v) => {
+        const picked = classes.filter((c, n) => !!v[`c${n}`]);
+        await saveKid(st, { portal_classes: picked });
+        await reload(st, true);
+        toast(picked.length ? `Check the portal: ${picked.join(', ')}` : 'Check the portal: no class ticked');
+      },
+    });
+  }
+
   function assignmentRow(st, a) {
     const steps = stepsOf(st, a.id);
     const tutor = tutorFirst(st);
@@ -745,9 +776,13 @@
       bars = P.bars(ed.minutes_left, ed.time_left, { lang: 'en', horizon: ed.horizon, no_time: ed.no_time });
     }
     const mark = (markWord(a) ? ` <span class="hw-mark hw-mark-${esc(a.school_mark)}">${esc(markWord(a))}</span>` : '')
-      + (countWord(a) ? ` <span class="hw-mark hw-count">${esc(countWord(a))}</span>` : '');
+      + (countWord(a) ? ` <span class="hw-mark hw-count">${esc(countWord(a))}</span>` : '')
+      + (a.is_test === true ? ' <span class="hw-mark hw-test">Test</span>' : '');
+    // 0032: what its text says to do, and Check the portal for a class the parents ticked.
+    const what = a.what ? `<span class="hw-arow-what">${esc(`What to do: ${a.what}`)}</span>` : '';
+    const portal = a.status === 'open' && portalClass(st, a.subject) ? '<span class="hw-arow-portal">Check the portal for details</span>' : '';
     return `<li><a class="hw-arow" href="#/homework/${esc(a.id)}"><span class="hw-arow-title">${esc(a.title)}${mark}</span>`
-      + `<span class="hw-arow-sub">${esc(sub.filter(Boolean).join(' · '))}</span><span class="hw-arow-state">${esc(state)}</span></a>${bars}</li>`;
+      + `<span class="hw-arow-sub">${esc(sub.filter(Boolean).join(' · '))}</span>${what}${portal}<span class="hw-arow-state">${esc(state)}</span></a>${bars}</li>`;
   }
 
   // ---------- Print (the Assignments card's Print): his open assignments and lessons on paper, by due date, each with its
@@ -1127,6 +1162,7 @@
           ${admin ? btn('change-time', 'Change', ` data-event="${esc(e.id)}"`) : ''}</li>`).join('')}</ul>` : `<p class="hw-switch-line">${esc(times || 'No homework time set')}</p>`}
         ${admin && st.events.length ? `<details class="hw-addtime"><summary>Add another time</summary>${timeFormHTML(false)}</details>` : ''}</div>`);
       if (core.schemaVersion >= 19) rows.push(routineRowHTML(st));
+      if (core.schemaVersion >= 32 && admin) rows.push(portalRowHTML(st));
       // The coach (0021): his New from school, to add or hide; the links themselves stay the parents'.
       if (!admin && canCoach() && core.schemaVersion >= 6 && st.school && st.school.feeds && st.school.feeds.length) {
         rows.push(`<div class="hw-switch-row" data-row="school"><p class="hw-switch-title">New from school</p>${schoolItemsHTML(st)
@@ -2437,6 +2473,7 @@
       case 'school-remove': removeSchool(st, d.feed); break;
       case 'school-pause': case 'school-resume': pauseSchool(st, d.feed, d.act === 'school-pause'); break;
       case 'school-auto': autoSchool(st, d.feed, d.on === '1'); break;
+      case 'portal-classes': portalForm(st); break;
       case 'school-now': checkNow(st); break;
       case 'school-off': st.schoolOff = true; draw(st); break;
       case 'school-redate': st.schoolRedate = !st.schoolRedate; st.schoolOff = false; draw(st); break;

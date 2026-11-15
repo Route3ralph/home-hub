@@ -2377,7 +2377,11 @@ function hwKidProblem(r) {
   if (![10, 15, 20, 25].includes(r.focus_minutes)) return hwCheck('homework_kids', 'homework_kids_focus_minutes_check');
   const range = { pts_focus: [0, 5], pts_on_time: [0, 50], pts_milestone: [0, 100], pts_day_cap: [0, 300], pts_milestone_week: [0, 400], instant_day: [0, 10] };
   const bad = Object.keys(range).find((k) => !(Number.isInteger(r[k]) && r[k] >= range[k][0] && r[k] <= range[k][1]));
-  return bad ? hwCheck('homework_kids', `homework_kids_${bad}_check`) : null;
+  if (bad) return hwCheck('homework_kids', `homework_kids_${bad}_check`);
+  // 0032: at most 20 classes, 1 to 40 characters each.
+  if (r.portal_classes !== undefined && !(Array.isArray(r.portal_classes) && r.portal_classes.length <= 20
+    && r.portal_classes.every((c) => typeof c === 'string' && c.trim().length >= 1 && c.trim().length <= 40))) return hwCheck('homework_kids', 'homework_kids_portal_classes_check');
+  return null;
 }
 function homeworkTables(db, table, method, body, member, rows) {
   if (table === 'household' && db.homework_kids && method === 'PATCH' && body && ('homework_ai' in body || 'homework_never_send' in body || 'homework_ai_month' in body)) {
@@ -2399,7 +2403,7 @@ function homeworkTables(db, table, method, body, member, rows) {
   try {
     if (method === 'GET') return { rows: ['tutor_links', 'ai_runs'].includes(table) && !admin ? [] : rows };
     if (table === 'homework_kids') {
-      if (method !== 'PATCH' || !only(HW_KID_UPDATE)) return denied;
+      if (method !== 'PATCH' || !only(db.clarity32 ? HW_KID_UPDATE.concat(['portal_classes']) : HW_KID_UPDATE)) return denied;   // 0032: portal_classes
       if (!admin) return { status: 200, rows: [] };
       const next = rows.map((r) => Object.assign({}, r, body, { updated_at: foodStamp(db), updated_by: email }));
       next.forEach((n) => { const bad = hwKidProblem(n); if (bad) throw bad; });
@@ -3075,6 +3079,20 @@ const tkStepsOf = (db, aid) => db.homework_steps.filter((s) => s.assignment_id =
 // 0007: his view's me.coach, the first word of the label of his first tutor link (active, not ended) with the coach
 // view on, so his screen can say that link sees his points too; left out with none (as on 6).
 function tkViewKid(db, kid) {
+  const v = tkViewKid31(db, kid);
+  // 0032 (db.clarity32): each assignment with what, test and portal where they apply, from its row (fixtures set the
+  // generated what and is_test) and the kid's portal_classes.
+  if (!v || !db.clarity32 || !Array.isArray(v.assignments)) return v;
+  const k = (db.homework_kids || []).find((x) => x.kid_id === kid) || {};
+  const norm = (x) => String(x || '').trim().toLowerCase();
+  const portal = (subject) => !!subject && (k.portal_classes || []).some((c) => norm(c) === norm(subject));
+  v.assignments = v.assignments.map((x) => {
+    const a = (db.assignments || []).find((r) => r.id === x.id) || {};
+    return Object.assign(x, a.what ? { what: a.what } : {}, a.is_test ? { test: true } : {}, portal(a.subject) ? { portal: true } : {});
+  });
+  return v;
+}
+function tkViewKid31(db, kid) {
   const v = tkViewKid30(db, kid);
   // 0031: his view says reminders are on, with the household's time (none while db.pushAt is null).
   return v && db.push31 && db.pushAt ? Object.assign(v, { reminders: { at: db.pushAt } }) : v;

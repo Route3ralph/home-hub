@@ -165,6 +165,9 @@ function fakeDb(who: string, st: any) {
     check('more than 4: the first 4 and "and 2 more", each title on one line', many.body === 'A task line, B task line, C task line, D task line and 2 more.', many.body);
     check('the link: his My day\'s homework, only with a site and a real code', dayUrl('https://family.example/hub/', TOKEN) === `https://family.example/hub/day.html?t=${TOKEN}#homework`
       && dayUrl(null, TOKEN) === null && dayUrl('https://family.example/hub/', 'nope') === null);
+    const exam = reminderFor({ ...list(), kids: [{ ...list().kids[0], late: [], tomorrow: [{ title: 'Listening, chapters 1 to 6', test: true }, { title: 'Volcano poster' }] }] }, JORDAN, 'en', url)!;
+    check('0032: a test says so in the reminder', exam.body === 'Listening, chapters 1 to 6 (test), Volcano poster.', exam.body);
+    check('... in Spanish "(examen)"', reminderFor({ ...list('es'), kids: [{ ...list('es').kids[0], late: [], tomorrow: [{ title: 'Escucha', test: true }] }] }, JORDAN, 'es', url)!.body === 'Escucha (examen).');
     check('the test notification', testNote('en', '16:00', url).body === 'This is a test. Your homework reminder comes every day at 16:00.');
   }
 

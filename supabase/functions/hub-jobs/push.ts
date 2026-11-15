@@ -134,12 +134,12 @@ const WORDS = {
   en: {
     title: 'Due tomorrow ({day})', title_none: 'Nothing due tomorrow ({day})',
     late: 'Not marked done yet: {n}.', late_one: 'Not marked done yet: 1.', all_done: 'All done for tomorrow.',
-    more: 'and {n} more', test_title: 'Home Hub reminders are on', test_body: 'This is a test. Your homework reminder comes every day at {at}.',
+    more: 'and {n} more', is_test: '(test)', test_title: 'Home Hub reminders are on', test_body: 'This is a test. Your homework reminder comes every day at {at}.',
   },
   es: {
     title: 'Para mañana ({day})', title_none: 'Nada para mañana ({day})',
     late: 'Sin marcar como hecho: {n}.', late_one: 'Sin marcar como hecho: 1.', all_done: 'Todo hecho para mañana.',
-    more: 'y {n} más', test_title: 'Los recordatorios de Home Hub están activados', test_body: 'Es una prueba. Tu recordatorio de tareas llega cada día a las {at}.',
+    more: 'y {n} más', is_test: '(examen)', test_title: 'Los recordatorios de Home Hub están activados', test_body: 'Es una prueba. Tu recordatorio de tareas llega cada día a las {at}.',
   },
 } as const;
 type Lang = keyof typeof WORDS;
@@ -165,7 +165,8 @@ export function reminderFor(list: DueList, kidId: string, language: unknown, url
   const late = arr<DueItem>(kid.late).length;
   if (!tomorrow.length && !late) return null;
   const day = oneLine(list.tomorrow_label);
-  const titles = open.slice(0, MAX_TITLES).map((it) => cut(oneLine(it.title), 60));
+  // 0032: a test says so ("Listening, chapters 1 to 6 (test)").
+  const titles = open.slice(0, MAX_TITLES).map((it) => cut(oneLine(it.title), 60) + (it.test ? ` ${w(l, 'is_test')}` : ''));
   const parts: string[] = [];
   if (titles.length) parts.push(titles.join(', ') + (open.length > MAX_TITLES ? ` ${w(l, 'more', { n: open.length - MAX_TITLES })}` : '') + '.');
   else if (tomorrow.length) parts.push(w(l, 'all_done'));

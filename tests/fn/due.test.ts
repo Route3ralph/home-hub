@@ -56,6 +56,20 @@ const empty = (): DueList => ({ ...list(), kids: [{ id: JORDAN, name: 'Jordan', 
     && es.html.includes('Falta') && es.html.includes('Próximamente, hasta el mar 17 nov') && es.html.includes('5 de 7'));
   const two = renderDue({ ...list(), kids: [list().kids[0], { id: TAYLOR, name: 'Taylor', tomorrow: [{ title: 'Spelling', due: '2026-11-14', due_label: 'Sat Nov 14' }], late: [], coming: [] }] }, { language: 'en' });
   check('two kids: a heading each, and both in the subject', two.subject === 'Due tomorrow (Sat Nov 14): 1 for Jordan, 1 for Taylor' && two.html.includes('>Jordan</h2>') && two.html.includes('>Taylor</h2>'));
+  // 0032: what to do, a test and Check the portal, on the open ones only.
+  const clear = (lang = 'en'): DueList => ({ ...list(lang), kids: [{ ...list(lang).kids[0], late: [], coming: [],
+    tomorrow: [{ title: 'Study for the novel', subject: 'Spanish', due: '2026-11-14', due_label: 'Sat Nov 14', what: 'Print the story PDF. Underline the <b>verbs</b>.', portal: true },
+               { title: 'Listening, chapters 1 to 6', subject: 'Spanish', due: '2026-11-14', due_label: 'Sat Nov 14', test: true, portal: true },
+               { title: 'Verbs worksheet', subject: 'Spanish', due: '2026-11-14', due_label: 'Sat Nov 14', done: true, what: 'Done already.', portal: true }] }] });
+  const c = renderDue(clear(), { language: 'en' });
+  check('0032: an open item\'s what-to-do line under it, escaped', c.html.includes('What to do: Print the story PDF. Underline the &lt;b&gt;verbs&lt;/b&gt;.') && !c.html.includes('<b>verbs</b>'), c.html.slice(0, 0));
+  check('... Check the portal for a ticked class, on each open one (twice here), never the done one', (c.html.match(/Check the portal for details\./g) || []).length === 2 && !c.html.includes('Done already.'));
+  check('... a test says Test in its line', c.html.includes('Listening, chapters 1 to 6</span><span style="color:#5f574c;"> · Spanish · Test</span>'));
+  check('... and the text part has them, indented under the item',
+    c.text.includes('[ ] Study for the novel · Spanish\n    What to do: Print the story PDF. Underline the <b>verbs</b>.\n    Check the portal for details.')
+    && c.text.includes('[ ] Listening, chapters 1 to 6 · Spanish · Test\n    Check the portal for details.') && !c.text.includes('Done already.'), c.text);
+  const ce = renderDue(clear('es'), { language: 'es' });
+  check('... in Spanish', ce.html.includes('Qué hacer: Print the story PDF.') && ce.html.includes('Revisa el portal para más detalles.') && ce.html.includes(' · Spanish · Examen'));
   const none = renderDue({ ...list(), kids: [] }, { language: 'en' });
   check('nobody with homework on: says so', none.html.includes('Nobody has homework turned on.'));
 }

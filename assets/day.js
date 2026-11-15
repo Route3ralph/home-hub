@@ -168,6 +168,8 @@
       hw_school_pat: 'Plan with {tutor}', hw_school_pat_none: 'Plan with your parents', hw_school_hide: 'Hide',
       hw_school_planned: 'Planned for {day}: {title}', hw_school_for_pat: 'On your homework, to plan with {tutor}: {title}',
       hw_school_for_pat_none: 'On your homework, to plan with your parents: {title}', hw_school_hidden: 'Hidden: {title}. A parent can bring it back.',
+      // What to do, Test and Check the portal (0032, docs/v1.3-homework.md §32).
+      hw_what: 'What to do: {text}', hw_test: 'Test', hw_portal: 'Check the portal for details.',
       // Phone reminders (0031, docs/v1.3-homework.md §31).
       hw_remind_off: 'Get a reminder of tomorrow\'s homework on this phone every day at {at}.',
       hw_remind_off_notime: 'Get a reminder of tomorrow\'s homework on this phone every day, once a parent picks the time.',
@@ -306,6 +308,7 @@
       hw_school_pat: 'Planear con {tutor}', hw_school_pat_none: 'Planear con tus padres', hw_school_hide: 'Ocultar',
       hw_school_planned: 'Planeado para {day}: {title}', hw_school_for_pat: 'En tu tarea, para planear con {tutor}: {title}',
       hw_school_for_pat_none: 'En tu tarea, para planear con tus padres: {title}', hw_school_hidden: 'Oculta: {title}. Tus padres pueden recuperarla.',
+      hw_what: 'Qué hacer: {text}', hw_test: 'Examen', hw_portal: 'Revisa el portal para más detalles.',
       hw_remind_off: 'Recibe cada día a las {at} un recordatorio de la tarea de mañana en este teléfono.',
       hw_remind_off_notime: 'Recibe cada día un recordatorio de la tarea de mañana en este teléfono, cuando tus padres elijan la hora.',
       hw_remind_on: 'Recordatorios activados: cada día a las {at}.', hw_remind_on_notime: 'Recordatorios activados. Tus padres eligen la hora.',
@@ -2054,6 +2057,13 @@
   }
   // An assignment with no plan, due within 3 days: Quick (his guess of the minutes) or a block on it.
   const quickDue = (a) => plan.daysBetween(hv.today, a.due_date) <= 3;
+  // 0032: what its text says to do (the teacher's words, cut short), a Test tag, and Check the portal.
+  function whatHTML(a) {
+    const tag = a.test === true ? `<span class="hw-tag-test">${esc(hw('hw_test'))}</span>` : '';
+    const what = a.what ? `<span class="hw-what-text">${esc(hw('hw_what', { text: a.what }))}</span>` : '';
+    const portal = a.portal === true && a.status === 'open' ? `<p class="hw-portal">${esc(hw('hw_portal'))}</p>` : '';
+    return `${tag || what ? `<p class="hw-what">${tag}${tag && what ? ' ' : ''}${what}</p>` : ''}${portal}`;
+  }
   function noPlanHTML(a) {
     const title = [a.subject, a.title, plan.t(a.kind === 'lesson' ? 'do_by' : 'due_on', { day: hwRel(a.due_date) }, lang)].filter(Boolean).join(' · ');
     const chips = quickOpen === a.id ? `<div class="hw-quick-chips"><span>${esc(hw('hw_quick_q'))}</span>
@@ -2063,6 +2073,7 @@
       <span class="hw-noplan-acts"><button type="button" class="btn btn-sm" data-act="hw-quick" data-asg="${esc(a.id)}" aria-expanded="${quickOpen === a.id}">${esc(plan.t('quick', null, lang))}</button>
       <button type="button" class="btn btn-sm" data-act="hw-asg-start" data-asg="${esc(a.id)}">${esc(hw('hw_start'))}</button></span>
       ${chips}
+      ${whatHTML(a)}
       ${countHTML(a)}
     </div>`;
   }
@@ -2126,6 +2137,7 @@
       .map((s) => `<p class="hw-note">${esc(s.not_yet ? plan.t('not_yet', { note: s.coach.text }, lang) : plan.t('coach_note', { who: whoOf(s.coach.by), note: s.coach.text }, lang))}</p>`).join('') : '';
     return `<div class="hw-asg${a.status !== 'open' ? ' is-closed' : ''}" data-asg="${esc(a.id)}">
       <p class="hw-asg-line">${esc(bits.filter(Boolean).join(' · '))}${tail}</p>
+      ${whatHTML(a)}
       ${countHTML(a)}
       ${passed && given ? talkHTML(a, passed) : ''}
       ${given ? plan.bars(a.minutes_left, a.time_left, { lang, horizon: a.horizon, no_time: a.no_time }) : ''}
