@@ -2662,6 +2662,60 @@ const emailOf = (req) => {
     await page.context().close();
   }
 
+  // =====================================================================
+  // 17. What to do, Test and Check the portal (schema 32, 0032; docs/v1.3-homework.md §32): an assignment's row says what
+  // its text asks, a Test tag, and Check the portal for a class a parent ticked under Switches (Choose classes)
+  // =====================================================================
+  {
+    const LATER = { routine_status: () => ({ points: 0, sections: [], today: null }), can_coach: () => false };
+    const RPC31 = Object.assign({}, RPC8, LATER, { hub_schema_version: () => 31 });
+    const RPC32 = Object.assign({}, RPC8, LATER, { hub_schema_version: () => 32 });
+    const SCI = 'a5c10000-0000-4000-8000-000000000001', HIST = 'a5c10000-0000-4000-8000-000000000004';
+    const cdb = (v32) => {
+      // The school links and the coach view are read from 6 and 7 on: the database has both.
+      const d = withCoach(withSchoolCheck(fullDb()));
+      if (v32) d.clarity32 = true;
+      Object.assign(d.assignments.find((a) => a.id === SCI), { what: 'Make a poster about a <b>river</b>. Show its source, its mouth and one animal that lives in it.' });
+      Object.assign(d.assignments.find((a) => a.id === HIST), { is_test: true });
+      return d;
+    };
+    const ROW = (id) => `.hw-arow[href="#/homework/${id}"]`;
+    ({ page, db } = await open({ label: 'clarity-31', db: cdb(false), rpc: RPC31 }));
+    check('schema 31: no Check the portal row under Switches', !(await page.$('[data-row="portal"]')));
+    await page.context().close();
+
+    ({ page, db } = await open({ label: 'clarity-32', db: cdb(true), rpc: RPC32 }));
+    check('schema 32: the river poster\'s row says what to do (the teacher\'s words, as text)',
+      (await tc(page, `${ROW(SCI)} .hw-arow-what`)) === 'What to do: Make a poster about a <b>river</b>. Show its source, its mouth and one animal that lives in it.',
+      await tc(page, ROW(SCI)));
+    check('... the history timeline has a Test tag', (await tc(page, `${ROW(HIST)} .hw-test`)) === 'Test', await tc(page, ROW(HIST)));
+    check('... no class ticked: no Check the portal anywhere', !(await page.$('.hw-arow-portal')));
+    check('... Switches: Check the portal, "No class ticked.", with Choose classes',
+      /No class ticked\./.test(await tc(page, '[data-row="portal"]')) && !!(await page.$('[data-row="portal"] [data-act="portal-classes"]')), await tc(page, '[data-row="portal"]'));
+    await page.click('[data-row="portal"] [data-act="portal-classes"]');
+    await page.waitForSelector('#formDialog[open]');
+    const labels = await page.$$eval('#formDialog [type="checkbox"]', (es) => es.map((e) => e.closest('label').textContent.trim()));
+    check('Choose classes: every class on his assignments, A to Z, none ticked', same(labels, ['English', 'History', 'Math', 'Science'])
+      && (await page.$$eval('#formDialog [type="checkbox"]', (es) => es.every((e) => !e.checked))), JSON.stringify(labels));
+    await page.check('#formDialog label:has-text("Science") input');
+    await page.click('#formDialog [type="submit"]');
+    await settle(page);
+    const k = db.homework_kids.find((x) => x.kid_id === ID.jordan);
+    check('Save: homework_kids.portal_classes is ["Science"], and the toast says so', same(k.portal_classes, ['Science'])
+      && (await lastToast(page)) === 'Check the portal: Science', `${JSON.stringify(k.portal_classes)} | ${await lastToast(page)}`);
+    check('... the river poster now says Check the portal for details; the history timeline doesn\'t',
+      (await tc(page, `${ROW(SCI)} .hw-arow-portal`)) === 'Check the portal for details' && !(await page.$(`${ROW(HIST)} .hw-arow-portal`)));
+    check('... and the row lists what\'s ticked', /Ticked: Science\./.test(await tc(page, '[data-row="portal"]')), await tc(page, '[data-row="portal"]'));
+    await page.context().close();
+
+    ({ page, db } = await open({ label: 'clarity-sam', db: cdb(true), rpc: RPC32, email: 'sam@example.com' }));
+    check('Sam (not a parent): no Choose classes', !(await page.$('[data-act="portal-classes"]')));
+    await page.context().close();
+    ({ page, db } = await open({ label: 'clarity-320', db: cdb(true), rpc: RPC32, ctx: { viewport: { width: 320, height: 700 }, isMobile: true, hasTouch: true } }));
+    check('320px: no sideways page scroll with the what-to-do lines', await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth));
+    await page.context().close();
+  }
+
   console.log(results.join('\n'));
   console.log(`\n${results.filter((r) => r.startsWith('PASS')).length}/${results.length} passed`);
   console.log('PAGE ERRORS:', errors.length ? '\n' + errors.join('\n') : 'none');

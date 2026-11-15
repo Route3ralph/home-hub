@@ -2377,7 +2377,11 @@ function hwKidProblem(r) {
   if (![10, 15, 20, 25].includes(r.focus_minutes)) return hwCheck('homework_kids', 'homework_kids_focus_minutes_check');
   const range = { pts_focus: [0, 5], pts_on_time: [0, 50], pts_milestone: [0, 100], pts_day_cap: [0, 300], pts_milestone_week: [0, 400], instant_day: [0, 10] };
   const bad = Object.keys(range).find((k) => !(Number.isInteger(r[k]) && r[k] >= range[k][0] && r[k] <= range[k][1]));
-  return bad ? hwCheck('homework_kids', `homework_kids_${bad}_check`) : null;
+  if (bad) return hwCheck('homework_kids', `homework_kids_${bad}_check`);
+  // 0032: at most 20 classes, 1 to 40 characters each.
+  if (r.portal_classes !== undefined && !(Array.isArray(r.portal_classes) && r.portal_classes.length <= 20
+    && r.portal_classes.every((c) => typeof c === 'string' && c.trim().length >= 1 && c.trim().length <= 40))) return hwCheck('homework_kids', 'homework_kids_portal_classes_check');
+  return null;
 }
 function homeworkTables(db, table, method, body, member, rows) {
   if (table === 'household' && db.homework_kids && method === 'PATCH' && body && ('homework_ai' in body || 'homework_never_send' in body || 'homework_ai_month' in body)) {
@@ -2399,7 +2403,7 @@ function homeworkTables(db, table, method, body, member, rows) {
   try {
     if (method === 'GET') return { rows: ['tutor_links', 'ai_runs'].includes(table) && !admin ? [] : rows };
     if (table === 'homework_kids') {
-      if (method !== 'PATCH' || !only(HW_KID_UPDATE)) return denied;
+      if (method !== 'PATCH' || !only(db.clarity32 ? HW_KID_UPDATE.concat(['portal_classes']) : HW_KID_UPDATE)) return denied;   // 0032: portal_classes
       if (!admin) return { status: 200, rows: [] };
       const next = rows.map((r) => Object.assign({}, r, body, { updated_at: foodStamp(db), updated_by: email }));
       next.forEach((n) => { const bad = hwKidProblem(n); if (bad) throw bad; });
@@ -3075,6 +3079,20 @@ const tkStepsOf = (db, aid) => db.homework_steps.filter((s) => s.assignment_id =
 // 0007: his view's me.coach, the first word of the label of his first tutor link (active, not ended) with the coach
 // view on, so his screen can say that link sees his points too; left out with none (as on 6).
 function tkViewKid(db, kid) {
+  const v = tkViewKid31(db, kid);
+  // 0032 (db.clarity32): each assignment with what, test and portal where they apply, from its row (fixtures set the
+  // generated what and is_test) and the kid's portal_classes.
+  if (!v || !db.clarity32 || !Array.isArray(v.assignments)) return v;
+  const k = (db.homework_kids || []).find((x) => x.kid_id === kid) || {};
+  const norm = (x) => String(x || '').trim().toLowerCase();
+  const portal = (subject) => !!subject && (k.portal_classes || []).some((c) => norm(c) === norm(subject));
+  v.assignments = v.assignments.map((x) => {
+    const a = (db.assignments || []).find((r) => r.id === x.id) || {};
+    return Object.assign(x, a.what ? { what: a.what } : {}, a.is_test ? { test: true } : {}, portal(a.subject) ? { portal: true } : {});
+  });
+  return v;
+}
+function tkViewKid31(db, kid) {
   const v = tkViewKid30(db, kid);
   // 0031: his view says reminders are on, with the household's time (none while db.pushAt is null).
   return v && db.push31 && db.pushAt ? Object.assign(v, { reminders: { at: db.pushAt } }) : v;
@@ -3783,7 +3801,7 @@ const tkCoachReward = tkCall('coach_reward_by_token', ['p_token', 'p_action', 'p
   const f = b.p_fields == null ? {} : b.p_fields;
   const kid = l.kid_id;
   const today = tkToday(db);
-  if (!['save_reward', 'remove_reward', 'decide', 'give', 'void'].includes(b.p_action)) throw new Raise('22023', "That can't be done here.");
+  if (!['save_reward', 'remove_reward', 'decide', 'give', 'void'].concat(db.tutorTake33 ? ['take'] : []).includes(b.p_action)) throw new Raise('22023', "That can't be done here.");
   if (!b.p_key) throw new Raise('22023', 'That needs its id.');
   if (typeof f !== 'object' || Array.isArray(f)) throw new Raise('22023', "That can't be saved.");
   if (tkLen(f.title) > 60 || tkLen(f.note) > 120) throw tkTooLong();
@@ -3852,6 +3870,28 @@ const tkCoachReward = tkCall('coach_reward_by_token', ['p_token', 'p_action', 'p
       db.points_ledger.push(tkLedgerRow({ id: b.p_key, kid_id: kid, at: tkStamp(db.hwNow), day: today, kind: 'given', delta: f.points, note, who }));
       changed = true;
     }
+  } else if (b.p_action === 'take') {   // 0033 (db.tutorTake33)
+    const old = db.points_ledger.find((x) => x.id === b.p_key);
+    if (old) {
+      if (old.kid_id !== kid || old.kind !== 'taken') throw new Raise('22023', 'That id is taken.');
+    } else {
+      if (!Number.isInteger(f.points) || f.points < 1 || f.points > 200) throw new Raise('22023', 'Take 1 to 200 points.');
+      const note = cleanText(f.note, 120);
+      if (!note) throw new Raise('22023', 'Say why the points come off.');
+      const k = tkKidOf(db, kid);
+      if (!k || !k.points_on) throw new Raise('42501', 'Points are off.');
+      const bal = tkBalance(db, kid);
+      const free = bal.balance - bal.held;
+      if (free <= 0) throw new Raise('P0001', 'There are no free points to take.');
+      if (f.points > free) throw new Raise('P0001', `Only ${free} points are free to take (the rest are spent or held for a reward he asked for).`);
+      const mon = tkMonday(today);
+      const used = db.points_ledger.filter((x) => x.kid_id === kid && x.kind === 'taken' && / \(tutor link\)$/.test(x.who || '') && x.day >= mon && x.day <= tkAdd(mon, 6))
+        .reduce((n, x) => n - x.delta, 0);
+      if (used + f.points > 200) throw new Raise('P0001', "That's more than 200 points this week taken through the tutor link. A parent can take more.");
+      tkCount(db, l.id, 'writes', 200);
+      db.points_ledger.push(tkLedgerRow({ id: b.p_key, kid_id: kid, at: tkStamp(db.hwNow), day: today, kind: 'taken', delta: -f.points, note, who }));
+      changed = true;
+    }
   } else {
     const note = cleanText(f.note, 120);
     if (!note) throw new Raise('22023', 'Say why.');
@@ -3882,6 +3922,8 @@ function tkCoachManage(db, l) {
       .map((q) => ({ id: q.id, title: q.title, cost: q.cost, asked_on: tkDayOf(db, q.asked_at) })),
     lines: db.points_ledger.filter((x) => x.kid_id === kid && x.day >= tkAdd(today, -29) && x.day <= today).sort(desc)
       .map((x) => ({ id: x.id, day: x.day, kind: x.kind, delta: x.delta, note: x.note, voided: db.points_ledger.some((z) => z.kind === 'void' && z.void_of === x.id) })),
+    // 0033: take: true and his free points (never below 0).
+    ...(db.tutorTake33 ? { take: true, free: Math.max(tkBalance(db, kid).balance - tkBalance(db, kid).held, 0) } : {}),
   };
 }
 // Before 0007 the coach's functions aren't there (PostgREST's PGRST202), whatever is sent.

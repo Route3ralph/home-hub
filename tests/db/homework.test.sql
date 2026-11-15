@@ -1751,9 +1751,12 @@ select test.is(pg_temp.keys(:'kv'::jsonb -> 'points') || ' | ' || pg_temp.keys(:
                '... points, week, load, on_time, a reward, an ask, a history entry');
 select test.is(pg_temp.keys(:'kv'::jsonb -> 'goal') || ' | ' || pg_temp.keys(:'kv'::jsonb -> 'goal' -> 'next') || ' | ' || pg_temp.keys(:'kv'::jsonb -> 'goal' -> 'now'),
                'next,now | cost,id,need,title | cost,id,instant,title', '... the next-reward bar');
-select test.is(pg_temp.strings(:'kv'::jsonb) ~* ('make a poster|rivera|@|alex|morgan|\msam\M|jordan|pat lee|tutor link|my day|' || test.person('Taylor')::text
+-- From 0032 (docs/v1.3-homework.md §32) each assignment's `what` is the teacher's own words, cut short, on purpose; nothing
+-- else of the text.
+select test.is(pg_temp.strings(:'kv'::jsonb || jsonb_build_object('assignments', (select coalesce(jsonb_agg(x - 'what'), '[]') from jsonb_array_elements(:'kv'::jsonb -> 'assignments') x)))
+                 ~* ('make a poster|rivera|@|alex|morgan|\msam\M|jordan|pat lee|tutor link|my day|' || test.person('Taylor')::text
                  || '|' || test.person('Alex')::text), false,
-               '... none of: the teacher''s text, an email, a family member''s name, the tutor''s label, a writer''s label, a person''s id');
+               '... none of: the teacher''s text (but an assignment''s what, from 0032), an email, a family member''s name, the tutor''s label, a writer''s label, a person''s id');
 select test.is(:'kv'::jsonb -> 'session', 'null'::jsonb, '... session: null with no block open');
 -- On a day without homework time, earlier steps are neither listed nor counted.
 :as_owner

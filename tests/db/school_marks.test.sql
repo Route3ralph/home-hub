@@ -38,7 +38,7 @@ insert into assignments (id, kid_id, kind, title, subject, due_date, status) val
 -- ---------------------------------------------------------------------
 -- The schema and its grants
 -- ---------------------------------------------------------------------
-select test.is(hub_schema_version(), 31, 'hub_schema_version is 31');
+select test.is(hub_schema_version(), 33, 'hub_schema_version is 33');
 select test.is((select string_agg(column_name || ' ' || data_type || ' ' || is_nullable || ' ' || coalesce(column_default, '-'), ', ' order by column_name)
                 from information_schema.columns where table_schema = 'public' and table_name = 'assignments' and column_name in ('school_mark', 'grade')),
                'grade text YES -, school_mark text YES -', 'assignments.school_mark and grade: text, null by default');
@@ -47,7 +47,7 @@ select test.ok(has_column_privilege('authenticated', 'public.assignments', 'scho
                and not has_column_privilege('anon', 'public.assignments', 'school_mark', 'select') and not has_column_privilege('anon', 'public.assignments', 'grade', 'update'),
                'grants: authenticated may update the two (the policies decide who); anon nothing');
 select test.is((select count(*)::int from pg_proc p where p.pronamespace in ('public'::regnamespace, 'private'::regnamespace)
-                and (p.prosrc ~ '\mschool_mark\M' or p.prosrc ~ '\mgrade\M') and p.proname <> 'due_list'), 0, 'no function reads them (not My day, the tutor link, the board, Google or an email) but Due tomorrow''s due_list (0029) ...');
+                and (p.prosrc ~ '\mschool_mark\M' or p.prosrc ~ '\mgrade\M') and p.proname not in ('due_list', 'due_list_v31', 'assignment_is_test')), 0, 'no function reads them (not My day, the tutor link, the board, Google or an email) but Due tomorrow''s due_list (0029''s, kept by 0032 as private.due_list_v31, and 0032''s; 0032''s assignment_is_test only has the word grade in its pattern, "summative grade") ...');
 select test.ok((select p.prosrc ~ '\mschool_mark\M' and p.prosrc !~ '\mgrade\M' from pg_proc p where p.proname = 'due_list'),
                '... which reads Missing only, never a grade (docs/v1.3-homework.md §29)');
 

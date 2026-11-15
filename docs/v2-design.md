@@ -1867,3 +1867,56 @@ alter table public.household add column push_at time;   -- every day at this tim
 
 ### Going live
 The site and `hub-jobs` (verify_jwt false, with the three VAPID secrets) go live first; then 0031; then a parent sets the time on Settings, and the kid turns them on on his phone. `cron.sql` doesn't change. Undoing it isn't needed (with `push_at` null nothing is sent). If wanted, as the migration's header writes it out: drop the six functions, drop the new `private.homework_view_kid` and rename `homework_view_kid_v30` back, delete the `'push'` rows, drop the table and the column, then 0030's `hub_schema_version()`.
+
+## 38. v1.3: What to do, Test and Check the portal
+
+What an assignment really asks, where the family already looks: a line from the teacher's own text, a Test tag, and "Check the portal for details" on a class a parent ticks. Its migration is `supabase/migrations/0032_school_clarity.sql` (after 0031); the plan is `docs/v1.3-homework.md` §32. One transaction; it refuses to run without 0031 ("Phone reminders (migration 0031) aren't installed"), twice ("already installed"), on a database set back to 31 ("set back to 31"), or on one that isn't as 0031 left it (`push_by_token`, `private.homework_view_kid`, `private.homework_view_kid_v30`, `due_list`, `private.day_label`, `private.short_name`, `assignments.count_goal`, no `homework_view_kid_v31`, `due_list_v31`, `private.assignment_what`, `assignments.what` or `assignments.is_test` yet).
+
+### Tables
+```sql
+alter table public.assignments
+  add column what text generated always as (private.assignment_what(p_details => details)) stored,
+  add column is_test boolean generated always as (private.assignment_is_test(p_title => title, p_details => details)) stored;
+alter table public.homework_kids
+  add column portal_classes text[] not null default '{}' check (private.portal_classes_ok(p_classes => portal_classes));
+grant update (portal_classes) on public.homework_kids to authenticated;
+```
+- `assignments.what`: the line that says what to do, worked out from `details` whenever it changes: the words after "What to turn in:" (or "What to hand in:", "What to submit:", "What to do:") when there are any, else its first sentence; a first sentence under 60 characters takes the next one too; at most 200 characters, cut at a word with "…". Null with no text. Nobody writes it.
+- `assignments.is_test`: its title has the word exam, test, quiz, examen or prueba, or its text's first 140 characters say "summative grade" or "formative grade" and the text isn't practice for one ("prepare for", "prepare you for", "practice assignment", "study for"). Nobody writes it.
+- `homework_kids.portal_classes`: the classes a parent ticked, as the school writes them; at most 20, each 1 to 40 characters (`private.portal_classes_ok`). Parents change it as they change his other homework settings (RLS as 0005's); empty for every kid.
+- `hub_schema_version()` returns 32.
+
+### Functions
+- `private.assignment_what(p_details text) returns text` and `private.assignment_is_test(p_title text, p_details text) returns boolean`: immutable, what the two columns are generated from (authenticated and service_role may run them, so their writes can compute them).
+- `private.portal_classes_ok(p_classes text[]) returns boolean`: the column's check.
+- `private.portal_class(p_kid uuid, p_subject text) returns boolean` (service_role, and the definer functions below): whether a parent ticked that class for him, ignoring case and the spaces at the ends.
+- `private.homework_view_kid(p_kid uuid, p_lang text)`: 0031's, now `private.homework_view_kid_v31`, unchanged, with each assignment's `what`, `test: true` and `portal: true` where they apply (no key where they don't). Every token writer answers it.
+- `due_list(p_day date, p_lang text)` (service_role only, as before): 0029's, now `private.due_list_v31`, unchanged, with `what`, `test: true` and `portal: true` on each item where they apply.
+
+### hub-jobs
+- `due.ts`: each line of the Due tomorrow email carries "Test" where it applies; under an open one, "What to do: …" and, for a ticked class, "Check the portal for details." (text and HTML, escaped).
+- `push.ts`: a title in the reminder gains "(test)" ("(examen)" in Spanish).
+
+### Client
+- Homework (`assets/modules/homework.js`), on schema 32: an assignment's row shows a **Test** mark, "What to do: …" and, for a ticked class, "Check the portal for details"; parents' **Switches → Check the portal** ticks the classes (from his assignments) and saves `homework_kids.portal_classes`.
+- My day (`assets/day.js`): the same three under each assignment ("Qué hacer", "Examen", "Revisa el portal para más detalles." in Spanish), where his view has them.
+
+### Going live
+The site and `hub-jobs` (verify_jwt false) go live first; then 0032; then a parent ticks the classes. `cron.sql` doesn't change. Undoing it isn't needed (with no class ticked the only change is the line and the tag). If wanted, as the migration's header writes it out: drop the new `due_list` and move `private.due_list_v31` back, drop the new `private.homework_view_kid` and rename `homework_view_kid_v31` back, drop `private.portal_class`, the column and `private.portal_classes_ok`, drop the two generated columns and their two functions, then 0031's `hub_schema_version()`.
+
+## 39. v1.3: Take points on the tutor link
+
+A tutor whose link runs the kid's rewards (§22 of `docs/v1.3-homework.md`) takes points off, as a parent or the coach can (§34). Its migration is `supabase/migrations/0033_tutor_take.sql` (after 0032); the plan is `docs/v1.3-homework.md` §33. One transaction; it refuses to run without 0032 ("What to do and Check the portal (migration 0032) aren't installed"), twice ("already installed"), on a database set back to 32 ("set back to 32"), or on one that isn't as 0032 left it (`coach_reward_by_token`, `take_points`, `private.tutor_link_by_token`, `private.coach_view`, `private.points_balance`, `private.count_homework`, `private.portal_class`, no `coach_reward_by_token_v32` or `private.coach_view_v32` yet).
+
+### Tables
+None. A take is a `points_ledger` row of kind `'taken'` (§34), its `who` "<link label> (tutor link)". `hub_schema_version()` returns 33.
+
+### Functions
+- `coach_reward_by_token(p_token text, p_action text, p_key uuid, p_fields jsonb default '{}') returns jsonb` (anon; security definer; same signature): one more action, `'take'` (`{points, note}`): for a link whose coach view and Can manage rewards are on, else null. 1 to 200 points (22023 "Take 1 to 200 points."), a reason of 1 to 120 characters (22023 "Say why the points come off." / "That's too long."), `p_key` the row's id (22023 "That needs its id."; another row's, "That id is taken."). Refused while points are off (42501 "Points are off."). Only his free points, his balance less what his waiting asks hold (P0001 "There are no free points to take." / "Only N points are free to take (the rest are spent or held for a reward he asked for)."). At most 200 a household week taken through tutor links, apart from the 200 they may give (P0001 "That's more than 200 points this week taken through the tutor link. A parent can take more."). One of the link's writes. A resent key writes nothing more (`changed: false`). Answers as its other actions: `{action, key, changed}` and the coach view. Every other action is 0012's function, now `private.coach_reward_by_token_v32`, unchanged (nobody may call it but the new one).
+- `private.coach_view(p_link uuid)`: 0012's, now `private.coach_view_v32`, unchanged, with `take: true` and `free` (his free points, 0 or more) in `manage` (only where `manage` is).
+
+### Client
+- The tutor link (`assets/day.js`), in Run his rewards, where `manage.take` is: **Take points** after Give points (how many, 1 to 200, and why, which he sees), saying how many are free; the database's refusals in its words. Its points' lines read "Taken away" ("Quitados").
+
+### Going live
+The site goes live first; then 0033. No Edge Function and no `cron.sql` change. Undoing it isn't needed (with nothing taken through a link every page is as on 32). If wanted, as the migration's header writes it out: drop the new `private.coach_view` and rename `coach_view_v32` back, drop the new `coach_reward_by_token`, move `private.coach_reward_by_token_v32` back and give anon and authenticated execute on it again, then 0032's `hub_schema_version()`.
