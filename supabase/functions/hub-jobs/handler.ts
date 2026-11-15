@@ -21,6 +21,14 @@
 //            From migration 0029, it also sends Due tomorrow (due.ts, docs/v1.3-homework.md §29): every evening from
 //            household.due_at, each person on due_to (due_due) gets one email of each homework kid's lists (due_list,
 //            in their language), kind 'due', local_date: the day it goes. Asked for only on 29 and up.
+//            From migration 0031, it also sends phone reminders (push.ts, docs/v1.3-homework.md §31): every day from
+//            household.push_at, each kid with homework on and a phone kept (push_due) gets one notification of what is
+//            due tomorrow (due_list, in his language), channel 'push'. Needs the VAPID secrets; without them nothing is
+//            sent and the run is as it was. Asked for only on 31 and up. Pushes don't count against the email budget.
+//   push_key  anyone (his My day): {} → { public_key } for subscribing, or 503 {stop: 'not_set_up'} without the
+//            VAPID secrets.
+//   push_test  admins: { person_id } → one test notification to that person's phones now: { sent, failed, gone }.
+//            503 {stop: 'no_schema'} before 0031, {stop: 'not_set_up'} without the VAPID secrets.
 //   preview  admins (their own sign-in): { date?: 'YYYY-MM-DD', person_id?: uuid } → the rendered
 //            emails, one per person, without sending or logging anything.
 //   status   admins: the last 10 runs and today's emails, as counts and fixed messages.
@@ -75,6 +83,8 @@ import { renderDue } from './due.ts';
 import type { DueList } from './due.ts';
 import type { Sheet } from './weekly.ts';
 import { noSchema } from './util.ts';
+import { dayUrl, reminderFor, sendPush, testNote, vapidFrom } from './push.ts';
+import type { PushTarget, Vapid } from './push.ts';
 
 // What the tests and index.ts import from here.
 export { CORS, sameSecret };
@@ -167,19 +177,23 @@ export async function handle(req: Request, deps: Deps): Promise<Response> {
   const action = body.action ?? 'digest';
 
   if (action === 'digest') return digest(req, deps);
-  if (action === 'preview' || action === 'status' || action === 'weekly_preview' || action === 'due_preview') {
+  if (action === 'push_key') {
+    const v = vapidFrom(deps.env);
+    return v ? json(200, { public_key: v.publicKey }) : json(503, { stop: 'not_set_up', error: 'Phone reminders need the VAPID secrets.' });
+  }
+  if (action === 'preview' || action === 'status' || action === 'weekly_preview' || action === 'due_preview' || action === 'push_test') {
     const authorization = req.headers.get('Authorization') || '';
     if (!/^Bearer\s+\S+/.test(authorization)) return json(401, { error: 'Sign in first.' });
     const userDb = deps.user(authorization);
     const { data: me, error } = await userDb.rpc('whoami');
     if (error || !me || me.role !== 'admin') return json(403, { error: 'Only family admins can do this.' });
     return action === 'preview' ? preview(body, deps) : action === 'weekly_preview' ? weeklyPreview(body, deps, me)
-      : action === 'due_preview' ? duePreview(deps, me) : status(userDb, deps);
+      : action === 'due_preview' ? duePreview(deps, me) : action === 'push_test' ? pushTest(body, deps) : status(userDb, deps);
   }
   if (action === 'calendar' || action === 'calendar_test') return calendar(req, action, body, deps);
   if (action === 'school') return school(req, deps);
   if (action === 'homework_ai') return homeworkAi(req, body, deps);
-  return json(400, { error: 'Unknown action. Use digest, preview, weekly_preview, due_preview, status, calendar, calendar_test, school or homework_ai.' });
+  return json(400, { error: 'Unknown action. Use digest, preview, weekly_preview, due_preview, push_key, push_test, status, calendar, calendar_test, school or homework_ai.' });
 }
 
 // ---------------------------------------------------------------------
@@ -265,6 +279,7 @@ async function digest(req: Request, deps: Deps): Promise<Response> {
   let error: string | null = null;
   let rollError: string | null = null;
   let rolled: number | null = null;
+  let pushed: { due: number; sent: number; skipped: number; failed: number; busy: number } | null = null;
 
   // Sends are spaced out to stay inside Resend's rate limit.
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((done) => setTimeout(done, ms)));
@@ -362,6 +377,25 @@ async function digest(req: Request, deps: Deps): Promise<Response> {
           if (fin.error) throw new Error(`finish_notification: ${message(fin.error)}`);
         }
       }
+
+      // Phone reminders (from migration 0031): after the emails, with the VAPID secrets only. Not against the email
+      // budget, and a reminder that fails doesn't fail the run (the email is the one that must go).
+      const vapid = vapidFrom(deps.env);
+      if (stop === null && vapid && ver && !ver.error && Number(ver.data) >= 31) {
+        const pdue = await db.rpc('push_due', { p_limit: BATCH });
+        if (pdue.error && !noSchema(pdue.error)) throw new Error(`push_due: ${message(pdue.error)}`);
+        const prows: Row[] = !pdue.error && Array.isArray(pdue.data) ? pdue.data : [];
+        pushed = { due: prows.length, sent: 0, skipped: 0, failed: 0, busy: 0 };
+        for (const row of prows) {
+          const claim = await db.rpc('push_claim', { p_person: row.person_id, p_day: row.local_date });
+          if (claim.error) throw new Error(`push_claim: ${message(claim.error)}`);
+          if (!claim.data) { pushed.busy++; continue; }
+          const outcome = await remind(row, db, deps, site!, vapid, now());
+          pushed[outcome.status]++;
+          const fin = await db.rpc('finish_notification', { p_id: claim.data, p_status: outcome.status, p_detail: outcome.detail });
+          if (fin.error) throw new Error(`finish_notification: ${message(fin.error)}`);
+        }
+      }
     } catch (err) {
       stop = 'error';
       error = message(err);
@@ -370,7 +404,7 @@ async function digest(req: Request, deps: Deps): Promise<Response> {
 
   const unhandled = stop === 'config' || stop === 'error' || rollError !== null;
   const ok = !unhandled && stop === null && tally.failed === 0;
-  const detail = JSON.stringify({ ...tally, rolled, stop, error, roll_error: rollError });
+  const detail = JSON.stringify({ ...tally, rolled, stop, error, roll_error: rollError, ...(pushed ? { pushed } : {}) });
   const fin = await db.from('job_runs')
     .update({ finished_at: new Date(now()).toISOString(), ok, sent: tally.sent, detail }).eq('id', run.id);
   const recorded = !fin.error;
@@ -388,7 +422,63 @@ async function digest(req: Request, deps: Deps): Promise<Response> {
   if (unhandled || !recorded) {
     return json(500, { ok: false, ...tally, stop, error: error || rollError || `Could not record the run: ${message(fin.error)}` });
   }
-  return json(200, { ok, ...tally, stop });
+  return json(200, { ok, ...tally, stop, ...(pushed ? { pushed } : {}) });
+}
+
+// One kid's reminder to each of his phones. Never throws: every problem becomes 'failed' (or 'skipped').
+async function remind(row: Row, db: Db, deps: Deps, site: string, vapid: Vapid, nowMs: number): Promise<Outcome> {
+  try {
+    const { data: p, error: pErr } = await db.from('people').select('id, language, active').eq('id', row.person_id).maybeSingle();
+    if (pErr) return { status: 'failed', detail: `people: ${message(pErr)}` };
+    if (!p || !p.active) return { status: 'skipped', detail: 'No longer on the family list.' };
+    const { data: list, error: lErr } = await db.rpc('due_list', { p_day: row.local_date, p_lang: p.language === 'es' ? 'es' : 'en' });
+    if (lErr) return { status: 'failed', detail: `due_list: ${message(lErr)}` };
+    if (!list || !Array.isArray((list as DueList).kids)) return { status: 'failed', detail: 'due_list gave no lists.' };
+    const { data: targets, error: tErr } = await db.rpc('push_targets', { p_person: row.person_id });
+    if (tErr) return { status: 'failed', detail: `push_targets: ${message(tErr)}` };
+    const phones: PushTarget[] = Array.isArray(targets) ? targets : [];
+    if (!phones.length) return { status: 'skipped', detail: 'No phone has reminders on.' };
+    const url = dayUrl(site, phones[0].day_token) || site;
+    const note = reminderFor(list as DueList, row.person_id, p.language, url);
+    if (!note) return { status: 'skipped', detail: 'Nothing due tomorrow and nothing open.' };
+    const counts = { ok: 0, gone: 0, failed: 0 };
+    const codes: number[] = [];
+    for (const t of phones) {
+      const r = await sendPush(t, note, vapid, deps.fetch, nowMs);
+      counts[r.outcome]++;
+      if (r.outcome !== 'ok') codes.push(r.status);
+      const res = await db.rpc('push_result', { p_endpoint: t.endpoint, p_status: r.outcome });
+      if (res.error) return { status: 'failed', detail: `push_result: ${message(res.error)}` };
+    }
+    if (counts.ok) return { status: 'sent', detail: counts.gone || counts.failed ? `Sent to ${counts.ok}; not to ${counts.gone + counts.failed} (${codes.join(', ')}).` : null };
+    return { status: counts.failed ? 'failed' : 'skipped', detail: `No phone took it (${codes.join(', ')}).` };
+  } catch (err) {
+    return { status: 'failed', detail: message(err) };
+  }
+}
+
+// Settings' Send a test: one notification to one person's phones now. Nothing logged in notification_log.
+async function pushTest(body: Record<string, unknown>, deps: Deps): Promise<Response> {
+  if (!deps.env('SUPABASE_URL') || !serviceKey(deps.env)) return json(503, { error: 'The function has no Supabase service key.' });
+  const vapid = vapidFrom(deps.env);
+  if (!vapid) return json(503, { stop: 'not_set_up', error: 'Phone reminders need the VAPID secrets.' });
+  if (!isUuid(body.person_id)) return json(400, { error: 'Choose who to send it to.' });
+  const db = deps.service();
+  const { data: targets, error } = await db.rpc('push_targets', { p_person: body.person_id });
+  if (error) return noSchema(error) ? json(503, { stop: 'no_schema', error: 'Phone reminders need migration 0031.' }) : json(500, { error: `push_targets: ${message(error)}` });
+  const phones: PushTarget[] = Array.isArray(targets) ? targets : [];
+  const { data: p } = await db.from('people').select('language').eq('id', body.person_id).maybeSingle();
+  const { data: hh } = await db.from('household').select('push_at').eq('id', true).maybeSingle();
+  const at = typeof hh?.push_at === 'string' ? hh.push_at.slice(0, 5) : '—';
+  const site = siteBase(deps.env('SITE_URL'));
+  const tally = { sent: 0, failed: 0, gone: 0 };
+  const now = deps.now ? deps.now() : Date.now();
+  for (const t of phones) {
+    const r = await sendPush(t, testNote(p?.language, at, dayUrl(site, t.day_token) || site || ''), vapid, deps.fetch, now);
+    tally[r.outcome === 'ok' ? 'sent' : r.outcome]++;
+    await db.rpc('push_result', { p_endpoint: t.endpoint, p_status: r.outcome });
+  }
+  return json(200, { phones: phones.length, ...tally });
 }
 
 // Renders and sends one email. Never throws: every problem becomes 'failed' (or 'skipped').

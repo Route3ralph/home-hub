@@ -74,10 +74,12 @@ for (const m of fnSource.matchAll(/(?:\benv\(|Deno\.env\.get\()\s*['"]([A-Z0-9_]
 // Google key the calendar job stops with not_set_up and the morning email is unchanged; without the
 // Anthropic key, v1.3 PR B, the homework_ai action answers not_set_up and everything else works). The
 // rest stop every run (stop 'config', or 503) until they are set.
-const OPTIONAL = new Set(['HEALTHCHECK_URL', 'EMAIL_FROM_NAME', 'GOOGLE_SA_JSON', 'ANTHROPIC_API_KEY', 'RESEND_WEBHOOK_SECRET', 'INBOX_ADDRESS', 'INBOX_ALSO_FROM']);
+// Without the three VAPID secrets (0031) no phone reminder goes and push_key answers not_set_up; the rest works.
+const OPTIONAL = new Set(['HEALTHCHECK_URL', 'EMAIL_FROM_NAME', 'GOOGLE_SA_JSON', 'ANTHROPIC_API_KEY', 'RESEND_WEBHOOK_SECRET', 'INBOX_ADDRESS', 'INBOX_ALSO_FROM',
+  'VAPID_PUBLIC_KEY', 'VAPID_PRIVATE_KEY', 'VAPID_SUBJECT']);
 const REQUIRED = [...envNames].filter((n) => !OPTIONAL.has(n)).sort();
 check('hub-jobs: the secrets it reads are the ones this test knows (add a new one to the docs and here)',
-  [...envNames].sort().join() === ['ANTHROPIC_API_KEY', 'EMAIL_FROM', 'EMAIL_FROM_NAME', 'GOOGLE_SA_JSON', 'HEALTHCHECK_URL', 'HUB_CRON_SECRET', 'INBOX_ADDRESS', 'INBOX_ALSO_FROM', 'RESEND_API_KEY', 'RESEND_WEBHOOK_SECRET', 'SITE_URL'].join(), [...envNames].sort());
+  [...envNames].sort().join() === ['ANTHROPIC_API_KEY', 'EMAIL_FROM', 'EMAIL_FROM_NAME', 'GOOGLE_SA_JSON', 'HEALTHCHECK_URL', 'HUB_CRON_SECRET', 'INBOX_ADDRESS', 'INBOX_ALSO_FROM', 'RESEND_API_KEY', 'RESEND_WEBHOOK_SECRET', 'SITE_URL', 'VAPID_PRIVATE_KEY', 'VAPID_PUBLIC_KEY', 'VAPID_SUBJECT'].join(), [...envNames].sort());
 
 for (const [doc, text] of Object.entries(DOCS)) {
   const step4 = steps(text)['4'] || '';
@@ -354,11 +356,11 @@ check(`docs/v2-design.md "Anonymous token functions" lists every function anon c
 // 0012 (the coach's rewards): the coach's changes to rewards and points (one); 0014 (My day's language switch):
 // English | Español on a My day link (one); 0019 (the routine): his ticks on My day (one); 0020 (the family board):
 // board.html's read, its two ticks and Undo (four); 0022 (the watch list): a kid's list and his add on My day (two);
-// 0026 (homework counts): his +1 and −1 on My day (one).
+// 0026 (homework counts): his +1 and −1 on My day (one); 0031 (phone reminders): his phone's reminders on My day (one).
 const ANON = ['add_to_list_by_token', 'assignment_by_token', 'board_by_token', 'board_routine_by_token', 'board_tick_by_token', 'board_undo_by_token',
   'buy_item_by_token', 'coach_note_by_token', 'coach_reward_by_token', 'coach_view_by_token',
   'complete_by_token', 'confirm_digest', 'count_by_token', 'focus_by_token',
-  'get_list_by_token', 'get_person_day', 'homework_by_token', 'homework_prefs_by_token', 'plan_by_token', 'reward_by_token', 'routine_tick_by_token',
+  'get_list_by_token', 'get_person_day', 'homework_by_token', 'homework_prefs_by_token', 'plan_by_token', 'push_by_token', 'reward_by_token', 'routine_tick_by_token',
   'school_item_by_token', 'set_language_by_token', 'step_by_token', 'stop_digest', 'tutor_assignment_by_token', 'tutor_plan_by_token', 'tutor_step_by_token',
   'tutor_view_by_token', 'undo_by_token', 'watch_add_by_token', 'watch_by_token'];
 check(`the migrations let anon call exactly the ${ANON.length} token functions this check knows`, [...anon].sort().join() === ANON.join(), [...anon].sort());

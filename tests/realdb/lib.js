@@ -33,6 +33,10 @@ const AI_KEY = 'sk-ant-realdb-made-up-key-000000000000';
 const SA_ACCOUNT = 'home-hub-sync@home-hub-example.iam.gserviceaccount.com';
 const SA_KEY_ID = 'realdb0000000000000000000000000000a1b2c3';
 const SA_PAIR = crypto.generateKeyPairSync('rsa', { modulusLength: 2048, publicKeyEncoding: { type: 'spki', format: 'pem' }, privateKeyEncoding: { type: 'pkcs8', format: 'pem' } });
+// The VAPID key pair for phone reminders (0031): made here for this run only (base64url, as web-push prints them).
+const VAPID_PAIR = crypto.generateKeyPairSync('ec', { namedCurve: 'P-256' });
+const VAPID_JWK = VAPID_PAIR.privateKey.export({ format: 'jwk' });
+const VAPID_PUBLIC = Buffer.concat([Buffer.from([4]), Buffer.from(VAPID_JWK.x, 'base64url'), Buffer.from(VAPID_JWK.y, 'base64url')]).toString('base64url');
 const SA_JSON = JSON.stringify({
   type: 'service_account', project_id: 'home-hub-example', private_key_id: SA_KEY_ID, private_key: SA_PAIR.privateKey,
   client_email: SA_ACCOUNT, client_id: '100000000000000000001', token_uri: 'https://oauth2.googleapis.com/token',
@@ -345,7 +349,12 @@ async function setup(name, opts = {}) {
     HUB_CRON_SECRET: CRON_SECRET, SITE_URL: 'https://family.example/hub/', RESEND_API_KEY: 're_test_realdb', EMAIL_FROM: 'home@family.example',
     SUPABASE_SECRET_KEYS: JSON.stringify({ default: SERVICE_KEY }), SUPABASE_PUBLISHABLE_KEYS: JSON.stringify({ default: 'sb_publishable_realdb' }),
     GOOGLE_SA_JSON: SA_JSON, ANTHROPIC_API_KEY: AI_KEY,
+    VAPID_PUBLIC_KEY: VAPID_PUBLIC, VAPID_PRIVATE_KEY: VAPID_JWK.d, VAPID_SUBJECT: 'mailto:hub@family.example',
   };
+  // The push services (0031): every notification hub-jobs posts is in h.pushed ({ url, headers, body }); h.pushReply
+  // (201 by default) is the status they answer.
+  const pushed = [];
+  const push = { reply: 201 };
   let server;
   const functions = {};
   const google = fakeGoogle(() => server.hubNow());
@@ -369,6 +378,10 @@ async function setup(name, opts = {}) {
         if (google.handles(url)) return google.fetch(url, init);
         if (school.handles(url)) return school.fetch(url, init);
         if (anthropic.handles(url)) return anthropic.fetch(url, init);
+        if (/^https:\/\/web\.push\.apple\.com\//.test(String(url))) {
+          pushed.push({ url: String(url), headers: init.headers, body: init.body });
+          return new Response('', { status: push.reply });
+        }
         return new Response('ok', { status: 200 });
       },
       background: (p) => { background.push(p); },
@@ -428,6 +441,7 @@ async function setup(name, opts = {}) {
       const session = JSON.stringify(await sessionFor(o.email));
       await context.addInitScript((s) => { try { localStorage.setItem('sb-127-auth-token', s); } catch (e) { /* */ } }, session);
     }
+    if (o.init) await context.addInitScript(o.init);
     const page = await context.newPage();
     await page.clock.install({ time: new Date(await clockNow()) });
     const label = o.label || o.email || 'signed out';
@@ -501,7 +515,7 @@ async function setup(name, opts = {}) {
     return api('/functions/v1/hub-jobs', { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify(body) });
   };
   const aiDone = async () => { while (background.length) await Promise.all(background.splice(0)); };
-  return { base, browser, server, sent, google, school, anthropic, fnEnv, aiDone, AI_KEY, runDigest, runCalendar, hubJobsAs, api, sql, migrate, clockNow, setClock, requests, mark, failed, sessionFor, open, settle, go, tc, texts, lastToast, titles, until, shot, check, flow, finish, errors };
+  return { base, browser, server, sent, pushed, push, VAPID_PUBLIC, google, school, anthropic, fnEnv, aiDone, AI_KEY, runDigest, runCalendar, hubJobsAs, api, sql, migrate, clockNow, setClock, requests, mark, failed, sessionFor, open, settle, go, tc, texts, lastToast, titles, until, shot, check, flow, finish, errors };
 }
 
 // Homework (migration 0005, docs/v1.3-homework.md §3): its eleven tables and twenty-six public

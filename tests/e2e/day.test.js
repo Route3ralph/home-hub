@@ -634,14 +634,14 @@ const HW_AUDIO_DROP = `(${HW_STUBS})(); (${HW_CLOCKED})(); (${HW_WAKE_DROP})();`
   const rowByTitle = (page, title) => page.locator('.irow').filter({ has: page.locator('.irow-title', { hasText: title }) });
 
   // =====================================================================
-  // 1. What day.html loads: no hub, no manifest, no sign-in; noindex and no-referrer
+  // 1. What day.html loads: no hub, only its own manifest, no sign-in; noindex and no-referrer
   // =====================================================================
   let { page, db, requests } = await open({ label: 'en', path: `/day.html?t=${TAYLOR}`, signedIn: true });
   const head = await page.evaluate(() => ({
     scripts: [...document.querySelectorAll('script[src]')].map((s) => ({ src: s.getAttribute('src'), async: s.async || s.defer })),
     inline: document.querySelectorAll('script:not([src])').length,
     styles: [...document.querySelectorAll('link[rel=stylesheet]')].map((l) => l.getAttribute('href')),
-    manifest: !!document.querySelector('link[rel=manifest]'),
+    manifest: (document.querySelector('link[rel=manifest]') || { getAttribute: () => null }).getAttribute('href'),
     robots: (document.querySelector('meta[name=robots]') || {}).content,
     referrer: (document.querySelector('meta[name=referrer]') || {}).content,
     hub: typeof window.HomeHub, gantt: typeof window.HomeGantt,
@@ -656,7 +656,7 @@ const HW_AUDIO_DROP = `(${HW_STUBS})(); (${HW_CLOCKED})(); (${HW_WAKE_DROP})();`
   check('day.html: styles.css, css/day.css, then css/plan.css (v1.3)', same(head.styles.map((h) => h.replace(/\?.*$/, '')), ['assets/styles.css', 'assets/css/day.css', 'assets/css/plan.css']),
     head.styles.join(', '));
   check('day.html: robots noindex,nofollow and referrer no-referrer', /noindex/.test(head.robots || '') && /nofollow/.test(head.robots || '') && head.referrer === 'no-referrer', JSON.stringify(head));
-  check('day.html: no manifest link (the hub\'s manifest would install the hub)', !head.manifest);
+  check('day.html: its own manifest (day.webmanifest, 0031), never the hub\'s (which would install the hub)', head.manifest === 'day.webmanifest', String(head.manifest));
   check('day.html: the hub and the Gantt engine are not loaded', head.hub === 'undefined' && head.gantt === 'undefined'
     && !requests.some((u) => /hub\.js|gantt\.js|manifest\.webmanifest|assets\/modules\//.test(u)), requests.filter((u) => /assets/.test(u)).join(' | '));
   const fetched = await page.evaluate(async (urls) => Promise.all(urls.map(async (u) => (await fetch(new URL(u, location.href))).status)), head.styles.concat(['assets/shoplist.js', 'assets/plan.js', 'assets/day.js']));
@@ -3727,6 +3727,114 @@ const HW_AUDIO_DROP = `(${HW_STUBS})(); (${HW_CLOCKED})(); (${HW_WAKE_DROP})();`
     ({ page, db } = await open({ label: 'watch-390', path: `/day.html?t=${JORDAN}#watch`, db: wdb, ctx: phone() }));
     await until(async () => (await texts(page, '.watch-item-title')).length > 0);
     check('#watch at 390px: the list and the box, with no sideways page scroll', (await texts(page, '.watch-item-title')).length > 0 && await noSideScroll(page));
+    await page.context().close();
+  }
+
+  // =====================================================================
+  // Phone reminders (0031, docs/v1.3-homework.md §31): his homework view says reminders are on (reminders: {at}); in
+  // Safari on an iPhone the card says how to add My day to the Home Screen; opened from there, Turn on reminders
+  // subscribes (from the tap) and push_by_token keeps the phone; Turn off lets it go. The push service is faked in the
+  // page (no browser here has one): navigator.standalone, the service worker's registration and its pushManager.
+  // =====================================================================
+  {
+    const PUSH_FAKE = () => {
+      const rec = { reg: [], asked: [], unsub: 0 };
+      window.__push = rec;
+      let sub = null;
+      const mkSub = () => ({
+        endpoint: 'https://web.push.apple.com/QTestPhone0001',
+        toJSON() { return { endpoint: this.endpoint, keys: { p256dh: `B${'A'.repeat(86)}`, auth: 'a'.repeat(22) } }; },
+        unsubscribe() { rec.unsub += 1; sub = null; return Promise.resolve(true); },
+      });
+      const pm = {
+        getSubscription: () => Promise.resolve(sub),
+        subscribe: (o) => {
+          rec.asked.push({ userVisibleOnly: o.userVisibleOnly, keyBytes: o.applicationServerKey ? o.applicationServerKey.length : 0,
+                           active: !!(navigator.userActivation && navigator.userActivation.isActive) });
+          if (window.__pushDeny) { window.__perm = 'denied'; return Promise.reject(new DOMException('denied', 'NotAllowedError')); }
+          window.__perm = 'granted';
+          sub = mkSub();
+          return Promise.resolve(sub);
+        },
+      };
+      Object.defineProperty(navigator, 'serviceWorker', { configurable: true, value: { register: (u, o) => { rec.reg.push({ u, scope: o && o.scope }); return Promise.resolve({ pushManager: pm }); } } });
+      if (!window.PushManager) window.PushManager = function PushManager() {};
+      Object.defineProperty(navigator, 'standalone', { configurable: true, value: true });
+      try { Object.defineProperty(Notification, 'permission', { configurable: true, get: () => window.__perm || 'default' }); } catch (e) { /* the test says so */ }
+    };
+    const both = `(${HW_STUBS})();(${PUSH_FAKE})();`;
+    const KEY = `B${'A'.repeat(86)}`;
+    const pdb = (o) => { const d = hwDb(); d.push31 = true; d.pushAt = '16:00'; d.pushKey = KEY; return Object.assign(d, o || {}); };
+    const hub = (db) => (db.functionCalls || []).filter((c) => c.path === '/functions/v1/hub-jobs').map((c) => c.body.action);
+
+    // Before 0031: no card, nothing asked.
+    ({ page, db } = await open({ label: 'remind-30', path: `/day.html?t=${JORDAN}#homework`, db: hwDb(), device: HW_DEVICE, init: both }));
+    await page.waitForSelector('.hw-tonight');
+    check('reminders before 0031 (no reminders in his view): no card, no push_by_token and no push_key',
+      !(await page.$('.hw-remind')) && calls(db, 'push_by_token').length === 0 && !hub(db).includes('push_key') && (await page.evaluate(() => window.__push.reg.length)) === 0);
+    await page.context().close();
+
+    // An iPhone in Safari: how to add it, and nothing asked.
+    ({ page, db } = await open({ label: 'remind-safari', path: `/day.html?t=${JORDAN}#homework`, db: pdb(), device: HW_DEVICE, init: HW_STUBS, ctx: phone() }));
+    await page.waitForSelector('.hw-remind');
+    check('31, an iPhone in Safari: the card says how to add My day to the Home Screen; nothing asked',
+      (await text(page, '.hw-remind')) === 'To get a reminder of tomorrow\'s homework on this phone: tap Share, then Add to Home Screen. Open My day from the Home Screen and turn reminders on here.'
+      && !(await page.$('.hw-remind button')) && calls(db, 'push_by_token').length === 0, await text(page, '.hw-remind'));
+    check('... at 390px with no sideways page scroll', await noSideScroll(page));
+    await page.context().close();
+    ({ page, db } = await open({ label: 'remind-desktop', path: `/day.html?t=${JORDAN}#homework`, db: pdb(), device: HW_DEVICE, init: HW_STUBS }));
+    await page.waitForSelector('.hw-tonight');
+    check('31, a computer\'s browser (not an iPhone, not from a Home Screen): no card', !(await page.$('.hw-remind')));
+    await page.context().close();
+
+    // From the Home Screen: on, then off.
+    ({ page, db } = await open({ label: 'remind-on', path: `/day.html?t=${JORDAN}#homework`, db: pdb(), device: HW_DEVICE, init: both, ctx: phone() }));
+    await page.waitForSelector('.hw-remind button');
+    const rec0 = await page.evaluate(() => window.__push);
+    check('from the Home Screen: the service worker day-sw.js with scope ./day.html, the hub\'s key and this phone\'s status asked first',
+      same(rec0.reg, [{ u: 'day-sw.js', scope: './day.html' }]) && hub(db).includes('push_key')
+      && same(calls(db, 'push_by_token').map((c) => c.body), [{ p_token: JORDAN, p_action: 'status', p_endpoint: null }]), JSON.stringify([rec0.reg, hub(db), calls(db, 'push_by_token').map((c) => c.body)]));
+    check('... the card: every day at 4:00pm, with Turn on reminders',
+      (await text(page, '.hw-remind-line')) === 'Get a reminder of tomorrow\'s homework on this phone every day at 4:00pm.' && (await text(page, '.hw-remind button')) === 'Turn on reminders',
+      await text(page, '.hw-remind'));
+    await page.click('[data-act="hw-remind-on"]');
+    await until(async () => (await text(page, '.hw-remind-line')).startsWith('Reminders on'));
+    const rec1 = await page.evaluate(() => window.__push);
+    check('Turn on reminders: subscribed from the tap, visible only, with the hub\'s 65-byte key', rec1.asked.length === 1 && rec1.asked[0].userVisibleOnly === true
+      && rec1.asked[0].keyBytes === 65 && rec1.asked[0].active === true, JSON.stringify(rec1.asked));
+    const on = calls(db, 'push_by_token').slice(-1)[0].body;
+    check('... push_by_token on, with this phone\'s address and keys; kept', on.p_action === 'on' && on.p_endpoint === 'https://web.push.apple.com/QTestPhone0001'
+      && on.p_p256dh === KEY && on.p_auth === 'a'.repeat(22) && db.push_subscriptions.length === 1, JSON.stringify(on));
+    check('... "Reminders on: every day at 4:00pm.", Turn off, and the toast', (await text(page, '.hw-remind-line')) === 'Reminders on: every day at 4:00pm.'
+      && (await text(page, '.hw-remind button')) === 'Turn off' && /Reminders on/.test(await text(page, '.toasts')), await text(page, '.hw-remind'));
+    await page.click('[data-act="hw-remind-off"]');
+    await until(async () => (await text(page, '.hw-remind button')) === 'Turn on reminders');
+    const off = calls(db, 'push_by_token').slice(-1)[0].body;
+    check('Turn off: the phone unsubscribed, push_by_token off for this address, nothing kept', (await page.evaluate(() => window.__push.unsub)) === 1
+      && off.p_action === 'off' && off.p_endpoint === 'https://web.push.apple.com/QTestPhone0001' && db.push_subscriptions.length === 0, JSON.stringify(off));
+    await page.context().close();
+
+    // Already on (a phone kept): the card opens as on.
+    const kept = pdb({ push_subscriptions: [] });
+    ({ page, db } = await open({ label: 'remind-denied', path: `/day.html?t=${JORDAN}#homework`, db: kept, device: HW_DEVICE, init: `${both}window.__pushDeny = true;`, ctx: phone() }));
+    await page.waitForSelector('.hw-remind button');
+    await page.click('[data-act="hw-remind-on"]');
+    await until(async () => !(await page.$('.hw-remind button')));
+    check('the phone says no: "Reminders are blocked …", nothing kept', (await text(page, '.hw-remind-line')) === 'Reminders are blocked for My day. Turn them on in the phone\'s Settings, Notifications.'
+      && calls(db, 'push_by_token').every((c) => c.body.p_action === 'status'), await text(page, '.hw-remind'));
+    await page.context().close();
+
+    ({ page, db } = await open({ label: 'remind-nokey', path: `/day.html?t=${JORDAN}#homework`, db: pdb({ pushKey: 'not_set_up' }), device: HW_DEVICE, init: both, ctx: phone(), allowConsole: /503/ }));
+    await page.waitForSelector('.hw-tonight');
+    await page.waitForTimeout(300);
+    check('the hub has no key yet (push_key 503): no card, and push_by_token isn\'t asked', !(await page.$('.hw-remind')) && calls(db, 'push_by_token').length === 0);
+    await page.context().close();
+
+    ({ page, db } = await open({ label: 'remind-notime', path: `/day.html?t=${JORDAN}#homework`, db: pdb({ pushAt: null }), device: HW_DEVICE, init: both, ctx: phone() }));
+    await page.waitForSelector('.hw-tonight');
+    await page.waitForTimeout(300);
+    check('a parent hasn\'t set the time (no reminders in his view): no card, nothing asked', !(await page.$('.hw-remind')) && calls(db, 'push_by_token').length === 0
+      && (await page.evaluate(() => window.__push.reg.length)) === 0);
     await page.context().close();
   }
 
