@@ -2620,6 +2620,15 @@ async function install(page, db, log, opts = {}) {
         const r = db.school_feeds ? schoolJob(db, emailFrom(req)) : { status: 503, body: { ok: false, stop: 'no_schema' } };
         return reply(r.status, r.body);
       }
+      // 0031: push_key (anyone) with db.pushKey (a public key, or 'not_set_up'); push_test (admins) with db.pushTest.
+      if (path === '/functions/v1/hub-jobs' && body && body.action === 'push_key' && db.pushKey !== undefined) {
+        return db.pushKey === 'not_set_up' ? reply(503, { stop: 'not_set_up', error: 'Phone reminders need the VAPID secrets.' }) : reply(200, { public_key: db.pushKey });
+      }
+      if (path === '/functions/v1/hub-jobs' && body && body.action === 'push_test' && db.pushTest !== undefined) {
+        const m = db.members.find((x) => x.email === emailFrom(req));
+        if (!m || m.role !== 'admin') return reply(403, { error: 'Only family admins can do this.' });
+        return db.pushTest.__status ? reply(db.pushTest.__status, db.pushTest.body) : reply(200, db.pushTest);
+      }
       return reply(opts.fnStatus || 200, opts.fnBody || { sent: 1 });
     }
 
@@ -3066,6 +3075,11 @@ const tkStepsOf = (db, aid) => db.homework_steps.filter((s) => s.assignment_id =
 // 0007: his view's me.coach, the first word of the label of his first tutor link (active, not ended) with the coach
 // view on, so his screen can say that link sees his points too; left out with none (as on 6).
 function tkViewKid(db, kid) {
+  const v = tkViewKid30(db, kid);
+  // 0031: his view says reminders are on, with the household's time (none while db.pushAt is null).
+  return v && db.push31 && db.pushAt ? Object.assign(v, { reminders: { at: db.pushAt } }) : v;
+}
+function tkViewKid30(db, kid) {
   const v = tkViewKid6(db, kid);
   if (v && v.me && db.coach_notes) {
     const l = (db.tutor_links || []).filter((x) => x.kid_id === kid && x.active && x.coach && x.expires_on >= tkToday(db))
@@ -4000,6 +4014,29 @@ const homeworkTokenRpc = {
     return tkViewKid(db, me.id);
   }),
   // 0026 (§27): his +1 or −1 on a count, from the count his screen showed (else nothing changes); reaching it is done.
+  // 0031 (phone reminders, docs/v1.3-homework.md §31): with db.push31, this phone's reminders: 'status', 'on' (the address
+  // must be a push service's; at most 3 a kid) or 'off'. db.push_subscriptions holds them, db.pushAt the household's
+  // time ('HH:MM' or null). Without db.push31 it answers 404, as before 0031.
+  push_by_token: tkCall('push_by_token', ['p_token', 'p_action'], ['p_endpoint', 'p_p256dh', 'p_auth'], (db, b) => {
+    if (!db.push31) return { __status: 404, body: { code: 'PGRST202', message: 'Could not find the function public.push_by_token', details: null, hint: null } };
+    const me = tkKidByToken(db, b.p_token);
+    if (!me) return null;
+    if (!['status', 'on', 'off'].includes(b.p_action)) throw new Raise('22023', 'Choose on, off or status.');
+    db.push_subscriptions = db.push_subscriptions || [];
+    if (b.p_action === 'on') {
+      if (!b.p_endpoint || !b.p_p256dh || !b.p_auth) throw new Raise('22023', "This phone didn't give what reminders need. Try again.");
+      if (!/^https:\/\/(web\.push\.apple\.com|fcm\.googleapis\.com|updates\.push\.services\.mozilla\.com|[a-z0-9-]+\.notify\.windows\.com)\//.test(b.p_endpoint)) {
+        throw new Raise('22023', "This phone's reminder address isn't one Home Hub can use.");
+      }
+      db.push_subscriptions = db.push_subscriptions.filter((x) => x.endpoint !== b.p_endpoint);
+      db.push_subscriptions.push({ person_id: me.id, endpoint: b.p_endpoint, p256dh: b.p_p256dh, auth: b.p_auth });
+      const mine = db.push_subscriptions.filter((x) => x.person_id === me.id);
+      if (mine.length > 3) db.push_subscriptions = db.push_subscriptions.filter((x) => x !== mine[0]);
+    } else if (b.p_action === 'off') {
+      db.push_subscriptions = db.push_subscriptions.filter((x) => !(x.person_id === me.id && (!b.p_endpoint || x.endpoint === b.p_endpoint)));
+    }
+    return { on: !!b.p_endpoint && db.push_subscriptions.some((x) => x.person_id === me.id && x.endpoint === b.p_endpoint), at: db.pushAt || null };
+  }),
   count_by_token: tkCall('count_by_token', ['p_token', 'p_assignment', 'p_from', 'p_delta'], [], (db, b) => {
     const me = tkKidByToken(db, b.p_token);
     if (!me) return null;

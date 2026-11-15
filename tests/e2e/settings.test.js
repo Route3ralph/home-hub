@@ -280,6 +280,11 @@ const emailOf = (req) => {
           const html = '<!doctype html><html><head><title>Due tomorrow</title></head><body><h1 id="due">Due tomorrow (Tue Nov 3): 1 for Jordan</h1></body></html>';
           return route.fulfill({ status: 200, headers: JSONH, body: JSON.stringify({ day: '2026-11-02', at: '17:30:00', to: [], subject: 'Due tomorrow (Tue Nov 3): 1 for Jordan', html, text: '' }) });
         }
+        // 0031's push_test: one test to that person's phones (handler.ts's shape), or 503 without the VAPID secrets.
+        if (body.action === 'push_test') {
+          if (mode === 'not_set_up') return route.fulfill({ status: 503, headers: JSONH, body: JSON.stringify({ stop: 'not_set_up', error: 'Phone reminders need the VAPID secrets.' }) });
+          return route.fulfill({ status: 200, headers: JSONH, body: JSON.stringify(mode === 'none' ? { phones: 1, sent: 0, failed: 0, gone: 1 } : { phones: 2, sent: 2, failed: 0, gone: 0 }) });
+        }
         return route.fulfill({ status: 400, headers: JSONH, body: JSON.stringify({ error: 'Unknown action. Use digest, preview or status.' }) });
       });
     }
@@ -1702,6 +1707,76 @@ const emailOf = (req) => {
     check('Due tomorrow (320px): no sideways scroll, saved settings shown', await noSideScroll(page) && (await page.isChecked('.set-due input[name="on"]'))
       && (await page.isChecked(`.set-due input[name="to"][value="${ID.alex}"]`)));
     await shotOf(page, 'section[aria-labelledby="setDue"]', 'settings-due-phone.png');
+    await page.context().close();
+  }
+
+  // =====================================================================
+  // 6d. Phone reminders (schema 31, docs/v1.3-homework.md §31): the time on the household row, who turned them on
+  // (push_people), and Send a test (hub-jobs push_test)
+  // =====================================================================
+  {
+    const PEOPLE = [{ person_id: ID.jordan || ID.sam, name: 'Jordan Example', phones: 2, last_ok_at: '2026-11-02T21:00:00Z' }];
+    const v31Rpc = (list) => Object.assign({}, v3Rpc, hearthRpc, { hub_schema_version: () => 31, push_people: (db, b, email) => {
+      const m = db.members.find((x) => x.email === email);
+      if (!m || m.role !== 'admin') return { status: 403, body: { code: '42501', message: 'Only a parent can see this.' } };
+      return list;
+    } });
+    const pushDb = (extra = {}) => {
+      const d = withHearth(googleDb());
+      Object.assign(d.household[0], { weekly_at: null, weekly_to: [], weekly_sheets: [], due_at: null, due_to: [], push_at: null }, extra);
+      return d;
+    };
+    ({ page } = await open({ label: 'push-30', allowConsole: /status of 404/, db: pushDb(), rpc: Object.assign({}, v3Rpc, hearthRpc, { hub_schema_version: () => 30 }) }));
+    check('Phone reminders: no card on schema 30', !(await page.$('#setPush')) && !!(await page.$('#setDue')));
+    await page.context().close();
+
+    ({ page, db } = await open({ label: 'push', db: pushDb(), rpc: v31Rpc(PEOPLE), allowConsole: /status of (404|503)/ }));
+    check('Phone reminders: the card on schema 31, off to start, 4:00pm suggested, how to turn them on on the phone',
+      (await tc(page, '#setPush')) === 'Phone reminders' && !(await page.isChecked('.set-push input[name="on"]'))
+      && (await page.inputValue('.set-push input[name="at"]')) === '16:00' && /Add to Home Screen/.test(await tc(page, '[data-ref="push"] .set-help')));
+    await page.waitForSelector('.set-push-row');
+    check('... who turned them on (push_people): the name, the phones and when one was last sent, with Send a test',
+      (await tc(page, '.set-push-row span')) === 'Jordan Example: on 2 phones, last sent Mon Nov 2' && (await tc(page, '.set-push-row button')) === 'Send a test',
+      await tc(page, '.set-push-row'));
+    await page.check('.set-push input[name="on"]');
+    await page.click('.set-push [type="submit"]');
+    await page.waitForTimeout(600);
+    check('Phone reminders on: push_at 16:00 on the household row, and a toast', db.hhWrites.length === 1 && same(db.hhWrites[0].body, { push_at: '16:00' })
+      && (await lastToast(page)) === 'Phone reminders on: every day at 4:00pm', JSON.stringify(db.hhWrites[0]));
+    await page.waitForSelector('.set-push-row button');
+    await page.click('.set-push-row button');
+    await page.waitForTimeout(600);
+    const call = db.fnCalls.filter((c) => c.body.action === 'push_test').slice(-1)[0];
+    check('Send a test: hub-jobs push_test for that person, signed in, and the toast counts the phones',
+      call && call.auth && call.body.person_id === PEOPLE[0].person_id && (await lastToast(page)) === 'Test sent to 2 phones', JSON.stringify(call));
+    db.fn.push_test = 'none';
+    await page.click('.set-push-row button');
+    await page.waitForTimeout(600);
+    check('... no phone took it: says to turn reminders on again on the phone', (await lastToast(page)) === 'No phone took it. Turn reminders on again on the phone.');
+    db.fn.push_test = 'not_set_up';
+    await page.click('.set-push-row button');
+    await page.waitForTimeout(600);
+    check('... without the VAPID secrets: the function\'s reason', (await lastToast(page)) === 'Phone reminders need the VAPID secrets.', await lastToast(page));
+    await page.uncheck('.set-push input[name="on"]');
+    await page.click('.set-push [type="submit"]');
+    await page.waitForTimeout(600);
+    check('Phone reminders off: push_at null', db.hhWrites.length === 2 && db.hhWrites[1].body.push_at === null && (await lastToast(page)) === 'Phone reminders off');
+    await page.context().close();
+
+    ({ page } = await open({ label: 'push-none', db: pushDb({ push_at: '16:00:00' }), rpc: v31Rpc([]), allowConsole: /status of (404|503)/ }));
+    await page.waitForSelector('[data-ref="push-who"] .set-help');
+    check('nobody yet: says it\'s done on the kid\'s phone; the saved time shown', (await tc(page, '[data-ref="push-who"] .set-help')) === 'Nobody has turned them on yet. It\'s done on the kid\'s phone, in his My day.'
+      && (await page.isChecked('.set-push input[name="on"]')) && (await page.inputValue('.set-push input[name="at"]')) === '16:00');
+    await page.context().close();
+
+    ({ page } = await open({ label: 'push-member', allowConsole: /status of 404/, db: pushDb(), rpc: v31Rpc(PEOPLE), email: 'sam@example.com' }));
+    check('Phone reminders: a member who isn\'t an admin sees no card', !(await page.$('#setPush')));
+    await page.context().close();
+
+    ({ page } = await open({ label: 'push-phone', allowConsole: /status of (404|503)/, db: pushDb({ push_at: '16:00:00' }), rpc: v31Rpc(PEOPLE),
+                             ctx: { viewport: { width: 320, height: 700 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true } }));
+    await page.waitForSelector('.set-push-row');
+    check('Phone reminders (320px): no sideways scroll', await noSideScroll(page));
     await page.context().close();
   }
 
