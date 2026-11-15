@@ -49,10 +49,10 @@ const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
     const [popup] = await Promise.all([page.waitForEvent('popup'), page.click('.set-due [data-due="preview"]')]);
     await popup.waitForSelector('h1', { timeout: 8000 });
     const body = (await popup.textContent('body')).replace(/\s+/g, ' ');
-    check('Preview tonight\'s: the real due_list through the real hub-jobs: Saturday\'s, the late ones, Monday\'s with its count',
+    check('Preview tonight\'s: the real due_list through the real hub-jobs: Saturday\'s, the late ones (the quiz a Test, from 0032), Monday\'s with its count',
       (await popup.textContent('h1')) === 'Due tomorrow (Sat Nov 14): 1 for Jordan'
       && /Due tomorrow, Sat Nov 14 ?✓ ?Verbs worksheet · Spanish · done ?☐ ?Volcano poster · Science/.test(body)
-      && /Not marked done yet ?☐ ?Lab report · Science · Missing · due Thu Nov 5 ?☐ ?Map quiz · History · due Fri Nov 13/.test(body)
+      && /Not marked done yet ?☐ ?Lab report · Science · Missing · due Thu Nov 5 ?☐ ?Map quiz · History · Test · due Fri Nov 13/.test(body)
       && /Coming up, to Tue Nov 17 ?☐ ?Math topics · Math · 5 of 7 · due Mon Nov 16/.test(body), body.slice(0, 600));
     await shot(popup, 'due-preview');
     await popup.close();
@@ -82,7 +82,7 @@ const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
     await sql(`insert into assignments (kid_id, title, subject, due_date, status, details) values
                ('${P.jordan.id}', 'Chapter 3 exam', 'Spanish', '2026-11-16', 'open', 'Summative grade. What to turn in: Print the PDF and mark it up. Bring a pencil and the private notes page.')`);
     const gen = await one(`select what, is_test from assignments where title = 'Chapter 3 exam'`);
-    check('the generated columns: what from "What to turn in:", and a test', !!gen && gen.what === 'Print the PDF and mark it up. Bring a pencil and the private notes page.' && gen.is_test === true, JSON.stringify(gen));
+    check('the generated columns: what from "What to turn in:", and a test', !!gen && gen.what === 'Print the PDF and mark it up. Bring a pencil and the private notes page.' && gen.is_test === 't', JSON.stringify(gen));
     await h.mark();
     const { page, context } = await open({ email: 'alex@example.com', path: '/#/settings', label: 'due-portal' });
     // Alex ticks Spanish as the page does (a PATCH of the homework_kids row, through its own RLS and column grant).
