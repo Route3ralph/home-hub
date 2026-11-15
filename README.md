@@ -267,6 +267,15 @@ Every evening at the time you pick (5:30pm, say), the hub emails the people you 
 2. **About 2 minutes:** run [`supabase/migrations/0029_due_tomorrow.sql`](supabase/migrations/0029_due_tomorrow.sql) in the Supabase SQL editor, after 0028. "isn't installed" means 0028 is missing; "already installed" means it's done; either way nothing was changed.
 3. **Settings → Due tomorrow:** tick **Send it every evening at**, pick the time, tick who gets it, **Save**. **Preview tonight's** shows this evening's email. Each person needs a confirmed email address first (the morning email's confirmation does it).
 
+### Adding school items automatically (v1.3, migration 0030)
+
+Once the Assignments link's dates are checked, **Add automatically** on its row (Homework → Switches → School links) puts the school's new items on his homework by themselves, within the hour, with their due dates: anything due in the next 30 days. One you hid before (the same title and class, like the weekly practice you enter by hand with a count) or already added yourself is hidden instead. A link dated by the day each was given can't do it (use **Paste due dates**). **Stop adding automatically** turns it off; what it added stays.
+
+**Turning it on** (no Edge Function and no `cron.sql` change):
+1. `tests/run.sh` ends with `0 failed`; merge. Nothing changes until step 2: the button shows only on schema 30.
+2. **About 2 minutes:** run [`supabase/migrations/0030_school_auto_add.sql`](supabase/migrations/0030_school_auto_add.sql) in the Supabase SQL editor, after 0029. "isn't installed" means 0029 is missing; "already installed" means it's done; either way nothing was changed.
+3. **Homework → Switches → School links → Assignments → Add automatically.**
+
 ### Take points (v1.3, migration 0028)
 
 On the Homework page, **Take points** sits beside **Give points**: how many (1 to 200) and why. He sees it on his My day ("−10 Taken away · Phone at the dinner table"). It never takes him below zero, and never touches points held for a reward he asked for: the dialog says how many are free to take. You and the coach can take points; the coach at most 200 a week. To undo one, give the points back.
