@@ -2609,8 +2609,10 @@ const emailOf = (req) => {
   // by due date has Add automatically (parents only); on adds what is waiting at once and says so; off stops it
   // =====================================================================
   {
-    const RPC29 = Object.assign({}, RPC8, { hub_schema_version: () => 29 });
-    const RPC30 = Object.assign({}, RPC8, { hub_schema_version: () => 30 });
+    // From 19 the page reads the routine, and from 21 asks can_coach (a non-parent): the database answers both.
+    const LATER = { routine_status: () => ({ points: 0, sections: [], today: null }), can_coach: () => false };
+    const RPC29 = Object.assign({}, RPC8, LATER, { hub_schema_version: () => 29 });
+    const RPC30 = Object.assign({}, RPC8, LATER, { hub_schema_version: () => 30 });
     const WAIT = [['2026-11-02', 'Old worksheet', 'Math'], ['2026-11-06', 'Grammar quiz', 'Spanish'], ['2026-11-09', 'Reading log', 'English'],
       ['2026-11-13', 'Practice topics', 'Math']];
     const autoDb = (v30, rule) => {
