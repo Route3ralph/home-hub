@@ -434,8 +434,12 @@ const emptyLists = (b) => !!b && typeof b === 'object' && !Array.isArray(b)
     const kv = JSON.stringify(kidView.body);
     check('homework, Jordan\'s link: homework_by_token gives his view (his first name, Pat as "Pat", his step and his ask)', kidView.status === 200 && !!kidView.body
       && kidView.body.me.first_name === 'Jordan' && kidView.body.me.tutor === 'Pat' && kv.includes('Find 2 sources and save their links') && kv.includes('Choose Friday'), kv.slice(0, 300));
-    check('homework, Jordan\'s link: no teacher\'s text, no other name or surname, no email, no person\'s id and no token in his view',
-      !kv.includes('Make a poster') && !leaks(kv, ['Jordan']).length, leaks(kv, ['Jordan']));
+    // From 0032 (docs/v1.3-homework.md §32) an assignment's `what` is the teacher's words cut short, on purpose; nothing else of
+    // the text.
+    const kvNoWhat = JSON.stringify(Object.assign({}, kidView.body, { assignments: (kidView.body.assignments || []).map(({ what, ...a }) => a) }));
+    const whats = (kidView.body.assignments || []).map((a) => a.what).filter(Boolean);
+    check('homework, Jordan\'s link: no teacher\'s text (but an assignment\'s What to do line, at most 200 characters), no other name or surname, no email, no person\'s id and no token in his view',
+      !kvNoWhat.includes('Make a poster') && whats.every((x) => x.length <= 200) && !leaks(kv, ['Jordan']).length, [whats, leaks(kv, ['Jordan'])]);
     const card = await fn('get_person_day', null, { p_token: jordan.day_token });
     check('homework, Jordan\'s link: get_person_day carries his card, with no teacher\'s text', card.status === 200 && !!card.body && !!card.body.homework
       && !JSON.stringify(card.body.homework).includes('Make a poster'), JSON.stringify(card.body && card.body.homework));

@@ -76,5 +76,32 @@ const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
     check('the next run sends no second one', dueMail().length === 1);
   });
 
+  // 0032 (docs/v1.3-homework.md §32): an exam with the teacher's text, in a class Alex ticked: the preview (the real
+  // due_list through the real hub-jobs) shows Test, What to do and Check the portal under it, and nothing of the rest.
+  await flow('what to do and check the portal', async () => {
+    await sql(`insert into assignments (kid_id, title, subject, due_date, status, details) values
+               ('${P.jordan.id}', 'Chapter 3 exam', 'Spanish', '2026-11-16', 'open', 'Summative grade. What to turn in: Print the PDF and mark it up. Bring a pencil and the private notes page.')`);
+    const gen = await one(`select what, is_test from assignments where title = 'Chapter 3 exam'`);
+    check('the generated columns: what from "What to turn in:", and a test', !!gen && gen.what === 'Print the PDF and mark it up. Bring a pencil and the private notes page.' && gen.is_test === true, JSON.stringify(gen));
+    await h.mark();
+    const { page, context } = await open({ email: 'alex@example.com', path: '/#/settings', label: 'due-portal' });
+    // Alex ticks Spanish as the page does (a PATCH of the homework_kids row, through its own RLS and column grant).
+    const patched = await page.evaluate(async (kid) => {
+      const r = await window.HomeHub.core.sb.from('homework_kids').update({ portal_classes: ['Spanish'] }).eq('kid_id', kid).select('portal_classes');
+      return { error: r.error && r.error.message, data: r.data };
+    }, P.jordan.id);
+    check('Alex ticks Spanish (homework_kids.portal_classes, through RLS)', !patched.error && JSON.stringify(patched.data) === '[{"portal_classes":["Spanish"]}]', JSON.stringify(patched));
+    await page.waitForSelector('.set-due [data-due="preview"]', { timeout: 8000 });
+    const [popup] = await Promise.all([page.waitForEvent('popup'), page.click('.set-due [data-due="preview"]')]);
+    await popup.waitForSelector('h1', { timeout: 8000 });
+    const body = (await popup.textContent('body')).replace(/\s+/g, ' ');
+    check('the preview: the exam under Coming up with Test, What to do and Check the portal; the done Spanish worksheet with neither',
+      /Chapter 3 exam · Spanish · Test · due Mon Nov 16 ?What to do: Print the PDF and mark it up\. Bring a pencil and the private notes page\. ?Check the portal for details\./.test(body)
+      && /Verbs worksheet · Spanish · done ?☐/.test(body) && !/Summative grade/.test(body), body.slice(0, 900));
+    await popup.close();
+    check('alex: no API request failed', !(await failures()).length, await failures());
+    await context.close();
+  });
+
   await h.finish();
 })();
