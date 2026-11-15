@@ -394,6 +394,77 @@
   }
 
   // ============================================
+  // PHONE REMINDERS (schema 31, the parents; docs/v1.3-homework.md §31)
+  // Every day at push_at, hub-jobs sends each kid who turned reminders on in his My day (added to his phone's Home
+  // Screen) one notification of what's due tomorrow. The time is saved on the household row; who turned them on comes
+  // from push_people; Send a test asks hub-jobs (push_test) to send one to that person's phones now.
+  // ============================================
+  function drawPush(box, ctx, getHousehold, onSaved) {
+    const hh = getHousehold();
+    const on = !!hh.push_at;
+    box.innerHTML = `<p class="set-help">A notification on a kid's phone every day with his homework due tomorrow and how many aren't marked done. On the phone: open his My day link in Safari, tap Share, then Add to Home Screen; open My day from the Home Screen, then Homework, then Turn on reminders. Needs iOS 16.4 or later.</p>
+      <form class="form set-form set-push" novalidate>
+        <label class="set-check"><input type="checkbox" name="on"${on ? ' checked' : ''}> Send them every day at</label>
+        <label class="field set-weekly-time"><span class="sr-only">Time</span><input type="time" name="at" value="${esc(hhmm(hh.push_at) || '16:00')}"></label>
+        <p class="form-error" role="alert" hidden></p>
+        <div class="form-actions"><button type="submit" class="btn btn-primary set-btn">Save</button></div>
+      </form>
+      <div class="set-push-who" data-ref="push-who"><p class="set-status">Checking…</p></div>`;
+    const form = box.querySelector('form');
+    const errBox = form.querySelector('.form-error');
+    const fail = (msg) => { errBox.textContent = msg; errBox.hidden = false; };
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      errBox.hidden = true;
+      const turnOn = form.elements.on.checked;
+      const at = form.elements.at.value;
+      if (turnOn && !at) { fail('Pick the time they go out each day.'); return; }
+      const btn = form.querySelector('[type="submit"]');
+      btn.disabled = true;
+      try {
+        const row = await saveHousehold(getHousehold(), { push_at: turnOn ? at : null });
+        if (ctx.stale()) return;
+        toast(turnOn ? `Phone reminders on: every day at ${fmt.time(at)}` : 'Phone reminders off');
+        onSaved(row);
+      } catch (err) {
+        btn.disabled = false;
+        fail(friendly(err));
+      }
+    });
+    const who = box.querySelector('[data-ref="push-who"]');
+    (async () => {
+      let list = null;
+      try {
+        const { data, error } = await core.sb.rpc('push_people');
+        if (error) throw error;
+        list = Array.isArray(data) ? data : [];
+      } catch (err) {
+        if (!ctx.stale()) who.innerHTML = '<p class="set-status">Couldn\'t read who has them on.</p>';
+        return;
+      }
+      if (ctx.stale()) return;
+      who.innerHTML = list.length
+        ? `<ul class="set-weekly-list">${list.map((p) => `<li class="set-weekly-row set-push-row"><span>${esc(p.name)}: ${esc(p.phones === 1 ? 'on 1 phone' : `on ${p.phones} phones`)}${p.last_ok_at ? `, last sent ${esc(fmt.day(String(p.last_ok_at).slice(0, 10)))}` : ''}</span>
+            <button type="button" class="btn btn-sm set-btn" data-push-test="${esc(p.person_id)}">Send a test</button></li>`).join('')}</ul>`
+        : '<p class="set-help">Nobody has turned them on yet. It\'s done on the kid\'s phone, in his My day.</p>';
+    })();
+    who.addEventListener('click', async (e) => {
+      const b = e.target.closest('[data-push-test]');
+      if (!b) return;
+      b.disabled = true;
+      let res;
+      try { res = await core.sb.functions.invoke('hub-jobs', { body: { action: 'push_test', person_id: b.dataset.pushTest } }); } catch (err) { res = { error: err }; }
+      b.disabled = false;
+      if (res.error || !res.data) {
+        toast(res.error ? await fnMessage(res.error, 'Couldn\'t send it: the email function isn\'t updated yet.') : 'Couldn\'t send it.', { error: true });
+        return;
+      }
+      const d = res.data;
+      toast(d.sent ? `Test sent to ${d.sent === 1 ? '1 phone' : `${d.sent} phones`}` : 'No phone took it. Turn reminders on again on the phone.', d.sent ? undefined : { error: true });
+    });
+  }
+
+  // ============================================
   // THE PAGE
   // ============================================
   async function renderSettings(main, ctx) {
@@ -442,6 +513,10 @@
       ${admin && core.schemaVersion >= 29 ? `<section class="card set-card" aria-labelledby="setDue">
         <div class="card-head"><h2 id="setDue">Due tomorrow</h2><span class="card-sub">The kids' homework, every evening</span></div>
         <div class="set-body" data-ref="due"></div>
+      </section>` : ''}
+      ${admin && core.schemaVersion >= 31 ? `<section class="card set-card" aria-labelledby="setPush">
+        <div class="card-head"><h2 id="setPush">Phone reminders</h2><span class="card-sub">Homework due tomorrow, on a kid's phone</span></div>
+        <div class="set-body" data-ref="push"></div>
       </section>` : ''}
       <section class="card set-card" aria-labelledby="setCalendar">
         <div class="card-head"><h2 id="setCalendar">Google Calendar &amp; Hearth</h2></div>
@@ -772,7 +847,10 @@
     function drawDueCard() {
       if (ref('due') && hh) drawDue(ref('due'), ctx, () => hh, (row) => { hh = row; drawDueCard(); });
     }
-    function drawAll() { drawHousehold(); drawDaysOff(); drawStillOn(); drawWeeklyCard(); drawDueCard(); }
+    function drawPushCard() {
+      if (ref('push') && hh) drawPush(ref('push'), ctx, () => hh, (row) => { hh = row; drawPushCard(); });
+    }
+    function drawAll() { drawHousehold(); drawDaysOff(); drawStillOn(); drawWeeklyCard(); drawDueCard(); drawPushCard(); }
     drawAll();
     // Google Calendar & Hearth loads alongside the admin's reads (schema 3 only).
     const google = core.schemaVersion >= 3 ? googleCard(ref('calendar'), ctx, admin) : null;

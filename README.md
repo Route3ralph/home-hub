@@ -267,6 +267,17 @@ Every evening at the time you pick (5:30pm, say), the hub emails the people you 
 2. **About 2 minutes:** run [`supabase/migrations/0029_due_tomorrow.sql`](supabase/migrations/0029_due_tomorrow.sql) in the Supabase SQL editor, after 0028. "isn't installed" means 0028 is missing; "already installed" means it's done; either way nothing was changed.
 3. **Settings → Due tomorrow:** tick **Send it every evening at**, pick the time, tick who gets it, **Save**. **Preview tonight's** shows this evening's email. Each person needs a confirmed email address first (the morning email's confirmation does it).
 
+### Phone reminders (v1.3, migration 0031)
+
+A notification on the kid's iPhone every day at the time you pick (4:00pm, say): his homework due tomorrow and how many aren't marked done yet. A tap opens his My day. It works from his My day added to the Home Screen (iOS 16.4 or later), with no app. A web page can't add to the phone's Reminders app, so this is the way to get it on his phone.
+
+**Turning it on** (about 15 minutes; no `cron.sql` change):
+1. `tests/run.sh` ends with `0 failed`; merge. Nothing changes until step 3: the card shows only on schema 31.
+2. **About 5 minutes:** on any computer with Node, run `npx web-push generate-vapid-keys`. In Supabase → Edge Functions → Secrets add `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY` and `VAPID_SUBJECT` (`mailto:` and your address), then deploy `hub-jobs` (verify_jwt false).
+3. **About 2 minutes:** run [`supabase/migrations/0031_phone_reminders.sql`](supabase/migrations/0031_phone_reminders.sql) in the Supabase SQL editor, after 0030. "isn't installed" means 0030 is missing; "already installed" means it's done; either way nothing was changed.
+4. **Settings → Phone reminders:** tick **Send them every day at**, pick the time, **Save**.
+5. **On his phone, about 3 minutes:** open his My day link in Safari → Share → **Add to Home Screen**. Open My day from the Home Screen → Homework → **Turn on reminders** → **Allow**. Then **Send a test** on Settings.
+
 ### Adding school items automatically (v1.3, migration 0030)
 
 Once the Assignments link's dates are checked, **Add automatically** on its row (Homework → Switches → School links) puts the school's new items on his homework by themselves, within the hour, with their due dates: anything due in the next 30 days. One you hid before (the same title and class, like the weekly practice you enter by hand with a count) or already added yourself is hidden instead. A link dated by the day each was given can't do it (use **Paste due dates**). **Stop adding automatically** turns it off; what it added stays.
@@ -484,6 +495,7 @@ The order matters, and it's written out in [`CLAUDE.md`](CLAUDE.md) under **Depl
    - `GOOGLE_SA_JSON` (optional, for [Google Calendar and Hearth](#google-calendar-and-hearth)): the whole service-account key file (step B there). Without it the calendar job stops at once and the morning email is unchanged.
    - `ANTHROPIC_API_KEY` (optional, for v1.3's [AI planner](#the-ai-planner-v13-optional)): the key from the family's Anthropic workspace (step 4 there). Without it the `homework_ai` action answers `not_set_up` and everything else works.
    - `RESEND_WEBHOOK_SECRET`, `INBOX_ADDRESS` and `INBOX_ALSO_FROM` (optional, for the calendar inbox: email the hub and it goes on the calendar; `docs/v2-design.md` §28.3). Without them the webhook answers `not_set_up` or ignores the mail.
+   - `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY` and `VAPID_SUBJECT` (optional, for [phone reminders](#phone-reminders-v13-migration-0031)): the hub's key pair from `npx web-push generate-vapid-keys` and a `mailto:` contact. Without them no reminder goes and the rest works.
 5. Create two Vault secrets by hand (`hub_cron_secret`, with the same value as `HUB_CRON_SECRET`, and `hub_jobs_url`), then run [`supabase/cron.sql`](supabase/cron.sql). Its header shows the exact commands. It refuses to run with a missing or placeholder secret and is safe to run again. Run it again after a release that changes it: v1.1 adds the `hub-calendar` job, and v1.3's school feed (migration 0006) the `hub-school` job.
 6. Smoke checks: a POST to hub-jobs without the header answers 401; **Settings → Preview my morning email** shows an email; **Settings → Morning email** shows the last run; the next morning `notification_log` has `sent` rows.
 7. Ops hardening: set the Auth email rate limit to about 6 an hour, keep the signup hook on, and turn Resend's click and open tracking off (so links in emails aren't rewritten).

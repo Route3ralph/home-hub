@@ -168,6 +168,13 @@
       hw_school_pat: 'Plan with {tutor}', hw_school_pat_none: 'Plan with your parents', hw_school_hide: 'Hide',
       hw_school_planned: 'Planned for {day}: {title}', hw_school_for_pat: 'On your homework, to plan with {tutor}: {title}',
       hw_school_for_pat_none: 'On your homework, to plan with your parents: {title}', hw_school_hidden: 'Hidden: {title}. A parent can bring it back.',
+      // Phone reminders (0031, docs/v1.3-homework.md §31).
+      hw_remind_off: 'Get a reminder of tomorrow\'s homework on this phone every day at {at}.',
+      hw_remind_off_notime: 'Get a reminder of tomorrow\'s homework on this phone every day, once a parent picks the time.',
+      hw_remind_on: 'Reminders on: every day at {at}.', hw_remind_on_notime: 'Reminders on. A parent picks the time.',
+      hw_remind_turn_on: 'Turn on reminders', hw_remind_turn_off: 'Turn off', hw_remind_add: 'To get a reminder of tomorrow\'s homework on this phone: tap Share, then Add to Home Screen. Open My day from the Home Screen and turn reminders on here.',
+      hw_remind_denied: 'Reminders are blocked for My day. Turn them on in the phone\'s Settings, Notifications.',
+      hw_remind_failed: 'Reminders couldn\'t be turned on. Try again.', hw_remind_done_on: 'Reminders on', hw_remind_done_off: 'Reminders off',
       hw_school_more: '{n} more', hw_school_gone: 'No longer on the school site', hw_school_moved: 'The school moved it to {day}',
       hw_count: '{d} of {g} done', hw_count_plus: 'One more done: {title}', hw_count_minus: 'One less: {title}', hw_count_all: 'All {g} done!',
       hw_school_not_yours: "That isn't on your list from school any more.", hw_school_already: 'That one is on your homework already.',
@@ -299,6 +306,12 @@
       hw_school_pat: 'Planear con {tutor}', hw_school_pat_none: 'Planear con tus padres', hw_school_hide: 'Ocultar',
       hw_school_planned: 'Planeado para {day}: {title}', hw_school_for_pat: 'En tu tarea, para planear con {tutor}: {title}',
       hw_school_for_pat_none: 'En tu tarea, para planear con tus padres: {title}', hw_school_hidden: 'Oculta: {title}. Tus padres pueden recuperarla.',
+      hw_remind_off: 'Recibe cada día a las {at} un recordatorio de la tarea de mañana en este teléfono.',
+      hw_remind_off_notime: 'Recibe cada día un recordatorio de la tarea de mañana en este teléfono, cuando tus padres elijan la hora.',
+      hw_remind_on: 'Recordatorios activados: cada día a las {at}.', hw_remind_on_notime: 'Recordatorios activados. Tus padres eligen la hora.',
+      hw_remind_turn_on: 'Activar recordatorios', hw_remind_turn_off: 'Desactivar', hw_remind_add: 'Para recibir un recordatorio de la tarea de mañana en este teléfono: toca Compartir y luego Agregar a inicio. Abre Mi día desde la pantalla de inicio y activa los recordatorios aquí.',
+      hw_remind_denied: 'Los recordatorios están bloqueados para Mi día. Actívalos en Ajustes del teléfono, Notificaciones.',
+      hw_remind_failed: 'No se pudieron activar los recordatorios. Inténtalo de nuevo.', hw_remind_done_on: 'Recordatorios activados', hw_remind_done_off: 'Recordatorios desactivados',
       hw_school_more: '{n} más', hw_school_gone: 'Ya no está en el sitio de la escuela', hw_school_moved: 'La escuela la pasó a {day}',
       hw_count: '{d} de {g} hechos', hw_count_plus: 'Uno más hecho: {title}', hw_count_minus: 'Uno menos: {title}', hw_count_all: '¡Los {g} hechos!',
       hw_school_not_yours: 'Eso ya no está en tu lista de la escuela.', hw_school_already: 'Esa ya está en tu tarea.',
@@ -2238,9 +2251,130 @@
     if (![at, here, now].every(Number.isFinite)) return '';
     return new Date(at + Math.round((here - now) / 900000) * 900000).toISOString().slice(11, 16);
   }
+  // ---------- Phone reminders (0031, docs/v1.3-homework.md §31) ----------
+  // His My day added to the Home Screen can get one notification a day (iOS 16.4 and later): Turn on reminders asks the
+  // phone (from the tap itself, as iOS needs), then push_by_token keeps this phone's push address and keys. The service
+  // worker (day-sw.js) and hub-jobs' public key are got ready before the tap, so subscribing is its first await.
+  // remind: null (not checked yet), { hidden } (no 0031, or the hub has no key), or what the card shows.
+  let remind = null;
+  let remindChecking = false;
+  const remindStandalone = () => {
+    try { return navigator.standalone === true || window.matchMedia('(display-mode: standalone)').matches; } catch (e) { return false; }
+  };
+  const remindSupported = () => 'serviceWorker' in navigator && 'PushManager' in window && typeof window.Notification === 'function';
+  const remindKey = (k) => { const u = (k + '='.repeat((4 - (k.length % 4)) % 4)).replace(/-/g, '+').replace(/_/g, '/'); const b = atob(u); return Uint8Array.from(b, (c) => c.charCodeAt(0)); };
+  function remindAt(at) {
+    const m = /^(\d{2}):(\d{2})$/.exec(at || '');
+    if (!m) return null;
+    const h = Number(m[1]);
+    return lang === 'es' ? `${m[1]}:${m[2]}` : `${h % 12 || 12}:${m[2]}${h < 12 ? 'am' : 'pm'}`;
+  }
+  // Only where his view has reminders (0031, and a parent has set the time): otherwise nothing is asked. In Safari (not from the Home Screen) only the
+  // hint shows, from the view's time, with no request.
+  async function remindCheck() {
+    if (remind || remindChecking) return;
+    if (!hv || !hv.reminders || typeof hv.reminders !== 'object') { remind = { hidden: true }; return; }
+    remindChecking = true;
+    const supported = remindSupported();
+    const standalone = remindStandalone();
+    const base = { supported, standalone, ios: phoneKind() === 'ios', reg: null, pubKey: null, on: false, at: hv.reminders.at || null,
+                   perm: supported ? window.Notification.permission : 'default', busy: false, error: false };
+    let next = supported && standalone ? { hidden: true } : base;
+    if (supported && standalone) {
+      try {
+        const reg = await navigator.serviceWorker.register('day-sw.js', { scope: './day.html' });
+        const sub = await reg.pushManager.getSubscription();
+        const k = await one(() => sb.functions.invoke('hub-jobs', { body: { action: 'push_key' } }));
+        const pubKey = k && !k.error && k.data && typeof k.data.public_key === 'string' ? k.data.public_key : null;
+        const ans = pubKey ? await rpc(one(() => sb.rpc('push_by_token', { p_token: token, p_action: 'status', p_endpoint: sub ? sub.endpoint : null }))) : null;
+        if (ans) next = Object.assign(base, { reg, pubKey, on: !!ans.on, at: ans.at || null });
+      } catch (e) { /* the hub has no key yet, or nothing this phone can do: the card stays away */ }
+    }
+    remind = next;
+    remindChecking = false;
+    if (view === 'homework') renderHomework(true);
+  }
+  function remindHTML() {
+    // Checked after this draw (never in the middle of it: the check redraws the page when it knows).
+    if (!remind) { setTimeout(remindCheck, 0); return ''; }
+    if (remind.hidden) return '';
+    const r = remind;
+    const at = remindAt(r.at);
+    let line = '';
+    let act = '';
+    if (!r.supported || !r.standalone) {
+      if (!r.ios) return '';
+      line = hw('hw_remind_add');
+    } else if (r.on) {
+      line = at ? hw('hw_remind_on', { at }) : hw('hw_remind_on_notime');
+      act = `<button type="button" class="btn btn-sm" data-act="hw-remind-off"${r.busy ? ' disabled' : ''}>${esc(hw('hw_remind_turn_off'))}</button>`;
+    } else if (r.perm === 'denied') {
+      line = hw('hw_remind_denied');
+    } else {
+      line = at ? hw('hw_remind_off', { at }) : hw('hw_remind_off_notime');
+      act = `<button type="button" class="btn btn-sm btn-primary" data-act="hw-remind-on"${r.busy ? ' disabled' : ''}>${esc(hw('hw_remind_turn_on'))}</button>`;
+    }
+    return `<section class="hw-remind day-sec" data-on="${r.on ? '1' : '0'}"><p class="hw-remind-line">${esc(line)}</p>
+      ${r.error ? `<p class="form-error" role="alert">${esc(hw('hw_remind_failed'))}</p>` : ''}${act ? `<p class="hw-remind-acts">${act}</p>` : ''}</section>`;
+  }
+  async function remindOn() {
+    const r = remind;
+    if (!r || !r.reg || !r.pubKey || r.busy) return;
+    r.busy = true;
+    r.error = false;
+    let sub = null;
+    try {
+      // First, from the tap: the phone's own question.
+      sub = await r.reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: remindKey(r.pubKey) });
+    } catch (e) {
+      r.busy = false;
+      r.perm = window.Notification.permission;
+      r.error = r.perm !== 'denied';
+      renderHomework(true);
+      return;
+    }
+    renderHomework(true);
+    try {
+      const j = sub.toJSON();
+      const ans = await rpc(one(() => sb.rpc('push_by_token', { p_token: token, p_action: 'on', p_endpoint: j.endpoint,
+                                                               p_p256dh: j.keys && j.keys.p256dh, p_auth: j.keys && j.keys.auth })));
+      r.on = !!(ans && ans.on);
+      r.at = ans ? ans.at || null : r.at;
+      r.error = !r.on;
+      r.perm = window.Notification.permission;
+      if (r.on) toast(hw('hw_remind_done_on'));
+    } catch (e) {
+      r.error = true;
+      try { await sub.unsubscribe(); } catch (e2) { /* the next tap subscribes again */ }
+    }
+    r.busy = false;
+    renderHomework(true);
+  }
+  async function remindOff() {
+    const r = remind;
+    if (!r || !r.reg || r.busy) return;
+    r.busy = true;
+    renderHomework(true);
+    let endpoint = null;
+    try {
+      const sub = await r.reg.pushManager.getSubscription();
+      if (sub) { endpoint = sub.endpoint; await sub.unsubscribe(); }
+    } catch (e) { /* the server forgets it all the same */ }
+    try {
+      const ans = await rpc(one(() => sb.rpc('push_by_token', { p_token: token, p_action: 'off', p_endpoint: endpoint })));
+      r.on = false;
+      r.at = ans ? ans.at || null : r.at;
+      toast(hw('hw_remind_done_off'));
+    } catch (e) {
+      r.error = true;
+    }
+    r.busy = false;
+    renderHomework(true);
+  }
+
   function renderHomework(force) {
     if (!hv) { hwFrame('homework'); return; }
-    const key = JSON.stringify([Object.assign({}, hv, { as_of: null, server_now: null }), nowId, menuOpen, quickOpen, addOpen, earlierOpen, lengthPick, withPick, lang, notifyAsked,
+    const key = JSON.stringify([Object.assign({}, hv, { as_of: null, server_now: null }), nowId, menuOpen, quickOpen, addOpen, earlierOpen, lengthPick, withPick, lang, notifyAsked, remind && Object.assign({}, remind, { reg: null }),
       schoolMoreOpen, pathsMoreOpen, [...schoolBusy], timeAnswer(), !!cheer]);
     if (!force && key === hvDrawn && root.querySelector('.hw-tonight')) return;
     if (!force && (addOpen || sheet) && root.querySelector('.hw-tonight')) return;   // never under his fingers
@@ -2281,6 +2415,7 @@
         <div class="hw-list">${due.map(dueRowHTML).join('')}</div></section>` : ''}
       ${schoolHTML(school)}
       ${paceBits.length ? `<p class="hw-pace">${esc(paceBits.join(' · '))}</p>` : ''}
+      ${remindHTML()}
       <p class="hw-who">${esc(hv.me && hv.me.coach ? hw('hw_who_sees_coach', { coach: hv.me.coach }) : hw('who_sees'))}</p>
       ${notify}${silent}
       ${footerHTML()}`;
@@ -3149,6 +3284,8 @@
       case 'hw-replan': replan([asg]); break;
       case 'hw-cue': openSheet('cue', null, (hv.me || {}).cue || ''); break;
       case 'hw-ifstuck': openSheet('ifstuck', null, (hv.me || {}).if_stuck || ''); break;
+      case 'hw-remind-on': remindOn(); break;
+      case 'hw-remind-off': remindOff(); break;
       case 'hw-notify':
         notifyAsked = true;
         try { window.Notification.requestPermission().catch(() => {}); } catch (err) { /* nothing more to ask */ }

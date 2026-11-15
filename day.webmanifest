@@ -1,0 +1,15 @@
+{
+  "name": "My day",
+  "short_name": "My day",
+  "description": "Your day, your chores and your homework, from Home Hub.",
+  "id": "./day.html",
+  "scope": "./day.html",
+  "display": "standalone",
+  "background_color": "#f6f4f0",
+  "theme_color": "#2f5d50",
+  "icons": [
+    { "src": "assets/icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "assets/icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "assets/icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
