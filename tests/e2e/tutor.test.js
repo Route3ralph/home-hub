@@ -538,6 +538,7 @@ async function tokenRpcs(page, db) {
     check('Run his rewards: his ask waiting, his rewards, Give points and the lines to correct', same(await texts(page, `${M} .cm-asks li > span`), ["Choose Friday's dinner · 60 · asked today"])
       && same(await texts(page, `${M} .cm-rewards li > span`), ['Extra game time · 15 · instant', "Choose Friday's dinner · 60"])
       && !!(await page.$(`${M} form[data-mform="give"]`)) && (await texts(page, `${M} .cm-lines li`)).length >= 2, await text(page, M));
+    check('before 0033: no Take points', !(await page.$(`${M} form[data-mform="take"]`)) && !/Take points/.test(await text(page, M)), await text(page, M));
     // Yes on his ask.
     await page.click(`${M} .cm-asks [data-mact="yes"]`);
     await until(async () => /Nothing waiting\./.test(await text(page, M)));
@@ -593,6 +594,47 @@ async function tokenRpcs(page, db) {
     d.tutor_links[0].rewards = false;
     await page.evaluate(() => window.dispatchEvent(new Event('focus')));
     check('the parents turn Can manage rewards off: on the next read Run his rewards goes', await until(async () => !(await page.$('[data-part="manage"]'))));
+    await page.context().close();
+  }
+  {
+    // 0033 (§33.2): Take points, as Give, with how many are free. Jordan has 88 points, 60 of them held for his ask.
+    const d = withCoachRewards(coachDb());
+    d.tutor_links[0].rewards = true;
+    d.tutorTake33 = true;
+    ({ page, db } = await open({ label: 'coach-take', path: `/day.html?h=${PAT}`, db: d, allowConsole: /status of 400/ }));
+    await page.waitForSelector('[data-part="manage"] form[data-mform="take"]');
+    const M = '[data-part="manage"]';
+    const T = `${M} form[data-mform="take"]`;
+    check('0033: Take points after Give points, saying how many are free',
+      (await texts(page, `${M} h4`)).join('|').includes('Give points|Take points|Correct points (30 days)')
+      && (await text(page, `${T} small`)) === 'Jordan has 28 free points (the rest are spent or held for a reward he asked for). At most 200 a week taken through tutor links.',
+      `${(await texts(page, `${M} h4`)).join('|')} / ${await text(page, `${T} small`)}`);
+    await page.fill(`${T} [name="points"]`, '29');
+    await page.fill(`${T} [name="note"]`, 'Phone at the table');
+    await page.click(`${T} [type="submit"]`);
+    await until(async () => !!(await page.$(`${M} .cm-error`)));
+    check('Take more than his free points: the refusal says how many are free, what was typed kept, nothing taken',
+      (await text(page, `${M} .cm-error`)) === 'Only 28 points are free to take (the rest are spent or held for a reward he asked for).'
+      && (await page.inputValue(`${T} [name="points"]`)) === '29' && (await text(page, '.coach-balance')) === '88 points'
+      && !d.points_ledger.some((x) => x.kind === 'taken'), await text(page, `${M} .cm-error`));
+    const firstKey = calls(db, 'coach_reward_by_token').slice(-1)[0].body.p_key;
+    await page.fill(`${T} [name="points"]`, '10');
+    await page.click(`${T} [type="submit"]`);
+    await until(async () => (await text(page, '.coach-balance')) === '78 points');
+    const take = calls(db, 'coach_reward_by_token').slice(-1)[0];
+    const row = d.points_ledger.find((x) => x.kind === 'taken');
+    check('Take 10: take with the points and the reason (a new key: the refused one isn\'t reused); the balance drops, the form empties',
+      take.body.p_action === 'take' && same(take.body.p_fields, { points: 10, note: 'Phone at the table' }) && /^[0-9a-f-]{36}$/.test(take.body.p_key) && take.body.p_key !== firstKey
+      && (await page.inputValue(`${T} [name="points"]`)) === '' && (await page.inputValue(`${T} [name="note"]`)) === '', JSON.stringify(take.body));
+    check('... a taken line, -10, as the link', !!row && row.delta === -10 && row.who === 'Pat Lee, tutor (tutor link)' && row.note === 'Phone at the table', JSON.stringify(row));
+    check('... 18 free now; his points\' lines read "Taken away" with the reason, and it isn\'t among the lines to correct (a take can\'t be voided)',
+      /Jordan has 18 free points/.test(await text(page, `${T} small`)) && /Taken away · Phone at the table/.test(await coachText(page))
+      && !(await page.$(`${M} .cm-lines li[data-line="${row.id}"]`)), `${await text(page, `${T} small`)} / ${await coachText(page)}`);
+    await page.fill(`${T} [name="points"]`, '5');
+    await page.click(`${T} [type="submit"]`);
+    await until(async () => !!(await page.$(`${M} .cm-error`)));
+    check('no reason: "Say why the points come off."', (await text(page, `${M} .cm-error`)) === 'Say why the points come off.', await text(page, `${M} .cm-error`));
+    await page.locator(M).screenshot({ path: SHOTS + 'tutor-coach-take.png' });
     await page.context().close();
   }
   {

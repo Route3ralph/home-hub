@@ -229,7 +229,8 @@ const PAT_WHO = 'Pat Lee, tutor (tutor link)';
     const v = await view();
     const asg = v && v.assignments.find((x) => x.id === sci);
     check('pat: ... and the plan is on Jordan\'s view (homework_by_token), given by "tutor" (never a name), with its nine steps and no teacher\'s text',
-      !!asg && asg.state === 'given' && asg.given_by === 'tutor' && asg.added_by === 'tutor' && asg.steps.length === 9 && !JSON.stringify(v).includes('Make a poster'), asg);
+      !!asg && asg.state === 'given' && asg.given_by === 'tutor' && asg.added_by === 'tutor' && asg.steps.length === 9
+      && !JSON.stringify(Object.assign({}, v, { assignments: v.assignments.map(({ what, ...a }) => a) })).includes('Make a poster'), asg);   // what: 0032's line
 
     // Nothing of it is in the texts and the email: the homework-time event is, as any event.
     const text = (await one(`select public.day_text('${P.jordan.id}', '${MON}') as t`)).t;

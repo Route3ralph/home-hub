@@ -267,6 +267,23 @@ Every evening at the time you pick (5:30pm, say), the hub emails the people you 
 2. **About 2 minutes:** run [`supabase/migrations/0029_due_tomorrow.sql`](supabase/migrations/0029_due_tomorrow.sql) in the Supabase SQL editor, after 0028. "isn't installed" means 0028 is missing; "already installed" means it's done; either way nothing was changed.
 3. **Settings → Due tomorrow:** tick **Send it every evening at**, pick the time, tick who gets it, **Save**. **Preview tonight's** shows this evening's email. Each person needs a confirmed email address first (the morning email's confirmation does it).
 
+### What to do, Test and Check the portal (v1.3, migration 0032)
+
+A school item's title can hide what it asks ("Study for …" when the teacher wants a marked-up printout). Each assignment now shows **What to do:** the teacher's own words, cut short (the part after "What to turn in:" when there is one), and a **Test** tag on an exam or quiz. On **Homework → Switches → Check the portal** you tick the classes whose assignments often leave things out; each of their assignments then says "Check the portal for details". All three show on the Homework page, his My day and the Due tomorrow email; the phone reminder marks a test.
+
+**Turning it on** (about 10 minutes; no `cron.sql` change):
+1. `tests/run.sh` ends with `0 failed`; merge, and deploy `hub-jobs` (verify_jwt false). Nothing changes until step 2: the pages show them only on schema 32.
+2. **About 2 minutes:** run [`supabase/migrations/0032_school_clarity.sql`](supabase/migrations/0032_school_clarity.sql) in the Supabase SQL editor, after 0031. "isn't installed" means 0031 is missing; "already installed" means it's done; either way nothing was changed.
+3. **Homework → Switches → Check the portal → Choose classes**, tick, **Save**.
+
+### Take points on the tutor link (v1.3, migration 0033)
+
+A tutor whose link runs his rewards can take points off too: **Take points** after Give points on the link, how many (1 to 200) and why. The same rules as yours: never below zero, never points held for a reward he asked for (the form says how many are free), and he sees "−10 Taken away · reason". At most 200 a week taken through tutor links. To undo one, give the points back.
+
+**Turning it on** (no Edge Function and no `cron.sql` change):
+1. `tests/run.sh` ends with `0 failed`; merge. Nothing changes until step 2.
+2. **About 2 minutes:** run [`supabase/migrations/0033_tutor_take.sql`](supabase/migrations/0033_tutor_take.sql) in the Supabase SQL editor, after 0032. "isn't installed" means 0032 is missing; "already installed" means it's done; either way nothing was changed.
+
 ### Phone reminders (v1.3, migration 0031)
 
 A notification on the kid's iPhone every day at the time you pick (4:00pm, say): his homework due tomorrow and how many aren't marked done yet. A tap opens his My day. It works from his My day added to the Home Screen (iOS 16.4 or later), with no app. A web page can't add to the phone's Reminders app, so this is the way to get it on his phone.

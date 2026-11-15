@@ -442,7 +442,11 @@ select test.is((select added_by || ' ' || due_date || ' ' || details || ' ' || c
                E'school 2026-11-05 Write up the lab.\nUse the template on the class page. alex@example.com',
                'a parent''s Add: an assignment from school, the description as its teacher''s text');
 :as_anon
-select test.ok(strpos(homework_by_token(test.token('Taylor'))::text, 'Use the template') = 0, 'her view never carries the description');
+-- From 0032 her view carries the description's what-to-do line (assignments.what, at most 200 characters), never the
+-- description itself (no details key anywhere in it).
+select test.ok(strpos(homework_by_token(test.token('Taylor'))::text, '"details"') = 0, 'her view never carries the description (no details key)');
+select test.is((select x ->> 'what' from jsonb_array_elements(homework_by_token(test.token('Taylor')) -> 'assignments') x where x ->> 'id' = :'lab'),
+               'Write up the lab. Use the template on the class page.', '... only its what-to-do line (0032), its two short sentences on one line');
 
 -- ---------------------------------------------------------------------
 -- The next read: school changes reach an assignment unless a person changed that field

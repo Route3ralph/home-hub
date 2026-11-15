@@ -10,6 +10,8 @@ import { oneLine } from './util.ts';
 export type DueItem = {
   title: string; subject?: string | null; due?: string; due_label?: string;
   done?: boolean; missing?: boolean; count?: { goal: number; done: number } | null;
+  // 0032: what its text says to do (the teacher's words, cut short), a test, and a class to check on the portal.
+  what?: string | null; test?: boolean; portal?: boolean;
 };
 export type DueKid = { id: string; name: string; tomorrow: DueItem[]; late: DueItem[]; coming: DueItem[] };
 export type DueList = {
@@ -23,6 +25,7 @@ const WORDS = {
     what_one: '{n} for {name}', what_many: '{parts}',
     tomorrow: 'Due tomorrow, {day}', late: 'Not marked done yet', coming: 'Coming up, to {day}',
     nothing: 'Nothing due tomorrow.', done: 'done', missing: 'Missing', due: 'due {d}', count: '{done} of {goal}',
+    test: 'Test', what: 'What to do: {text}', portal: 'Check the portal for details.',
     no_kids: 'Nobody has homework turned on.',
     footer: 'From Home Hub, every evening. Change the time or who gets it on Settings, Due tomorrow.',
   },
@@ -31,6 +34,7 @@ const WORDS = {
     what_one: '{n} de {name}', what_many: '{parts}',
     tomorrow: 'Para mañana, {day}', late: 'Sin marcar como hecho', coming: 'Próximamente, hasta el {day}',
     nothing: 'Nada para mañana.', done: 'hecho', missing: 'Falta', due: 'entrega {d}', count: '{done} de {goal}',
+    test: 'Examen', what: 'Qué hacer: {text}', portal: 'Revisa el portal para más detalles.',
     no_kids: 'Nadie tiene las tareas activadas.',
     footer: 'Desde Home Hub, cada tarde. La hora y quién lo recibe se cambian en Ajustes, Para mañana.',
   },
@@ -49,6 +53,7 @@ const arr = <T>(x: unknown): T[] => (Array.isArray(x) ? (x as T[]) : []);
 function line(it: DueItem, l: Lang, withDate: boolean): string {
   const bits = [oneLine(it.subject)];
   if (it.count && Number.isFinite(Number(it.count.goal))) bits.push(w(l, 'count', { done: Number(it.count.done) || 0, goal: Number(it.count.goal) }));
+  if (it.test) bits.push(w(l, 'test'));
   if (it.missing) bits.push(w(l, 'missing'));
   if (withDate && it.due_label) bits.push(w(l, 'due', { d: oneLine(it.due_label) }));
   if (it.done) bits.push(w(l, 'done'));
@@ -62,6 +67,8 @@ function itemHtml(it: DueItem, l: Lang, withDate: boolean): string {
     + `<span style="display:inline-block;width:18px;">${mark}</span>`
     + `<span style="${it.done ? 'text-decoration:line-through;' : 'font-weight:bold;'}">${esc(oneLine(it.title))}</span>`
     + (sub ? `<span style="color:${it.missing ? LATE : MUTED};"> · ${esc(sub)}</span>` : '')
+    + (it.what && !it.done ? `<div style="margin:2px 0 0 18px;color:${MUTED};">${esc(w(l, 'what', { text: oneLine(it.what) }))}</div>` : '')
+    + (it.portal && !it.done ? `<div style="margin:2px 0 0 18px;color:${LATE};font-weight:bold;">${esc(w(l, 'portal'))}</div>` : '')
     + '</li>';
 }
 
@@ -75,7 +82,9 @@ function sectionText(title: string, items: DueItem[], l: Lang, withDate: boolean
   if (!items.length) return [];
   return ['', title, ...items.map((it) => {
     const sub = line(it, l, withDate);
-    return `${it.done ? '[x]' : '[ ]'} ${oneLine(it.title)}${sub ? ` · ${sub}` : ''}`;
+    return [`${it.done ? '[x]' : '[ ]'} ${oneLine(it.title)}${sub ? ` · ${sub}` : ''}`,
+      ...(it.what && !it.done ? [`    ${w(l, 'what', { text: oneLine(it.what) })}`] : []),
+      ...(it.portal && !it.done ? [`    ${w(l, 'portal')}`] : [])].join('\n');
   })];
 }
 

@@ -3838,6 +3838,45 @@ const HW_AUDIO_DROP = `(${HW_STUBS})(); (${HW_CLOCKED})(); (${HW_WAKE_DROP})();`
     await page.context().close();
   }
 
+  // =====================================================================
+  // What to do, Test and Check the portal (0032, docs/v1.3-homework.md §32): under an assignment on his homework, the
+  // line its text says to do, a Test tag, and Check the portal for a class the parents ticked; in Spanish too
+  // =====================================================================
+  {
+    const cdb = (o) => {
+      const d = hwDb(o);
+      d.clarity32 = true;
+      Object.assign(d.assignments.find((a) => a.id === H.span), { what: 'Print the word list. Bring it on <b>Monday</b>.' });
+      Object.assign(d.assignments.find((a) => a.id === H.ws51), { is_test: true });
+      Object.assign(d.homework_kids.find((k) => k.kid_id === d.assignments.find((a) => a.id === H.span).kid_id), { portal_classes: [' spanish '] });
+      return d;
+    };
+    const SPAN = `.hw-asg[data-asg="${H.span}"]`;
+    ({ page, db } = await open({ label: 'clarity', path: `/day.html?t=${JORDAN}#homework`, db: cdb(), device: HW_DEVICE, init: HW_STUBS }));
+    await page.waitForSelector('.hw-tonight');
+    check('0032: under the Spanish project, what to do (the teacher\'s words, as text) and Check the portal (its class ticked, any case)',
+      (await text(page, `${SPAN} .hw-what`)) === 'What to do: Print the word list. Bring it on <b>Monday</b>.'
+      && (await text(page, `${SPAN} .hw-portal`)) === 'Check the portal for details.', await text(page, SPAN));
+    check('... a test says Test', (await text(page, `[data-asg="${H.ws51}"] .hw-tag-test`)) === 'Test', await text(page, `[data-asg="${H.ws51}"]`));
+    check('... the others have neither (no line, no tag, no note)', !(await page.$(`[data-asg="${H.math}"] .hw-what, [data-asg="${H.math}"] .hw-portal, [data-asg="${H.sci}"] .hw-what`)));
+    await page.context().close();
+    ({ page, db } = await open({ label: 'clarity-es', path: `/day.html?t=${JORDAN}#homework`, db: cdb({ lang: 'es' }), device: HW_DEVICE, init: HW_STUBS }));
+    await page.waitForSelector('.hw-tonight');
+    check('... in Spanish: "Qué hacer: …", "Examen" and "Revisa el portal para más detalles."', (await text(page, `${SPAN} .hw-what`)).startsWith('Qué hacer: Print the word list.')
+      && (await text(page, `[data-asg="${H.ws51}"] .hw-tag-test`)) === 'Examen' && (await text(page, `${SPAN} .hw-portal`)) === 'Revisa el portal para más detalles.');
+    await page.context().close();
+    ({ page, db } = await open({ label: 'clarity-390', path: `/day.html?t=${JORDAN}#homework`, db: cdb(), device: HW_DEVICE, init: HW_STUBS, ctx: phone() }));
+    await page.waitForSelector('.hw-tonight');
+    check('... at 390px with no sideways page scroll', await noSideScroll(page));
+    await page.context().close();
+    const before = hwDb();
+    Object.assign(before.assignments.find((a) => a.id === H.span), { what: 'Print the word list.' });
+    ({ page, db } = await open({ label: 'clarity-31', path: `/day.html?t=${JORDAN}#homework`, db: before, device: HW_DEVICE, init: HW_STUBS }));
+    await page.waitForSelector('.hw-tonight');
+    check('before 0032 (no what in his view): no line, tag or note', !(await page.$('.hw-what, .hw-tag-test, .hw-portal')));
+    await page.context().close();
+  }
+
   console.log(results.join('\n'));
   console.log(`\n${results.filter((r) => r.startsWith('PASS')).length}/${results.length} passed`);
   console.log('PAGE ERRORS:', errors.length ? '\n' + errors.join('\n') : 'none');

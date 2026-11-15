@@ -255,3 +255,7 @@
 .hw-count-acts { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 10px 0 0; }
 .hw-count-big { font-weight: 700; font-size: 16px; margin-right: 4px; }
 .hw-count-line { margin: 10px 0 0; font-weight: 650; }
+/* 0032: what to do, Test and Check the portal on an assignment's row. */
+.hw-mark.hw-test { background: var(--warn-soft); color: var(--warn); }
+.hw-arow-what { grid-column: 1; color: var(--text-2); font-size: 13px; overflow-wrap: anywhere; }
+.hw-arow-portal { grid-column: 1; color: var(--warn); font-size: 13px; font-weight: 650; }
