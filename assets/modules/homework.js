@@ -1191,7 +1191,13 @@
     if (f) state = [f.paused ? 'Paused' : null, read || (f.paused ? null : f.last_stop ? 'Added · not read yet' : 'Added · first read within the hour')].filter(Boolean).join(' · ');
     const open = !!(st.form && st.form.key === `school:${kind}`);
     const at = ` data-feed="${esc(kind)}"`;
-    const acts = open ? '' : f ? `${btn('school-replace', 'Replace', at)}${btn(f.paused ? 'school-resume' : 'school-pause', f.paused ? 'Resume' : 'Pause', at)}${btn('school-remove', 'Remove', at)}${f.kind === 'assignments' && f.checked && core.schemaVersion >= 15 && !st.schoolRedate ? btn('school-redate', 'Change dates', at) : ''}`
+    // 0030 (schema 30): a checked Assignments link dated by due date can add its new items to his homework by itself.
+    const auto = kind === 'assignments' && f && f.checked && f.date_rule !== 'assigned' && core.schemaVersion >= 30 && isAdmin() && !open;
+    const autoLine = auto ? `<small class="hw-feed-what hw-feed-auto">${esc(f.auto_add === true
+      ? `Adding automatically: new ones due in the next 30 days go on ${kidName(st)}'s homework within the hour, except ones you hid before or added yourself.`
+      : `New ones wait in New from school until you add them.`)}</small>` : '';
+    const autoBtn = auto ? btn('school-auto', f.auto_add === true ? 'Stop adding automatically' : 'Add automatically', ` data-feed="${esc(kind)}" data-on="${f.auto_add === true ? '0' : '1'}"`) : '';
+    const acts = open ? '' : f ? `${btn('school-replace', 'Replace', at)}${btn(f.paused ? 'school-resume' : 'school-pause', f.paused ? 'Resume' : 'Pause', at)}${btn('school-remove', 'Remove', at)}${f.kind === 'assignments' && f.checked && core.schemaVersion >= 15 && !st.schoolRedate ? btn('school-redate', 'Change dates', at) : ''}${autoBtn}`
       : btn('school-add', 'Add link', at, 'btn-primary');
     const repeats = f ? Number(f.last_repeats) || 0 : 0;
     // 0015: a checked Assignments link says how its dates are read, and Change dates answers the check again.
@@ -1202,7 +1208,7 @@
       ${f ? `<small class="hw-feed-link">${esc(`${f.host} …${f.url_end}`)}</small>` : ''}
       ${f && f.last_stop ? `<p class="hw-feed-error" role="status">${esc(stopWords(f.last_stop))}</p>` : ''}
       ${f && f.stale ? `<p class="hw-feed-error hw-feed-stale" role="status">${esc(STALE)}</p>` : ''}
-      ${datesLine}${repeats ? `<small class="hw-feed-what hw-feed-repeats">${esc(`${plural(repeats, 'repeating event')}: Home Hub uses only the first date of each.`)}</small>` : ''}
+      ${datesLine}${autoLine}${repeats ? `<small class="hw-feed-what hw-feed-repeats">${esc(`${plural(repeats, 'repeating event')}: Home Hub uses only the first date of each.`)}</small>` : ''}
       ${acts ? `<div class="hw-feed-acts">${acts}</div>` : ''}${open ? schoolFormHTML(kind, label, !!f) : ''}</li>`;
   }
   // From 0015 (schema 15) an item of an Assignments link whose dates are the day each was assigned has assigned: true:
@@ -2083,6 +2089,18 @@
     write(st, () => run(sb().rpc('pause_school_feed', { p_feed: f.id, p_paused: paused })),
       () => toast(paused ? `${FEED_LABEL[feed]} link paused: Home Hub doesn't read it until you resume it` : `${FEED_LABEL[feed]} link resumed. Home Hub reads it within the hour.`));
   }
+  // 0030: a parent turns adding automatically on or off. On adds what is waiting at once.
+  function autoSchool(st, feed, on) {
+    const f = feedOf(st, feed);
+    if (!f) return;
+    let res = null;
+    write(st, async () => { res = await run(sb().rpc('set_school_auto_add', { p_feed: f.id, p_on: on })); },
+      () => {
+        const n = res && typeof res === 'object' ? Number(res.added) || 0 : 0;
+        toast(on ? `Adding automatically. ${n ? `${plural(n, 'assignment')} added to ${kidName(st)}'s homework now.` : 'New ones go on within the hour.'}`
+          : 'Stopped adding automatically: new ones wait in New from school.');
+      });
+  }
   // The first-import check's answer: the due date is an item's last ('end') or first ('start') day, moved by shift.
   function checkDates(st, id, rule, shift) {
     st.schoolOff = false;
@@ -2418,6 +2436,7 @@
       case 'school-add': case 'school-replace': if (FEED_LABEL[d.feed]) open(`school:${d.feed}`, 'school', d.feed); break;
       case 'school-remove': removeSchool(st, d.feed); break;
       case 'school-pause': case 'school-resume': pauseSchool(st, d.feed, d.act === 'school-pause'); break;
+      case 'school-auto': autoSchool(st, d.feed, d.on === '1'); break;
       case 'school-now': checkNow(st); break;
       case 'school-off': st.schoolOff = true; draw(st); break;
       case 'school-redate': st.schoolRedate = !st.schoolRedate; st.schoolOff = false; draw(st); break;

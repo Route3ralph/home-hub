@@ -1795,3 +1795,26 @@ alter table public.notification_log add constraint notification_log_kind_check c
 
 ### Going live
 The site and `hub-jobs` (verify_jwt false) go live first; then 0029; then a parent turns it on. `cron.sql` doesn't change. Undoing it isn't needed (with `due_at` null nothing is sent). If wanted, as the migration's header writes it out: drop the two functions, the trigger and its function, delete the 'due' rows, put the kind check back as 0025 left it, drop the two columns, then 0028's `hub_schema_version()`.
+
+## 36. v1.3: Adding school items automatically
+
+An Assignments link's new items go straight onto the kid's homework. Its migration is `supabase/migrations/0030_school_auto_add.sql` (after 0029); the plan is `docs/v1.3-homework.md` §30. One transaction; it refuses to run without 0029 ("Due tomorrow (migration 0029) isn't installed"), twice ("already installed"), on a database set back to 29 ("set back to 29"), or on one that isn't as 0029 left it (`due_list`, `private.school_apply`, `private.school_assignment`, `school_feed_status`, `private.is_admin`, `today_local`, `school_feeds.date_rule`, `school_items.hidden`, no `school_auto_add`, `set_school_auto_add`, `school_apply_v29` or `school_feed_status_v29` yet).
+
+### Tables
+```sql
+alter table public.school_feeds add column auto_add boolean not null default false;   -- new items go on by themselves
+```
+- `school_feeds.auto_add`: off for every link; only `set_school_auto_add` changes it.
+- `hub_schema_version()` returns 30.
+
+### Functions
+- `private.school_auto_add(p_feed uuid) returns int` (nobody signed in or out): for an on, checked, unpaused, not removed Assignments link whose `date_rule` isn't `'assigned'`, while the kid's `homework_kids.active` and `people.active`, each waiting item (`made_at` null, not hidden, not gone) due from `today_local()` to 30 days on, in due order: hidden when a hidden item on the link has the same title and subject (trimmed, any case) or one of his assignments not from school has the same title and due date; else `private.school_assignment(item, 'school (added automatically)', null)`. Answers how many were added.
+- `private.school_apply(p_feed uuid) returns int`: `school_auto_add`, then 0015's body, unchanged, now `private.school_apply_v29`. Every read (`school_store`) and `check_school_feed` call it.
+- `set_school_auto_add(p_feed uuid, p_on boolean) returns jsonb` (signed in; security definer): a parent only (42501 "Only a parent can change homework.", the coach too); 22023 "Choose on or off.", "That school link isn't there any more.", "Only the Assignments link adds homework.", and, turning on a link dated by the day each was given, "This link's dates are the day each was given, so Home Hub can't know the due dates. Use Paste due dates instead." On adds what is waiting at once. Answers `{added}` with `school_feed_status(kid)`.
+- `school_feed_status(p_kid uuid) returns jsonb` (signed in, as before): 0018's (now `private.school_feed_status_v29`, unchanged), with each feed's `auto_add`.
+
+### Client
+- Homework (`assets/modules/homework.js`), parents, gated on `core.schemaVersion >= 30`: on the Assignments link's row, once checked and not dated by the day given, a line ("New ones wait in New from school until you add them." or what adding automatically does) and **Add automatically** / **Stop adding automatically** (`set_school_auto_add`).
+
+### Going live
+The site goes live first; then 0030; then a parent turns it on. No Edge Function and no `cron.sql` change. Undoing it isn't needed (with `auto_add` off everywhere everything is as on 29). If wanted, as the migration's header writes it out: drop `set_school_auto_add` and the new `school_feed_status`, move `private.school_feed_status_v29` back, drop the new `school_apply` and rename `school_apply_v29` back, drop `school_auto_add` and the column, then 0029's `hub_schema_version()`.

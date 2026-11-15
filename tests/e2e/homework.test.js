@@ -45,7 +45,7 @@
 const { chromium } = require('playwright');
 const { createHash } = require('crypto');
 const { makeDb, install, signIn, SUPA, withHomework, homeworkRpc, foodRpc, hwKidRow, tutorLinkRow, assignmentRow, stepRow, sessionRow,
-  rewardRow, askRow, ledgerRow, withSchool, withSchoolCheck, withSchoolAssigned, schoolRpc, schoolFeedRow, schoolItemRow, schoolUrlOf, withCoach, coachRpc, coachNoteRow, withCoachRewards } = require('./mock');
+  rewardRow, askRow, ledgerRow, withSchool, withSchoolCheck, withSchoolAssigned, withSchoolAuto, schoolRpc, schoolFeedRow, schoolItemRow, schoolUrlOf, withCoach, coachRpc, coachNoteRow, withCoachRewards } = require('./mock');
 const { serve } = require('./server');
 
 let BASE = '';
@@ -2601,6 +2601,64 @@ const emailOf = (req) => {
     check('... Hide 1: one school_item_action hide, "Hidden, already on Jordan\'s homework: 1"',
       same(calls(db, 'school_item_action').map((c) => c.body), [{ p_item: '5c2f1000-0000-4000-8000-000000000098', p_action: 'hide' }])
       && (await lastToast(page)) === 'Hidden, already on Jordan\'s homework: 1', `${JSON.stringify(calls(db, 'school_item_action').map((c) => c.body))} | ${await lastToast(page)}`);
+    await page.context().close();
+  }
+
+  // =====================================================================
+  // 16. Adding school items automatically (schema 30, 0030; docs/v1.3-homework.md §30): a checked Assignments link dated
+  // by due date has Add automatically (parents only); on adds what is waiting at once and says so; off stops it
+  // =====================================================================
+  {
+    // From 19 the page reads the routine, and from 21 asks can_coach (a non-parent): the database answers both.
+    const LATER = { routine_status: () => ({ points: 0, sections: [], today: null }), can_coach: () => false };
+    const RPC29 = Object.assign({}, RPC8, LATER, { hub_schema_version: () => 29 });
+    const RPC30 = Object.assign({}, RPC8, LATER, { hub_schema_version: () => 30 });
+    const WAIT = [['2026-11-02', 'Old worksheet', 'Math'], ['2026-11-06', 'Grammar quiz', 'Spanish'], ['2026-11-09', 'Reading log', 'English'],
+      ['2026-11-13', 'Practice topics', 'Math']];
+    const autoDb = (v30, rule) => {
+      const d = checkDb(true, WAIT);
+      withSchoolAssigned(d);
+      if (v30) withSchoolAuto(d);
+      Object.assign(d.school_feeds[0], { checked: true, date_rule: rule || 'end' });
+      // Last week's practice topics, hidden: this week's copy is hidden too, not added.
+      d.school_items.push(schoolItemRow({ id: '5c2f1000-0000-4000-8000-000000000097', feed_id: FA, title: 'Practice topics', subject: 'Math', due_date: '2026-11-04', hidden: true }));
+      return d;
+    };
+    const AUTO = `${FEED('assignments')} [data-act="school-auto"]`;
+    ({ page, db } = await open({ label: 'auto-29', db: autoDb(false), rpc: RPC29 }));
+    check('schema 29: no Add automatically, and no line about it', !(await page.$(AUTO)) && !(await page.$('.hw-feed-auto')), await tc(page, FEED('assignments')));
+    await page.context().close();
+
+    ({ page, db } = await open({ label: 'auto-30', db: autoDb(true), rpc: RPC30 }));
+    check('schema 30: the Assignments link has Add automatically, and says new ones wait',
+      (await tc(page, AUTO)) === 'Add automatically' && (await tc(page, `${FEED('assignments')} .hw-feed-auto`)) === 'New ones wait in New from school until you add them.',
+      await tc(page, FEED('assignments')));
+    await page.click(AUTO);
+    await settle(page);
+    check('Add automatically: set_school_auto_add(the link, true); two added now; this week\'s practice topics hidden (hidden last week), the past one left',
+      same(lastCall(db, 'set_school_auto_add').body, { p_feed: FA, p_on: true })
+      && (await lastToast(page)) === 'Adding automatically. 2 assignments added to Jordan\'s homework now.'
+      && same(db.school_items.filter((i) => i.made_at).map((i) => i.title).sort(), ['Grammar quiz', 'Reading log'])
+      && same(db.school_items.filter((i) => i.hidden).map((i) => `${i.title} ${i.due_date}`).sort(), ['Practice topics 2026-11-04', 'Practice topics 2026-11-13']),
+      `${JSON.stringify(lastCall(db, 'set_school_auto_add').body)} | ${await lastToast(page)} | ${JSON.stringify(db.school_items.map((i) => [i.title, i.due_date, !!i.made_at, i.hidden]))}`);
+    check('... the button reads Stop adding automatically, with what it does',
+      (await tc(page, AUTO)) === 'Stop adding automatically'
+      && (await tc(page, `${FEED('assignments')} .hw-feed-auto`)) === 'Adding automatically: new ones due in the next 30 days go on Jordan\'s homework within the hour, except ones you hid before or added yourself.',
+      await tc(page, FEED('assignments')));
+    await page.click(AUTO);
+    await settle(page);
+    check('Stop adding automatically: set_school_auto_add(the link, false), and the toast says new ones wait',
+      same(lastCall(db, 'set_school_auto_add').body, { p_feed: FA, p_on: false }) && (await lastToast(page)) === 'Stopped adding automatically: new ones wait in New from school.'
+      && (await tc(page, AUTO)) === 'Add automatically', `${JSON.stringify(lastCall(db, 'set_school_auto_add').body)} | ${await lastToast(page)}`);
+    await page.context().close();
+
+    // A link dated by the day each was given: no switch (the hub can't know the due dates).
+    ({ page, db } = await open({ label: 'auto-assigned', db: autoDb(true, 'assigned'), rpc: RPC30 }));
+    check('an "assigned" link: no Add automatically', !(await page.$(AUTO)) && !(await page.$('.hw-feed-auto')), await tc(page, FEED('assignments')));
+    await page.context().close();
+    // Sam (not a parent) sees no switch.
+    ({ page, db } = await open({ label: 'auto-sam', db: autoDb(true), rpc: RPC30, email: 'sam@example.com' }));
+    check('Sam: no Add automatically', !(await page.$(AUTO)));
     await page.context().close();
   }
 

@@ -191,8 +191,8 @@ select test.is((select c.relrowsecurity and not exists (select 1 from pg_policy 
                 from pg_class c where c.oid = 'private.school_feed_urls'::regclass), true, '... row-level security on, no policies');
 select test.is((select string_agg(a.attname, ',' order by a.attnum) from pg_attribute a
                 where a.attrelid = 'public.school_feeds'::regclass and a.attnum > 0 and not a.attisdropped),
-               'id,kid_id,kind,host,url_end,date_rule,date_shift,checked,paused,next_at,last_try_at,last_ok_at,last_count,last_repeats,last_stop,fails,removed_at,created_at,created_by,updated_at,updated_by',
-               'school_feeds has no address column: the host and its last 4 characters');
+               'id,kid_id,kind,host,url_end,date_rule,date_shift,checked,paused,next_at,last_try_at,last_ok_at,last_count,last_repeats,last_stop,fails,removed_at,created_at,created_by,updated_at,updated_by,auto_add',
+               'school_feeds has no address column: the host and its last 4 characters (0030 adds auto_add, a switch)');
 :as_anon
 select test.is(test.try('select * from private.school_feed_urls'), 'denied', 'anon can''t read the addresses');
 select test.is(test.try('select school_begin()'), 'denied', '... or start a read');
@@ -294,7 +294,7 @@ select test.is((select string_agg(x ->> 'past', ',') from jsonb_array_elements(:
                '... none of them past (five or more to come: as 0006 had it, past false on each)');
 select test.is(:'st0'::jsonb -> 'new', '[]'::jsonb, '... and nothing is new for her yet');
 select test.is(pg_temp.keys(:'st0'::jsonb -> 'feeds' -> 0),
-               'checked,date_rule,date_shift,fails,host,id,kind,last_count,last_ok_at,last_repeats,last_stop,last_try_at,next_at,paused,stale,url_end',
+               'auto_add,checked,date_rule,date_shift,fails,host,id,kind,last_count,last_ok_at,last_repeats,last_stop,last_try_at,next_at,paused,stale,url_end',
                '... a link''s status');
 select test.is((select string_agg(x ->> 'kind', ',' order by n) from jsonb_array_elements(:'st0'::jsonb -> 'feeds') with ordinality t (x, n)),
                'assignments,schedule,games', '... the links in a fixed order');

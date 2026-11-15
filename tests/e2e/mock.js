@@ -1819,6 +1819,35 @@ function withSchoolAssigned(db) {
   db.schoolAssigned15 = true;
   return db;
 }
+// withSchoolAuto(db) (after withSchoolAssigned) is 0030 (schema 30, docs/v1.3-homework.md §30): each feed on the status
+// card has auto_add, and set_school_auto_add(p_feed, p_on) turns it on (adding the waiting items due today to 30 days on at
+// once, as the database does) or off, for parents only. Without it, set_school_auto_add answers 404 and auto_add isn't
+// on the card, as on 29.
+function withSchoolAuto(db) {
+  withSchoolAssigned(db);
+  db.schoolAuto30 = true;
+  return db;
+}
+// private.school_auto_add: an on, checked, unpaused Assignments link dated by due date adds its waiting items due today to
+// today + 30 (an item whose title and class match one hidden on the link, or whose title and due date match one of his
+// added by hand, is hidden instead). Answers how many were added.
+function scAutoAdd(db, feedId, who) {
+  const f = scFeed(db, feedId);
+  const today = hwToday(db);
+  if (!f || !f.auto_add || f.kind !== 'assignments' || !f.checked || f.paused || f.removed_at || f.date_rule === 'assigned'
+    || !db.homework_kids.some((k) => k.kid_id === f.kid_id && k.active)) return 0;
+  const norm = (x) => String(x || '').trim().toLowerCase();
+  let n = 0;
+  db.school_items.filter((i) => i.feed_id === f.id && !i.made_at && !i.hidden && !i.gone_at && i.due_date >= today && i.due_date <= tkAdd(today, 30))
+    .sort(scByDue).forEach((i) => {
+      const hid = db.school_items.some((h) => h.feed_id === f.id && h.hidden && h.id !== i.id && norm(h.title) === norm(i.title) && norm(h.subject) === norm(i.subject));
+      const hand = db.assignments.some((a) => a.kid_id === f.kid_id && a.added_by !== 'school' && a.due_date === i.due_date && norm(a.title) === norm(i.title));
+      if (hid || hand) { i.hidden = true; return; }
+      scAssignment(db, i, who, fromMicros(scNowMs(db) * 1000), null, today);
+      n++;
+    });
+  return n;
+}
 const schoolUrlOf = (db, feedId) => (SCHOOL_URLS.get(db) || new Map()).get(feedId) || null;
 const schoolFeedRow = (o) => Object.assign({
   id: uuid(), kid_id: null, kind: 'assignments', host: 'academy.school.example', url_end: 'a1b2', date_rule: 'end', date_shift: 0, checked: false,
@@ -1895,10 +1924,11 @@ function scStatus(db, kid, nowMs, today) {
   const on = db.homework_kids.some((k) => k.kid_id === kid && k.active);
   return {
     kid_id: kid, last_run_at: db.schoolLastRun || null,
-    feeds: db.school_feeds.filter((f) => f.kid_id === kid && !f.removed_at).sort((x, y) => order[x.kind] - order[y.kind]).map((f) => ({
+    feeds: db.school_feeds.filter((f) => f.kid_id === kid && !f.removed_at).sort((x, y) => order[x.kind] - order[y.kind]).map((f) => Object.assign({
       id: f.id, kind: f.kind, host: f.host, url_end: f.url_end, checked: f.checked, date_rule: f.date_rule, date_shift: f.date_shift, paused: f.paused,
       last_try_at: f.last_try_at, last_ok_at: f.last_ok_at, last_count: f.last_count, last_repeats: f.last_repeats, last_stop: f.last_stop, fails: f.fails,
-      next_at: f.next_at, stale: !f.paused && on && f.next_at != null && tkMs(f.next_at) < nowMs - 2 * 3600e3 })),
+      next_at: f.next_at, stale: !f.paused && on && f.next_at != null && tkMs(f.next_at) < nowMs - 2 * 3600e3 },
+      db.schoolAuto30 ? { auto_add: f.auto_add === true } : {})),
     check: scCheck(db, kid, today),
     new: scItemsOf(db, kid, (i, f) => f.kind === 'assignments' && f.checked && !f.removed_at && !i.made_at && !i.hidden && !i.gone_at && i.due_date >= scFrom(db, f, today)
       && i.due_date <= tkAdd(today, 30)).sort(scByDue).slice(0, 50).map(pick),
@@ -1936,6 +1966,7 @@ function scAssignment(db, item, who, stamp, due, today) {
 // private.school_apply: the school's changes reach the open assignments made from a link's items, a field at a time,
 // never a field a person changed; a planned assignment's due date never moves by itself.
 function scApply(db, feedId) {
+  if (db.schoolAuto30) scAutoAdd(db, feedId, 'school (added automatically)');   // 0030: what's new first
   const given = scGiven(scFeed(db, feedId));   // 0015: an assigned link never writes a due date
   db.school_items.filter((i) => i.feed_id === feedId && !i.gone_at && i.due_date && i.assignment_id).forEach((i) => {
     const a = db.assignments.find((x) => x.id === i.assignment_id && x.status === 'open');
@@ -2045,6 +2076,18 @@ const schoolRpc = {
     if (f.paused && !b.p_paused) f.next_at = scDueNow(db, f.next_at);
     Object.assign(f, { paused: b.p_paused, updated_by: email, updated_at: now() });
     return null;
+  }),
+  set_school_auto_add: scCall('set_school_auto_add', ['p_feed', 'p_on'], [], (db, b, email) => {
+    if (!db.schoolAuto30) throw new Raise('PGRST202', 'Could not find the function public.set_school_auto_add(p_feed, p_on) in the schema cache');
+    parentOnly(db, email);
+    if (typeof b.p_on !== 'boolean') throw new Raise('22023', 'Choose on or off.');
+    const f = scFeed(db, b.p_feed);
+    if (!f || f.removed_at) throw new Raise('22023', "That school link isn't there any more.");
+    if (f.kind !== 'assignments') throw new Raise('22023', 'Only the Assignments link adds homework.');
+    if (b.p_on && f.date_rule === 'assigned') throw new Raise('22023', "This link's dates are the day each was given, so Home Hub can't know the due dates. Use Paste due dates instead.");
+    f.auto_add = b.p_on;
+    const added = b.p_on ? scAutoAdd(db, f.id, email) : 0;
+    return Object.assign({ added }, scStatusOf(db, f.kid_id));
   }),
   school_item_action: scCall('school_item_action', ['p_item', 'p_action'], ['p_due'], (db, b, email) => {
     coachOnly(db, email);
@@ -4170,4 +4213,4 @@ module.exports = { makeDb, install, signIn, expectedConsoleError, SUPA, withCale
   withFood, mealRow, shopItem, foodRpc, personDayFood, foodStamp, withRecipes, recipeRow,
   withHomework, homeworkRpc, homePlan, hwKidRow, tutorLinkRow, assignmentRow, stepRow, sessionRow, rewardRow, askRow, ledgerRow,
   withHomeworkTokens, homeworkTokenRpc, personDayHomework, tkKidRow, tkLinkRow, tkAssignmentRow, tkStepRow, tkSessionRow, tkRewardRow, tkLedgerRow, stubShare,
-  withSchool, withSchoolCheck, withSchoolAssigned, schoolRpc, schoolFeedRow, schoolItemRow, schoolUrlOf, withCoach, coachRpc, coachNoteRow, withCoachRewards, withCoachAdult, coachAdultRpc, hwCoach, aiRpc, aiJob, aiMessage, aiComplete };
+  withSchool, withSchoolCheck, withSchoolAssigned, withSchoolAuto, schoolRpc, schoolFeedRow, schoolItemRow, schoolUrlOf, withCoach, coachRpc, coachNoteRow, withCoachRewards, withCoachAdult, coachAdultRpc, hwCoach, aiRpc, aiJob, aiMessage, aiComplete };
