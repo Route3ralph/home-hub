@@ -709,6 +709,20 @@ const emptyLists = (b) => !!b && typeof b === 'object' && !Array.isArray(b)
     [gave.status, over.status, over.body, added.status, voided.status, rows]);
     const kidR = await fn('coach_reward_by_token', null, { p_token: jordan.day_token, p_action: 'give', p_key: 'e0000000-0000-4000-8000-000000000084', p_fields: { points: 5, note: 'x' } });
     check('Jordan\'s My day token opens no coach_reward_by_token (null)', kidR.status === 200 && kidR.body === null, [kidR.status, kidR.body]);
+    // 0033: take, as the link, never more than his free points.
+    const freeSql = Number((await sql(`select greatest(b.balance - b.held, 0) as f from tutor_links l, private.points_balance(l.kid_id) b where l.id = '${LINK}'`))[0].f);
+    const cvT = await fn('coach_view_by_token', null, { p_token: PAT });
+    const tooMany = await fn('coach_reward_by_token', null, { p_token: PAT, p_action: 'take', p_key: 'e0000000-0000-4000-8000-000000000086', p_fields: { points: Math.min(freeSql + 1, 200), note: 'x' } });
+    const took = freeSql >= 1 ? await fn('coach_reward_by_token', null, { p_token: PAT, p_action: 'take', p_key: 'e0000000-0000-4000-8000-000000000087', p_fields: { points: 1, note: 'Phone at the table' } }) : null;
+    const tookRow = await sql(`select kind, delta, who, note from points_ledger where id = 'e0000000-0000-4000-8000-000000000087'`);
+    check('0033: the coach view\'s manage says take and his free points (as the database counts them); signed out with Pat\'s token, more than that is refused and 1 is taken, as the link\'s',
+      cvT.status === 200 && cvT.body.manage.take === true && cvT.body.manage.free === freeSql && freeSql >= 1 && freeSql < 200
+      && tooMany.status >= 400 && /points are free to take/.test((tooMany.body && tooMany.body.message) || '')
+      && took && took.status === 200 && took.body.changed === true
+      && JSON.stringify(tookRow) === JSON.stringify([{ kind: 'taken', delta: '-1', who: 'Pat Lee, tutor (tutor link)', note: 'Phone at the table' }]),
+    [cvT.body && cvT.body.manage && [cvT.body.manage.take, cvT.body.manage.free], freeSql, tooMany.status, tooMany.body, took && took.status, tookRow]);
+    const kidT = await fn('coach_reward_by_token', null, { p_token: jordan.day_token, p_action: 'take', p_key: 'e0000000-0000-4000-8000-000000000088', p_fields: { points: 1, note: 'x' } });
+    check('... and Jordan\'s My day token takes nothing (null)', kidT.status === 200 && kidT.body === null, [kidT.status, kidT.body]);
     await fn('set_tutor_rewards', admin, { p_link: LINK, p_on: false });
     const offR2 = await fn('coach_reward_by_token', null, { p_token: PAT, p_action: 'give', p_key: 'e0000000-0000-4000-8000-000000000085', p_fields: { points: 5, note: 'x' } });
     check('Can manage rewards off again: null, and the coach view has no manage', offR2.status === 200 && offR2.body === null

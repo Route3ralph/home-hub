@@ -416,7 +416,7 @@
 .cm-form { margin: 8px 0 4px; display: grid; gap: 8px; max-width: 420px; }
 .cm-form input:not([type="checkbox"]) { width: 100%; }
 .cm-form .form-actions .btn { min-height: 44px; }
-.cm-give small { color: var(--text-3); }
+.cm-give small, .cm-take small { color: var(--text-3); }
 .cm-error { margin: 8px 0; }
 
 /* Movies and shows (0022, #watch): a kid's watch list and one box to add. */

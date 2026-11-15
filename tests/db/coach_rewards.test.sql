@@ -106,8 +106,8 @@ select test.throws($$select set_tutor_rewards('00000000-0000-4000-8000-000000000
 :as_anon
 create temp table v12 as select coach_view_by_token(pg_temp.token('Pat Lee, tutor')) as v;
 select test.is((select v - 'manage' from v12), (select v from v7), 'switch on: everything 0007 had is unchanged');
-select test.is((select string_agg(k, ',' order by k) from v12, jsonb_object_keys(v -> 'manage') k), 'asks,instant_day,lines,points_on,rewards',
-               '... plus manage: asks, instant_day, lines, points_on, rewards');
+select test.is((select string_agg(k, ',' order by k) from v12, jsonb_object_keys(v -> 'manage') k), 'asks,free,instant_day,lines,points_on,rewards,take',
+               '... plus manage: asks, instant_day, lines, points_on, rewards (and from 0033 free and take)');
 select test.is((select string_agg(x ->> 'title' || ' ' || (x ->> 'active'), ', ' order by n) from v12, jsonb_array_elements(v -> 'manage' -> 'rewards') with ordinality t (x, n)),
                'Extra game time true, Pick the movie true, Skip a chore false, Late bedtime false',
                '... his rewards, the suggestions nobody priced too; never Robin''s');

@@ -136,8 +136,8 @@ as $$
 $$;
 
 alter table public.assignments
-  add column what text generated always as (private.assignment_what(details)) stored,           -- what to do, from its text
-  add column is_test boolean generated always as (private.assignment_is_test(title, details)) stored;   -- an exam or quiz
+  add column what text generated always as (private.assignment_what(p_details => details)) stored,           -- what to do, from its text
+  add column is_test boolean generated always as (private.assignment_is_test(p_title => title, p_details => details)) stored;   -- an exam or quiz
 
 -- ---------------------------------------------------------------------
 -- Check the portal (§32.2)
@@ -153,7 +153,7 @@ as $$
 $$;
 
 alter table public.homework_kids
-  add column portal_classes text[] not null default '{}' check (private.portal_classes_ok(portal_classes));   -- "Check the portal"
+  add column portal_classes text[] not null default '{}' check (private.portal_classes_ok(p_classes => portal_classes));   -- "Check the portal"
 grant update (portal_classes) on public.homework_kids to authenticated;
 
 -- A class the parents ticked for this kid: the same words, ignoring case and the spaces at the ends.

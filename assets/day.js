@@ -197,7 +197,7 @@
       coach_k_focus: 'Focus', coach_k_on_time: 'On time', coach_k_milestones: 'Milestones', coach_k_given: 'Given', coach_k_voided: 'Voided', coach_k_trades: 'Trades',
       coach_lines: 'Last 30 days ({n})', coach_no_lines: 'No points in the last 30 days.',
       coach_l_focus: 'Focus', coach_l_on_time: 'On time', coach_l_milestone_done: 'Milestone ticked', coach_l_milestone: 'Milestone checked',
-      coach_l_given: 'Given', coach_l_void: 'Correction', coach_l_trade: 'Trade',
+      coach_l_given: 'Given', coach_l_void: 'Correction', coach_l_trade: 'Trade', coach_l_taken: 'Taken away', coach_l_routine: 'Routine',
       coach_rewards: 'Rewards', coach_no_rewards: 'No rewards yet.', coach_instant: 'instant',
       coach_asks: 'Asks and cash-ins (30 days)', coach_no_asks: 'None in the last 30 days.', coach_asked: 'asked {day}',
       coach_s_waiting: 'waiting', coach_s_approved: 'approved {day}', coach_s_declined: 'not now {day}', coach_s_cancelled: 'cancelled', coach_s_cashed: 'cashed in',
@@ -219,6 +219,12 @@
       cm_title_label: 'Reward', cm_cost_label: 'Points', cm_instant_label: 'Instant (he gets it on the spot)', cm_save: 'Save', cm_cancel: 'Cancel',
       cm_give: 'Give points', cm_give_points: 'Points (1 to 200)', cm_give_note: 'What for (he sees it)', cm_give_btn: 'Give',
       cm_give_hint: 'At most 200 points a week from tutor links.', cm_points_off: 'Points are off for {kid}, so none can be given.',
+      // 0033: Take points.
+      cm_take: 'Take points', cm_take_points: 'Points (1 to 200)', cm_take_note: 'Why (he sees it)', cm_take_btn: 'Take',
+      cm_take_hint: '{kid} has {n} free points (the rest are spent or held for a reward he asked for). At most 200 a week taken through tutor links.',
+      cm_e_take_points: 'Take 1 to 200 points.', cm_e_take_why: 'Say why the points come off.', cm_e_no_free: 'He has no free points to take.',
+      cm_e_free: 'Only {n} points are free to take (the rest are spent or held for a reward he asked for).',
+      cm_e_take_week: "That's more than 200 points this week taken through the tutor link. A parent can take more.",
       cm_lines: 'Correct points (30 days)', cm_no_lines: 'No points to correct.', cm_void: 'Void', cm_voided: 'voided', cm_void_note: 'Why (he sees it)',
       cm_saved: 'Saved.', cm_e_name: 'A reward needs a name.', cm_e_cost: 'A reward costs 1 to 10000 points.', cm_e_price: 'A reward on his list needs a price.',
       cm_e_points: 'Give 1 to 200 points.', cm_e_note: 'Say what the points are for.', cm_e_why: 'Say why.', cm_e_not_enough: 'Not enough points yet.',
@@ -330,7 +336,7 @@
       coach_k_focus: 'Concentración', coach_k_on_time: 'A tiempo', coach_k_milestones: 'Hitos', coach_k_given: 'Regalados', coach_k_voided: 'Anulados', coach_k_trades: 'Canjes',
       coach_lines: 'Últimos 30 días ({n})', coach_no_lines: 'Ningún punto en los últimos 30 días.',
       coach_l_focus: 'Concentración', coach_l_on_time: 'A tiempo', coach_l_milestone_done: 'Hito marcado', coach_l_milestone: 'Hito revisado',
-      coach_l_given: 'Regalados', coach_l_void: 'Corrección', coach_l_trade: 'Canje',
+      coach_l_given: 'Regalados', coach_l_void: 'Corrección', coach_l_trade: 'Canje', coach_l_taken: 'Quitados', coach_l_routine: 'Rutina',
       coach_rewards: 'Premios', coach_no_rewards: 'Todavía no hay premios.', coach_instant: 'al momento',
       coach_asks: 'Pedidos y canjes (30 días)', coach_no_asks: 'Ninguno en los últimos 30 días.', coach_asked: 'pedido {day}',
       coach_s_waiting: 'esperando', coach_s_approved: 'aprobado {day}', coach_s_declined: 'ahora no {day}', coach_s_cancelled: 'cancelado', coach_s_cashed: 'canjeado',
@@ -351,6 +357,11 @@
       cm_title_label: 'Premio', cm_cost_label: 'Puntos', cm_instant_label: 'Al momento (lo recibe en el acto)', cm_save: 'Guardar', cm_cancel: 'Cancelar',
       cm_give: 'Dar puntos', cm_give_points: 'Puntos (1 a 200)', cm_give_note: 'Por qué (él lo ve)', cm_give_btn: 'Dar',
       cm_give_hint: 'Como mucho 200 puntos a la semana desde los enlaces del tutor.', cm_points_off: 'Los puntos están desactivados para {kid}; no se pueden dar.',
+      cm_take: 'Quitar puntos', cm_take_points: 'Puntos (1 a 200)', cm_take_note: 'Por qué (él lo ve)', cm_take_btn: 'Quitar',
+      cm_take_hint: '{kid} tiene {n} puntos libres (el resto están gastados o reservados para un premio que pidió). Como mucho 200 a la semana quitados desde los enlaces del tutor.',
+      cm_e_take_points: 'Quita de 1 a 200 puntos.', cm_e_take_why: 'Di por qué se quitan los puntos.', cm_e_no_free: 'No tiene puntos libres que quitar.',
+      cm_e_free: 'Solo hay {n} puntos libres que quitar (el resto están gastados o reservados para un premio que pidió).',
+      cm_e_take_week: 'Son más de 200 puntos esta semana quitados desde el enlace del tutor. Un padre puede quitar más.',
       cm_lines: 'Corregir puntos (30 días)', cm_no_lines: 'No hay puntos que corregir.', cm_void: 'Anular', cm_voided: 'anulado', cm_void_note: 'Por qué (él lo ve)',
       cm_saved: 'Guardado.', cm_e_name: 'Un premio necesita un nombre.', cm_e_cost: 'Un premio cuesta de 1 a 10000 puntos.', cm_e_price: 'Un premio de su lista necesita un precio.',
       cm_e_points: 'Da de 1 a 200 puntos.', cm_e_note: 'Di por qué son los puntos.', cm_e_why: 'Di por qué.', cm_e_not_enough: 'Todavía no tiene puntos suficientes.',
@@ -3436,6 +3447,9 @@
     let give = { points: '', note: '' };
     let giveKey = null;       // the given points' key, until its answer (a resend finds them)
     let giveFor = null;
+    let take = { points: '', note: '' };   // 0033 (§33.2): Take points, as Give
+    let takeKey = null;
+    let takeFor = null;
     const kid = () => (cv && cv.kid) || '';
     const w = (k, vars) => t(k, Object.assign({ kid: kid() }, vars));
     const low = (x) => (/^(Yesterday|Today|Tomorrow|Ayer|Hoy|Mañana)$/.test(x) ? x.toLowerCase() : x);
@@ -3520,7 +3534,8 @@
       el.hidden = false;
     }
     // Run his rewards (0012): his asks waiting (Yes, Not now with a word), his rewards (change, take off his list, put back,
-    // delete his unpriced suggestion, + Reward), Give points, and Void on the last 30 days' earned or given lines.
+    // delete his unpriced suggestion, + Reward), Give points, from 0033 Take points, and Void on the last 30 days' earned
+    // or given lines.
     function manageHTML(m) {
       const asks = Array.isArray(m.asks) ? m.asks : [];
       const rewards = Array.isArray(m.rewards) ? m.rewards : [];
@@ -3559,6 +3574,13 @@
         + `<label class="field"><span>${esc(w('cm_give_note'))}</span><input name="note" maxlength="120" value="${esc(give.note)}"></label>`
         + `<small>${esc(w('cm_give_hint'))}</small><div class="form-actions"><button type="submit" class="btn btn-primary"${dis}>${esc(w('cm_give_btn'))}</button></div></form>`
         : `<p class="empty-line">${esc(w('cm_points_off'))}</p>`);
+      if (m.take && m.points_on) {   // 0033: as Give, with how many are free
+        out.push(`<h4>${esc(w('cm_take'))}</h4>`);
+        out.push(`<form class="cm-form cm-take" data-mform="take" novalidate autocomplete="off">`
+          + `<label class="field"><span>${esc(w('cm_take_points'))}</span><input name="points" type="number" inputmode="numeric" min="1" max="200" value="${esc(take.points)}"></label>`
+          + `<label class="field"><span>${esc(w('cm_take_note'))}</span><input name="note" maxlength="120" value="${esc(take.note)}"></label>`
+          + `<small>${esc(w('cm_take_hint', { n: Number(m.free) || 0 }))}</small><div class="form-actions"><button type="submit" class="btn btn-primary"${dis}>${esc(w('cm_take_btn'))}</button></div></form>`);
+      }
       out.push(`<h4>${esc(w('cm_lines'))}</h4>`);
       out.push(lines.length ? `<ul class="coach-list cm-lines">${lines.map((l) => `<li data-line="${esc(l.id)}"><span>${esc([rel(l.day), signed(l.delta), w(`coach_l_${l.kind}`), l.note].filter((x) => x != null && x !== '').join(' · '))}</span> `
         + (l.voided ? `<small>${esc(w('cm_voided'))}</small>` : btn('void', l.id, w('cm_void')))
@@ -3588,11 +3610,14 @@
       }
       if (r && !r.error) { cv = null; hide(); read(); return; }   // null: turned off a moment ago
       const msg = String((r.error && r.error.message) || '');
-      const known = [[/needs a name/, 'cm_e_name'], [/costs 1 to 10000/, 'cm_e_cost'], [/needs a price/, 'cm_e_price'], [/Give 1 to 200/, 'cm_e_points'],
+      const free = /^Only (\d+) points are free/.exec(msg);
+      const known = [[/Take 1 to 200/, 'cm_e_take_points'], [/Say why the points come off/, 'cm_e_take_why'], [/no free points to take/, 'cm_e_no_free'],
+        [/taken through the tutor link/, 'cm_e_take_week'], [/needs a name/, 'cm_e_name'], [/costs 1 to 10000/, 'cm_e_cost'], [/needs a price/, 'cm_e_price'], [/Give 1 to 200/, 'cm_e_points'],
         [/what the points are for/, 'cm_e_note'], [/^Say why/, 'cm_e_why'], [/Not enough points/, 'cm_e_not_enough'], [/200 points this week/, 'cm_e_week'],
         [/Points are off/, 'cm_e_points_off'], [/already spent/, 'cm_e_spent'], [/a lot for one day/, 'cm_e_day'], [/too long/, 'cm_e_long']].find(([re]) => re.test(msg));
-      mError = known ? w(known[1]) : friendly(r.error);
-      if (action === 'give' && r.error && r.error.code) giveKey = null;   // a refusal is final; no answer keeps the key
+      mError = free ? w('cm_e_free', { n: Number(free[1]) }) : known ? w(known[1]) : friendly(r.error);
+      if (action === 'give' && r.error && r.error.code) giveKey = null;
+      if (action === 'take' && r.error && r.error.code) takeKey = null;   // a refusal is final; no answer keeps the key
       draw();
     }
     function manageClick(b) {
@@ -3637,6 +3662,14 @@
           act('give', giveKey, fields, () => { give = { points: '', note: '' }; giveKey = null; giveFor = null; });
           return;
         }
+        case 'take': {
+          take = { points: val('points'), note: val('note') };
+          const fields = { points: num('points'), note: take.note.trim() };
+          const words = JSON.stringify(fields);
+          if (!takeKey || takeFor !== words) { takeKey = plan.newId(); takeFor = words; }
+          act('take', takeKey, fields, () => { take = { points: '', note: '' }; takeKey = null; takeFor = null; });
+          return;
+        }
         default:
       }
     }
@@ -3654,6 +3687,7 @@
     el.addEventListener('input', (e) => {
       const f = e.target.form;
       if (f && f.dataset.mform === 'give') { give = { points: f.elements.points.value, note: f.elements.note.value }; return; }
+      if (f && f.dataset.mform === 'take') { take = { points: f.elements.points.value, note: f.elements.note.value }; return; }
       if (f && f.dataset.mform) return;
       if (e.target.name === 'note') { draft = e.target.value; if (error) { error = ''; const p = el.querySelector('.coach-note .form-error'); if (p) p.hidden = true; } }
     });
