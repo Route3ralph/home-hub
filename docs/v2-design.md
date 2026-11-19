@@ -1970,3 +1970,44 @@ alter table public.points_ledger add constraint points_ledger_kind_check
 
 ### Going live
 The site goes live first; then 0034. No Edge Function and no `cron.sql` change. Undoing it isn't needed (with nothing tapped, every page is as on 33). If wanted, as the migration's header writes it out: drop the new `private.coach_view` and rename `coach_view_v33` back, drop the new `get_person_day`, move `private.get_person_day_v33` back with its grants, drop `task_week` (both), `start_by_token`, `unnudge_task` and `nudge_task`, delete the `'start'` lines and put the kind check back as 0028 left it, drop `homework_kids.pts_start` and the two tables, then 0033's `hub_schema_version()`.
+
+## 41. v1.3: the Sunday summary
+
+An email to a tutor every Sunday with the week's numbers (§40) for the kid his link is for. Its migration is `supabase/migrations/0035_tutor_summary.sql` (after 0034); the plan is `docs/v1.3-homework.md` §35. One transaction; it refuses to run without 0034 ("Nudge and Start (migration 0034) aren't installed"), twice ("already installed"), on a database set back to 34 ("set back to 34"), or on one that isn't as 0034 left it (`private.task_week`, `private.is_admin`, `private.short_name`, `private.monday`, `private.now`, `private.tz`, `today_local`, `tutor_links.coach`; no `tutor_summary_log`, `summary_due` or `set_tutor_summary` yet).
+
+### Tables
+```sql
+alter table public.tutor_links
+  add column summary_to text check (summary_to is null or (char_length(summary_to) between 6 and 254
+                                                            and summary_to ~ '^[^@\s<>,;"]+@[^@\s<>,;"]+\.[^@\s<>,;"]+$'));
+create table public.tutor_summary_log (
+  id         uuid primary key default gen_random_uuid(),
+  link_id    uuid not null references public.tutor_links (id) on delete cascade,
+  week       date not null,                  -- the Monday of the week it covers
+  status     text not null check (status in ('sending', 'sent', 'failed', 'skipped')),
+  attempts   int not null default 1,
+  claimed_at timestamptz not null default now(),
+  detail     text,
+  unique (link_id, week)
+);
+```
+- `tutor_links.summary_to`: the tutor's address (null: no summary). Only `set_tutor_summary` writes it; the table's select grant and policy (the parents) cover it.
+- `tutor_summary_log`: one row per link and week, as `notification_log` is per person (a tutor isn't on the family list). RLS on; the parents read it (policy "Parents see the Sunday summaries", `private.is_admin()`); only service_role writes it.
+- `hub_schema_version()` returns 35.
+
+### Functions
+- `set_tutor_summary(p_link uuid, p_to text) returns void` (signed in; a definer; `private.is_admin()`, else 42501 "Only a parent can change homework."): the address, trimmed and in lower case; null or blank clears it. 22023 "That doesn't look like an email address." (one address, 6 to 254 characters); 22023 "That link is gone.".
+- `summary_due(p_limit int default 20) returns table (link_id uuid, week date)` (service_role; invoker): on a Sunday from 17:00 (the household's time), each link that is on, not ended, has its coach view on and an address, and whose kid is active with homework on, and that has no row for this week sent, skipped, in flight (less than 10 minutes) or out of tries (3). `week` is the Monday.
+- `summary_claim(p_link uuid, p_week date) returns uuid` (service_role; invoker): as `claim_notification`: a new `sending` row, or a failed or stale one again with a try left; null otherwise.
+- `summary_finish(p_id uuid, p_status text, p_detail text default null) returns void` (service_role; invoker): `sent`, `failed` or `skipped` (else 22023 "summary_finish: status must be sent, failed or skipped."), with the detail cut to 500.
+- `tutor_summary(p_link uuid) returns jsonb` (service_role; a definer): `{to, language, label, kid, week: {this, last}}`, `kid` the kid's first name and `week` `private.task_week` for this household week and the one before. Null for a link that is gone, off, ended, without its coach view or an address, or whose kid isn't active with homework on.
+
+### hub-jobs
+- The morning email's run (every 15 minutes), on schema 35, after Due tomorrow: `summary_due`, then for each link the budget, `summary_claim`, `tutor_summary`, `summary.ts`'s email, Resend (idempotency key `summary-<link>-<week>`), `summary_finish`. No link, no task title, no note: the email holds the kid's first name, the tutor's first name and the two weeks' numbers.
+- `summary_preview` (admins): `{ link }` → `{to, subject, html, text}`, nothing sent or logged; 409 for a link that gets none; 503 `no_schema` before 0035.
+
+### Client
+- Homework (`assets/modules/homework.js`), parents, on schema 35: under a tutor link whose coach view is on, **Sunday summary to** (the address; Save calls `set_tutor_summary`, blank turns it off), the last send from `tutor_summary_log` ("Last sent Sunday Nov 8."), and **Preview** (`summary_preview`).
+
+### Going live
+The site and `hub-jobs` (verify_jwt false) first, in either order; then 0035; then a parent types the tutor's address. No `cron.sql` change. Undoing it isn't needed (with no address set nothing is sent). If wanted, as the migration's header writes it out: drop `tutor_summary`, `summary_finish`, `summary_claim`, `summary_due` and `set_tutor_summary`, drop `tutor_summary_log` and `tutor_links.summary_to`, then 0034's `hub_schema_version()`.

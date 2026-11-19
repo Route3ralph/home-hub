@@ -1777,6 +1777,17 @@ const coachRpc = {
     return null;
   })(db, b, email)
     : { __status: 404, body: { code: 'PGRST202', message: `Could not find the function public.set_tutor_rewards(${Object.keys(b || {}).sort().join(', ')}) in the schema cache`, details: null, hint: null } }),
+  // 0035 (docs/v1.3-homework.md §35): the Sunday summary's address, as the migration checks it (db.summary35).
+  set_tutor_summary: (db, b, email) => (db.summary35 ? hwCall('set_tutor_summary', ['p_link', 'p_to'], [], (d, x, e) => {
+    parentOnly(d, e);
+    const v = String(x.p_to == null ? '' : x.p_to).trim().toLowerCase() || null;
+    if (v && (v.length < 6 || v.length > 254 || !/^[^@\s<>,;"]+@[^@\s<>,;"]+\.[^@\s<>,;"]+$/.test(v))) throw new Raise('22023', 'That doesn\'t look like an email address.');
+    const l = d.tutor_links.find((y) => y.id === x.p_link);
+    if (!l) throw new Raise('22023', 'That link is gone.');
+    l.summary_to = v;
+    return null;
+  })(db, b, email)
+    : { __status: 404, body: { code: 'PGRST202', message: `Could not find the function public.set_tutor_summary(${Object.keys(b || {}).sort().join(', ')}) in the schema cache`, details: null, hint: null } }),
   coach_note_done: coachCall('coach_note_done', ['p_note'], (db, b, email) => {
     parentOnly(db, email);
     const n = db.coach_notes.find((x) => x.id === b.p_note);
@@ -2648,6 +2659,14 @@ async function install(page, db, log, opts = {}) {
         if (!m || m.role !== 'admin') return reply(403, { error: 'Only family admins can do this.' });
         return db.pushTest.__status ? reply(db.pushTest.__status, db.pushTest.body) : reply(200, db.pushTest);
       }
+      // 0035: summary_preview (admins) with db.summaryPreview: a reply body, or { __status, body }. Its calls are kept.
+      if (path === '/functions/v1/hub-jobs' && body && body.action === 'summary_preview' && db.summaryPreview !== undefined) {
+        const m = db.members.find((x) => x.email === emailFrom(req));
+        if (!m || m.role !== 'admin') return reply(403, { error: 'Only family admins can do this.' });
+        (db.summaryCalls ||= []).push(body);
+        const r = typeof db.summaryPreview === 'function' ? db.summaryPreview(body) : db.summaryPreview;
+        return r.__status ? reply(r.__status, r.body) : reply(200, r);
+      }
       return reply(opts.fnStatus || 200, opts.fnBody || { sent: 1 });
     }
 
@@ -2788,6 +2807,10 @@ async function install(page, db, log, opts = {}) {
         ? { status: 403, body: { code: '42501', message: `permission denied for table ${table}`, details: null, hint: null } } : null)
       // 0034: the parents (and the coach) read task_nudges and task_starts; only the functions write them (no grant).
       || (['task_nudges', 'task_starts'].includes(table)
+        ? (method === 'GET' ? { rows: member.role === 'admin' ? db[table].filter(match) : [] }
+          : { status: 403, body: { code: '42501', message: `permission denied for table ${table}`, details: null, hint: null } }) : null)
+      // 0035: the parents read tutor_summary_log; only hub-jobs writes it (no grant).
+      || (table === 'tutor_summary_log'
         ? (method === 'GET' ? { rows: member.role === 'admin' ? db[table].filter(match) : [] }
           : { status: 403, body: { code: '42501', message: `permission denied for table ${table}`, details: null, hint: null } }) : null)
       // 0007: the parents read coach_notes (members get no rows); only the functions write it (no grant).

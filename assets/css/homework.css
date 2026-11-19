@@ -221,6 +221,11 @@
 
 /* 0007: a tutor link's coach view switch and the coach's notes (docs/v1.3-homework.md §20.5) */
 .hw-link-coach { display: grid; gap: 4px; margin-top: 8px; min-width: 0; }
+/* 0035: the Sunday summary's address, under the coach switches. */
+.hw-summary { display: grid; gap: 4px; margin-top: 6px; min-width: 0; }
+.hw-summary .field { margin: 0; }
+.hw-summary .field input { width: 100%; max-width: 320px; }
+.hw-summary .form-actions { justify-content: flex-start; margin-top: 2px; }
 .hw-coach-notes { margin-top: 8px; padding: 10px 12px; border-radius: 12px; background: var(--surface-2); min-width: 0; }
 .hw-coach-head { margin: 0 0 4px; font-weight: 650; }
 .hw-coach-notes ul { margin: 0; padding: 0; list-style: none; }
