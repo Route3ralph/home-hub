@@ -284,6 +284,15 @@ A tutor whose link runs his rewards can take points off too: **Take points** aft
 1. `tests/run.sh` ends with `0 failed`; merge. Nothing changes until step 2.
 2. **About 2 minutes:** run [`supabase/migrations/0033_tutor_take.sql`](supabase/migrations/0033_tutor_take.sql) in the Supabase SQL editor, after 0032. "isn't installed" means 0032 is missing; "already installed" means it's done; either way nothing was changed.
 
+### The Sunday summary (v1.3, migration 0035)
+
+Every Sunday from 5pm, an email to the tutor with the week's numbers for the kid: tasks due, done, on time, reminders, starts, starts with no reminder, minutes to start and to finish, points, this week next to last week, in the link's language. There's no link in it, so a mistyped address can't open his page, and nothing else of the family. Set it on the Homework page, under the tutor's link (its coach view on): **Sunday summary to**, his address, **Save**, then **Preview**. Blank turns it off.
+
+**Turning it on** (about 10 minutes; no `cron.sql` change):
+1. `tests/run.sh` ends with `0 failed`; merge, and deploy `hub-jobs` (verify_jwt false). Nothing changes until step 2.
+2. **About 2 minutes:** run [`supabase/migrations/0035_tutor_summary.sql`](supabase/migrations/0035_tutor_summary.sql) in the Supabase SQL editor, after 0034. "isn't installed" means 0034 is missing; "already installed" means it's done; either way nothing was changed.
+3. **Homework → the tutor's link → Sunday summary to**: his address, **Save**, **Preview**.
+
 ### Nudge, Start and the week's numbers (v1.3, migration 0034)
 
 For the tutor's goal: starting and finishing tasks on time without being reminded again and again.

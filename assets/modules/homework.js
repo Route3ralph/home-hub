@@ -277,6 +277,12 @@
         : Promise.resolve([]),
       isAdmin() ? q(sb().from('ai_runs').select(RUN_COLS).eq('kind', 'test').order('started_at', { ascending: false }).limit(1)) : Promise.resolve([]),
     ]);
+    // 0035 (§35.5): the Sunday summaries' log, for each link's "Last sent". A failed read only loses that line.
+    st.summaryLog = [];
+    if (isAdmin() && core.schemaVersion >= 35) {
+      try { st.summaryLog = await q(sb().from('tutor_summary_log').select('link_id,week,status,claimed_at').order('week', { ascending: false }).limit(30)) || []; }
+      catch { st.summaryLog = []; }
+    }
     st.household = (house || [])[0] || null;
     st.aiRuns = runs || [];
     st.lastTest = (tests || [])[0] || null;
@@ -1035,6 +1041,7 @@
       + (core.schemaVersion >= 12 && l.coach ? `<label class="hw-switch"><input type="checkbox" data-act="link-rewards" data-link="${esc(l.id)}"${l.rewards ? ' checked' : ''}><span>Can manage rewards</span></label>
         <small class="hw-switch-line">${esc(`Lets ${tutor} say Yes or Not now to ${kid}'s asks, add, change, price and take rewards off his list, `
           + `give points with a note (at most 200 a week from tutor links) and void points with a reason, as you can. Each change shows as ${tutor}'s.`)}</small>` : '')
+      + (core.schemaVersion >= 35 && l.coach ? summaryHTML(st, l, tutor, kid) : '')
       + '</div>'
       + (st.coachFailed ? `<p class="hw-switch-line">${esc(`${tutor}'s notes couldn't be loaded.`)}</p>` : '')
       + (open.length || done.length ? `<div class="hw-coach-notes"><p class="hw-coach-head">${esc(`Notes from ${l.label} (${open.length})`)}</p>`
@@ -1042,6 +1049,21 @@
         + (done.length ? `<details data-keep="${esc(keep)}"${st.schoolOpen[keep] ? ' open' : ''}><summary>${esc(`Earlier notes (${done.length})`)}</summary>`
           + `<ul>${done.map((n) => `<li><span class="hw-coach-note">${esc(line(n))}</span> · Done</li>`).join('')}</ul></details>` : '')
         + '</div>' : '');
+  }
+  // 0035 (docs/v1.3-homework.md §35.5): the Sunday summary, an email to the tutor with the week's numbers, only with the
+  // coach view on. The address is saved with set_tutor_summary (blank: off); Preview asks hub-jobs (summary_preview).
+  function summaryHTML(st, l, tutor, kid) {
+    const last = (st.summaryLog || []).find((x) => x.link_id === l.id);
+    const day = last ? P.fmt.short(dates.addDays(last.week, 6), 'en') : '';
+    const lastLine = !last ? '' : last.status === 'sent' ? `Last sent Sunday ${day}.` : last.status === 'failed' ? `Sunday ${day}'s didn't go: it tries again on the next run.`
+      : last.status === 'skipped' ? `Sunday ${day}'s wasn't sent.` : `Sending Sunday ${day}'s now.`;
+    return `<form class="hw-summary" data-form="summary" data-link="${esc(l.id)}" novalidate autocomplete="off">
+        <label class="field"><span>Sunday summary to</span><input type="email" name="to" maxlength="254" value="${esc(l.summary_to || '')}" placeholder="${esc(`${tutor}'s email`)}"></label>
+        <small class="hw-switch-line">${esc(`Every Sunday at 5pm, this week's and last week's numbers for ${kid}: tasks due and done, on time, reminders, starts, minutes to start and to finish, points. `
+          + 'No link in it, and nothing else of the family. Leave it blank to stop it.')}</small>
+        ${lastLine ? `<p class="hw-switch-line hw-summary-last">${esc(lastLine)}</p>` : ''}
+        <p class="form-error" role="alert" hidden></p>
+        <div class="form-actions"><button type="submit" class="btn btn-sm">Save</button>${l.summary_to ? btn('summary-preview', 'Preview', ` data-link="${esc(l.id)}"`) : ''}</div></form>`;
   }
   function linkFormHTML(l) {
     const x = l || { label: '', language: 'en' };
@@ -2098,6 +2120,38 @@
       p_can_ai: true, p_active: true })), () => toast(`Link made for ${label}. Send it with WhatsApp or Text.`));
   }
 
+  // The Sunday summary's address (§35.5): blank turns it off. The database checks the address again, in its own words.
+  function submitSummary(st, form) {
+    const l = st.links.find((x) => x.id === form.dataset.link);
+    if (!l) return;
+    const to = String(form.elements.to.value || '').trim();
+    const err = form.querySelector('.form-error');
+    if (to && !/^[^@\s<>,;"]+@[^@\s<>,;"]+\.[^@\s<>,;"]+$/.test(to)) { err.textContent = 'That doesn\'t look like an email address.'; err.hidden = false; return; }
+    write(st, () => run(sb().rpc('set_tutor_summary', { p_link: l.id, p_to: to || null })),
+      () => toast(to ? `${l.label} gets the Sunday summary at ${to.toLowerCase()}` : `No Sunday summary for ${l.label}`));
+  }
+  async function previewSummary(st, b) {
+    // The window opens on the click, so the browser doesn't block it; the email goes in when it arrives.
+    const win = window.open('', '_blank');
+    if (win) win.document.write('<!doctype html><title>Making the email…</title><p style="font-family:sans-serif">Making the email…</p>');
+    b.disabled = true;
+    let res;
+    try { res = await sb().functions.invoke('hub-jobs', { body: { action: 'summary_preview', link: b.dataset.link } }); } catch (err) { res = { error: err }; }
+    b.disabled = false;
+    if (res.error || !res.data || typeof res.data.html !== 'string') {
+      if (win) win.close();
+      let msg = 'Couldn\'t make the email: the email function isn\'t updated yet.';
+      try { const body = res.error && res.error.context && await res.error.context.json(); if (body && body.error && res.error.context.status === 409) msg = body.error; } catch { /* keep the default */ }
+      toast(msg, { error: true });
+      return;
+    }
+    if (!win) { toast('Your browser blocked the new window. Allow pop-ups for the Home Hub, then try again.', { error: true }); return; }
+    win.document.open();
+    win.document.write(res.data.html);
+    win.document.close();
+    win.focus();
+  }
+
   // ---------- School links: Add link, Replace, Remove
   // The pasted link as it is sent: trimmed, webcal:// as https://. The database checks it again (the school's host,
   // the feed's path, its z value) and refuses anything else in its own words. The box is emptied once it is saved,
@@ -2513,6 +2567,7 @@
       case 'paste-cancel': st.paste = null; draw(st); break;
       case 'paste-add': addPasted(st); break;
       case 'add-link': open('link:new', 'link', null); break;
+      case 'summary-preview': previewSummary(st, act); break;
       case 'routine-edit': st.routineDraft = routineDraft(st); st.form = { key: 'routine' }; draw(st); break;
       case 'routine-cancel': st.routineDraft = null; st.form = null; draw(st); break;
       case 'routine-add': case 'routine-del': case 'routine-up': {
@@ -2563,6 +2618,7 @@
     else if (form.dataset.form === 'rewards') addRewards(st, form);
     else if (form.dataset.form === 'values') savePoints(st, form);
     else if (form.dataset.form === 'link') submitLink(st, form);
+    else if (form.dataset.form === 'summary') submitSummary(st, form);
     else if (form.dataset.form === 'school') saveSchool(st, form);
     else if (form.dataset.form === 'schooldue') schoolAddDue(st, form);
     else if (form.dataset.form === 'schoolpaste') { if (st.paste) readPaste(st, form); }

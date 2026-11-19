@@ -2768,6 +2768,83 @@ const emailOf = (req) => {
     await page.context().close();
   }
 
+  // =====================================================================
+  // 19. The Sunday summary (schema 35, 0035; docs/v1.3-homework.md §35.5): under a link whose coach view is on, the
+  // tutor's address (set_tutor_summary; blank turns it off), the last send from tutor_summary_log, and Preview
+  // (hub-jobs summary_preview). None on 34, none with the coach view off.
+  // =====================================================================
+  {
+    const LATER = { routine_status: () => ({ points: 0, sections: [], today: null }), can_coach: () => false };
+    const RPC35 = Object.assign({}, RPC8, LATER, { hub_schema_version: () => 35, task_week: homeworkRpc.task_week });
+    const RPC34s = Object.assign({}, RPC35, { hub_schema_version: () => 34 });
+    const wdb = (v35, coach = true) => {
+      const d = withCoachRewards(withCoach(withSchoolCheck(fullDb())));
+      d.clarity32 = true;
+      d.starts34 = { week: {} };
+      d.homework_kids.forEach((k) => { k.pts_start = 5; });
+      d.tutor_links[0].coach = coach;
+      if (v35) {
+        d.summary35 = true;
+        d.tutor_links.forEach((l) => { l.summary_to = null; });
+        d.tutor_summary_log = [];
+      }
+      return d;
+    };
+    ({ page, db } = await open({ label: 'summary-35', db: wdb(true), rpc: RPC35, allowConsole: /status of 409/ }));
+    await page.waitForSelector('.hw-link form[data-form="summary"]');
+    check('schema 35, coach view on: the Sunday summary box, empty, with what it sends in plain words and no Preview yet',
+      (await page.inputValue('.hw-link form[data-form="summary"] [name="to"]')) === ''
+      && /Every Sunday at 5pm, this week's and last week's numbers for Jordan/.test(await tc(page, '.hw-link form[data-form="summary"]'))
+      && /No link in it, and nothing else of the family/.test(await tc(page, '.hw-link form[data-form="summary"]'))
+      && !(await page.$('.hw-link [data-act="summary-preview"]')), await tc(page, '.hw-link form[data-form="summary"]'));
+    await page.fill('.hw-link form[data-form="summary"] [name="to"]', 'pat at example');
+    await page.click('.hw-link form[data-form="summary"] [type="submit"]');
+    await sleep(300);
+    check('a bad address is refused in plain words, and nothing is called', (await tc(page, '.hw-link form[data-form="summary"] .form-error')) === 'That doesn\'t look like an email address.'
+      && !calls(db, 'set_tutor_summary').length, await tc(page, '.hw-link form[data-form="summary"] .form-error'));
+    await page.fill('.hw-link form[data-form="summary"] [name="to"]', ' Pat.Lee@Example.com ');
+    await page.click('.hw-link form[data-form="summary"] [type="submit"]');
+    await settle(page);
+    check('Save: set_tutor_summary with the link and the address; saved in lower case; a toast', same(lastCall(db, 'set_tutor_summary').body, { p_link: LINK1, p_to: 'Pat.Lee@Example.com' })
+      && db.tutor_links[0].summary_to === 'pat.lee@example.com' && (await lastToast(page)) === 'Pat Lee, tutor gets the Sunday summary at pat.lee@example.com',
+      `${JSON.stringify(lastCall(db, 'set_tutor_summary').body)} ${await lastToast(page)}`);
+    check('... the box shows it, and Preview appears', (await page.inputValue('.hw-link form[data-form="summary"] [name="to"]')) === 'pat.lee@example.com'
+      && !!(await page.$('.hw-link [data-act="summary-preview"]')));
+    db.summaryPreview = { to: 'pat.lee@example.com', subject: "Jordan's week", html: '<!doctype html><title>x</title><p id="sum">Tasks due 9</p>', text: 'x' };
+    const [popup] = await Promise.all([page.waitForEvent('popup'), page.click('.hw-link [data-act="summary-preview"]')]);
+    await popup.waitForSelector('#sum');
+    check('Preview: summary_preview with the link; the email opens in a new window', (db.summaryCalls || []).length === 1 && db.summaryCalls[0].link === LINK1
+      && (await popup.textContent('#sum')) === 'Tasks due 9', JSON.stringify(db.summaryCalls));
+    await popup.close();
+    db.summaryPreview = { __status: 409, body: { error: 'This link gets no summary: it needs to be on, with its coach view on and an address.' } };
+    const [popup2] = await Promise.all([page.waitForEvent('popup'), page.click('.hw-link [data-act="summary-preview"]')]);
+    await settle(page);
+    check('... a link that gets none: the window closes and the toast says why', popup2.isClosed() && /needs to be on, with its coach view on and an address/.test(await lastToast(page)), await lastToast(page));
+    await page.fill('.hw-link form[data-form="summary"] [name="to"]', '');
+    await page.click('.hw-link form[data-form="summary"] [type="submit"]');
+    await settle(page);
+    check('blank: set_tutor_summary with null turns it off', same(lastCall(db, 'set_tutor_summary').body, { p_link: LINK1, p_to: null }) && db.tutor_links[0].summary_to === null
+      && (await lastToast(page)) === 'No Sunday summary for Pat Lee, tutor', await lastToast(page));
+    await page.context().close();
+    const logged = wdb(true);
+    logged.tutor_links[0].summary_to = 'pat@example.com';
+    logged.tutor_summary_log.push({ id: 's1', link_id: LINK1, week: '2026-11-02', status: 'sent', claimed_at: at('2026-11-08', '17:05'), attempts: 1 });
+    ({ page, db } = await open({ label: 'summary-last', db: logged, rpc: RPC35 }));
+    await page.waitForSelector('.hw-summary-last');
+    check('the last send from the log: "Last sent Sunday Nov 8."', (await tc(page, '.hw-summary-last')) === 'Last sent Sunday Nov 8.', await tc(page, '.hw-summary-last'));
+    await page.context().close();
+    ({ page, db } = await open({ label: 'summary-off', db: wdb(true, false), rpc: RPC35 }));
+    check('coach view off: no Sunday summary box', !(await page.$('.hw-link form[data-form="summary"]')) && !!(await page.$('.hw-link [data-act="link-coach"]')));
+    await page.context().close();
+    ({ page, db } = await open({ label: 'summary-34', db: wdb(false), rpc: RPC34s }));
+    check('schema 34: no Sunday summary box, and no tutor_summary_log read', !(await page.$('.hw-link form[data-form="summary"]')));
+    await page.context().close();
+    ({ page, db } = await open({ label: 'summary-320', db: wdb(true), rpc: RPC35, ctx: { viewport: { width: 320, height: 700 }, isMobile: true, hasTouch: true } }));
+    await page.waitForSelector('.hw-link form[data-form="summary"]');
+    check('320px: no sideways page scroll with the box', await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth));
+    await page.context().close();
+  }
+
   console.log(results.join('\n'));
   console.log(`\n${results.filter((r) => r.startsWith('PASS')).length}/${results.length} passed`);
   console.log('PAGE ERRORS:', errors.length ? '\n' + errors.join('\n') : 'none');

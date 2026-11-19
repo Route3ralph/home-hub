@@ -25,6 +25,10 @@
 //            household.push_at, each kid with homework on and a phone kept (push_due) gets one notification of what is
 //            due tomorrow (due_list, in his language), channel 'push'. Needs the VAPID secrets; without them nothing is
 //            sent and the run is as it was. Asked for only on 31 and up. Pushes don't count against the email budget.
+//            From migration 0035, it also sends the Sunday summary (summary.ts, docs/v1.3-homework.md §35): every Sunday
+//            from 17:00, each tutor link with its coach view on and an address (summary_due) gets one email of the
+//            week's numbers (tutor_summary, in the link's language), claimed and finished in tutor_summary_log
+//            (summary_claim, summary_finish). Asked for only on 35 and up.
 //   push_key  anyone (his My day): {} → { public_key } for subscribing, or 503 {stop: 'not_set_up'} without the
 //            VAPID secrets.
 //   push_test  admins: { person_id } → one test notification to that person's phones now: { sent, failed, gone }.
@@ -37,6 +41,8 @@
 //            or logged. 'next' (the default) is the week Sunday's email covers. 503 {stop: 'no_schema'} before 0025.
 //   due_preview  admins: {} → this evening's Due tomorrow email (subject, html, text) in the admin's language, and who
 //            it would go to. Nothing is sent or logged. 503 {stop: 'no_schema'} before 0029.
+//   summary_preview  admins: { link } → that tutor link's Sunday summary (to, subject, html, text) as it would go now.
+//            Nothing is sent or logged. 409 for a link that gets none, 503 {stop: 'no_schema'} before 0035.
 //   calendar pg_cron (supabase/cron.sql) every 5 minutes with x-hub-cron, or an admin's Sync now
 //            (their own sign-in; it also reads every calendar): copies hub items to Google and reads
 //            Google's events back (calendar.ts, docs/v1.1-google-calendar.md §3.4).
@@ -80,6 +86,8 @@ import { homeworkAi } from './homework.ts';
 import { inbox } from './inbox.ts';
 import { renderWeekly, sheetChoices } from './weekly.ts';
 import { renderDue } from './due.ts';
+import { renderSummary } from './summary.ts';
+import type { Summary } from './summary.ts';
 import type { DueList } from './due.ts';
 import type { Sheet } from './weekly.ts';
 import { noSchema } from './util.ts';
@@ -181,19 +189,21 @@ export async function handle(req: Request, deps: Deps): Promise<Response> {
     const v = vapidFrom(deps.env);
     return v ? json(200, { public_key: v.publicKey }) : json(503, { stop: 'not_set_up', error: 'Phone reminders need the VAPID secrets.' });
   }
-  if (action === 'preview' || action === 'status' || action === 'weekly_preview' || action === 'due_preview' || action === 'push_test') {
+  if (action === 'preview' || action === 'status' || action === 'weekly_preview' || action === 'due_preview' || action === 'push_test'
+      || action === 'summary_preview') {
     const authorization = req.headers.get('Authorization') || '';
     if (!/^Bearer\s+\S+/.test(authorization)) return json(401, { error: 'Sign in first.' });
     const userDb = deps.user(authorization);
     const { data: me, error } = await userDb.rpc('whoami');
     if (error || !me || me.role !== 'admin') return json(403, { error: 'Only family admins can do this.' });
     return action === 'preview' ? preview(body, deps) : action === 'weekly_preview' ? weeklyPreview(body, deps, me)
-      : action === 'due_preview' ? duePreview(deps, me) : action === 'push_test' ? pushTest(body, deps) : status(userDb, deps);
+      : action === 'due_preview' ? duePreview(deps, me) : action === 'push_test' ? pushTest(body, deps)
+      : action === 'summary_preview' ? summaryPreview(body, deps) : status(userDb, deps);
   }
   if (action === 'calendar' || action === 'calendar_test') return calendar(req, action, body, deps);
   if (action === 'school') return school(req, deps);
   if (action === 'homework_ai') return homeworkAi(req, body, deps);
-  return json(400, { error: 'Unknown action. Use digest, preview, weekly_preview, due_preview, push_key, push_test, status, calendar, calendar_test, school or homework_ai.' });
+  return json(400, { error: 'Unknown action. Use digest, preview, weekly_preview, due_preview, summary_preview, push_key, push_test, status, calendar, calendar_test, school or homework_ai.' });
 }
 
 // ---------------------------------------------------------------------
@@ -375,6 +385,29 @@ async function digest(req: Request, deps: Deps): Promise<Response> {
           tally[outcome.status]++;
           const fin = await db.rpc('finish_notification', { p_id: claim.data, p_status: outcome.status, p_detail: outcome.detail });
           if (fin.error) throw new Error(`finish_notification: ${message(fin.error)}`);
+        }
+      }
+
+      // The Sunday summary (from migration 0035): one email per tutor link with an address, every Sunday from 17:00,
+      // logged in tutor_summary_log (summary_claim, summary_finish), against the same budget. Asked for only on 35.
+      if (stop === null && ver && !ver.error && Number(ver.data) >= 35) {
+        const sdue = await db.rpc('summary_due', { p_limit: BATCH });
+        if (sdue.error && !noSchema(sdue.error)) throw new Error(`summary_due: ${message(sdue.error)}`);
+        const srows: { link_id: string; week: string }[] = !sdue.error && Array.isArray(sdue.data) ? sdue.data : [];
+        tally.due += srows.length;
+        for (const row of srows) {
+          const budget = await db.rpc('email_budget_left');
+          if (budget.error) throw new Error(`email_budget_left: ${message(budget.error)}`);
+          if (!(Number(budget.data) > 0)) { stop = 'budget'; break; }
+
+          const claim = await db.rpc('summary_claim', { p_link: row.link_id, p_week: row.week });
+          if (claim.error) throw new Error(`summary_claim: ${message(claim.error)}`);
+          if (!claim.data) { tally.busy++; continue; }
+
+          const outcome = await summarize(row, db, deps, { apiKey: apiKey!, from: from!, pace, sleep, canSignIn });
+          tally[outcome.status]++;
+          const fin = await db.rpc('summary_finish', { p_id: claim.data, p_status: outcome.status, p_detail: outcome.detail });
+          if (fin.error) throw new Error(`summary_finish: ${message(fin.error)}`);
         }
       }
 
@@ -563,7 +596,11 @@ async function deliver(row: Row, db: Db, deps: Deps, site: string, resend: Sende
   } catch (err) {
     return { status: 'failed', detail: `render: ${message(err)}` };
   }
+  return sendEmail(to, email, key, deps, resend);
+}
 
+// One email through Resend, under one idempotency key. Never throws.
+async function sendEmail(to: string, email: Email, key: string, deps: Deps, resend: Sender): Promise<Outcome> {
   const payload = JSON.stringify({
     from: `"${displayName(deps.env('EMAIL_FROM_NAME') || 'Home Hub')}" <${resend.from}>`,
     to: [to],
@@ -611,6 +648,38 @@ async function deliver(row: Row, db: Db, deps: Deps, site: string, resend: Sende
   } catch (err) {
     return { status: 'failed', detail: `Resend: ${message(err)}`.slice(0, DETAIL_MAX) };
   }
+}
+
+// One tutor link's Sunday summary. Never throws: every problem becomes 'failed' (or 'skipped').
+async function summarize(row: { link_id: string; week: string }, db: Db, deps: Deps, resend: Sender): Promise<Outcome> {
+  let s: Summary | null;
+  let email: Email;
+  try {
+    const { data, error } = await db.rpc('tutor_summary', { p_link: row.link_id });
+    if (error) return { status: 'failed', detail: `tutor_summary: ${message(error)}` };
+    s = data as Summary | null;
+    if (!s || !s.to) return { status: 'skipped', detail: 'The link is off, ended, without its coach view or an address.' };
+    email = renderSummary(s);
+  } catch (err) {
+    return { status: 'failed', detail: `render: ${message(err)}` };
+  }
+  return sendEmail(s.to, email, `summary-${row.link_id}-${row.week}`, deps, resend);
+}
+
+// summary_preview: one tutor link's Sunday summary as it would go now (the Homework page's Preview). Nothing is sent
+// or logged. A link that wouldn't get one (off, ended, no coach view or no address) is a 409 saying so.
+async function summaryPreview(body: Record<string, unknown>, deps: Deps): Promise<Response> {
+  if (!isUuid(body.link)) return json(400, { error: 'link must be a tutor link\'s id.' });
+  if (!deps.env('SUPABASE_URL') || !serviceKey(deps.env)) return json(503, { error: 'The function has no Supabase service key.' });
+  const db = deps.service();
+  const { data, error } = await db.rpc('tutor_summary', { p_link: body.link });
+  if (error) {
+    return noSchema(error) ? json(503, { stop: 'no_schema', error: 'The Sunday summary needs migration 0035.' }) : json(500, { error: `tutor_summary: ${message(error)}` });
+  }
+  const s = data as Summary | null;
+  if (!s || !s.to) return json(409, { error: 'This link gets no summary: it needs to be on, with its coach view on and an address.' });
+  const e = renderSummary(s);
+  return json(200, { to: s.to, subject: e.subject, html: e.html, text: e.text });
 }
 
 // ---------------------------------------------------------------------

@@ -61,7 +61,7 @@ create or replace function private.school_host_suffix() returns text language sq
 -- ---------------------------------------------------------------------
 -- The schema, the switch and its grants
 -- ---------------------------------------------------------------------
-select test.is(hub_schema_version(), 34, 'hub_schema_version is 34');
+select test.is(hub_schema_version(), 35, 'hub_schema_version is 35');
 select test.is((select format_type(a.atttypid, a.atttypmod) || ' ' || a.attnotnull || ' ' || pg_get_expr(d.adbin, d.adrelid)
                 from pg_attribute a join pg_attrdef d on d.adrelid = a.attrelid and d.adnum = a.attnum
                 where a.attrelid = 'public.school_feeds'::regclass and a.attname = 'auto_add'),
