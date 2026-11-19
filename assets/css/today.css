@@ -40,6 +40,7 @@
   font-size: 14px; font-weight: 600;
 }
 .today-take { flex: none; min-height: 44px; margin-left: 2px; white-space: nowrap; }
+.today-nudge { flex: none; min-height: 44px; margin-left: 2px; white-space: nowrap; }
 
 /* ---------- "Which one is you?" ---------- */
 .today-who { margin-bottom: 12px; }

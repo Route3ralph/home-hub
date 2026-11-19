@@ -100,6 +100,9 @@
 /* An event's Bring (schema 17): its own line under the title, "Bring: Cleats" / "Llevar: Cleats". */
 .irow-bring { display: block; margin-top: 2px; color: var(--text-2); font-size: 14px; overflow-wrap: anywhere; }
 .irow-bring b { font-weight: 650; color: var(--text); }
+/* 0034: Start on his own task, then when he started it. */
+.day-start { display: inline-flex; margin-top: 8px; min-height: 44px; padding: 0 18px; font-weight: 650; }
+.irow-started { display: block; margin-top: 2px; color: var(--accent, var(--text-2)); font-size: 14px; font-weight: 600; }
 .meal-recipe { align-self: flex-start; display: inline-flex; align-items: center; min-height: 44px; font-size: 15px; font-weight: 600; overflow-wrap: anywhere; }
 
 /* ---------- The list's button (a helper's My day) ---------- */
@@ -441,3 +444,11 @@
 .hw-what { flex: 1 1 100%; margin: 4px 0 0; color: var(--text-2); font-size: 14px; overflow-wrap: anywhere; }
 .hw-tag-test { display: inline-block; padding: 1px 8px; border-radius: 999px; background: var(--warn-soft); color: var(--warn); font-size: 12px; font-weight: 700; }
 .hw-portal { flex: 1 1 100%; margin: 4px 0 0; color: var(--warn); font-size: 14px; font-weight: 650; }
+
+/* 0034: the tutor link's week of starting and finishing. */
+.coach-week { width: 100%; border-collapse: collapse; }
+.coach-week th, .coach-week td { padding: 6px 8px; border-bottom: 1px solid var(--line, #e5e5e5); font-size: 15px; text-align: left; }
+.coach-week td { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.coach-week thead th { font-size: 13px; color: var(--text-2); font-weight: 600; }
+.coach-week thead th + th { text-align: right; }
+.coach-week tbody th { font-weight: 500; }

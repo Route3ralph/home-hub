@@ -235,7 +235,31 @@ const FAKES = {
     // From 0022 (docs/v2-design.md §27), with db.watch (the list) and db.watchKids (kids' tokens): watch, how many
     // are still to watch, for a kid only.
     if (db.watch && (db.watchKids || []).includes(b.p_token)) out.watch = db.watch.filter((x) => !x.watched).length;
+    // From 0034 (docs/v1.3-homework.md §34.3), with db.starts34 ({ kids: tokens, started: { taskId: 'HH:MM' }, nudged: ids }):
+    // a kid's own open or late tasks marked can_start, or started.
+    if (db.starts34 && db.starts34.kids.includes(b.p_token)) {
+      [...out.days.flatMap((d) => d.items), ...out.late].forEach((it) => {
+        if (it.kind !== 'task' || !it.mine || (it.status !== 'open' && it.status !== 'late')) return;
+        if (db.starts34.started[it.item_id]) it.started = db.starts34.started[it.item_id];
+        else it.can_start = true;
+      });
+    }
     return person && db.shopping_items ? personDayFood(db, person, out) : out;
+  },
+  // 0034: his Start (null for anyone but a kid with homework on); +5 with no nudge, once.
+  start_by_token: (db, b) => {
+    if (!db.starts34) return fail(404, 'PGRST202', 'Could not find the function public.start_by_token(p_occurrence, p_task_id, p_token) in the schema cache');
+    if (!db.starts34.kids.includes(b.p_token)) return null;
+    const who = db.my[b.p_token];
+    const f = findTask(who, b.p_task_id);
+    if (!f) return fail(403, '42501', "That isn't on your day.");
+    if ((f.it.status !== 'open' && f.it.status !== 'late') || b.p_occurrence !== f.it.occurrence) return fail(400, '22023', "That isn't on your day any more.");
+    let paid = 0;
+    if (!db.starts34.started[b.p_task_id]) {
+      db.starts34.started[b.p_task_id] = db.starts34.at || '16:32';
+      paid = (db.starts34.nudged || []).includes(b.p_task_id) ? 0 : 5;
+    }
+    return Object.assign(FAKES.get_person_day(db, { p_token: b.p_token }), { paid });
   },
   // 0022: a kid's list (null for anyone else) and his add (a resent key adds nothing; "<name> (My day)").
   watch_by_token: (db, b) => {
@@ -3874,6 +3898,43 @@ const HW_AUDIO_DROP = `(${HW_STUBS})(); (${HW_CLOCKED})(); (${HW_WAKE_DROP})();`
     ({ page, db } = await open({ label: 'clarity-31', path: `/day.html?t=${JORDAN}#homework`, db: before, device: HW_DEVICE, init: HW_STUBS }));
     await page.waitForSelector('.hw-tonight');
     check('before 0032 (no what in his view): no line, tag or note', !(await page.$('.hw-what, .hw-tag-test, .hw-portal')));
+    await page.context().close();
+  }
+
+  // Start on his own tasks (0034, docs/v1.3-homework.md §34.3): his My day marks each open task of his can_start;
+  // Start calls start_by_token with the task and the date shown, and the row then says when he started. A start with
+  // no reminder pays +5; one after a nudge only says it started. Never for the helper, never before 0034.
+  {
+    const sdb = () => Object.assign(dayDb(), { starts34: { kids: [JORDAN], started: {}, nudged: [] } });
+    ({ page, db } = await open({ label: 'start-es', path: `/day.html?t=${JORDAN}`, db: sdb() }));
+    await page.waitForSelector('.day-start');
+    const startBtn = await page.$eval('.day-start', (b) => ({ text: b.textContent, label: b.getAttribute('aria-label'), row: b.closest('.irow').querySelector('.irow-title').textContent }));
+    check('0034: Empezar on his open task (Spanish), labelled with the task', startBtn.text === 'Empezar' && startBtn.label === 'Empezar: Tender la cama' && startBtn.row === 'Tender la cama',
+      JSON.stringify(startBtn));
+    await page.click('.day-start');
+    await page.waitForSelector('.irow-started');
+    const sc = calls(db, 'start_by_token');
+    check('... Empezar calls start_by_token with the token, the task and the date shown', sc.length === 1 && same(sc[0].body, { p_token: JORDAN, p_task_id: ID.bed, p_occurrence: TODAY }),
+      JSON.stringify(sc.map((c) => c.body)));
+    check('... the row says when he started, the button goes, the box stays to tick', /^Empezado \S+/.test(await text(page, '.irow-started')) && !(await page.$('.day-start'))
+      && !!(await page.$('.irow .day-check:not([disabled])')), await text(page, '.irow-started'));
+    check('... and the toast: started with no reminder, +5', /Empezado sin recordatorio: \+5 puntos/.test(await text(page, '.toast')), await text(page, '.toast'));
+    await page.context().close();
+    const nudged = sdb();
+    nudged.starts34.nudged = [ID.bed];
+    ({ page, db } = await open({ label: 'start-nudged', path: `/day.html?t=${JORDAN}`, db: nudged }));
+    await page.waitForSelector('.day-start');
+    await page.click('.day-start');
+    await page.waitForSelector('.irow-started');
+    check('after a nudge: started, no bonus ("Empezado: Tender la cama")', /Empezado: Tender la cama/.test(await text(page, '.toast')) && !/\+5/.test(await text(page, '.toast')), await text(page, '.toast'));
+    await page.context().close();
+    ({ page, db } = await open({ label: 'start-helper', path: `/day.html?t=${TAYLOR}`, db: sdb() }));
+    await page.waitForSelector('.day-check');
+    check("the helper's My day: no Start", !(await page.$('.day-start, .irow-started')));
+    await page.context().close();
+    ({ page, db } = await open({ label: 'start-33', path: `/day.html?t=${JORDAN}`, db: dayDb() }));
+    await page.waitForSelector('.day-check');
+    check('before 0034: no Start, and start_by_token is never called', !(await page.$('.day-start, .irow-started')) && !calls(db, 'start_by_token').length);
     await page.context().close();
   }
 

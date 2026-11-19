@@ -226,6 +226,15 @@
     } catch (err) { return null; }
   }
 
+  // 0034: the nudges of the last 30 days (only the parents and the coach can read them), for the Nudge buttons'
+  // counts. Never throws: a failed read leaves the buttons with no count. No request below 34 or for anyone else.
+  async function loadNudges(today) {
+    if (!(core.schemaVersion >= 34) || !(core.me && core.me.role === 'admin')) return null;
+    try {
+      return (await q(core.sb.from('task_nudges').select('id,task_id,occurrence').gte('occurrence', dates.addDays(today, -30)))) || [];
+    } catch (err) { return null; }
+  }
+
   // day_text for every kid and helper with a phone, so the Send buttons are ready to tap (a link
   // has to have its message before the tap, or phones block the new window).
   function loadTexts(today) {
@@ -243,7 +252,7 @@
   async function load() {
     const today = dates.today();
     const projects = loadProjects();
-    const [agenda, late, heads, setup, texts, , google, notice, dinners, homework, tomorrowTexts] = await Promise.all([
+    const [agenda, late, heads, setup, texts, , google, notice, dinners, homework, tomorrowTexts, nudges] = await Promise.all([
       call('agenda', { p_from: today, p_to: today }),
       call('late_items'),
       call('heads_up', { p_day: today }),
@@ -255,6 +264,7 @@
       loadDinners(today),
       loadHomework(today),
       loadTomorrowTexts(),
+      loadNudges(today),
     ]);
     const p = await projects;
     return {
@@ -272,7 +282,48 @@
       notice,
       dinners,
       homework,
+      nudges,
     };
+  }
+
+  // 0034: Nudge, on a kid's open or late task (a parent, the Today page). Each tap is one time-stamped reminder;
+  // the toast's Undo takes it back (unnudge_task, 15 minutes). The kid never sees them.
+  const nudgeable = (st, it) => !!st.data.nudges && it.kind === 'task' && (it.status === 'open' || it.status === 'late') && !!it.occurrence
+    && (() => { const p = it.responsible_id && v2.person(it.responsible_id); return !!p && p.role === 'kid' && p.active !== false; })();
+  const nudgeCount = (st, it) => (st.data.nudges || []).filter((n) => n.task_id === it.item_id && n.occurrence === it.occurrence).length;
+  function nudgeButton(st, it) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'btn btn-sm today-nudge';
+    const n = nudgeCount(st, it);
+    btn.textContent = n ? `Nudged ${n}×` : 'Nudge';
+    btn.setAttribute('aria-label', `Nudge ${firstName(v2.person(it.responsible_id).name)}: ${it.title}${n ? ` (nudged ${n} ${n === 1 ? 'time' : 'times'})` : ''}`);
+    btn.addEventListener('click', () => nudge(st, it, btn));
+    return btn;
+  }
+  async function nudge(st, it, btn) {
+    if (btn.disabled) return;
+    btn.disabled = true;
+    let r;
+    try {
+      r = await call('nudge_task', { p_task: it.item_id, p_occurrence: it.occurrence });
+    } catch (err) {
+      btn.disabled = false;
+      toast(friendly(err), { error: true });
+      return;
+    }
+    const kid = firstName(v2.person(it.responsible_id).name);
+    toast(`Nudged ${kid}: ${it.title} (${plural(Number(r && r.count) || 1, 'time')})`, {
+      action: {
+        label: 'Undo',
+        async onClick() {
+          await call('unnudge_task', { p_id: r.id });
+          toast('Nudge taken back.');
+          if (!st.ctx.stale()) refresh(st);
+        },
+      },
+    });
+    refresh(st);
   }
 
   // ============================================
@@ -770,8 +821,12 @@
       if (list) items.forEach((it) => list.appendChild(isGoogle(it) ? googleRow(it) : ui.itemRow(it, rowOpts(extra))));
       return list;
     };
-    fill('day', dayItems);
-    fill('late', late.slice(0, 3));
+    const dayList = fill('day', dayItems);
+    const lateList = fill('late', late.slice(0, 3));
+    // 0034: Nudge on a kid's open or late task, for a parent.
+    [[dayList, dayItems], [lateList, late.slice(0, 3)]].forEach(([list, items]) => {
+      if (list) items.forEach((it, i) => { if (!isGoogle(it) && nudgeable(st, it)) list.children[i].appendChild(nudgeButton(st, it)); });
+    });
     fill('heads', heads.map((it) => (it.kind === 'contract' ? Object.assign({}, it, { title: 'Contract ends', location: null }) : it)), { showDate: true });
     const nobodyList = fill('nobody', nobody.slice(0, 5));
     if (nobodyList && mine) {

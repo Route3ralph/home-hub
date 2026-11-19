@@ -291,10 +291,11 @@
     const kid = chosen;
     const fresh = { today, kids: known, kid, row: known.find((k) => k.kid_id === kid) || null, times: (times || []).filter((t) => t.kid_id === kid),
       links: (links || []).filter((l) => l.kid_id === kid), events: [], assignments: [], steps: [], sessions: [], ledger: [], rewards: [], asks: [],
-      week: [], weekFailed: false, school: null, schoolFailed: false, coachNotes: [], coachFailed: false, routine: null, routineFailed: false };
+      week: [], weekFailed: false, school: null, schoolFailed: false, coachNotes: [], coachFailed: false, routine: null, routineFailed: false,
+      starts: null };
     if (kid) {
       const ids = fresh.times.map((t) => t.event_id);
-      const [events, assignments, sessions, ledger, rewards, asks, week, school, coach, routine] = await Promise.all([
+      const [events, assignments, sessions, ledger, rewards, asks, week, school, coach, routine, starts] = await Promise.all([
         ids.length ? q(sb().from('events').select('id,title,start_date,start_time,end_time,repeat,repeat_weekdays,repeat_until').in('id', ids)) : Promise.resolve([]),
         q(sb().from('assignments').select(aCols()).eq('kid_id', kid).order('due_date')),
         q(sb().from('focus_sessions').select('*').eq('kid_id', kid).order('started_at', { ascending: false })),
@@ -306,14 +307,39 @@
         readSchool(kid),
         readCoachNotes(fresh.links),
         readRoutine(kid),
+        readStarts(kid, today),
       ]);
       const aIds = (assignments || []).map((a) => a.id);
       const steps = aIds.length ? await q(sb().from('homework_steps').select('*').in('assignment_id', aIds).order('pos')) : [];
       Object.assign(fresh, { events: events || [], assignments: assignments || [], steps: steps || [], sessions: sessions || [], ledger: ledger || [],
         rewards: rewards || [], asks: asks || [], week: week.rows, weekFailed: week.failed, school: school.status, schoolFailed: school.failed,
-        coachNotes: coach.notes, coachFailed: coach.failed, routine: routine.routine, routineFailed: routine.failed });
+        coachNotes: coach.notes, coachFailed: coach.failed, routine: routine.routine, routineFailed: routine.failed, starts });
     }
     Object.assign(st, fresh, { loaded: true, failed: false });
+  }
+
+  // 0034 (§34.5): this week's and last week's numbers for his tasks (task_week), for a parent or the coach. Never
+  // throws: a failed read (null) leaves the section out. Below 34, nothing is asked.
+  async function readStarts(kid, today) {
+    if (!(core.schemaVersion >= 34) || !canCoach()) return null;
+    try {
+      const [now, last] = await Promise.all([run(sb().rpc('task_week', { p_kid: kid, p_from: today })),
+        run(sb().rpc('task_week', { p_kid: kid, p_from: dates.addDays(today, -7) }))]);
+      return now && last ? { now, last } : null;
+    } catch (err) { return null; }
+  }
+  function startsHTML(st) {
+    const w = st.starts;
+    if (!w) return '';
+    const kid = kidName(st);
+    const mins = (n) => (n == null ? '—' : `${n} min`);
+    const lines = [['Tasks due', 'assigned'], ['Done', 'done'], ['Done on time', 'on_time'], ['Reminders (Nudge)', 'reminders'],
+      ['Started', 'started'], ['Started with no reminder', 'started_unprompted'], ['From the task\'s time to Start', 'avg_minutes_to_start', mins],
+      ['From Start to done', 'avg_minutes_to_finish', mins], ['Points earned', 'points']];
+    const cell = (x, key, f) => esc(f ? f(x[key]) : String(x[key] == null ? 0 : x[key]));
+    return section('starts', 'Starting and finishing', `<p class="hw-switch-line">${esc(`${kid}'s tasks, Monday to Sunday. Nudge a task on the Today page each time he needs a reminder; he taps Start on his My day when he begins (a start with no reminder pays ${st.row && st.row.points_on ? st.row.pts_start : 0} points, 3 a day at most).`)}</p>
+      <table class="hw-card hw-starts"><thead><tr><th scope="col"></th><th scope="col">This week</th><th scope="col">Last week</th></tr></thead>
+      <tbody>${lines.map(([label, key, f]) => `<tr><th scope="row">${esc(label)}</th><td>${cell(w.now, key, f)}</td><td>${cell(w.last, key, f)}</td></tr>`).join('')}</tbody></table>`);
   }
 
   // Read again and draw: after each write and on focus. A failed read keeps what is on screen.
@@ -350,6 +376,7 @@
     const ms = rows.filter((l) => l.kind === 'milestone');
     const given = sum(rows.filter((l) => l.kind === 'given'), (l) => l.delta);
     const taken = sum(rows.filter((l) => l.kind === 'taken'), (l) => l.delta);
+    const started = sum(rows.filter((l) => l.kind === 'start'), (l) => l.delta);
     const voided = sum(rows.filter((l) => l.kind === 'void'), (l) => l.delta);
     const by = [...new Set(ms.map((l) => (viaLink(l.who) ? String(whoName(l.who)).split(/[\s,]+/)[0] : whoName(l.who))))];
     const parts = [];
@@ -358,6 +385,7 @@
     if (ms.length) parts.push(`${signed(sum(ms, (l) => l.delta))} milestones checked${by.length ? ` by ${by.join(' and ')}` : ''}`);
     if (given) parts.push(`${signed(given)} given`);
     if (taken) parts.push(`${signed(taken)} taken`);
+    if (started) parts.push(`${signed(started)} starting with no reminder`);
     if (voided) parts.push(`${signed(voided)} voided`);
     return parts.length ? `this week: ${parts.join(', ')}` : 'nothing earned this week';
   }
@@ -915,7 +943,7 @@
         : esc(blockLine(st, b))}</li>`).join('')}</ul>` : ''}`);
   }
 
-  const LEDGER = { focus: 'Focus', on_time: 'On time', milestone_done: 'Ticked', milestone: 'Checked', given: 'Given', routine: 'Routine', taken: 'Taken' };
+  const LEDGER = { focus: 'Focus', on_time: 'On time', milestone_done: 'Ticked', milestone: 'Checked', given: 'Given', routine: 'Routine', taken: 'Taken', start: 'Started' };
   function ledgerLine(st, l) {
     // A trade of an instant reward he cashed himself says so (no parent's yes was needed).
     const cashed = l.kind === 'trade' && l.ask_id && st.asks.some((x) => x.id === l.ask_id && x.status === 'cashed');
@@ -1141,7 +1169,8 @@
     const values = [['pts_focus', 'Per focused minute', 0, 5], ['pts_on_time', 'Starting on time (once 5 minutes are done)', 0, 50],
       ['pts_milestone', 'A milestone (half when he ticks it, half when it\'s checked)', 0, 100],
       ['pts_day_cap', 'Most a day from blocks and on-time starts', 0, 300], ['pts_milestone_week', 'Most a week from milestones', 0, 400],
-      ['instant_day', 'Instant rewards he may get a day', 0, 10]];
+      ['instant_day', 'Instant rewards he may get a day', 0, 10]]
+      .concat(core.schemaVersion >= 34 ? [['pts_start', 'Starting a task with no reminder (3 a day at most)', 0, 20]] : []);
     const rows = [];
     rows.push(`<div class="hw-switch-row" data-row="kid"><label class="hw-switch"><input type="checkbox" data-act="kid-on"${k.active ? ' checked' : ''}${off}><span>Homework for ${esc(kid)}</span></label>
       <small class="hw-switch-line">Homework on ${esc(kid)}'s My day, and ${esc(tutor ? `${tutor}'s` : 'the tutor\'s')} link. Off hides them; nothing is deleted.</small>
@@ -1545,7 +1574,7 @@
     if (st.failed) {
       body = '<p class="hw-fail" role="status">Homework couldn\'t be loaded. Check the connection. <button type="button" class="linkbtn hw-retry" data-act="retry">Try again</button></p>';
     } else if (st.kid && st.row.active) {
-      body = [approveHTML(st), checkHTML(st), talkHTML(st), qaHTML(st), assignmentsHTML(st), timelineHTML(st), weekHTML(st), pointsHTML(st), switchesHTML(st)].join('');
+      body = [approveHTML(st), checkHTML(st), talkHTML(st), qaHTML(st), assignmentsHTML(st), timelineHTML(st), weekHTML(st), startsHTML(st), pointsHTML(st), switchesHTML(st)].join('');
     } else if (st.kid) {
       body = switchesHTML(st);
     }
@@ -1800,6 +1829,7 @@
     const err = form.querySelector('.form-error');
     const patch = {};
     const limits = { pts_focus: 5, pts_on_time: 50, pts_milestone: 100, pts_day_cap: 300, pts_milestone_week: 400, instant_day: 10 };
+    if (core.schemaVersion >= 34 && f.pts_start) limits.pts_start = 20;
     for (const name of Object.keys(limits)) {
       const v = Number(f[name].value);
       if (!Number.isInteger(v) || v < 0 || v > limits[name]) { err.textContent = `Use a whole number from 0 to ${limits[name]}.`; err.hidden = false; f[name].focus(); return null; }

@@ -2716,6 +2716,58 @@ const emailOf = (req) => {
     await page.context().close();
   }
 
+  // =====================================================================
+  // 18. Starting and finishing (schema 34, 0034; docs/v1.3-homework.md §34.5): this week's and last week's numbers for
+  // his tasks (task_week, twice), and the start bonus under Switches' points values. None on 33, none for Sam.
+  // =====================================================================
+  {
+    const LATER = { routine_status: () => ({ points: 0, sections: [], today: null }), can_coach: () => false };
+    const RPC33 = Object.assign({}, RPC8, LATER, { hub_schema_version: () => 33 });
+    const RPC34 = Object.assign({}, RPC8, LATER, { hub_schema_version: () => 34, task_week: homeworkRpc.task_week });
+    const sdb = (v34) => {
+      const d = withCoach(withSchoolCheck(fullDb()));
+      d.clarity32 = true;
+      if (v34) {
+        d.starts34 = { week: { [ID.jordan]: {
+          now: { assigned: 9, done: 7, on_time: 5, reminders: 4, started: 6, started_unprompted: 3, avg_minutes_to_start: 12, avg_minutes_to_finish: 25, points: 140 },
+          last: { assigned: 8, done: 1, on_time: 1, reminders: 0, started: 0, started_unprompted: 0, avg_minutes_to_start: null, avg_minutes_to_finish: null, points: 30 } } } };
+        d.homework_kids.forEach((k) => { k.pts_start = 5; });
+      }
+      return d;
+    };
+    ({ page, db } = await open({ label: 'starts-34', db: sdb(true), rpc: RPC34 }));
+    await page.waitForSelector('[data-sec="starts"]');
+    const rowsOf = await page.$$eval('[data-sec="starts"] tbody tr', (rs) => rs.map((r) => [...r.children].map((c) => c.textContent.trim()).join(' | ')));
+    check('schema 34: Starting and finishing, this week and last, line by line', same(rowsOf, ['Tasks due | 9 | 8', 'Done | 7 | 1', 'Done on time | 5 | 1', 'Reminders (Nudge) | 4 | 0',
+      'Started | 6 | 0', 'Started with no reminder | 3 | 0', 'From the task\'s time to Start | 12 min | —', 'From Start to done | 25 min | —', 'Points earned | 140 | 30']), JSON.stringify(rowsOf));
+    const tw = db.starts34.calls || [];
+    check('... task_week read twice for him: this week and the week before', tw.length === 2 && tw.every((c) => c.p_kid === ID.jordan) && tw[0].p_from !== tw[1].p_from, JSON.stringify(tw));
+    check('... and it says how the numbers come in (Nudge on Today, Start on his My day, 5 points)', /Nudge a task on the Today page/.test(await tc(page, '[data-sec="starts"]'))
+      && /pays 5 points, 3 a day at most/.test(await tc(page, '[data-sec="starts"]')), await tc(page, '[data-sec="starts"] .hw-switch-line'));
+    check('... before Points and rewards', await page.evaluate(() => { const a = document.querySelector('[data-sec="starts"]'); const b = document.querySelector('[data-sec="points"]');
+      return !!(a && b && (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING)); }));
+    check('Switches: the start bonus among the points values (5)', (await page.inputValue('form[data-form="values"] [name="pts_start"]')) === '5');
+    await page.fill('form[data-form="values"] [name="pts_start"]', '8');
+    await page.click('form[data-form="values"] [type="submit"]');
+    await settle(page);
+    check('... Save writes pts_start 8 with the others', db.homework_kids.find((x) => x.kid_id === ID.jordan).pts_start === 8);
+    await page.fill('form[data-form="values"] [name="pts_start"]', '21');
+    await page.click('form[data-form="values"] [type="submit"]');
+    await sleep(300);
+    check('... 21 is refused in plain words', /from 0 to 20/.test(await tc(page, 'form[data-form="values"] .form-error')), await tc(page, 'form[data-form="values"] .form-error'));
+    await page.context().close();
+    ({ page, db } = await open({ label: 'starts-320', db: sdb(true), rpc: RPC34, ctx: { viewport: { width: 320, height: 700 }, isMobile: true, hasTouch: true } }));
+    await page.waitForSelector('[data-sec="starts"]');
+    check('320px: no sideways page scroll with the table', await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth));
+    await page.context().close();
+    ({ page, db } = await open({ label: 'starts-sam', db: sdb(true), rpc: RPC34, email: 'sam@example.com' }));
+    check('Sam (not a parent or the coach): no Starting and finishing, and no task_week read', !(await page.$('[data-sec="starts"]')) && !(db.starts34.calls || []).length);
+    await page.context().close();
+    ({ page, db } = await open({ label: 'starts-33', db: sdb(false), rpc: RPC33 }));
+    check('schema 33: no Starting and finishing, and no start bonus field', !(await page.$('[data-sec="starts"]')) && !(await page.$('form[data-form="values"] [name="pts_start"]')));
+    await page.context().close();
+  }
+
   console.log(results.join('\n'));
   console.log(`\n${results.filter((r) => r.startsWith('PASS')).length}/${results.length} passed`);
   console.log('PAGE ERRORS:', errors.length ? '\n' + errors.join('\n') : 'none');

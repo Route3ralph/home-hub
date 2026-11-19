@@ -42,7 +42,7 @@ create function pg_temp.free() returns text language sql stable as $$
 $$;
 grant execute on function pg_temp.free() to anon;
 
-select test.is(hub_schema_version(), 33, 'hub_schema_version is 33');
+select test.is(hub_schema_version(), 34, 'hub_schema_version is 34');
 
 :as_admin
 select save_homework_kid(test.person('Taylor'), true);
@@ -79,7 +79,7 @@ select test.is((coach_view_by_token(pg_temp.token('Pat Lee, tutor')) -> 'manage'
 select test.is(pg_temp.free(), '105', '... and free: 305 less the 200 his ask holds');
 :as_owner
 select test.is(private.coach_view_v32(pg_temp.lid('Pat Lee, tutor')),
-               private.coach_view(pg_temp.lid('Pat Lee, tutor')) #- '{manage,take}' #- '{manage,free}', '... and otherwise exactly 0032''s coach view');
+               (private.coach_view(pg_temp.lid('Pat Lee, tutor')) #- '{manage,take}'::text[] #- '{manage,free}'::text[]) - 'week'::text, '... and otherwise exactly 0032''s coach view (0034 adds week)');
 
 -- ---------------------------------------------------------------------
 -- What it refuses

@@ -265,11 +265,13 @@ select test.is(pg_temp.keys((homework_by_token(test.token('Taylor')) -> 'me') - 
                '... and nothing else is new in his me');
 
 create temp table cv as select coach_view_by_token(pg_temp.token('Pat Lee, tutor')) as v;
-select test.is(pg_temp.keys((select v from cv)), 'as_of,asks,calendar,focus,kid,language,notes,points,rewards,tasks,today',
-               'the coach view: exactly its keys');
+select test.is(pg_temp.keys((select v from cv)), 'as_of,asks,calendar,focus,kid,language,notes,points,rewards,tasks,today,week',
+               'the coach view: exactly its keys (week from 0034)');
+select test.is(pg_temp.keys((select v -> 'week' -> 'this' from cv)), 'assigned,avg_minutes_to_finish,avg_minutes_to_start,done,from,on_time,points,reminders,started,started_unprompted,to',
+               '... 0034''s week: counts and averages only (this and last)');
 select test.is((select v ->> 'kid' || ' ' || (v ->> 'language') || ' ' || (v ->> 'today') || ' ' || (v ->> 'as_of') from cv),
                'Taylor en 2026-11-04 2026-11-04T17:30', '... the kid''s first name, the link''s language, today and the time');
-select test.is(pg_temp.all_keys((select v from cv)),
+select test.is(pg_temp.all_keys((select v - 'week' from cv)),
                'all_day,as_of,asked_on,asks,assignment,balance,calendar,cost,day,decided_on,delta,end_day,ends,focus,given,instant,kid,kind,'
                'language,last_week,lines,milestones,minutes,note,notes,on_time,points,result,rewards,seen_minutes,starts,status,tasks,'
                'this_week,title,today,trades,voided',
@@ -701,7 +703,7 @@ select test.is((select string_agg(p.proname || ' ' || r, ', ' order by p.proname
                   and (has_function_privilege(r, p.oid, 'execute') or not coalesce(p.proconfig, '{}') @> '{"search_path=\"\""}')), null,
                '... nobody may call their functions, and each sets search_path = ''''');
 -- 7 since 0007; 0008 (the first-import check's past items) makes it 8, 0009 (the school items' keys) 9, 0010 (Hearth people) 10, and 0011 (project guests) 11.
-select test.is(hub_schema_version(), 33, 'hub_schema_version is 33 (0007 made it 7, 0008 8, 0009 9, 0010 10, 0011 11, 0012 12, 0013 13, 0014 14, 0015 15, 0016 16, 0017 17, 0018 18, 0019 19, 0020 20, 0021 21, 0022 makes it 22, 0023 23, 0024 24, 0025 25, 0026 26, 0027 27, 0028 28, 0029 29, 0030 30, 0031 31, 0032 32, 0033 33)');
+select test.is(hub_schema_version(), 34, 'hub_schema_version is 34 (0007 made it 7, 0008 8, 0009 9, 0010 10, 0011 11, 0012 12, 0013 13, 0014 14, 0015 15, 0016 16, 0017 17, 0018 18, 0019 19, 0020 20, 0021 21, 0022 makes it 22, 0023 23, 0024 24, 0025 25, 0026 26, 0027 27, 0028 28, 0029 29, 0030 30, 0031 31, 0032 32, 0033 33, 0034 34)');
 
 -- ---------------------------------------------------------------------
 -- Erase takes the notes with it

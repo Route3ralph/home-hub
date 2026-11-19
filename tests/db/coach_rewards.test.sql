@@ -76,7 +76,7 @@ select test.ok((select v from v7) is not null and not ((select v from v7) ? 'man
 select test.is(pg_temp.act('Pat Lee, tutor', 'give', 'f0000000-0000-4000-8000-000000000001', '{"points": 5, "note": "Nice"}'), 'null',
                '... and coach_reward_by_token answers null');
 :as_owner
-select test.is((select v from v7), private.coach_view_v7(pg_temp.lid('Pat Lee, tutor')), 'with the switch off, the coach view is exactly 0007''s');
+select test.is((select v - 'week' from v7), private.coach_view_v7(pg_temp.lid('Pat Lee, tutor')), 'with the switch off, the coach view is exactly 0007''s (but 0034''s week)');
 select test.is((select count(*) from points_ledger where id = 'f0000000-0000-4000-8000-000000000001')::int, 0, '... and wrote nothing');
 -- The switch alone, coach view off: still nothing.
 :as_admin
