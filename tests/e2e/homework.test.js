@@ -2790,7 +2790,7 @@ const emailOf = (req) => {
       }
       return d;
     };
-    ({ page, db } = await open({ label: 'summary-35', db: wdb(true), rpc: RPC35 }));
+    ({ page, db } = await open({ label: 'summary-35', db: wdb(true), rpc: RPC35, allowConsole: /status of 409/ }));
     await page.waitForSelector('.hw-link form[data-form="summary"]');
     check('schema 35, coach view on: the Sunday summary box, empty, with what it sends in plain words and no Preview yet',
       (await page.inputValue('.hw-link form[data-form="summary"] [name="to"]')) === ''
