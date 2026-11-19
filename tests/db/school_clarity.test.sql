@@ -21,7 +21,7 @@ grant execute on function pg_temp.run(text) to anon, authenticated, service_role
 -- ---------------------------------------------------------------------
 -- The schema, the columns and the grants
 -- ---------------------------------------------------------------------
-select test.is(hub_schema_version(), 33, 'hub_schema_version is 33');
+select test.is(hub_schema_version(), 34, 'hub_schema_version is 34');
 select test.is((select string_agg(a.attname || ' ' || format_type(a.atttypid, a.atttypmod) || ' ' || a.attgenerated::text, ', ' order by a.attname)
                 from pg_attribute a where a.attrelid = 'public.assignments'::regclass and a.attname in ('what', 'is_test')),
                'is_test boolean s, what text s', 'assignments.what (text) and is_test (boolean): generated, stored');

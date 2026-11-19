@@ -13,7 +13,7 @@
 \ir calendar_fixtures.sql
 
 :as_owner
-select test.is(hub_schema_version(), 33, 'hub_schema_version is 33');
+select test.is(hub_schema_version(), 34, 'hub_schema_version is 34');
 create function pg_temp.run(p_sql text) returns text language plpgsql as $$
 begin
   execute p_sql;

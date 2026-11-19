@@ -1481,7 +1481,22 @@ const hwCoach = (db, email) => hwAdmin(db, email) || (!!db.coachAdult && !!db.me
   && (db.people || []).some((p) => p.email === email && p.role === 'adult' && p.active !== false && p.coach));
 const coachOnly = (db, email) => { if (!hwCoach(db, email)) throw new Raise('42501', PARENT_ONLY); };
 
+// 0034 (db.starts34 = { week: { [kid]: { now, last } } }): task_week, a parent's or the coach's, for one kid's week.
+// Without db.starts34 it isn't there (404), as below 34.
+const STARTS_ZERO = { assigned: 0, done: 0, on_time: 0, reminders: 0, started: 0, started_unprompted: 0, avg_minutes_to_start: null, avg_minutes_to_finish: null, points: 0 };
+function taskWeekFake(db, b, email) {
+  if (!db.starts34) return { __status: 404, body: { code: 'PGRST202', message: 'Could not find the function public.task_week(p_from, p_kid) in the schema cache', details: null, hint: null } };
+  if (!hwCoach(db, email)) return { __status: 403, body: { code: '42501', message: 'Only a parent can see this.', details: null, hint: null } };
+  const w = (db.starts34.week || {})[b.p_kid] || {};
+  const thisWeek = hwToday(db);
+  const mon = (d) => { const x = new Date(`${d}T12:00:00Z`); x.setUTCDate(x.getUTCDate() - ((x.getUTCDay() + 6) % 7)); return x.toISOString().slice(0, 10); };
+  const which = mon(b.p_from) === mon(thisWeek) ? 'now' : 'last';
+  (db.starts34.calls = db.starts34.calls || []).push(b);
+  return Object.assign({ from: mon(b.p_from), to: homePlan().addDays(mon(b.p_from), 6) }, STARTS_ZERO, w[which] || {});
+}
+
 const homeworkRpc = {
+  task_week: (db, b, email) => taskWeekFake(db, b, email),
   homework_week: hwCall('homework_week', ['p_kid', 'p_from'], ['p_days'], (db, b) => {
     const HP = homePlan();
     const n = b.p_days == null ? 14 : b.p_days;
@@ -2403,7 +2418,7 @@ function homeworkTables(db, table, method, body, member, rows) {
   try {
     if (method === 'GET') return { rows: ['tutor_links', 'ai_runs'].includes(table) && !admin ? [] : rows };
     if (table === 'homework_kids') {
-      if (method !== 'PATCH' || !only(db.clarity32 ? HW_KID_UPDATE.concat(['portal_classes']) : HW_KID_UPDATE)) return denied;   // 0032: portal_classes
+      if (method !== 'PATCH' || !only(HW_KID_UPDATE.concat(db.clarity32 ? ['portal_classes'] : [], db.starts34 ? ['pts_start'] : []))) return denied;   // 0032: portal_classes; 0034: pts_start
       if (!admin) return { status: 200, rows: [] };
       const next = rows.map((r) => Object.assign({}, r, body, { updated_at: foodStamp(db), updated_by: email }));
       next.forEach((n) => { const bad = hwKidProblem(n); if (bad) throw bad; });
@@ -2771,6 +2786,10 @@ async function install(page, db, log, opts = {}) {
       // 0006: members read school_feeds and school_items; only the functions write them (no grant).
       || (['school_feeds', 'school_items'].includes(table) && method !== 'GET'
         ? { status: 403, body: { code: '42501', message: `permission denied for table ${table}`, details: null, hint: null } } : null)
+      // 0034: the parents (and the coach) read task_nudges and task_starts; only the functions write them (no grant).
+      || (['task_nudges', 'task_starts'].includes(table)
+        ? (method === 'GET' ? { rows: member.role === 'admin' ? db[table].filter(match) : [] }
+          : { status: 403, body: { code: '42501', message: `permission denied for table ${table}`, details: null, hint: null } }) : null)
       // 0007: the parents read coach_notes (members get no rows); only the functions write it (no grant).
       || (table === 'coach_notes'
         ? (method === 'GET' ? { rows: member.role === 'admin' ? db[table].filter(match) : [] }
@@ -3792,6 +3811,9 @@ function tkCoachView(db, l) {
       .sort((x, y) => (tkMs(x.created_at) > tkMs(y.created_at) ? -1 : tkMs(x.created_at) < tkMs(y.created_at) ? 1 : x.id > y.id ? -1 : 1))
       .map((n) => ({ id: n.id, note: n.note, day: tkDayOf(db, n.created_at) })),
     ...(db.coachRewards && l.rewards ? { manage: tkCoachManage(db, l) } : {}),
+    // 0034 (db.starts34): this week's and last week's numbers for his tasks.
+    ...(db.starts34 ? { week: { this: Object.assign({}, STARTS_ZERO, ((db.starts34.week || {})[kid] || {}).now || {}),
+      last: Object.assign({}, STARTS_ZERO, ((db.starts34.week || {})[kid] || {}).last || {}) } } : {}),
   };
 }
 const tkCoachReward = tkCall('coach_reward_by_token', ['p_token', 'p_action', 'p_key'], ['p_fields'], (db, b) => {

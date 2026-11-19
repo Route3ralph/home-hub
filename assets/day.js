@@ -87,6 +87,9 @@
       routine: 'My routine', routine_count: '{done} of {total}', routine_points: 'Each section you finish: +{n} points',
       routine_paid: '{title} done: +{n} points', routine_all: 'All done for today.',
       done_label: 'Done: {title}', call: 'Call {name}', ticked: 'Done: {title}', undo: 'Undo', dismiss: 'Close',
+      // 0034: Start on his own tasks.
+      start_btn: 'Start', start_label: 'Start: {title}', started_at: 'Started {time}', start_ok: 'Started: {title}',
+      start_paid: 'Started with no reminder: +{n} points',
       undone: "Undone. It's back on your list.",
       already: 'That was already ticked off. The list is up to date now.',
       not_yours: "That task isn't on your list any more.",
@@ -158,7 +161,7 @@
       hw_asked: 'Asked', hw_rewards: 'Rewards', hw_suggest_btn: 'Suggest', hw_suggest_hint: 'A parent prices it.', hw_recent: 'Recent',
       hw_decided: 'Decided', hw_yes: 'Yes', hw_not_now: 'Not now', hw_not_now_note: 'Not now: {note}', hw_suggested: 'Sent to your parents: {title}',
       hw_asked_toast: 'Asked: {title}', hw_no_rewards: 'No rewards yet. Suggest one.',
-      hw_k_focus: 'Focus', hw_k_on_time: 'On time', hw_k_milestone: 'Milestone checked', hw_k_given: 'From your parents', hw_k_taken: 'Taken away', hw_k_void: 'Void',
+      hw_k_focus: 'Focus', hw_k_on_time: 'On time', hw_k_milestone: 'Milestone checked', hw_k_given: 'From your parents', hw_k_taken: 'Taken away', hw_k_start: 'Started with no reminder', hw_k_void: 'Void',
       hw_k_trade: 'Trade', hw_back_home: '‹ Homework', hw_notify: 'Show a notification when a block ends', hw_notify_body: 'Your block is over.',
       hw_being_planned: 'Being planned', hw_start: 'Start',
       // PR B: a plan made with an AI draft says so (§6.10); his view carries no parent's name.
@@ -205,6 +208,11 @@
       coach_r_done: 'Step done', coach_r_more: 'More to do', coach_r_stopped: 'Stopped', coach_r_time: 'Time ran out', coach_r_expired: 'Not ended',
       coach_cal: 'His calendar', coach_cal_next: 'Next 14 days', coach_cal_last: 'Last 7 days', coach_cal_none: 'Nothing.', coach_all_day: 'All day',
       coach_tasks: 'His daily tasks (late ones, today and the last 7 days)', coach_no_tasks: 'No tasks.',
+      // 0034: starting and finishing, this week and last.
+      cw_title: 'Starting and finishing his tasks (Monday to Sunday)', cw_this: 'This week', cw_last: 'Last week', cw_min: '{n} min',
+      cw_assigned: 'Tasks due', cw_done: 'Done', cw_on_time: 'Done on time', cw_reminders: 'Reminders', cw_started: 'Started',
+      cw_unprompted: 'Started with no reminder', cw_to_start: 'From the task\'s time to Start', cw_to_finish: 'From Start to done', cw_points: 'Points earned',
+      coach_l_start: 'Started with no reminder',
       coach_t_open_today: 'Not done yet', coach_t_open: 'Not done', coach_t_done: 'Done', coach_t_skipped: 'Skipped', coach_t_missed: 'Missed',
       coach_t_late: 'Late since {day}',
       coach_note_label: "A note for {kid}'s family", coach_note_hint: 'Only his parents see it, on their Homework page. For example: "suggest lowering the on-time bonus".',
@@ -238,6 +246,8 @@
       routine: 'Mi rutina', routine_count: '{done} de {total}', routine_points: 'Cada sección que termines: +{n} puntos',
       routine_paid: '{title} hecho: +{n} puntos', routine_all: 'Todo hecho por hoy.',
       done_label: 'Hecho: {title}', call: 'Llamar a {name}', ticked: 'Hecho: {title}', undo: 'Deshacer', dismiss: 'Cerrar',
+      start_btn: 'Empezar', start_label: 'Empezar: {title}', started_at: 'Empezado {time}', start_ok: 'Empezado: {title}',
+      start_paid: 'Empezado sin recordatorio: +{n} puntos',
       undone: 'Deshecho. Vuelve a estar en tu lista.',
       already: 'Eso ya estaba marcado. La lista ya está al día.',
       not_yours: 'Esa tarea ya no está en tu lista.',
@@ -306,7 +316,7 @@
       hw_asked: 'Pedido', hw_rewards: 'Premios', hw_suggest_btn: 'Proponer', hw_suggest_hint: 'Tus padres le ponen precio.', hw_recent: 'Últimos movimientos',
       hw_decided: 'Decididos', hw_yes: 'Sí', hw_not_now: 'Ahora no', hw_not_now_note: 'Ahora no: {note}', hw_suggested: 'Enviado a tus padres: {title}',
       hw_asked_toast: 'Pedido: {title}', hw_no_rewards: 'Todavía no hay premios. Propón uno.',
-      hw_k_focus: 'Concentración', hw_k_on_time: 'A tiempo', hw_k_milestone: 'Hito revisado', hw_k_given: 'De tus padres', hw_k_taken: 'Quitados', hw_k_void: 'Anulado',
+      hw_k_focus: 'Concentración', hw_k_on_time: 'A tiempo', hw_k_milestone: 'Hito revisado', hw_k_given: 'De tus padres', hw_k_taken: 'Quitados', hw_k_start: 'Empezada sin recordatorio', hw_k_void: 'Anulado',
       hw_k_trade: 'Cambio', hw_back_home: '‹ Tarea', hw_notify: 'Avisar con una notificación cuando termine un bloque', hw_notify_body: 'Tu bloque terminó.',
       hw_being_planned: 'En preparación', hw_start: 'Empezar',
       hw_ai_help: 'Plan de {tutor}, con ayuda de IA', hw_ai_help_none: 'Plan de tus padres, con ayuda de IA', hw_ai_help_family: 'Plan de tus padres, con ayuda de IA',
@@ -344,6 +354,10 @@
       coach_r_done: 'Paso hecho', coach_r_more: 'Queda más', coach_r_stopped: 'Parado', coach_r_time: 'Se acabó el tiempo', coach_r_expired: 'Sin terminar',
       coach_cal: 'Su calendario', coach_cal_next: 'Próximos 14 días', coach_cal_last: 'Últimos 7 días', coach_cal_none: 'Nada.', coach_all_day: 'Todo el día',
       coach_tasks: 'Sus tareas diarias (atrasadas, hoy y los últimos 7 días)', coach_no_tasks: 'Ninguna tarea.',
+      cw_title: 'Empezar y terminar sus tareas (de lunes a domingo)', cw_this: 'Esta semana', cw_last: 'La semana pasada', cw_min: '{n} min',
+      cw_assigned: 'Tareas para hacer', cw_done: 'Hechas', cw_on_time: 'Hechas a tiempo', cw_reminders: 'Recordatorios', cw_started: 'Empezadas',
+      cw_unprompted: 'Empezadas sin recordatorio', cw_to_start: 'De la hora de la tarea a Empezar', cw_to_finish: 'De Empezar a hecha', cw_points: 'Puntos ganados',
+      coach_l_start: 'Empezada sin recordatorio',
       coach_t_open_today: 'Sin hacer todavía', coach_t_open: 'Sin hacer', coach_t_done: 'Hecha', coach_t_skipped: 'Saltada', coach_t_missed: 'No hecha',
       coach_t_late: 'Atrasada desde {day}',
       coach_note_label: 'Una nota para la familia de {kid}', coach_note_hint: 'Solo la ven sus padres, en su página de Tarea. Por ejemplo: "propongo bajar el extra por empezar a tiempo".',
@@ -853,9 +867,51 @@
       <div class="irow-time${untimed ? ' untimed' : ''}"><span>${esc(top)}</span>${sub ? `<small>${esc(sub)}</small>` : ''}</div>
       ${canTick || ticked ? `<button type="button" class="irow-check day-check" role="checkbox" aria-checked="${ticked}"${ticked ? ' disabled' : ''} aria-label="${esc(t('done_label', { title: it.title }))}"><span class="irow-box">${ICON.check}</span></button>` : ''}
       <div class="irow-main"><span class="irow-title">${esc(it.title)}</span>${details || badge ? `<span class="irow-sub">${badge}${details}</span>` : ''}${typeof it.bring === 'string' && it.bring
-        ? `<span class="irow-bring"><b>${esc(t('bring'))}</b> ${esc(it.bring)}</span>` : ''}</div>
+        ? `<span class="irow-bring"><b>${esc(t('bring'))}</b> ${esc(it.bring)}</span>` : ''}${startHTML(it, canTick)}</div>
       ${it.contractor_phone ? `<a class="irow-call" href="${esc(telHref(it.contractor_phone))}" aria-label="${esc(t('call', { name: who }))}" title="${esc(t('call', { name: who }))}">${ICON.phone}</a>` : ''}
     </div>`;
+  }
+
+  // 0034: Start on one of his own open tasks (get_person_day marks it can_start), or when he started it.
+  function startHTML(it, canTick) {
+    if (!canTick) return '';
+    if (typeof it.started === 'string' && /^\d\d:\d\d$/.test(it.started)) {
+      return `<span class="irow-started">${esc(t('started_at', { time: fmt.time(it.started) }))}</span>`;
+    }
+    return it.can_start === true
+      ? `<button type="button" class="btn btn-sm day-start" data-act="task-start" aria-label="${esc(t('start_label', { title: it.title }))}">${esc(t('start_btn'))}</button>` : '';
+  }
+  async function startTask(btn) {
+    const row = btn.closest('.irow');
+    const it = row && rows[Number(row.dataset.i)];
+    if (!it || btn.disabled) return;
+    btn.disabled = true;
+    busy++;
+    let reload = false;
+    try {
+      const day = await rpc(one(() => sb.rpc('start_by_token', { p_token: token, p_task_id: it.item_id, p_occurrence: it.occurrence })));
+      if (!day) { linkGone(); return; }
+      const paid = Number(day.paid) || 0;
+      delete day.paid;
+      lastLoad = Date.now();
+      dayAt = perfNow();
+      accept(day);
+      if (paid > 0) {
+        const c = day.homework;
+        if (c && c.points != null) cheer = { from: Number(c.points) - paid, to: Number(c.points) };
+        toast(t('start_paid', { n: paid }));
+      } else {
+        toast(t('start_ok', { title: it.title }));
+      }
+    } catch (err) {
+      btn.disabled = false;
+      toast(friendly(err), { error: true });
+      reload = isStale(err) || /on your day/.test(String(err && err.message));
+    } finally {
+      busy--;
+    }
+    if (reload && !busy) { await refresh(); return; }
+    if (view === 'day') renderDay(true);
   }
 
   // A key for an item, to keep the focus on it when the list is redrawn.
@@ -2479,7 +2535,7 @@
     const waiting = (hv.asks || []).filter((q) => q.status === 'waiting');
     const decided = (hv.asks || []).filter((q) => q.status === 'approved' || q.status === 'declined' || q.status === 'cashed');
     const asked = new Set(waiting.map((q) => q.reward_id));
-    const kindWord = { routine: 'hw_k_routine', focus: 'hw_k_focus', on_time: 'hw_k_on_time', milestone_done: 'hw_k_milestone_done', milestone: 'hw_k_milestone', given: 'hw_k_given', taken: 'hw_k_taken',
+    const kindWord = { routine: 'hw_k_routine', focus: 'hw_k_focus', on_time: 'hw_k_on_time', milestone_done: 'hw_k_milestone_done', milestone: 'hw_k_milestone', given: 'hw_k_given', taken: 'hw_k_taken', start: 'hw_k_start',
       void: 'hw_k_void', trade: 'hw_k_trade' };
     const signed = (n) => (n < 0 ? `−${-n}` : `+${n}`);
     // An instant reward he can cash: "Get it now", then "Yes, get it · −15" (one more tap, so a slip can't spend
@@ -3522,6 +3578,17 @@
           return `<li class="coach-task is-${esc(x.status)}">${esc([rel(x.day), st, x.title].join(' · '))}</li>`;
         }).join('')}</ul>` : `<p class="empty-line">${esc(w('coach_no_tasks'))}</p>`)
         + '</div>');
+      // 0034 (§34.6): starting and finishing his tasks, this week and last (counts only, never who nudged).
+      if (v.week && v.week.this && v.week.last) {
+        const mins = (n) => (n == null ? '—' : w('cw_min', { n }));
+        const lines = [['cw_assigned', 'assigned'], ['cw_done', 'done'], ['cw_on_time', 'on_time'], ['cw_reminders', 'reminders'], ['cw_started', 'started'],
+          ['cw_unprompted', 'started_unprompted'], ['cw_to_start', 'avg_minutes_to_start', mins], ['cw_to_finish', 'avg_minutes_to_finish', mins], ['cw_points', 'points']];
+        const cell = (x, key, f) => esc(f ? f(x[key]) : String(x[key] == null ? 0 : x[key]));
+        out.push(`<div class="coach-part" data-part="week"><h3>${esc(w('cw_title'))}</h3>`
+          + `<table class="coach-week"><thead><tr><th scope="col"></th><th scope="col">${esc(w('cw_this'))}</th><th scope="col">${esc(w('cw_last'))}</th></tr></thead><tbody>`
+          + lines.map(([label, key, f]) => `<tr><th scope="row">${esc(w(label))}</th><td>${cell(v.week.this, key, f)}</td><td>${cell(v.week.last, key, f)}</td></tr>`).join('')
+          + '</tbody></table></div>');
+      }
       // A note for the family, and the link's own notes.
       const notes = Array.isArray(v.notes) ? v.notes : [];
       out.push(`<form class="coach-note" novalidate autocomplete="off"><label class="field"><span>${esc(w('coach_note_label'))}</span>`
@@ -3794,6 +3861,8 @@
       else { e.preventDefault(); routinePart(rt); }
       return;
     }
+    const go = e.target.closest('[data-act="task-start"]');
+    if (go && root.contains(go)) { startTask(go); return; }
     const box = e.target.closest('.day-check');
     if (box) { tick(box); return; }
     const row = e.target.closest('.lrow[data-i]');

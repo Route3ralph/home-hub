@@ -1323,6 +1323,56 @@ const emailOf = (req) => {
   }
 
   // =====================================================================
+  // 9d. Nudge (schema 34, migration 0034, docs/v1.3-homework.md §34.2): on a kid's open or late task, for a parent: each
+  //     tap is nudge_task with the task and its date, its count on the button, the toast's Undo is unnudge_task. Never
+  //     on a grown-up's task, never for Sam, and on 17 nothing is read.
+  // =====================================================================
+  {
+    const until = async (fn) => { for (let i = 0; i < 40; i++) { if (await fn().catch(() => false)) return true; await page.waitForTimeout(100); } return false; };
+    const nRpc = (v) => Object.assign({ hub_schema_version: () => v }, calendarRpc, homeworkRpc, {
+      tomorrow_text: () => 'tomorrow',
+      nudge_task: (d, b) => {
+        const id = uuid();
+        d.task_nudges.push({ id, task_id: b.p_task, occurrence: b.p_occurrence });
+        return { id, count: d.task_nudges.filter((n) => n.task_id === b.p_task && n.occurrence === b.p_occurrence).length };
+      },
+      unnudge_task: (d, b) => { const before = d.task_nudges.length; d.task_nudges = d.task_nudges.filter((n) => n.id !== b.p_id); return d.task_nudges.length < before; },
+    });
+    const nDb = () => Object.assign(withHearth(withHomework(withFood(withCalendars(todayDb(), { auth: 'service_account' })))), { task_nudges: [] });
+    ({ page, db, log } = await open({ label: 'nudge', db: nDb(), rpc: nRpc(34) }));
+    await page.click(`.today-chips [data-person="${ID.jordan}"]`);
+    await page.waitForSelector('.today-nudge');
+    const fish = db.late.find((x) => x.title === 'Feed the fish');
+    const btnOf = () => rowFor(page, 'late', 'Feed the fish').locator('.today-nudge');
+    check('nudge (34): Jordan\'s late task has Nudge, labelled with him and the task', (await btnOf().innerText()) === 'Nudge'
+      && (await btnOf().getAttribute('aria-label')) === 'Nudge Jordan: Feed the fish', await btnOf().getAttribute('aria-label'));
+    await btnOf().click();
+    await until(async () => (await btnOf().innerText()) === 'Nudged 1×');
+    check('nudge: nudge_task with the task and the date it was due; the button counts it', same(calls(db, 'nudge_task').map((c) => c.body), [{ p_task: fish.item_id, p_occurrence: '2026-10-24' }])
+      && (await btnOf().innerText()) === 'Nudged 1×' && /Nudged Jordan: Feed the fish \(1 time\)/.test(await lastToast(page)), `${await btnOf().innerText()} / ${await lastToast(page)}`);
+    await btnOf().click();
+    await until(async () => (await btnOf().innerText()) === 'Nudged 2×');
+    check('nudge: as many times as needed (2)', calls(db, 'nudge_task').length === 2 && db.task_nudges.length === 2 && (await btnOf().innerText()) === 'Nudged 2×');
+    await page.locator('.toasts .toast', { hasText: '(2 times)' }).locator('button', { hasText: 'Undo' }).click();
+    await until(async () => (await btnOf().innerText()) === 'Nudged 1×');
+    check('nudge: Undo calls unnudge_task with that nudge', calls(db, 'unnudge_task').length === 1 && db.task_nudges.length === 1 && (await btnOf().innerText()) === 'Nudged 1×');
+    await page.click('.today-chips [data-view="me"]');
+    await page.waitForTimeout(200);
+    check('nudge: never on a grown-up\'s task (Alex\'s day)', !(await page.$('.today-nudge')));
+    await page.context().close();
+    ({ page, db, log } = await open({ label: 'nudge-sam', db: nDb(), rpc: nRpc(34), email: 'sam@example.com' }));
+    await page.click(`.today-chips [data-person="${ID.jordan}"]`);
+    await page.waitForTimeout(300);
+    check('nudge: none for Sam, and Sam reads no nudges', !(await page.$('.today-nudge')) && !log.some((l) => /task_nudges/.test(l)));
+    await page.context().close();
+    ({ page, db, log } = await open({ label: 'nudge-17', db: nDb(), rpc: nRpc(17) }));
+    await page.click(`.today-chips [data-person="${ID.jordan}"]`);
+    await page.waitForTimeout(300);
+    check('nudge: on 17, no Nudge and no task_nudges read', !(await page.$('.today-nudge')) && !log.some((l) => /task_nudges/.test(l)));
+    await page.context().close();
+  }
+
+  // =====================================================================
   // 10. v1 mode: no Today page, no v2 reads
   // =====================================================================
   ({ page, log } = await open({ label: 'v1', v1: true, db: makeDb() }));

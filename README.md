@@ -284,6 +284,17 @@ A tutor whose link runs his rewards can take points off too: **Take points** aft
 1. `tests/run.sh` ends with `0 failed`; merge. Nothing changes until step 2.
 2. **About 2 minutes:** run [`supabase/migrations/0033_tutor_take.sql`](supabase/migrations/0033_tutor_take.sql) in the Supabase SQL editor, after 0032. "isn't installed" means 0032 is missing; "already installed" means it's done; either way nothing was changed.
 
+### Nudge, Start and the week's numbers (v1.3, migration 0034)
+
+For the tutor's goal: starting and finishing tasks on time without being reminded again and again.
+- **Nudge** (Today page, parents): on each open or late task of a kid. Each tap is one time-stamped reminder; the button counts them ("Nudged 2×"); the toast's Undo takes it back. He never sees it.
+- **Start** (his My day): he taps it when he begins a task, then ticks it when it's done. A start nobody nudged first pays 5 points (3 a day at most; change it under Homework → Switches → Points).
+- **Starting and finishing** (Homework page, and the tutor link with the coach view on): this week and last, tasks due, done, on time, reminders, starts, starts with no reminder, minutes from the task's time to Start and from Start to done, points. Give each chore a time for "to Start" to count it.
+
+**Turning it on** (no Edge Function and no `cron.sql` change):
+1. `tests/run.sh` ends with `0 failed`; merge. Nothing changes until step 2.
+2. **About 2 minutes:** run [`supabase/migrations/0034_task_starts.sql`](supabase/migrations/0034_task_starts.sql) in the Supabase SQL editor, after 0033. "isn't installed" means 0033 is missing; "already installed" means it's done; either way nothing was changed.
+
 ### Phone reminders (v1.3, migration 0031)
 
 A notification on the kid's iPhone every day at the time you pick (4:00pm, say): his homework due tomorrow and how many aren't marked done yet. A tap opens his My day. It works from his My day added to the Home Screen (iOS 16.4 or later), with no app. A web page can't add to the phone's Reminders app, so this is the way to get it on his phone.

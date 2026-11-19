@@ -638,6 +638,26 @@ async function tokenRpcs(page, db) {
     await page.context().close();
   }
   {
+    // 0034 (§34.6): starting and finishing his tasks, this week and last, after his daily tasks; counts only. Not before 0034.
+    const d = coachDb();
+    d.starts34 = { week: { [P.jordan]: { now: { assigned: 9, done: 7, on_time: 5, reminders: 4, started: 6, started_unprompted: 3, avg_minutes_to_start: 12, avg_minutes_to_finish: 25, points: 140 },
+      last: { assigned: 8, done: 1, on_time: 1, points: 30 } } } };
+    ({ page, db } = await open({ label: 'coach-week', path: `/day.html?h=${PAT}`, db: d }));
+    await page.waitForSelector('[data-part="week"]');
+    const wk = await page.$$eval('[data-part="week"] tbody tr', (rs) => rs.map((r) => [...r.children].map((c) => c.textContent.trim()).join(' | ')));
+    check('0034: Starting and finishing his tasks, this week and last, line by line', (await text(page, '[data-part="week"] h3')) === 'Starting and finishing his tasks (Monday to Sunday)'
+      && same(wk, ['Tasks due | 9 | 8', 'Done | 7 | 1', 'Done on time | 5 | 1', 'Reminders | 4 | 0', 'Started | 6 | 0', 'Started with no reminder | 3 | 0',
+        "From the task's time to Start | 12 min | —", 'From Start to done | 25 min | —', 'Points earned | 140 | 30']), JSON.stringify(wk));
+    check('... after his daily tasks', await page.evaluate(() => { const a = document.querySelector('[data-part="tasks"]'); const b = document.querySelector('[data-part="week"]');
+      return !!(a && b && (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING)); }));
+    check('... with no one\'s name or email in it', !/Alex|Sam\b|@/.test(await text(page, '[data-part="week"]')));
+    await page.context().close();
+    ({ page, db } = await open({ label: 'coach-week-33', path: `/day.html?h=${PAT}`, db: coachDb() }));
+    await page.waitForSelector('[data-part="tasks"]');
+    check('before 0034: no week panel', !(await page.$('[data-part="week"]')));
+    await page.context().close();
+  }
+  {
     // Spanish, on a phone.
     ({ page, db } = await open({ label: 'coach-es', path: `/day.html?h=${PAT}`, db: coachDb({ lang: 'es' }),
       ctx: { viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true } }));

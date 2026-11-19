@@ -259,3 +259,11 @@
 .hw-mark.hw-test { background: var(--warn-soft); color: var(--warn); }
 .hw-arow-what { grid-column: 1; color: var(--text-2); font-size: 13px; overflow-wrap: anywhere; }
 .hw-arow-portal { grid-column: 1; color: var(--warn); font-size: 13px; font-weight: 650; }
+
+/* 0034: Starting and finishing, this week and last. */
+.hw-starts { width: 100%; border-collapse: collapse; }
+.hw-starts th, .hw-starts td { padding: 8px 10px; text-align: left; border-bottom: 1px solid var(--line, #e5e5e5); font-size: 15px; }
+.hw-starts td { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.hw-starts thead th { font-size: 13px; color: var(--text-2); font-weight: 600; }
+.hw-starts thead th + th { text-align: right; }
+.hw-starts tbody th { font-weight: 500; }

@@ -15,13 +15,13 @@ const { setup, HOMEWORK_TABLES, HOMEWORK_FNS } = require('./lib');
 // 0004's three for the helper's list, 0005's seven for Jordan's homework and four for the tutor link, 0006's
 // one for his New from school, 0007's two for the tutor link's coach view, 0012's one for the coach's rewards, and 0014's
 // one for My day's English | Español, 0019's one for his routine's ticks, 0020's four for the family board, 0022's two
-// for his watch list, 0026's one for his count's +1, and 0031's one for his phone reminders.
+// for his watch list, 0026's one for his count's +1, 0031's one for his phone reminders, and 0034's one for his Start.
 const TOKEN_FNS = ['get_person_day', 'complete_by_token', 'undo_by_token', 'confirm_digest', 'stop_digest', 'set_language_by_token', 'get_shared_project',
   'get_list_by_token', 'add_to_list_by_token', 'buy_item_by_token',
   'homework_by_token', 'step_by_token', 'plan_by_token', 'focus_by_token', 'reward_by_token', 'assignment_by_token', 'homework_prefs_by_token',
   'tutor_view_by_token', 'tutor_assignment_by_token', 'tutor_plan_by_token', 'tutor_step_by_token', 'school_item_by_token',
   'coach_view_by_token', 'coach_note_by_token', 'coach_reward_by_token', 'routine_tick_by_token',
-  'board_by_token', 'board_tick_by_token', 'board_undo_by_token', 'board_routine_by_token', 'watch_by_token', 'watch_add_by_token', 'count_by_token', 'push_by_token'];
+  'board_by_token', 'board_tick_by_token', 'board_undo_by_token', 'board_routine_by_token', 'watch_by_token', 'watch_add_by_token', 'count_by_token', 'push_by_token', 'start_by_token'];
 // What any signed-in account may learn, by design: its own email, the household's date, clock and
 // time zone, and the schema version (sign-up is limited to the family list by the auth hook).
 const HARMLESS = ['current_email', 'clock', 'today_local', 'hub_schema_version'];
@@ -607,8 +607,8 @@ const emptyLists = (b) => !!b && typeof b === 'object' && !Array.isArray(b)
     // On: the coach view, signed out with Pat's token.
     const cv = await fn('coach_view_by_token', null, { p_token: PAT });
     const ct = JSON.stringify(cv.body);
-    check('coach view on: exactly its keys, for Jordan (his first name)', cv.status === 200 && !!cv.body
-      && JSON.stringify(Object.keys(cv.body).sort()) === JSON.stringify(['as_of', 'asks', 'calendar', 'focus', 'kid', 'language', 'notes', 'points', 'rewards', 'tasks', 'today'])
+    check('coach view on: exactly its keys (week from 0034), for Jordan (his first name)', cv.status === 200 && !!cv.body
+      && JSON.stringify(Object.keys(cv.body).sort()) === JSON.stringify(['as_of', 'asks', 'calendar', 'focus', 'kid', 'language', 'notes', 'points', 'rewards', 'tasks', 'today', 'week'])
       && cv.body.kid === 'Jordan', ct.slice(0, 300));
     check('... his points (118: the given ones), his reward, his waiting ask, his finished block',
       cv.body.points.balance === 118 && cv.body.rewards.length === 1 && cv.body.rewards[0].title === "Choose Friday's dinner"
@@ -727,6 +727,31 @@ const emptyLists = (b) => !!b && typeof b === 'object' && !Array.isArray(b)
     [cvT.body && cvT.body.manage && [cvT.body.manage.take, cvT.body.manage.free], freeSql, tooMany.status, tooMany.body, took && took.status, tookRow]);
     const kidT = await fn('coach_reward_by_token', null, { p_token: jordan.day_token, p_action: 'take', p_key: 'e0000000-0000-4000-8000-000000000088', p_fields: { points: 1, note: 'x' } });
     check('... and Jordan\'s My day token takes nothing (null)', kidT.status === 200 && kidT.body === null, [kidT.status, kidT.body]);
+
+    // 0034: Nudge (Alex, signed in; never Sam or signed out) and Start (Jordan's My day token, signed out) on a task of
+    // his due today; his My day never shows the nudge; the real task_week counts both, for a parent only.
+    const NT = 'e0000000-0000-4000-8000-000000000091';
+    const today34 = (await sql('select public.today_local()::text as d'))[0].d;
+    await sql(`insert into tasks (id, title, responsible_id, due_date) values ('${NT}', 'Feed the fish', '${jordan.id}', '${today34}')`);
+    const nArgs = { p_task: NT, p_occurrence: today34 };
+    const [nSam, nAnon, nAlex] = [await fn('nudge_task', member, nArgs), await fn('nudge_task', null, nArgs), await fn('nudge_task', admin, nArgs)];
+    const [rSam34, rAnon34, rAlex34] = [await ask('/rest/v1/task_nudges?select=id,who', member), await ask('/rest/v1/task_nudges?select=id,who', null),
+      await ask('/rest/v1/task_nudges?select=id,who', admin)];
+    check('0034: Nudge: Sam refused (403), signed out refused, Alex nudges (count 1); Alex reads it, Sam reads nothing, signed out is refused',
+      nSam.status === 403 && nAnon.status >= 400 && nAlex.status === 200 && nAlex.body.count === 1
+      && rAlex34.status === 200 && rAlex34.body.length === 1 && rAlex34.body[0].who === 'alex@example.com' && rSam34.status === 200 && rSam34.body.length === 0 && rAnon34.status >= 400,
+    [nSam.status, nAnon.status, nAlex.status, nAlex.body, rAlex34.status, rSam34.status, rSam34.body, rAnon34.status]);
+    const myDay34 = await fn('get_person_day', null, { p_token: jordan.day_token });
+    const fish = (b) => [...((b && b.days) || []).flatMap((d) => d.items || []), ...((b && b.late) || [])].find((x) => x.item_id === NT);
+    check('... his My day: Feed the fish can be started, and nothing of the nudge', myDay34.status === 200 && fish(myDay34.body) && fish(myDay34.body).can_start === true
+      && !/nudg|remind|alex@/i.test(JSON.stringify(myDay34.body)), fish(myDay34.body));
+    const st34 = await fn('start_by_token', null, { p_token: jordan.day_token, p_task_id: NT, p_occurrence: today34 });
+    check('... signed out with his token, Start: no bonus (he was nudged first), and the task says when he started',
+      st34.status === 200 && st34.body.paid === 0 && /^\d\d:\d\d$/.test(String(fish(st34.body) && fish(st34.body).started)), [st34.status, st34.body && st34.body.paid, fish(st34.body)]);
+    const [wAlex, wSam] = [await fn('task_week', admin, { p_kid: jordan.id, p_from: today34 }), await fn('task_week', member, { p_kid: jordan.id, p_from: today34 })];
+    check('... the real task_week (Alex): at least this task, its reminder and its start; Sam is refused',
+      wAlex.status === 200 && wAlex.body.assigned >= 1 && wAlex.body.reminders === 1 && wAlex.body.started === 1 && wAlex.body.started_unprompted === 0 && wSam.status === 403,
+      [wAlex.status, wAlex.body, wSam.status]);
     await fn('set_tutor_rewards', admin, { p_link: LINK, p_on: false });
     const offR2 = await fn('coach_reward_by_token', null, { p_token: PAT, p_action: 'give', p_key: 'e0000000-0000-4000-8000-000000000085', p_fields: { points: 5, note: 'x' } });
     check('Can manage rewards off again: null, and the coach view has no manage', offR2.status === 200 && offR2.body === null
