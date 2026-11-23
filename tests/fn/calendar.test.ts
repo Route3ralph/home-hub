@@ -1244,9 +1244,9 @@ const calendarCalls = (s: ReturnType<typeof setup>) => s.G.calls.filter((c) => c
   const src = Object.fromEntries(readdirSync(dir).filter((f) => f.endsWith('.ts')).map((f) => [f, readFileSync(new URL(f, dir), 'utf8')]));
   const code = (f: string) => src[f].replace(/\/\/.*$/gm, '');
   // v1.3's school feed (migration 0006) adds school.ts and ical.ts on purpose (docs/v1.3-homework.md §12), and its AI
-  // planner (PR B) homework.ts (§2.2), v2's calendar inbox inbox.ts (docs/v2-design.md §28), and the Sunday sheets weekly.ts (§31), and Due tomorrow due.ts (docs/v1.3-homework.md §29), and phone reminders push.ts (§31), and the Sunday summary summary.ts (§35).
-  check('the hub-jobs files are index, handler, render, util, google, calendar, school, ical, homework, inbox, weekly, due, push and summary',
-    Object.keys(src).sort().join() === 'calendar.ts,due.ts,google.ts,handler.ts,homework.ts,ical.ts,inbox.ts,index.ts,push.ts,render.ts,school.ts,summary.ts,util.ts,weekly.ts', Object.keys(src));
+  // planner (PR B) homework.ts (§2.2), v2's calendar inbox inbox.ts (docs/v2-design.md §28), and the Sunday sheets weekly.ts (§31), and Due tomorrow due.ts (docs/v1.3-homework.md §29), and phone reminders push.ts (§31), and the Sunday summary summary.ts (§35), and the school's missing-assignment emails school_mail.ts (§37).
+  check('the hub-jobs files are index, handler, render, util, google, calendar, school, ical, homework, inbox, weekly, due, push, summary and school_mail',
+    Object.keys(src).sort().join() === 'calendar.ts,due.ts,google.ts,handler.ts,homework.ts,ical.ts,inbox.ts,index.ts,push.ts,render.ts,school.ts,school_mail.ts,summary.ts,util.ts,weekly.ts', Object.keys(src));
   check('the Google helper is gcal(…); nothing calls call(\'…\') (the contract check would read it as a database function)',
     /\bgcal\(/.test(code('google.ts')) && /\bgcal\(/.test(code('calendar.ts')) && Object.keys(src).every((f) => !/(^|[^\w.])call\s*\(\s*['"`]/.test(code(f))));
   check('GOOGLE_SA_JSON is read with a literal deps.env(\'GOOGLE_SA_JSON\'), and no other Google secret is read',

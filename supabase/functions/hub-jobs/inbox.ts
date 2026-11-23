@@ -27,12 +27,16 @@
 //      column), as it does any such event.
 //   8. The answer, to the sender, as a reply (In-Reply-To): what was added, with the calendar's link, or why nothing
 //      was. job_runs gets ok and sent (the events added).
+// From migration 0037, a forwarded missing-assignment notice from the school's portal (school_mail.ts: the title, class
+// and due date, read without AI) skips Claude and the day's limit: school_missing_by_email marks the assignment Missing
+// (0036's points follow), and the answer says what happened.
 // Privacy: console lines are fixed codes; the email, its sender and Claude's answer are never logged or kept, except
 // as the events themselves.
 
 import { ANTHROPIC, classify } from './homework.ts';
 import { siteBase } from './render.ts';
-import { json, oneLine, sameSecret } from './util.ts';
+import { json, noSchema, oneLine, sameSecret } from './util.ts';
+import { classOf, missingNotice } from './school_mail.ts';
 import type { Db, Deps } from './util.ts';
 
 export const INBOX_MODEL = 'claude-opus-5-5';
@@ -337,6 +341,12 @@ async function handleEmail(deps: Deps, emailId: string): Promise<void> {
   const subject = oneLine(mail.subject).slice(0, 200);
   const reply = (text: string, html: string) => sendReply(deps, sender, subject, mail.message_id ?? mail.headers?.['message-id'], text, html, emailId);
 
+  // The school's missing-assignment notice (migration 0037, school_mail.ts): read without AI, the assignment marked
+  // Missing, and an answer. Before 0037 (no function yet) the email is answered as one the hub can't read yet.
+  const raw = typeof mail.text === 'string' && mail.text.trim() ? mail.text : htmlText(String(mail.html ?? ''));
+  const notice = missingNotice(String(mail.subject ?? ''), raw);
+  if (notice) return schoolNotice(deps, db, notice, who, reply, finish);
+
   // The day's limit
   const since = new Date(now() - 86400000).toISOString();
   const { count } = await db.from('events').select('id', { count: 'exact', head: true }).like('created_by', '% (email)').gte('created_at', since);
@@ -397,6 +407,35 @@ async function handleEmail(deps: Deps, emailId: string): Promise<void> {
     + `${link ? `<p><a href="${escHtml(link)}">See it or change it</a></p>` : ''}`;
   await reply(text, html);
   return finish(true, added.length, 'added');
+}
+
+// One missing-assignment notice: school_missing_by_email finds and marks it; the answer says what happened.
+async function schoolNotice(deps: Deps, db: Db, n: { title: string; klass: string; due: string }, who: string,
+  reply: (text: string, html: string) => Promise<void>, finish: (ok: boolean, sent: number, code: string) => Promise<void>): Promise<void> {
+  const { data, error } = await db.rpc('school_missing_by_email', { p_title: n.title, p_class: n.klass, p_due: n.due, p_by: who });
+  const site = siteBase(deps.env('SITE_URL'));
+  const what = `${n.title} (${classOf(n.klass)}, due ${dayLabel(n.due)})`;
+  if (error) {
+    await reply(noSchema(error)
+      ? `The hub can't mark missing work from the school's emails yet, so nothing changed for ${what}. Mark it Missing on the Homework page.`
+      : `Sorry, the hub couldn't mark ${what} just now. Mark it Missing on the Homework page.`, '');
+    return finish(false, 0, noSchema(error) ? 'notice_no_schema' : 'notice_error');
+  }
+  const r = (data || {}) as { status?: string; kid?: string; assignment_id?: string; points?: number };
+  const kid = oneLine(r.kid || 'him').slice(0, 40);
+  const pts = Number(r.points) || 0;
+  const pointsLine = pts < 0 ? ` ${-pts} points came off ${kid}'s points.` : r.status === 'already' ? '' : ' No points came off (his points are off, or this week\'s limit is reached).';
+  const link = site && r.assignment_id ? `${site}#/homework/${r.assignment_id}` : '';
+  const after = ' When he makes it up, tap Clear mark on the assignment and the points come back.';
+  let text: string;
+  if (r.status === 'marked') text = `Marked Missing for ${kid}: ${what}.${pointsLine}${after}`;
+  else if (r.status === 'added') text = `${what} wasn't on ${kid}'s homework, so the hub added it and marked it Missing.${pointsLine}${after}`;
+  else if (r.status === 'already') text = `${what} is already marked Missing for ${kid}. Nothing changed.`;
+  else if (r.status === 'many') text = `The hub couldn't tell whose ${what} is. Mark it Missing on the Homework page.`;
+  else text = `Nobody has homework turned on, so nothing was marked for ${what}.`;
+  if (link) text += `\n\nSee it: ${link}`;
+  await reply(text, '');
+  return finish(true, r.status === 'marked' || r.status === 'added' ? 1 : 0, `notice_${oneLine(r.status || 'none').slice(0, 10)}`);
 }
 
 type Asked = { answer: unknown } | { stop: string };

@@ -2046,3 +2046,18 @@ alter table public.points_ledger add constraint points_ledger_check check ((kind
 
 ### Going live
 The site first; then 0036. No Edge Function and no `cron.sql` change. Undoing it isn't needed (set the values to 0). If wanted, as the migration's header writes it out: drop the trigger, its function, `private.mark_points` and `private.grade_number`, delete the mark lines, drop `points_ledger.assignment_id`, put the two ledger checks back as 0034 left them, drop the six columns and their order check, then 0035's `hub_schema_version()`.
+
+## 43. v1.3: the school's missing-assignment emails
+
+A forwarded missing-assignment notice from the school's portal marks the assignment Missing, so §42's points follow. Its migration is `supabase/migrations/0037_school_missing_email.sql` (after 0036); the plan is `docs/v1.3-homework.md` §37. One transaction; it refuses to run without 0036 ("Points from the school's marks (migration 0036) aren't installed"), twice ("already installed"), on a database set back to 36 ("set back to 36"), or on one that isn't as 0036 left it (`private.mark_points`, `private.school_assignment(p_item, p_who, p_due)`, `school_items`, `school_feeds`, the trigger `assignments_mark_points`).
+
+### Functions
+- `public.school_missing_by_email(p_title text, p_class text, p_due date, p_by text) returns jsonb` (service_role only; a definer). Among the active kids with homework on, the assignment of kind `'assignment'` with that title (any case and spaces), that class without its section ("Science 6 - A" is "Science 6"; a null subject matches) and a due date within 14 days of `p_due`, the nearest first; else an item from school not made one yet, matched the same way, made one with `private.school_assignment`; else, with one kid only, a new assignment (`added_by 'school'`, the class as its subject, written by `p_by`). Then marked Missing, once, with the mark's line written as `p_by`. Answers `{status, kid, title, subject, due, assignment_id, points}`: `marked`, `added`, `already` (nothing changed), `many` (several kids and none has it) or `no_kid`; `points` is what the mark moved. 22023 "That needs the title and the due date." for an empty title or no date.
+- `private.mark_points(p_assignment uuid)`: §42's, unchanged but for who a line is from when no one is signed in: `hub.mark_by` (set for its own transaction by `school_missing_by_email`), else "Home Hub".
+- `hub_schema_version()` returns 37.
+
+### hub-jobs
+The inbox (§28), after the sender check: a notice (`school_mail.ts`, `missingNotice`: "… has indicated a missing assignment", then the title, the class, "Assigned:" and "Due:" lines, in the email or a forward of it; no AI) skips Claude and the day's limit, calls `school_missing_by_email` with the forwarder as "<first name> (email)", and answers what happened, with the assignment's link. Before 0037 it answers that the hub can't mark them yet. A notice sent straight from the school (not by a family member) is never read.
+
+### Going live
+`hub-jobs` (verify_jwt false) first, then 0037, then a parent's mail rule forwards the notices to the hub's inbox address. No page and no `cron.sql` change. Undoing it isn't needed (stop forwarding). If wanted, as the migration's header writes it out: drop `school_missing_by_email`, then 0036's `private.mark_points` and `hub_schema_version()`.
