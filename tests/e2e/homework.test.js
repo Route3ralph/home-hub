@@ -2859,6 +2859,7 @@ const emailOf = (req) => {
       d.clarity32 = true;
       d.starts34 = { week: {} };
       d.homework_kids.forEach((k) => { k.pts_start = 5; });
+      d.tutor_summary_log = [];   // 0035: the Sunday summaries' log, read on 35 and up
       if (v36) {
         d.marks36 = true;
         d.homework_kids.forEach((k) => Object.assign(k, { pts_missing: 10, pts_low_grade: 5, grade_floor: 75, pts_high_grade: 10, grade_top: 90, pts_mark_week: 50 }));
