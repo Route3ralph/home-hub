@@ -284,6 +284,14 @@ A tutor whose link runs his rewards can take points off too: **Take points** aft
 1. `tests/run.sh` ends with `0 failed`; merge. Nothing changes until step 2.
 2. **About 2 minutes:** run [`supabase/migrations/0033_tutor_take.sql`](supabase/migrations/0033_tutor_take.sql) in the Supabase SQL editor, after 0032. "isn't installed" means 0032 is missing; "already installed" means it's done; either way nothing was changed.
 
+### Points from the school's marks (v1.3, migration 0036)
+
+When you or the coach mark an assignment **Missing** or **Graded** on the Homework page, Max's points follow at once: Missing takes 10, a grade below 75 takes 5, a grade of 90 or more gives a 10-point bonus, at most 50 taken a week. Clearing the mark (a makeup) or a better grade gives the points back. He sees each line ("−10 School mark · Missing: Lab report"). Change the numbers under **Homework → Switches → Points**; 0 turns one off. Blackbaud's feed has no grades or missing status, so the marks are still set by hand.
+
+**Turning it on** (no Edge Function and no `cron.sql` change):
+1. `tests/run.sh` ends with `0 failed`; merge. Nothing changes until step 2.
+2. **About 2 minutes:** run [`supabase/migrations/0036_school_mark_points.sql`](supabase/migrations/0036_school_mark_points.sql) in the Supabase SQL editor, after 0035. "isn't installed" means 0035 is missing; "already installed" means it's done; either way nothing was changed.
+
 ### The Sunday summary (v1.3, migration 0035)
 
 Every Sunday from 5pm, an email to the tutor with the week's numbers for the kid: tasks due, done, on time, reminders, starts, starts with no reminder, minutes to start and to finish, points, this week next to last week, in the link's language. There's no link in it, so a mistyped address can't open his page, and nothing else of the family. Set it on the Homework page, under the tutor's link (its coach view on): **Sunday summary to**, his address, **Save**, then **Preview**. Blank turns it off.

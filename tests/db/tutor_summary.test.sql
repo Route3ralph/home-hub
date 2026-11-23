@@ -30,7 +30,7 @@ create function pg_temp.due() returns text language sql stable as $$
 $$;
 grant execute on function pg_temp.due() to service_role;
 
-select test.is(hub_schema_version(), 35, 'hub_schema_version is 35');
+select test.is(hub_schema_version(), 36, 'hub_schema_version is 36 (0035 made it 35)');
 
 -- ---------------------------------------------------------------------
 -- Grants

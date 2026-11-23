@@ -46,7 +46,7 @@ select test.is((whoami() -> 'person' ->> 'id')::uuid, test.person('Alex'), 'whoa
 -- people under Calendars to read, and asks for hearth_tags and calendars.sort_by_guest, only on 10.
 -- Migration 0011 (project guests) changes it on purpose again: the client shows a guest their projects, and the parents
 -- Guest access, the Guests card and the Documents link, only on 11 (guests.test.sql).
-select test.is(hub_schema_version(), 35, 'hub_schema_version is 35');
+select test.is(hub_schema_version(), 36, 'hub_schema_version is 36');
 -- 0009 replaces private.school_rows with the same signature: still not a definer function, stable, search_path = '',
 -- and no API role may call it (as 0006 revoked it; 0009 revokes it again). Its private.school_rekey (run once by 0009,
 -- again only by the owner) runs as the owner too, and no API role may call it either.
@@ -295,10 +295,12 @@ select test.is((select string_agg(c.relname || '.' || a.attname, ', ' order by c
                                     'rewards', 'reward_asks', 'points_ledger', 'ai_runs')
                   and has_column_privilege('authenticated', c.oid, a.attname, 'update')),
                'assignments.count_done, assignments.count_goal, assignments.details, assignments.due_date, assignments.grade, assignments.kind, assignments.school_mark, assignments.status, '
-               'assignments.stretch, assignments.subject, assignments.title, homework_kids.active, homework_kids.focus_minutes, homework_kids.instant_day, homework_kids.points_on, '
-               'homework_kids.portal_classes, homework_kids.pts_day_cap, homework_kids.pts_focus, homework_kids.pts_milestone, homework_kids.pts_milestone_week, '
+               'assignments.stretch, assignments.subject, assignments.title, homework_kids.active, homework_kids.focus_minutes, homework_kids.grade_floor, homework_kids.grade_top, '
+               'homework_kids.instant_day, homework_kids.points_on, '
+               'homework_kids.portal_classes, homework_kids.pts_day_cap, homework_kids.pts_focus, homework_kids.pts_high_grade, homework_kids.pts_low_grade, homework_kids.pts_mark_week, '
+               'homework_kids.pts_milestone, homework_kids.pts_milestone_week, homework_kids.pts_missing, '
                'homework_kids.pts_on_time, homework_kids.pts_start, rewards.active, rewards.cost, rewards.instant, rewards.sort_order, rewards.title',
-               '0005''s tables: the columns signed-in users may update (never cue, if_stuck, given_*, plan_rev, done_at or added_by; 0023 adds school_mark and grade, 0026 count_goal and count_done, 0032 portal_classes, 0034 pts_start)');
+               '0005''s tables: the columns signed-in users may update (never cue, if_stuck, given_*, plan_rev, done_at or added_by; 0023 adds school_mark and grade, 0026 count_goal and count_done, 0032 portal_classes, 0034 pts_start, 0036 the marks'' six values)');
 select test.is((select string_agg(t, ', ' order by t)
                 from unnest(array['homework_kids', 'homework_times', 'tutor_links', 'assignments', 'homework_steps', 'focus_sessions',
                                   'rewards', 'reward_asks', 'points_ledger', 'ai_runs']) t
