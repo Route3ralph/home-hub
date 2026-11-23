@@ -384,6 +384,7 @@
     const taken = sum(rows.filter((l) => l.kind === 'taken'), (l) => l.delta);
     const started = sum(rows.filter((l) => l.kind === 'start'), (l) => l.delta);
     const voided = sum(rows.filter((l) => l.kind === 'void'), (l) => l.delta);
+    const marks = sum(rows.filter((l) => l.kind === 'mark_off' || l.kind === 'mark_on'), (l) => l.delta);
     const by = [...new Set(ms.map((l) => (viaLink(l.who) ? String(whoName(l.who)).split(/[\s,]+/)[0] : whoName(l.who))))];
     const parts = [];
     if (focus) parts.push(`${signed(focus)} focus and on time`);
@@ -393,6 +394,7 @@
     if (taken) parts.push(`${signed(taken)} taken`);
     if (started) parts.push(`${signed(started)} starting with no reminder`);
     if (voided) parts.push(`${signed(voided)} voided`);
+    if (marks) parts.push(`${signed(marks)} school marks`);
     return parts.length ? `this week: ${parts.join(', ')}` : 'nothing earned this week';
   }
 
@@ -949,7 +951,7 @@
         : esc(blockLine(st, b))}</li>`).join('')}</ul>` : ''}`);
   }
 
-  const LEDGER = { focus: 'Focus', on_time: 'On time', milestone_done: 'Ticked', milestone: 'Checked', given: 'Given', routine: 'Routine', taken: 'Taken', start: 'Started' };
+  const LEDGER = { focus: 'Focus', on_time: 'On time', milestone_done: 'Ticked', milestone: 'Checked', given: 'Given', routine: 'Routine', taken: 'Taken', start: 'Started', mark_off: 'School mark', mark_on: 'School mark' };
   function ledgerLine(st, l) {
     // A trade of an instant reward he cashed himself says so (no parent's yes was needed).
     const cashed = l.kind === 'trade' && l.ask_id && st.asks.some((x) => x.id === l.ask_id && x.status === 'cashed');
@@ -1192,7 +1194,11 @@
       ['pts_milestone', 'A milestone (half when he ticks it, half when it\'s checked)', 0, 100],
       ['pts_day_cap', 'Most a day from blocks and on-time starts', 0, 300], ['pts_milestone_week', 'Most a week from milestones', 0, 400],
       ['instant_day', 'Instant rewards he may get a day', 0, 10]]
-      .concat(core.schemaVersion >= 34 ? [['pts_start', 'Starting a task with no reminder (3 a day at most)', 0, 20]] : []);
+      .concat(core.schemaVersion >= 34 ? [['pts_start', 'Starting a task with no reminder (3 a day at most)', 0, 20]] : [])
+      // 0036 (§36.2): the school's marks move points as soon as an assignment is marked Missing or Graded.
+      .concat(core.schemaVersion >= 36 ? [['pts_missing', 'Work marked Missing (points off)', 0, 100], ['pts_low_grade', 'A grade below the line (points off)', 0, 100],
+        ['grade_floor', 'The line: grades below this lose points (out of 100)', 0, 100], ['pts_high_grade', 'A grade at the top (bonus)', 0, 100],
+        ['grade_top', 'The top: grades from this earn the bonus (out of 100)', 0, 100], ['pts_mark_week', 'Most the marks take a week', 0, 500]] : []);
     const rows = [];
     rows.push(`<div class="hw-switch-row" data-row="kid"><label class="hw-switch"><input type="checkbox" data-act="kid-on"${k.active ? ' checked' : ''}${off}><span>Homework for ${esc(kid)}</span></label>
       <small class="hw-switch-line">Homework on ${esc(kid)}'s My day, and ${esc(tutor ? `${tutor}'s` : 'the tutor\'s')} link. Off hides them; nothing is deleted.</small>
@@ -1852,10 +1858,14 @@
     const patch = {};
     const limits = { pts_focus: 5, pts_on_time: 50, pts_milestone: 100, pts_day_cap: 300, pts_milestone_week: 400, instant_day: 10 };
     if (core.schemaVersion >= 34 && f.pts_start) limits.pts_start = 20;
+    if (core.schemaVersion >= 36 && f.pts_missing) Object.assign(limits, { pts_missing: 100, pts_low_grade: 100, grade_floor: 100, pts_high_grade: 100, grade_top: 100, pts_mark_week: 500 });
     for (const name of Object.keys(limits)) {
       const v = Number(f[name].value);
       if (!Number.isInteger(v) || v < 0 || v > limits[name]) { err.textContent = `Use a whole number from 0 to ${limits[name]}.`; err.hidden = false; f[name].focus(); return null; }
       patch[name] = v;
+    }
+    if ('grade_floor' in patch && patch.grade_floor >= patch.grade_top) {
+      err.textContent = 'The line for points off must be below the top for the bonus.'; err.hidden = false; f.grade_floor.focus(); return null;
     }
     patch.focus_minutes = Number(f.focus_minutes.value);
     return write(st, () => saveKid(st, patch), () => toast('Saved'));

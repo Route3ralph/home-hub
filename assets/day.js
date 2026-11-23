@@ -161,7 +161,7 @@
       hw_asked: 'Asked', hw_rewards: 'Rewards', hw_suggest_btn: 'Suggest', hw_suggest_hint: 'A parent prices it.', hw_recent: 'Recent',
       hw_decided: 'Decided', hw_yes: 'Yes', hw_not_now: 'Not now', hw_not_now_note: 'Not now: {note}', hw_suggested: 'Sent to your parents: {title}',
       hw_asked_toast: 'Asked: {title}', hw_no_rewards: 'No rewards yet. Suggest one.',
-      hw_k_focus: 'Focus', hw_k_on_time: 'On time', hw_k_milestone: 'Milestone checked', hw_k_given: 'From your parents', hw_k_taken: 'Taken away', hw_k_start: 'Started with no reminder', hw_k_void: 'Void',
+      hw_k_focus: 'Focus', hw_k_on_time: 'On time', hw_k_milestone: 'Milestone checked', hw_k_given: 'From your parents', hw_k_taken: 'Taken away', hw_k_start: 'Started with no reminder', hw_k_mark: 'School mark', hw_k_void: 'Void',
       hw_k_trade: 'Trade', hw_back_home: '‹ Homework', hw_notify: 'Show a notification when a block ends', hw_notify_body: 'Your block is over.',
       hw_being_planned: 'Being planned', hw_start: 'Start',
       // PR B: a plan made with an AI draft says so (§6.10); his view carries no parent's name.
@@ -212,7 +212,7 @@
       cw_title: 'Starting and finishing his tasks (Monday to Sunday)', cw_this: 'This week', cw_last: 'Last week', cw_min: '{n} min',
       cw_assigned: 'Tasks due', cw_done: 'Done', cw_on_time: 'Done on time', cw_reminders: 'Reminders', cw_started: 'Started',
       cw_unprompted: 'Started with no reminder', cw_to_start: 'From the task\'s time to Start', cw_to_finish: 'From Start to done', cw_points: 'Points earned',
-      coach_l_start: 'Started with no reminder',
+      coach_l_start: 'Started with no reminder', coach_l_mark_off: 'School mark', coach_l_mark_on: 'School mark',
       coach_t_open_today: 'Not done yet', coach_t_open: 'Not done', coach_t_done: 'Done', coach_t_skipped: 'Skipped', coach_t_missed: 'Missed',
       coach_t_late: 'Late since {day}',
       coach_note_label: "A note for {kid}'s family", coach_note_hint: 'Only his parents see it, on their Homework page. For example: "suggest lowering the on-time bonus".',
@@ -316,7 +316,7 @@
       hw_asked: 'Pedido', hw_rewards: 'Premios', hw_suggest_btn: 'Proponer', hw_suggest_hint: 'Tus padres le ponen precio.', hw_recent: 'Últimos movimientos',
       hw_decided: 'Decididos', hw_yes: 'Sí', hw_not_now: 'Ahora no', hw_not_now_note: 'Ahora no: {note}', hw_suggested: 'Enviado a tus padres: {title}',
       hw_asked_toast: 'Pedido: {title}', hw_no_rewards: 'Todavía no hay premios. Propón uno.',
-      hw_k_focus: 'Concentración', hw_k_on_time: 'A tiempo', hw_k_milestone: 'Hito revisado', hw_k_given: 'De tus padres', hw_k_taken: 'Quitados', hw_k_start: 'Empezada sin recordatorio', hw_k_void: 'Anulado',
+      hw_k_focus: 'Concentración', hw_k_on_time: 'A tiempo', hw_k_milestone: 'Hito revisado', hw_k_given: 'De tus padres', hw_k_taken: 'Quitados', hw_k_start: 'Empezada sin recordatorio', hw_k_mark: 'Nota del colegio', hw_k_void: 'Anulado',
       hw_k_trade: 'Cambio', hw_back_home: '‹ Tarea', hw_notify: 'Avisar con una notificación cuando termine un bloque', hw_notify_body: 'Tu bloque terminó.',
       hw_being_planned: 'En preparación', hw_start: 'Empezar',
       hw_ai_help: 'Plan de {tutor}, con ayuda de IA', hw_ai_help_none: 'Plan de tus padres, con ayuda de IA', hw_ai_help_family: 'Plan de tus padres, con ayuda de IA',
@@ -357,7 +357,7 @@
       cw_title: 'Empezar y terminar sus tareas (de lunes a domingo)', cw_this: 'Esta semana', cw_last: 'La semana pasada', cw_min: '{n} min',
       cw_assigned: 'Tareas para hacer', cw_done: 'Hechas', cw_on_time: 'Hechas a tiempo', cw_reminders: 'Recordatorios', cw_started: 'Empezadas',
       cw_unprompted: 'Empezadas sin recordatorio', cw_to_start: 'De la hora de la tarea a Empezar', cw_to_finish: 'De Empezar a hecha', cw_points: 'Puntos ganados',
-      coach_l_start: 'Empezada sin recordatorio',
+      coach_l_start: 'Empezada sin recordatorio', coach_l_mark_off: 'Nota del colegio', coach_l_mark_on: 'Nota del colegio',
       coach_t_open_today: 'Sin hacer todavía', coach_t_open: 'Sin hacer', coach_t_done: 'Hecha', coach_t_skipped: 'Saltada', coach_t_missed: 'No hecha',
       coach_t_late: 'Atrasada desde {day}',
       coach_note_label: 'Una nota para la familia de {kid}', coach_note_hint: 'Solo la ven sus padres, en su página de Tarea. Por ejemplo: "propongo bajar el extra por empezar a tiempo".',
@@ -2535,7 +2535,7 @@
     const waiting = (hv.asks || []).filter((q) => q.status === 'waiting');
     const decided = (hv.asks || []).filter((q) => q.status === 'approved' || q.status === 'declined' || q.status === 'cashed');
     const asked = new Set(waiting.map((q) => q.reward_id));
-    const kindWord = { routine: 'hw_k_routine', focus: 'hw_k_focus', on_time: 'hw_k_on_time', milestone_done: 'hw_k_milestone_done', milestone: 'hw_k_milestone', given: 'hw_k_given', taken: 'hw_k_taken', start: 'hw_k_start',
+    const kindWord = { routine: 'hw_k_routine', focus: 'hw_k_focus', on_time: 'hw_k_on_time', milestone_done: 'hw_k_milestone_done', milestone: 'hw_k_milestone', given: 'hw_k_given', taken: 'hw_k_taken', start: 'hw_k_start', mark_off: 'hw_k_mark', mark_on: 'hw_k_mark',
       void: 'hw_k_void', trade: 'hw_k_trade' };
     const signed = (n) => (n < 0 ? `−${-n}` : `+${n}`);
     // An instant reward he can cash: "Get it now", then "Yes, get it · −15" (one more tap, so a slip can't spend

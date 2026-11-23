@@ -2845,6 +2845,55 @@ const emailOf = (req) => {
     await page.context().close();
   }
 
+  // =====================================================================
+  // 20. Points from the school's marks (schema 36, 0036; docs/v1.3-homework.md §36.2): the six values under Switches'
+  // points values, saved with the others; the line must be below the top; a mark line in his points reads "School
+  // mark". None on 35.
+  // =====================================================================
+  {
+    const LATER = { routine_status: () => ({ points: 0, sections: [], today: null }), can_coach: () => false };
+    const RPC36 = Object.assign({}, RPC8, LATER, { hub_schema_version: () => 36, task_week: homeworkRpc.task_week });
+    const RPC35m = Object.assign({}, RPC36, { hub_schema_version: () => 35 });
+    const mdb = (v36) => {
+      const d = withCoach(withSchoolCheck(fullDb()));
+      d.clarity32 = true;
+      d.starts34 = { week: {} };
+      d.homework_kids.forEach((k) => { k.pts_start = 5; });
+      if (v36) {
+        d.marks36 = true;
+        d.homework_kids.forEach((k) => Object.assign(k, { pts_missing: 10, pts_low_grade: 5, grade_floor: 75, pts_high_grade: 10, grade_top: 90, pts_mark_week: 50 }));
+      }
+      return d;
+    };
+    ({ page, db } = await open({ label: 'marks-36', db: mdb(true), rpc: RPC36 }));
+    await page.waitForSelector('form[data-form="values"] [name="pts_missing"]');
+    const vals = await page.$$eval('form[data-form="values"] input', (xs) => Object.fromEntries(xs.filter((x) => x.name).map((x) => [x.name, x.value])));
+    check('schema 36: the six values under the points values, with their defaults', vals.pts_missing === '10' && vals.pts_low_grade === '5' && vals.grade_floor === '75'
+      && vals.pts_high_grade === '10' && vals.grade_top === '90' && vals.pts_mark_week === '50', JSON.stringify(vals));
+    check('... in plain words', /Work marked Missing \(points off\)/.test(await tc(page, 'form[data-form="values"]')) && /grades below this lose points/.test(await tc(page, 'form[data-form="values"]')));
+    await page.fill('form[data-form="values"] [name="pts_missing"]', '15');
+    await page.fill('form[data-form="values"] [name="grade_floor"]', '70');
+    await page.click('form[data-form="values"] [type="submit"]');
+    await settle(page);
+    const k36 = db.homework_kids.find((x) => x.kid_id === ID.jordan);
+    check('... Save writes them with the others (15 for Missing, the line at 70)', k36.pts_missing === 15 && k36.grade_floor === 70, JSON.stringify(k36));
+    await page.fill('form[data-form="values"] [name="grade_floor"]', '95');
+    await page.click('form[data-form="values"] [type="submit"]');
+    await sleep(300);
+    check('... a line at or above the top is refused in plain words', (await tc(page, 'form[data-form="values"] .form-error')) === 'The line for points off must be below the top for the bonus.'
+      && db.homework_kids.find((x) => x.kid_id === ID.jordan).grade_floor === 70, await tc(page, 'form[data-form="values"] .form-error'));
+    await page.fill('form[data-form="values"] [name="pts_mark_week"]', '501');
+    await page.fill('form[data-form="values"] [name="grade_floor"]', '70');
+    await page.click('form[data-form="values"] [type="submit"]');
+    await sleep(300);
+    check('... 501 a week is refused', /from 0 to 500/.test(await tc(page, 'form[data-form="values"] .form-error')), await tc(page, 'form[data-form="values"] .form-error'));
+    await page.context().close();
+    ({ page, db } = await open({ label: 'marks-35', db: mdb(false), rpc: RPC35m }));
+    await page.waitForSelector('form[data-form="values"] [name="pts_start"]');
+    check('schema 35: none of the six', !(await page.$('form[data-form="values"] [name="pts_missing"]')) && !(await page.$('form[data-form="values"] [name="grade_top"]')));
+    await page.context().close();
+  }
+
   console.log(results.join('\n'));
   console.log(`\n${results.filter((r) => r.startsWith('PASS')).length}/${results.length} passed`);
   console.log('PAGE ERRORS:', errors.length ? '\n' + errors.join('\n') : 'none');

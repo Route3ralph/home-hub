@@ -2404,6 +2404,13 @@ function hwKidProblem(r) {
   const range = { pts_focus: [0, 5], pts_on_time: [0, 50], pts_milestone: [0, 100], pts_day_cap: [0, 300], pts_milestone_week: [0, 400], instant_day: [0, 10] };
   const bad = Object.keys(range).find((k) => !(Number.isInteger(r[k]) && r[k] >= range[k][0] && r[k] <= range[k][1]));
   if (bad) return hwCheck('homework_kids', `homework_kids_${bad}_check`);
+  // 0036: the marks' values, and the line below the top.
+  if (r.pts_missing !== undefined) {
+    const r36 = { pts_missing: [0, 100], pts_low_grade: [0, 100], grade_floor: [0, 100], pts_high_grade: [0, 100], grade_top: [0, 100], pts_mark_week: [0, 500] };
+    const b36 = Object.keys(r36).find((k) => !(Number.isInteger(r[k]) && r[k] >= r36[k][0] && r[k] <= r36[k][1]));
+    if (b36) return hwCheck('homework_kids', `homework_kids_${b36}_check`);
+    if (r.grade_floor >= r.grade_top) return hwCheck('homework_kids', 'homework_kids_grade_order');
+  }
   // 0032: at most 20 classes, 1 to 40 characters each.
   if (r.portal_classes !== undefined && !(Array.isArray(r.portal_classes) && r.portal_classes.length <= 20
     && r.portal_classes.every((c) => typeof c === 'string' && c.trim().length >= 1 && c.trim().length <= 40))) return hwCheck('homework_kids', 'homework_kids_portal_classes_check');
@@ -2429,7 +2436,7 @@ function homeworkTables(db, table, method, body, member, rows) {
   try {
     if (method === 'GET') return { rows: ['tutor_links', 'ai_runs'].includes(table) && !admin ? [] : rows };
     if (table === 'homework_kids') {
-      if (method !== 'PATCH' || !only(HW_KID_UPDATE.concat(db.clarity32 ? ['portal_classes'] : [], db.starts34 ? ['pts_start'] : []))) return denied;   // 0032: portal_classes; 0034: pts_start
+      if (method !== 'PATCH' || !only(HW_KID_UPDATE.concat(db.clarity32 ? ['portal_classes'] : [], db.starts34 ? ['pts_start'] : [], db.marks36 ? ['pts_missing', 'pts_low_grade', 'grade_floor', 'pts_high_grade', 'grade_top', 'pts_mark_week'] : []))) return denied;   // 0032: portal_classes; 0034: pts_start
       if (!admin) return { status: 200, rows: [] };
       const next = rows.map((r) => Object.assign({}, r, body, { updated_at: foodStamp(db), updated_by: email }));
       next.forEach((n) => { const bad = hwKidProblem(n); if (bad) throw bad; });

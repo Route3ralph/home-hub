@@ -2011,3 +2011,38 @@ create table public.tutor_summary_log (
 
 ### Going live
 The site and `hub-jobs` (verify_jwt false) first, in either order; then 0035; then a parent types the tutor's address. No `cron.sql` change. Undoing it isn't needed (with no address set nothing is sent). If wanted, as the migration's header writes it out: drop `tutor_summary`, `summary_finish`, `summary_claim`, `summary_due` and `set_tutor_summary`, drop `tutor_summary_log` and `tutor_links.summary_to`, then 0034's `hub_schema_version()`.
+
+## 42. v1.3: points from the school's marks
+
+When a parent or the coach marks an assignment Missing or Graded (migration 0023), the kid's points follow. Its migration is `supabase/migrations/0036_school_mark_points.sql` (after 0035); the plan is `docs/v1.3-homework.md` §36. One transaction; it refuses to run without 0035 ("The Sunday summary (migration 0035) isn't installed"), twice ("already installed"), on a database set back to 35 ("set back to 35"), or on one that isn't as 0035 left it (`private.points_balance`, `private.monday`, `private.now`, `today_local`, `current_email`, `tutor_summary_log`, `assignments.school_mark`, the ledger's kind and sign checks as 0034 and 0028 left them; no `points_ledger.assignment_id` or `private.mark_points` yet).
+
+### Tables
+```sql
+alter table public.homework_kids
+  add column pts_missing    int not null default 10 check (pts_missing between 0 and 100),
+  add column pts_low_grade  int not null default 5  check (pts_low_grade between 0 and 100),
+  add column grade_floor    int not null default 75 check (grade_floor between 0 and 100),
+  add column pts_high_grade int not null default 10 check (pts_high_grade between 0 and 100),
+  add column grade_top      int not null default 90 check (grade_top between 0 and 100),
+  add column pts_mark_week  int not null default 50 check (pts_mark_week between 0 and 500),
+  add constraint homework_kids_grade_order check (grade_floor < grade_top);
+alter table public.points_ledger add column assignment_id uuid references public.assignments (id) on delete set null;
+alter table public.points_ledger add constraint points_ledger_kind_check
+  check (kind in ('focus', 'on_time', 'milestone_done', 'milestone', 'given', 'void', 'trade', 'routine', 'taken', 'start', 'mark_off', 'mark_on'));
+alter table public.points_ledger add constraint points_ledger_check check ((kind in ('void', 'trade', 'taken', 'mark_off')) = (delta < 0));
+```
+- The six values: what Missing takes, what a grade under `grade_floor` takes, what a grade at `grade_top` or more gives, and the most the marks take in a household week. A parent changes them as the other points values (column grants of update; the table's policies). 0 turns one off.
+- `points_ledger.assignment_id`: the assignment a mark line is for. `'mark_off'` lines are negative (points taken, or a bonus taken back), `'mark_on'` positive (a bonus, or points given back).
+- `hub_schema_version()` returns 36.
+
+### Functions
+- `private.grade_number(p_grade text) returns numeric` (immutable): "92", "92%", "92.5" as they are (at most 150); "18/20" as a share of 100; a letter A+ 98, A 95, A- 91, B+ 88, B 85, B- 81, C+ 78, C 75, C- 71, D+ 68, D 65, D- 61, F 50; anything else null.
+- `private.mark_points(p_assignment uuid) returns void` (a definer): with his points on, makes the assignment's mark lines add up to what its mark is worth now: Missing `-pts_missing`; Graded under `grade_floor` `-pts_low_grade`; Graded at `grade_top` or more `+pts_high_grade`; anything else (no mark, a grade between, a grade that isn't a number) 0. One line for the difference, today, written as whoever changed the mark, its note "Missing: ", "Grade 72: ", "Made up: " or "Mark changed: " and the title. Taking is never more than his free points (balance less what his waiting asks hold) or what is left of the week's `pts_mark_week`; giving back is never more than was taken. It takes his `homework_kids` row's lock first.
+- `private.assignments_mark_points()` and the trigger `assignments_mark_points`: after an insert, or an update of `school_mark` or `grade` that changes either, on `assignments`.
+
+### Client
+- Homework (`assets/modules/homework.js`), on schema 36: the six values among Switches' points values ("Work marked Missing (points off)", and so on), saved with the others; the line must be below the top. The lines read "School mark" in his points and the week's sources.
+- My day and the tutor link (`assets/day.js`): a mark line reads "School mark" / "Nota del colegio", with its note.
+
+### Going live
+The site first; then 0036. No Edge Function and no `cron.sql` change. Undoing it isn't needed (set the values to 0). If wanted, as the migration's header writes it out: drop the trigger, its function, `private.mark_points` and `private.grade_number`, delete the mark lines, drop `points_ledger.assignment_id`, put the two ledger checks back as 0034 left them, drop the six columns and their order check, then 0035's `hub_schema_version()`.
