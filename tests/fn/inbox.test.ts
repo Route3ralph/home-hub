@@ -11,6 +11,7 @@ import {
   INBOX_MODEL, INBOX_DAY_MAX, INBOX_EVENTS_MAX, INBOX_PROMPT, verifySignature, address, checkEvents, emailText, htmlText,
   matchPeople, eventLine, forged, today, alsoFrom,
 } from '../../supabase/functions/hub-jobs/inbox.ts';
+import { classOf, missingNotice, usDate } from '../../supabase/functions/hub-jobs/school_mail.ts';
 import { ANTHROPIC } from '../../supabase/functions/hub-jobs/homework.ts';
 import { createHmac } from 'node:crypto';
 
@@ -61,7 +62,9 @@ const jsonRes = (status: number, body: unknown) => new Response(JSON.stringify(b
 // The harness
 // ---------------------------------------------------------------------
 type Op = { table: string; op: string; args: any[]; filters: any[] };
-function setup(o: { env?: Record<string, string | undefined>; mail?: any; mailStatus?: number; claude?: Response; seen?: boolean; count?: number; insertFail?: boolean } = {}) {
+function setup(o: { env?: Record<string, string | undefined>; mail?: any; mailStatus?: number; claude?: Response; seen?: boolean; count?: number; insertFail?: boolean;
+  rpc?: (fn: string, args: any) => { data: any; error: any } } = {}) {
+  const rpcCalls: { fn: string; args: any }[] = [];
   const ops: Op[] = [];
   const hits: { url: string; init: any; body: any }[] = [];
   const bg: Promise<unknown>[] = [];
@@ -108,11 +111,11 @@ function setup(o: { env?: Record<string, string | undefined>; mail?: any; mailSt
   };
   const deps: any = {
     env: (n: string) => env[n], fetch: fetchFake, now: () => NOW,
-    service: () => ({ from: query, rpc: () => Promise.resolve({ data: null, error: { message: 'no rpc here' } }) }),
+    service: () => ({ from: query, rpc: (fn: string, args: any) => { rpcCalls.push({ fn, args }); return Promise.resolve(o.rpc ? o.rpc(fn, args) : { data: null, error: { message: 'no rpc here' } }); } }),
     user: () => { throw new Error('no sign-in for the inbox'); },
     background: (p: Promise<unknown>) => { bg.push(p); },
   };
-  return { deps, ops, hits, bg };
+  return { deps, ops, hits, bg, rpcCalls };
 }
 const logged: string[] = [];
 const real = { log: console.log, error: console.error };
@@ -334,6 +337,54 @@ const claudeHits = (s: ReturnType<typeof setup>) => s.hits.filter((h) => h.url =
     && forged({ 'authentication-results': ['mx.example; dmarc=fail', 'x; dmarc=pass'] }, 'alex@example.com'));
   check('today in the household\'s time zone', today(Date.parse('2026-11-07T03:00:00Z'), 'America/New_York').date === '2026-11-06'
     && today(Date.parse('2026-11-07T03:00:00Z'), 'America/New_York').weekday === 'Friday');
+
+  // ---- The school's missing-assignment notice (migration 0037, docs/v1.3-homework.md §37): read without AI
+  {
+    const NOTICE_SUBJECT = 'Westfield Academy has indicated a missing assignment';
+    const NOTICE = 'Hello,\n\nAs requested, this email is to notify you that you have a missing assignment:\n\nVolcano Poster Draft\n\n\nScience 6 - A\nAssigned: 11/3/2026\nDue: 11/4/2026\n\nYou may access the detail page from here: More Details';
+    const FWD = `From: Alex Lee\nSent: Thursday\n\n________________________________\nFrom: School Portal <portal@school.example>\nSubject: ${NOTICE_SUBJECT}\n\n${NOTICE}`;
+    check('missingNotice: the title, the class, the dates', JSON.stringify(missingNotice(NOTICE_SUBJECT, NOTICE))
+      === JSON.stringify({ title: 'Volcano Poster Draft', klass: 'Science 6 - A', assigned: '2026-11-03', due: '2026-11-04' }), JSON.stringify(missingNotice(NOTICE_SUBJECT, NOTICE)));
+    check('... inside a forward (Fw: subject, header lines above)', missingNotice(`Fw: ${NOTICE_SUBJECT}`, FWD)?.title === 'Volcano Poster Draft');
+    check('... quoted with ">" (a reply-forward)', missingNotice('Fwd: x', NOTICE.split('\n').map((l) => `> ${l}`).join('\n'))?.due === '2026-11-04');
+    check('... with no Assigned line', missingNotice(NOTICE_SUBJECT, NOTICE.replace('Assigned: 11/3/2026\n', ''))?.assigned === null);
+    check('not a notice: an ordinary email, a notice with no due date or no class, a bad date', missingNotice('dinner', 'Dinner Fri 6-8') === null
+      && missingNotice(NOTICE_SUBJECT, NOTICE.replace(/Due: .*/, '')) === null
+      && missingNotice(NOTICE_SUBJECT, NOTICE.replace('Science 6 - A\n', '')) === null
+      && missingNotice(NOTICE_SUBJECT, NOTICE.replace('11/4/2026', '13/40/2026')) === null);
+    check('usDate and classOf', usDate('2/29/2027') === null && usDate('2/29/2028') === '2028-02-29' && classOf('Science 6 - A') === 'Science 6'
+      && classOf('Math 7') === 'Math 7' && classOf('Ancient History - D') === 'Ancient History');
+
+    const marked = { data: { status: 'marked', kid: 'Jordan', title: 'Volcano Poster Draft', subject: 'Science 6', due: '2026-11-04', assignment_id: 'as-1', points: -10 }, error: null };
+    let s = setup({ mail: received({ subject: `Fw: ${NOTICE_SUBJECT}`, text: FWD }), rpc: () => marked });
+    let r = await run(s, webhook());
+    let rep = replies(s);
+    check('a forwarded notice: no Claude, one call to school_missing_by_email with the title, class, due date and the forwarder',
+      r.status === 200 && !claudeHits(s).length && s.rpcCalls.length === 1 && s.rpcCalls[0].fn === 'school_missing_by_email'
+      && JSON.stringify(s.rpcCalls[0].args) === JSON.stringify({ p_title: 'Volcano Poster Draft', p_class: 'Science 6 - A', p_due: '2026-11-04', p_by: 'Alex (email)' }), JSON.stringify(s.rpcCalls));
+    check('... the answer: marked, the points, how to give them back, and the link', rep.length === 1
+      && rep[0].text.startsWith('Marked Missing for Jordan: Volcano Poster Draft (Science 6, due Wed Nov 4). 10 points came off Jordan\'s points.')
+      && /tap Clear mark/.test(rep[0].text) && rep[0].text.includes('https://family.example/hub/#/homework/as-1'), rep[0] && rep[0].text);
+    check('... no event added, and the day\'s limit never read', !inserts(s, 'events').length && !s.ops.some((x) => x.table === 'events'));
+    check('... job_runs finished ok, sent 1, a fixed code only', s.ops.some((x) => x.table === 'job_runs' && x.op === 'update' && x.args[0].ok === true && x.args[0].sent === 1)
+      && logged.includes('inbox: notice_marked 1') && !logged.some((l) => /Volcano|Science/.test(l)));
+    for (const [st, re] of [['added', /wasn't on Jordan's homework, so the hub added it and marked it Missing/], ['already', /already marked Missing for Jordan\. Nothing changed\./],
+      ['many', /couldn't tell whose/], ['no_kid', /Nobody has homework turned on/]] as [string, RegExp][]) {
+      s = setup({ mail: received({ subject: NOTICE_SUBJECT, text: NOTICE }), rpc: () => ({ data: { ...marked.data, status: st, points: st === 'added' ? -10 : 0 }, error: null }) });
+      await run(s, webhook());
+      rep = replies(s);
+      check(`... status ${st}: its own answer`, rep.length === 1 && re.test(rep[0].text), rep[0] && rep[0].text);
+    }
+    s = setup({ mail: received({ subject: NOTICE_SUBJECT, text: NOTICE }), rpc: () => ({ data: { ...marked.data, points: 0 }, error: null }) });
+    await run(s, webhook());
+    check('... marked with no points moved: says why it may be', /No points came off \(his points are off, or this week's limit is reached\)/.test(replies(s)[0].text));
+    s = setup({ mail: received({ subject: NOTICE_SUBJECT, text: NOTICE }), rpc: () => ({ data: null, error: { message: 'Could not find the function public.school_missing_by_email', code: 'PGRST202' } }) });
+    await run(s, webhook());
+    check('before 0037: answered that the hub can\'t mark them yet, nothing else', /can't mark missing work from the school's emails yet/.test(replies(s)[0].text) && !claudeHits(s).length);
+    s = setup({ mail: received({ from: 'Portal <portal@school.example>', subject: NOTICE_SUBJECT, text: NOTICE }), rpc: () => marked });
+    await run(s, webhook());
+    check('a notice straight from the school (not forwarded by family): not read, no answer', !s.rpcCalls.length && !replies(s).length);
+  }
 
   for (const r of results) console.log(r);
   const failed = results.filter((r) => r.startsWith('FAIL')).length;

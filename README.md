@@ -284,6 +284,15 @@ A tutor whose link runs his rewards can take points off too: **Take points** aft
 1. `tests/run.sh` ends with `0 failed`; merge. Nothing changes until step 2.
 2. **About 2 minutes:** run [`supabase/migrations/0033_tutor_take.sql`](supabase/migrations/0033_tutor_take.sql) in the Supabase SQL editor, after 0032. "isn't installed" means 0032 is missing; "already installed" means it's done; either way nothing was changed.
 
+### The school's missing-assignment emails (v1.3, migration 0037)
+
+Forward the school portal's "missing assignment" emails to the hub's inbox address (an Outlook or Gmail rule does it for you), and the hub marks that assignment **Missing** on Max's homework within a minute, so the points come off by themselves. It reads the title, class and due date from the email; if the assignment isn't on the hub yet, it adds it. You get a reply saying what it did. When he makes the work up, tap **Clear mark** and the points come back.
+
+**Turning it on** (about 15 minutes; no `cron.sql` change):
+1. `tests/run.sh` ends with `0 failed`; merge, and deploy `hub-jobs` (verify_jwt false).
+2. **About 2 minutes:** run [`supabase/migrations/0037_school_missing_email.sql`](supabase/migrations/0037_school_missing_email.sql) in the Supabase SQL editor, after 0036.
+3. **About 5 minutes:** in Outlook on the web, Settings → Mail → Rules → Add new rule: from the portal's address, subject includes "missing assignment", forward to the hub's inbox address.
+
 ### Points from the school's marks (v1.3, migration 0036)
 
 When you or the coach mark an assignment **Missing** or **Graded** on the Homework page, Max's points follow at once: Missing takes 10, a grade below 75 takes 5, a grade of 90 or more gives a 10-point bonus, at most 50 taken a week. Clearing the mark (a makeup) or a better grade gives the points back. He sees each line ("−10 School mark · Missing: Lab report"). Change the numbers under **Homework → Switches → Points**; 0 turns one off. Blackbaud's feed has no grades or missing status, so the marks are still set by hand.
