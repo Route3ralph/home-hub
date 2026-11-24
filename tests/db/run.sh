@@ -698,7 +698,7 @@ else report "FAIL  0009 pasted while he taps Plan with Pat on a copy  (0009: ${o
 # included): each says why, and changes nothing.
 m10=supabase/migrations/0010_hearth_people.sql
 out=$(quiet -d hub_again -f $m10 2>&1)
-if [[ $out == *"Hearth people (migration 0010) is already installed (hub_schema_version() is 37)"* ]] \
+if [[ $out == *"Hearth people (migration 0010) is already installed (hub_schema_version() is 38)"* ]] \
    && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 38 ]]; then
   report "PASS  migration 0010 refuses to run twice"
 else report "FAIL  migration 0010 refuses to run twice  (${out:0:200})"; fi
