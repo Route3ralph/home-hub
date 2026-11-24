@@ -772,6 +772,33 @@
       <small class="hw-switch-line">${esc(`For a class whose assignments often leave things out: each of its assignments says "Check the portal for details" here, on ${kidName(st)}'s My day and in the Due tomorrow email. ${list}`)}</small>
       ${btn('portal-classes', 'Choose classes')}</div>`;
   }
+  // 0038 (§38): a test with no plan gets study steps on the days before it, once, within the hour.
+  const TEST_PREP_DAYS = [[0, 'Off'], [2, '2 days before'], [3, '3 days before'], [4, '4 days before'], [5, '5 days before']];
+  function testPrepText(n) {
+    return n > 0 ? `${n} days before each test` : 'Off';
+  }
+  function testPrepRowHTML(st, admin) {
+    const n = Number(st.row.test_prep_days) || 0;
+    return `<div class="hw-switch-row" data-row="test-prep"><p class="hw-switch-title">Study before tests</p>
+      <small class="hw-switch-line">${esc(`A test with no plan of its own gets study steps on ${kidName(st)}'s days before it (list the topics, a study list, two practice blocks, quiz yourself), on his My day within the hour. A plan someone wrote is never changed; delete the steps and they don't come back. Now: ${testPrepText(n)}.`)}</small>
+      ${admin ? btn('test-prep', 'Change') : ''}</div>`;
+  }
+  function testPrepForm(st) {
+    core.openForm({
+      title: 'Study before tests',
+      intro: 'Start studying this many days before each test.',
+      fields: [{ name: 'days', label: 'Start', type: 'select', value: String(Number(st.row.test_prep_days) || 0),
+        options: TEST_PREP_DAYS.map(([v, label]) => [String(v), label]) }],
+      submitLabel: 'Save',
+      onSubmit: async (v) => {
+        const days = Number(v.days) || 0;
+        await saveKid(st, { test_prep_days: days });
+        await reload(st, true);
+        toast(days ? `Study before tests: ${days} days before` : 'Study before tests: off');
+      },
+    });
+  }
+
   function portalForm(st) {
     const classes = classesOf(st);
     if (!classes.length) { toast('No classes yet: they come from his assignments.'); return; }
@@ -1220,6 +1247,7 @@
         ${admin && st.events.length ? `<details class="hw-addtime"><summary>Add another time</summary>${timeFormHTML(false)}</details>` : ''}</div>`);
       if (core.schemaVersion >= 19) rows.push(routineRowHTML(st));
       if (core.schemaVersion >= 32 && admin) rows.push(portalRowHTML(st));
+      if (core.schemaVersion >= 38 && 'test_prep_days' in k) rows.push(testPrepRowHTML(st, admin));
       // The coach (0021): his New from school, to add or hide; the links themselves stay the parents'.
       if (!admin && canCoach() && core.schemaVersion >= 6 && st.school && st.school.feeds && st.school.feeds.length) {
         rows.push(`<div class="hw-switch-row" data-row="school"><p class="hw-switch-title">New from school</p>${schoolItemsHTML(st)
@@ -2568,6 +2596,7 @@
       case 'school-pause': case 'school-resume': pauseSchool(st, d.feed, d.act === 'school-pause'); break;
       case 'school-auto': autoSchool(st, d.feed, d.on === '1'); break;
       case 'portal-classes': portalForm(st); break;
+      case 'test-prep': testPrepForm(st); break;
       case 'school-now': checkNow(st); break;
       case 'school-off': st.schoolOff = true; draw(st); break;
       case 'school-redate': st.schoolRedate = !st.schoolRedate; st.schoolOff = false; draw(st); break;

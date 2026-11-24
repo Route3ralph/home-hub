@@ -2061,3 +2061,24 @@ The inbox (§28), after the sender check: a notice (`school_mail.ts`, `missingNo
 
 ### Going live
 `hub-jobs` (verify_jwt false) first, then 0037, then a parent's mail rule forwards the notices to the hub's inbox address. No page and no `cron.sql` change. Undoing it isn't needed (stop forwarding). If wanted, as the migration's header writes it out: drop `school_missing_by_email`, then 0036's `private.mark_points` and `hub_schema_version()`.
+
+## 44. v1.3: study before tests
+
+A test with no plan of its own gets the starter test plan's study steps on the days before it. Its migration is `supabase/migrations/0038_test_prep.sql` (after 0037); the plan is `docs/v1.3-homework.md` §38. One transaction; it refuses to run without 0037 ("The school's missing-assignment emails (migration 0037) aren't installed"), twice ("already installed"), on a database set back to 37 ("set back to 37"), or on one that isn't as 0037 left it (`private.school_apply`, `private.school_apply_v29`, `school_missing_by_email`, `assignments.is_test`, `people.language`).
+
+### Columns
+```sql
+alter table public.homework_kids add column test_prep_days int not null default 0 check (test_prep_days between 0 and 7);
+alter table public.assignments add column test_prep_at timestamptz;
+```
+- `homework_kids.test_prep_days int not null default 0` (0 to 7; 0 is off): how many days before a test the study starts. A parent changes it (a column grant; the policy decides who).
+- `assignments.test_prep_at timestamptz`: when the study steps were put on; set once, so the test is never planned again.
+
+### Functions
+- `private.test_prep(p_kid uuid) returns int` (no API role). With his homework on and `test_prep_days` above 0: for each open assignment of kind `'assignment'` that `is_test`, due after today, with no `test_prep_at` and no step other than a turn-in and none done, puts the five study steps (`source 'template'`, written by "Home Hub", each `least(minutes, focus_minutes)`) on the days from `greatest(today, due − test_prep_days)` (tomorrow from 18:00 local) to `due − 1`, step i on `first + i × days / 5`; keeps the turn-in there (moved to position 6) or adds the starter's on the due date; sets `test_prep_at`, `plan_rev + 1` and, if not yet given, `given_at`/`given_by` ("Home Hub"). English or Spanish by `people.language`. Answers how many tests it planned. A test whose days are all past is left unmarked.
+- `private.school_apply(p_feed uuid) returns int`: 0030's (moved to `private.school_apply_v37`, unchanged), then `private.test_prep` for the feed's kid, so the hourly read plans what came in.
+- `private.homework_kids_test_prep()` (a definer, the trigger `homework_kids_test_prep` after update of `test_prep_days`): a change to a value above 0 runs `private.test_prep` at once.
+- `hub_schema_version()` returns 38.
+
+### Going live
+The site first (the Homework page shows the row only on 38), then 0038, then a parent sets the days. No Edge Function and no `cron.sql` change. Undoing it isn't needed (set the days to 0; steps already put on stay, as any plan). If wanted, as the migration's header writes it out: drop the trigger, its function, `private.school_apply` and `private.test_prep`, rename `private.school_apply_v37` back, drop the two columns, then 0037's `hub_schema_version()`.

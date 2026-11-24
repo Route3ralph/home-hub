@@ -34,7 +34,7 @@ create function pg_temp.mark(p_id text, p_mark text, p_grade text) returns void 
 $$;
 grant execute on function pg_temp.mark(text, text, text) to authenticated;
 
-select test.is(hub_schema_version(), 37, 'hub_schema_version is 37');
+select test.is(hub_schema_version(), 38, 'hub_schema_version is 38');
 
 :as_admin
 select save_homework_kid(test.person('Taylor'), true);
