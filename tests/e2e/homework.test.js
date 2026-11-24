@@ -2895,6 +2895,45 @@ const emailOf = (req) => {
     await page.context().close();
   }
 
+  // =====================================================================
+  // 21. Study before tests (schema 38, 0038; docs/v1.3-homework.md §38.2): a Switches row says whether it's on and how
+  // many days; a parent's Change picks Off or 2 to 5 days and saves test_prep_days. None on 37.
+  // =====================================================================
+  {
+    const LATER = { routine_status: () => ({ points: 0, sections: [], today: null }), can_coach: () => false };
+    const RPC38 = Object.assign({}, RPC8, LATER, { hub_schema_version: () => 38, task_week: homeworkRpc.task_week });
+    const RPC37t = Object.assign({}, RPC38, { hub_schema_version: () => 37 });
+    const tdb = (v38) => {
+      const d = withCoach(withSchoolCheck(fullDb()));
+      d.clarity32 = true;
+      d.starts34 = { week: {} };
+      d.tutor_summary_log = [];
+      d.marks36 = true;
+      d.homework_kids.forEach((k) => Object.assign(k, { pts_start: 5, pts_missing: 10, pts_low_grade: 5, grade_floor: 75, pts_high_grade: 10, grade_top: 90, pts_mark_week: 50 }));
+      if (v38) { d.prep38 = true; d.homework_kids.forEach((k) => { k.test_prep_days = 0; }); }
+      return d;
+    };
+    ({ page, db } = await open({ label: 'prep-38', db: tdb(true), rpc: RPC38 }));
+    await page.waitForSelector('[data-row="test-prep"]');
+    check('schema 38: a "Study before tests" row under Switches, off', /Study before tests/.test(await tc(page, '[data-row="test-prep"]'))
+      && /Now: Off\./.test(await tc(page, '[data-row="test-prep"]')), await tc(page, '[data-row="test-prep"]'));
+    check('... it says a plan someone wrote is never changed', /A plan someone wrote is never changed/.test(await tc(page, '[data-row="test-prep"]')));
+    await page.click('[data-row="test-prep"] [data-act="test-prep"]');
+    await page.waitForSelector('#formDialog[open] select[name="days"]');
+    const opts = await page.$$eval('#formDialog select[name="days"] option', (xs) => xs.map((x) => `${x.value}:${x.textContent}`).join(','));
+    check('... Change offers Off and 2 to 5 days', opts === '0:Off,2:2 days before,3:3 days before,4:4 days before,5:5 days before', opts);
+    await page.selectOption('#formDialog select[name="days"]', '3');
+    await page.click('#formDialog [type="submit"]');
+    await settle(page);
+    check('... Save writes test_prep_days 3', db.homework_kids.find((x) => x.kid_id === ID.jordan).test_prep_days === 3, JSON.stringify(db.homework_kids.find((x) => x.kid_id === ID.jordan)));
+    check('... and the row says so', /Now: 3 days before each test\./.test(await tc(page, '[data-row="test-prep"]')), await tc(page, '[data-row="test-prep"]'));
+    await page.context().close();
+    ({ page, db } = await open({ label: 'prep-37', db: tdb(false), rpc: RPC37t }));
+    await page.waitForSelector('[data-row="portal"]');
+    check('schema 37: no Study before tests row', !(await page.$('[data-row="test-prep"]')));
+    await page.context().close();
+  }
+
   console.log(results.join('\n'));
   console.log(`\n${results.filter((r) => r.startsWith('PASS')).length}/${results.length} passed`);
   console.log('PAGE ERRORS:', errors.length ? '\n' + errors.join('\n') : 'none');

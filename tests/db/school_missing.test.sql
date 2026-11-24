@@ -24,7 +24,7 @@ create function pg_temp.got(r jsonb) returns text language sql immutable as $$
 $$;
 grant execute on function pg_temp.got(jsonb) to service_role;
 
-select test.is(hub_schema_version(), 37, 'hub_schema_version is 37');
+select test.is(hub_schema_version(), 38, 'hub_schema_version is 38');
 select test.is((select string_agg(r || ':' || has_function_privilege(r, 'public.school_missing_by_email(text, text, date, text)', 'execute'), ',' order by r)
                 from unnest(array['anon', 'authenticated', 'service_role']) r),
                'anon:false,authenticated:false,service_role:true', 'school_missing_by_email: service_role only');
