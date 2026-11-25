@@ -236,7 +236,7 @@ else report "FAIL  migration 0007 stamps the tasks and events already there  (${
 # at 0006): each says why, and changes nothing.
 # (hub_again is a copy of a fresh install, at 22 since 0022.)
 out=$(quiet -d hub_again -f supabase/migrations/0008_school_check.sql 2>&1)
-if [[ $out == *"already installed"* ]] && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 38 ]]; then
+if [[ $out == *"already installed"* ]] && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 39 ]]; then
   report "PASS  migration 0008 refuses to run twice"
 else report "FAIL  migration 0008 refuses to run twice  (${out:0:200})"; fi
 out=$(quiet -d hub_v1_again -f supabase/migrations/0008_school_check.sql 2>&1)
@@ -393,7 +393,7 @@ else report "FAIL  same status card: 0008 changes only the check  (${out:0:150};
 # without 0008 (at 0006 and at 0007), and on a database at 0008 that isn't as 0008 left it: each says why, and
 # changes nothing.
 out=$(quiet -d hub_again -f supabase/migrations/0009_school_keys.sql 2>&1)
-if [[ $out == *"already installed"* ]] && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 38 ]]; then
+if [[ $out == *"already installed"* ]] && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 39 ]]; then
   report "PASS  migration 0009 refuses to run twice"
 else report "FAIL  migration 0009 refuses to run twice  (${out:0:200})"; fi
 out=$(quiet -d hub_v1_again -f supabase/migrations/0009_school_keys.sql 2>&1)
@@ -698,8 +698,8 @@ else report "FAIL  0009 pasted while he taps Plan with Pat on a copy  (0009: ${o
 # included): each says why, and changes nothing.
 m10=supabase/migrations/0010_hearth_people.sql
 out=$(quiet -d hub_again -f $m10 2>&1)
-if [[ $out == *"Hearth people (migration 0010) is already installed (hub_schema_version() is 38)"* ]] \
-   && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 38 ]]; then
+if [[ $out == *"Hearth people (migration 0010) is already installed (hub_schema_version() is 39)"* ]] \
+   && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 39 ]]; then
   report "PASS  migration 0010 refuses to run twice"
 else report "FAIL  migration 0010 refuses to run twice  (${out:0:200})"; fi
 out=$(quiet -d hub_v1_again -f $m10 2>&1)
@@ -1018,8 +1018,8 @@ else report "FAIL  migration 0010's undo  (undo: ${undo:0:150} ${undo_g:0:150}; 
 # a database set back to 10, and on a database at 0010 that isn't as 0010 left it: each says why, and changes nothing.
 m11=supabase/migrations/0011_project_guests.sql
 out=$(quiet -d hub_again -f $m11 2>&1)
-if [[ $out == *"Project guests (migration 0011) is already installed (hub_schema_version() is 38). Nothing was changed."* ]] \
-   && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 38 ]]; then
+if [[ $out == *"Project guests (migration 0011) is already installed (hub_schema_version() is 39). Nothing was changed."* ]] \
+   && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 39 ]]; then
   report "PASS  migration 0011 refuses to run twice"
 else report "FAIL  migration 0011 refuses to run twice  (${out:0:200})"; fi
 out=$(quiet -d hub_v1_again -f $m11 2>&1)
@@ -1099,8 +1099,8 @@ else report "FAIL  migration 0011's undo  (undo: ${undo:0:200}; then: $got_undo;
 # on a database set back to 11, and on a database at 0011 that isn't as 0011 left it: each says why, and changes nothing.
 m12=supabase/migrations/0012_coach_rewards.sql
 out=$(quiet -d hub_again -f $m12 2>&1)
-if [[ $out == *"The coach's rewards (migration 0012) is already installed (hub_schema_version() is 38). Nothing was changed."* ]] \
-   && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 38 ]]; then
+if [[ $out == *"The coach's rewards (migration 0012) is already installed (hub_schema_version() is 39). Nothing was changed."* ]] \
+   && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 39 ]]; then
   report "PASS  migration 0012 refuses to run twice"
 else report "FAIL  migration 0012 refuses to run twice  (${out:0:200})"; fi
 out=$(quiet -d hub_v1_again -f $m12 2>&1)
@@ -1164,8 +1164,8 @@ else report "FAIL  migration 0012's undo  (undo: ${undo:0:200}; then: $got_undo;
 # a database as at 0012 (hub_12), and 0013 then runs again, as on a fresh install.
 m13=supabase/migrations/0013_recipes.sql
 out=$(quiet -d hub_again -f $m13 2>&1)
-if [[ $out == *"Recipes (migration 0013) is already installed (hub_schema_version() is 38). Nothing was changed."* ]] \
-   && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 38 ]]; then
+if [[ $out == *"Recipes (migration 0013) is already installed (hub_schema_version() is 39). Nothing was changed."* ]] \
+   && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 39 ]]; then
   report "PASS  migration 0013 refuses to run twice"
 else report "FAIL  migration 0013 refuses to run twice  (${out:0:200})"; fi
 out=$(quiet -d hub_v1_again -f $m13 2>&1)
@@ -1220,8 +1220,8 @@ else report "FAIL  migration 0013's undo  (undo: ${undo:0:200}; then: $got_undo;
 # Its undo leaves a database as at 0013 (hub_13), and 0014 then runs again, as on a fresh install.
 m14=supabase/migrations/0014_day_language.sql
 out=$(quiet -d hub_again -f $m14 2>&1)
-if [[ $out == *"My day's language switch (migration 0014) is already installed (hub_schema_version() is 38). Nothing was changed."* ]] \
-   && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 38 ]]; then
+if [[ $out == *"My day's language switch (migration 0014) is already installed (hub_schema_version() is 39). Nothing was changed."* ]] \
+   && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 39 ]]; then
   report "PASS  migration 0014 refuses to run twice"
 else report "FAIL  migration 0014 refuses to run twice  (${out:0:200})"; fi
 out=$(quiet -d hub_v1_again -f $m14 2>&1)
@@ -1280,8 +1280,8 @@ else report "FAIL  migration 0014's undo  (undo: ${undo:0:200}; then: $got_undo;
 # (tests/db/school_assigned.test.sql).
 m15=supabase/migrations/0015_school_assigned_dates.sql
 out=$(quiet -d hub_again -f $m15 2>&1)
-if [[ $out == *"The school's assigned dates (migration 0015) are already installed (hub_schema_version() is 38). Nothing was changed."* ]] \
-   && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 38 ]]; then
+if [[ $out == *"The school's assigned dates (migration 0015) are already installed (hub_schema_version() is 39). Nothing was changed."* ]] \
+   && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 39 ]]; then
   report "PASS  migration 0015 refuses to run twice"
 else report "FAIL  migration 0015 refuses to run twice  (${out:0:200})"; fi
 out=$(quiet -d hub_v1_again -f $m15 2>&1)
@@ -1397,6 +1397,9 @@ out37=$(quiet -d hub_37_on36 -f $m37 2>&1)
 m38=supabase/migrations/0038_test_prep.sql
 sql -d postgres -c 'create database hub_38_on37 template hub_37_on36'
 out38=$(quiet -d hub_38_on37 -f $m38 2>&1)
+m39=supabase/migrations/0039_paste_grades.sql
+sql -d postgres -c 'create database hub_39_on38 template hub_38_on37'
+out39=$(quiet -d hub_39_on38 -f $m39 2>&1)
 if [[ -z $out && $(quiet -d hub_15 -A -t -c "select public.hub_schema_version()") == 15 && -z $out16 && $(quiet -d hub_16_on15 -A -t -c "select public.hub_schema_version()") == 16 \
       && -z $out17 && $(quiet -d hub_17_on16 -A -t -c "select public.hub_schema_version()") == 17 \
       && -z $out18 && $(quiet -d hub_18_on17 -A -t -c "select public.hub_schema_version()") == 18 \
@@ -1419,18 +1422,19 @@ if [[ -z $out && $(quiet -d hub_15 -A -t -c "select public.hub_schema_version()"
       && -z $out35 && $(quiet -d hub_35_on34 -A -t -c "select public.hub_schema_version()") == 35 \
       && -z $out36 && $(quiet -d hub_36_on35 -A -t -c "select public.hub_schema_version()") == 36 \
       && -z $out37 && $(quiet -d hub_37_on36 -A -t -c "select public.hub_schema_version()") == 37 \
-      && -z $out38 && $(catalog_of hub_38_on37) == "$(catalog_of hub)" && $(columns_of hub_38_on37) == "$(columns_of hub)" && $(policies_of hub_38_on37) == "$(policies_of hub)" ]] \
+      && -z $out38 && $(quiet -d hub_38_on37 -A -t -c "select public.hub_schema_version()") == 38 \
+      && -z $out39 && $(catalog_of hub_39_on38) == "$(catalog_of hub)" && $(columns_of hub_39_on38) == "$(columns_of hub)" && $(policies_of hub_39_on38) == "$(policies_of hub)" ]] \
    && [[ -z $(quiet -d hub_15 -A -t -c "select coalesce(to_regprocedure('public.school_item_action(uuid, text)')::text, '') || coalesce(to_regprocedure('public.school_item_by_token(text, uuid, text, int)')::text, '') || coalesce(to_regprocedure('private.school_assignment(uuid, text)')::text, '')") ]]; then
-  report "PASS  migration 0015 on a database at 0014: schema 15 (the old signatures of school_item_action, school_item_by_token and school_assignment gone), then 0016 (schema 16), 0017 (schema 17), 0018 (schema 18), 0019 (schema 19), 0020 (schema 20), 0021 (schema 21), 0022 (schema 22), 0023 (schema 23), 0024 (schema 24), 0025 (schema 25), 0026 (schema 26), 0027 (schema 27), 0028 (schema 28), 0029 (schema 29), 0030 (schema 30), 0031 (schema 31), 0032 (schema 32), 0033 (schema 33), 0034 (schema 34), 0035 (schema 35), 0036 (schema 36), 0037 (schema 37), and with 0038 as on a fresh install"
-else report "FAIL  migration 0015 on a database at 0014  (${out:0:200}; 0016: ${out16:0:200}; 0017: ${out17:0:200}; 0018: ${out18:0:200}; 0019: ${out19:0:200}; 0020: ${out20:0:200}; 0021: ${out21:0:200}; 0022: ${out22:0:200}; 0023: ${out23:0:200}; 0024: ${out24:0:200}; 0025: ${out25:0:200}; 0026: ${out26:0:200}; 0027: ${out27:0:200}; 0028: ${out28:0:200}; 0029: ${out29:0:200}; 0030: ${out30:0:200}; 0031: ${out31:0:200}; 0032: ${out32:0:200}; 0033: ${out33:0:200}; 0034: ${out34:0:200}; 0035: ${out35:0:200}; 0036: ${out36:0:200}; 0037: ${out37:0:200}; 0038: ${out38:0:200})"; fi
+  report "PASS  migration 0015 on a database at 0014: schema 15 (the old signatures of school_item_action, school_item_by_token and school_assignment gone), then 0016 (schema 16), 0017 (schema 17), 0018 (schema 18), 0019 (schema 19), 0020 (schema 20), 0021 (schema 21), 0022 (schema 22), 0023 (schema 23), 0024 (schema 24), 0025 (schema 25), 0026 (schema 26), 0027 (schema 27), 0028 (schema 28), 0029 (schema 29), 0030 (schema 30), 0031 (schema 31), 0032 (schema 32), 0033 (schema 33), 0034 (schema 34), 0035 (schema 35), 0036 (schema 36), 0037 (schema 37), 0038 (schema 38), and with 0039 as on a fresh install"
+else report "FAIL  migration 0015 on a database at 0014  (${out:0:200}; 0016: ${out16:0:200}; 0017: ${out17:0:200}; 0018: ${out18:0:200}; 0019: ${out19:0:200}; 0020: ${out20:0:200}; 0021: ${out21:0:200}; 0022: ${out22:0:200}; 0023: ${out23:0:200}; 0024: ${out24:0:200}; 0025: ${out25:0:200}; 0026: ${out26:0:200}; 0027: ${out27:0:200}; 0028: ${out28:0:200}; 0029: ${out29:0:200}; 0030: ${out30:0:200}; 0031: ${out31:0:200}; 0032: ${out32:0:200}; 0033: ${out33:0:200}; 0034: ${out34:0:200}; 0035: ${out35:0:200}; 0036: ${out36:0:200}; 0037: ${out37:0:200}; 0038: ${out38:0:200}; 0039: ${out39:0:200})"; fi
 
 # 0016 (Change dates keeps the due dates of homework already added, docs/v1.3-homework.md §23.4) refuses to run twice,
 # on a v1 database, without 0015 (at 0014), on a database set back to 15, and on a database at 0015 that isn't as 0015
 # left it: each says why, and changes nothing. On a database at 0015 it applies (above: as a fresh install); what it
 # changes is in tests/db/school_redate.test.sql. Its undo gives a database at 0015 again, and 0016 runs again after it.
 out=$(quiet -d hub_again -f $m16 2>&1)
-if [[ $out == *"Change dates keeping due dates (migration 0016) is already installed (hub_schema_version() is 38). Nothing was changed."* ]] \
-   && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 38 ]]; then
+if [[ $out == *"Change dates keeping due dates (migration 0016) is already installed (hub_schema_version() is 39). Nothing was changed."* ]] \
+   && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 39 ]]; then
   report "PASS  migration 0016 refuses to run twice"
 else report "FAIL  migration 0016 refuses to run twice  (${out:0:200})"; fi
 out=$(quiet -d hub_v1_again -f $m16 2>&1)
@@ -1485,8 +1489,8 @@ else report "FAIL  migration 0016's undo  (undo: ${undo:0:200}; then: $got_undo;
 # with no Bring every answer is as on 16 (5b to 5e and 5g). Its undo, as the migration's header writes it out, gives a
 # database at 0016 again, and 0017 runs again after it.
 out=$(quiet -d hub_again -f $m17 2>&1)
-if [[ $out == *"Bring and the Tomorrow message (migration 0017) is already installed (hub_schema_version() is 38). Nothing was changed."* ]] \
-   && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 38 ]]; then
+if [[ $out == *"Bring and the Tomorrow message (migration 0017) is already installed (hub_schema_version() is 39). Nothing was changed."* ]] \
+   && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 39 ]]; then
   report "PASS  migration 0017 refuses to run twice"
 else report "FAIL  migration 0017 refuses to run twice  (${out:0:200})"; fi
 out=$(quiet -d hub_v1_again -f $m17 2>&1)
@@ -1564,8 +1568,8 @@ else report "FAIL  migration 0017's undo  (undo: ${undo:0:200}; then: $got_undo;
 # given more than 10 days ago that nobody added or hid, and nothing else. Its undo, as the migration's header writes it
 # out, gives a database at 0017 again (school_store's old signature and grants back), and 0018 runs again after it.
 out=$(quiet -d hub_again -f $m18 2>&1)
-if [[ $out == *"Keeping what the school gave (migration 0018) is already installed (hub_schema_version() is 38). Nothing was changed."* ]] \
-   && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 38 ]]; then
+if [[ $out == *"Keeping what the school gave (migration 0018) is already installed (hub_schema_version() is 39). Nothing was changed."* ]] \
+   && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 39 ]]; then
   report "PASS  migration 0018 refuses to run twice"
 else report "FAIL  migration 0018 refuses to run twice  (${out:0:200})"; fi
 out=$(quiet -d hub_v1_again -f $m18 2>&1)
@@ -1647,8 +1651,8 @@ else report "FAIL  migration 0018's undo  (undo: ${undo:0:200}; then: $got_undo;
 # the migration's header writes it out, gives a database at 0018 again (the routine points paid gone with it), and 0019
 # runs again after it.
 out=$(quiet -d hub_again -f $m19 2>&1)
-if [[ $out == *"The routine (migration 0019) is already installed (hub_schema_version() is 38). Nothing was changed."* ]] \
-   && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 38 ]]; then
+if [[ $out == *"The routine (migration 0019) is already installed (hub_schema_version() is 39). Nothing was changed."* ]] \
+   && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 39 ]]; then
   report "PASS  migration 0019 refuses to run twice"
 else report "FAIL  migration 0019 refuses to run twice  (${out:0:200})"; fi
 out=$(quiet -d hub_v1_again -f $m19 2>&1)
@@ -1716,8 +1720,8 @@ else report "FAIL  migration 0019's undo  (undo: ${undo:0:200}; then: $got_undo;
 # the migration's header writes it out, gives a database at 0019 again (the board's link gone), and 0020 runs again
 # after it.
 out=$(quiet -d hub_again -f $m20 2>&1)
-if [[ $out == *"The family board (migration 0020) is already installed (hub_schema_version() is 38). Nothing was changed."* ]] \
-   && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 38 ]]; then
+if [[ $out == *"The family board (migration 0020) is already installed (hub_schema_version() is 39). Nothing was changed."* ]] \
+   && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 39 ]]; then
   report "PASS  migration 0020 refuses to run twice"
 else report "FAIL  migration 0020 refuses to run twice  (${out:0:200})"; fi
 out=$(quiet -d hub_v1_again -f $m20 2>&1)
@@ -1775,8 +1779,8 @@ else report "FAIL  migration 0020's undo  (undo: ${undo:0:200}; then: $got_undo;
 # install); what it changes is in tests/db/coach_adult.test.sql. Its undo, as the migration's header writes it out,
 # gives a database at 0020 again, every function body exactly as 0020 left it, and 0021 runs again after it.
 out=$(quiet -d hub_again -f $m21 2>&1)
-if [[ $out == *"The coach (migration 0021) is already installed (hub_schema_version() is 38). Nothing was changed."* ]] \
-   && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 38 ]]; then
+if [[ $out == *"The coach (migration 0021) is already installed (hub_schema_version() is 39). Nothing was changed."* ]] \
+   && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 39 ]]; then
   report "PASS  migration 0021 refuses to run twice"
 else report "FAIL  migration 0021 refuses to run twice  (${out:0:200})"; fi
 out=$(quiet -d hub_v1_again -f $m21 2>&1)
@@ -1843,8 +1847,8 @@ else report "FAIL  migration 0021's undo  (undo: ${undo:0:200}; then: $got_undo;
 # a database at 0021 it applies (above: as a fresh install); what it adds is in tests/db/watch.test.sql. Its undo, as
 # the migration's header writes it out, gives a database at 0021 again (the list gone), and 0022 runs again after it.
 out=$(quiet -d hub_again -f $m22 2>&1)
-if [[ $out == *"The watch list (migration 0022) is already installed (hub_schema_version() is 38). Nothing was changed."* ]] \
-   && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 38 ]]; then
+if [[ $out == *"The watch list (migration 0022) is already installed (hub_schema_version() is 39). Nothing was changed."* ]] \
+   && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 39 ]]; then
   report "PASS  migration 0022 refuses to run twice"
 else report "FAIL  migration 0022 refuses to run twice  (${out:0:200})"; fi
 out=$(quiet -d hub_v1_again -f $m22 2>&1)
@@ -1902,8 +1906,8 @@ else report "FAIL  migration 0022's undo  (undo: ${undo:0:200}; then: $got_undo;
 # a database at 0022 it applies (above: as a fresh install); what it adds is in tests/db/school_marks.test.sql. Its undo,
 # as the migration's header writes it out, gives a database at 0022 again (the marks gone), and 0023 runs again after it.
 out=$(quiet -d hub_again -f $m23 2>&1)
-if [[ $out == *"Missing and Graded (migration 0023) are already installed (hub_schema_version() is 38). Nothing was changed."* ]] \
-   && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 38 ]]; then
+if [[ $out == *"Missing and Graded (migration 0023) are already installed (hub_schema_version() is 39). Nothing was changed."* ]] \
+   && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 39 ]]; then
   report "PASS  migration 0023 refuses to run twice"
 else report "FAIL  migration 0023 refuses to run twice  (${out:0:200})"; fi
 out=$(quiet -d hub_v1_again -f $m23 2>&1)
@@ -1958,8 +1962,8 @@ else report "FAIL  migration 0023's undo  (undo: ${undo:0:200}; then: $got_undo;
 # a database at 0023 it applies (above: as a fresh install); what it adds is in tests/db/selections.test.sql. Its undo,
 # as the migration's header writes it out, gives a database at 0023 again (the list gone), and 0024 runs again after it.
 out=$(quiet -d hub_again -f $m24 2>&1)
-if [[ $out == *"Selections (migration 0024) are already installed (hub_schema_version() is 38). Nothing was changed."* ]] \
-   && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 38 ]]; then
+if [[ $out == *"Selections (migration 0024) are already installed (hub_schema_version() is 39). Nothing was changed."* ]] \
+   && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 39 ]]; then
   report "PASS  migration 0024 refuses to run twice"
 else report "FAIL  migration 0024 refuses to run twice  (${out:0:200})"; fi
 out=$(quiet -d hub_v1_again -f $m24 2>&1)
@@ -2016,8 +2020,8 @@ else report "FAIL  migration 0024's undo  (undo: ${undo:0:200}; then: $got_undo;
 # the migration's header writes it out, gives a database at 0024 again (the settings and the sent log gone), and 0025
 # runs again after it.
 out=$(quiet -d hub_again -f $m25 2>&1)
-if [[ $out == *"The Sunday sheets (migration 0025) are already installed (hub_schema_version() is 38). Nothing was changed."* ]] \
-   && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 38 ]]; then
+if [[ $out == *"The Sunday sheets (migration 0025) are already installed (hub_schema_version() is 39). Nothing was changed."* ]] \
+   && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 39 ]]; then
   report "PASS  migration 0025 refuses to run twice"
 else report "FAIL  migration 0025 refuses to run twice  (${out:0:200})"; fi
 out=$(quiet -d hub_v1_again -f $m25 2>&1)
@@ -2077,8 +2081,8 @@ else report "FAIL  migration 0025's undo  (undo: ${undo:0:200}; then: $got_undo;
 # On a database at 0025 it applies (above: as a fresh install); what it adds is in tests/db/counts.test.sql. Its undo,
 # as the migration's header writes it out, gives a database at 0025 again (the counts gone), and 0026 runs again after it.
 out=$(quiet -d hub_again -f $m26 2>&1)
-if [[ $out == *"Homework counts (migration 0026) are already installed (hub_schema_version() is 38). Nothing was changed."* ]] \
-   && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 38 ]]; then
+if [[ $out == *"Homework counts (migration 0026) are already installed (hub_schema_version() is 39). Nothing was changed."* ]] \
+   && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 39 ]]; then
   report "PASS  migration 0026 refuses to run twice"
 else report "FAIL  migration 0026 refuses to run twice  (${out:0:200})"; fi
 out=$(quiet -d hub_v1_again -f $m26 2>&1)
@@ -2139,8 +2143,8 @@ else report "FAIL  migration 0026's undo  (undo: ${undo:0:200}; then: $got_undo;
 # what it adds is in tests/db/task_calendar.test.sql. Its undo, as the migration's header writes it out, gives a
 # database at 0026 again, and 0027 runs again after it.
 out=$(quiet -d hub_again -f $m27 2>&1)
-if [[ $out == *"Tasks on the calendar (migration 0027) are already installed (hub_schema_version() is 38). Nothing was changed."* ]] \
-   && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 38 ]]; then
+if [[ $out == *"Tasks on the calendar (migration 0027) are already installed (hub_schema_version() is 39). Nothing was changed."* ]] \
+   && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 39 ]]; then
   report "PASS  migration 0027 refuses to run twice"
 else report "FAIL  migration 0027 refuses to run twice  (${out:0:200})"; fi
 out=$(quiet -d hub_v1_again -f $m27 2>&1)
@@ -2201,8 +2205,8 @@ else report "FAIL  migration 0027's undo  (undo: ${undo:0:200}; then: $got_undo;
 # undo, as the migration's header writes it out, gives a database at 0027 again (any points taken gone), and 0028 runs
 # again after it.
 out=$(quiet -d hub_again -f $m28 2>&1)
-if [[ $out == *"Take points (migration 0028) is already installed (hub_schema_version() is 38). Nothing was changed."* ]] \
-   && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 38 ]]; then
+if [[ $out == *"Take points (migration 0028) is already installed (hub_schema_version() is 39). Nothing was changed."* ]] \
+   && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 39 ]]; then
   report "PASS  migration 0028 refuses to run twice"
 else report "FAIL  migration 0028 refuses to run twice  (${out:0:200})"; fi
 out=$(quiet -d hub_v1_again -f $m28 2>&1)
@@ -2263,8 +2267,8 @@ else report "FAIL  migration 0028's undo  (undo: ${undo:0:200}; then: $got_undo;
 # undo, as the migration's header writes it out, gives a database at 0028 again (any 'due' rows gone), and 0029 runs
 # again after it.
 out=$(quiet -d hub_again -f $m29 2>&1)
-if [[ $out == *"Due tomorrow (migration 0029) is already installed (hub_schema_version() is 38). Nothing was changed."* ]] \
-   && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 38 ]]; then
+if [[ $out == *"Due tomorrow (migration 0029) is already installed (hub_schema_version() is 39). Nothing was changed."* ]] \
+   && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 39 ]]; then
   report "PASS  migration 0029 refuses to run twice"
 else report "FAIL  migration 0029 refuses to run twice  (${out:0:200})"; fi
 out=$(quiet -d hub_v1_again -f $m29 2>&1)
@@ -2325,8 +2329,8 @@ else report "FAIL  migration 0029's undo  (undo: ${undo:0:200}; then: $got_undo;
 # tests/db/school_auto.test.sql. Its undo, as the migration's header writes it out, gives a database at 0029 again
 # (school_apply and school_feed_status as 0029 left them), and 0030 runs again after it.
 out=$(quiet -d hub_again -f $m30 2>&1)
-if [[ $out == *"Adding school items automatically (migration 0030) is already installed (hub_schema_version() is 38). Nothing was changed."* ]] \
-   && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 38 ]]; then
+if [[ $out == *"Adding school items automatically (migration 0030) is already installed (hub_schema_version() is 39). Nothing was changed."* ]] \
+   && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 39 ]]; then
   report "PASS  migration 0030 refuses to run twice"
 else report "FAIL  migration 0030 refuses to run twice  (${out:0:200})"; fi
 out=$(quiet -d hub_v1_again -f $m30 2>&1)
@@ -2385,8 +2389,8 @@ else report "FAIL  migration 0030's undo  (undo: ${undo:0:200}; then: $got_undo;
 # database at 0030 it applies (above: as a fresh install); what it adds is in tests/db/push.test.sql. Its undo, as the
 # migration's header writes it out, gives a database at 0030 again (the reminders' log rows gone), and 0031 runs again.
 out=$(quiet -d hub_again -f $m31 2>&1)
-if [[ $out == *"Phone reminders (migration 0031) are already installed (hub_schema_version() is 38). Nothing was changed."* ]] \
-   && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 38 ]]; then
+if [[ $out == *"Phone reminders (migration 0031) are already installed (hub_schema_version() is 39). Nothing was changed."* ]] \
+   && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 39 ]]; then
   report "PASS  migration 0031 refuses to run twice"
 else report "FAIL  migration 0031 refuses to run twice  (${out:0:200})"; fi
 out=$(quiet -d hub_v1_again -f $m31 2>&1)
@@ -2447,8 +2451,8 @@ else report "FAIL  migration 0031's undo  (undo: ${undo:0:200}; then: $got_undo;
 # why, and changes nothing. On a database at 0031 it applies (above); what it adds is in tests/db/school_clarity.test.sql.
 # Its undo, as the migration's header writes it out, gives a database at 0031 again, and 0032 runs again.
 out=$(quiet -d hub_again -f $m32 2>&1)
-if [[ $out == *"What to do and Check the portal (migration 0032) are already installed (hub_schema_version() is 38). Nothing was changed."* ]] \
-   && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 38 ]]; then
+if [[ $out == *"What to do and Check the portal (migration 0032) are already installed (hub_schema_version() is 39). Nothing was changed."* ]] \
+   && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 39 ]]; then
   report "PASS  migration 0032 refuses to run twice"
 else report "FAIL  migration 0032 refuses to run twice  (${out:0:200})"; fi
 out=$(quiet -d hub_v1_again -f $m32 2>&1)
@@ -2508,8 +2512,8 @@ else report "FAIL  migration 0032's undo  (undo: ${undo:0:200}; then: $got_undo;
 # tests/db/tutor_take.test.sql. Its undo, as the migration's header writes it out (with its grant line), gives a
 # database at 0032 again, the tutor link's function callable as before, and 0033 runs again.
 out=$(quiet -d hub_again -f $m33 2>&1)
-if [[ $out == *"Take points on the tutor link (migration 0033) is already installed (hub_schema_version() is 38). Nothing was changed."* ]] \
-   && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 38 ]]; then
+if [[ $out == *"Take points on the tutor link (migration 0033) is already installed (hub_schema_version() is 39). Nothing was changed."* ]] \
+   && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 39 ]]; then
   report "PASS  migration 0033 refuses to run twice"
 else report "FAIL  migration 0033 refuses to run twice  (${out:0:200})"; fi
 out=$(quiet -d hub_v1_again -f $m33 2>&1)
@@ -2569,8 +2573,8 @@ else report "FAIL  migration 0033's undo  (undo: ${undo:0:200}; then: $got_undo;
 # tests/db/task_starts.test.sql. Its undo, as the migration's header writes it out (with its grant line), gives a
 # database at 0033 again, My day's function callable as before, and 0034 runs again.
 out=$(quiet -d hub_again -f $m34 2>&1)
-if [[ $out == *"Nudge and Start (migration 0034) are already installed (hub_schema_version() is 38). Nothing was changed."* ]] \
-   && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 38 ]]; then
+if [[ $out == *"Nudge and Start (migration 0034) are already installed (hub_schema_version() is 39). Nothing was changed."* ]] \
+   && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 39 ]]; then
   report "PASS  migration 0034 refuses to run twice"
 else report "FAIL  migration 0034 refuses to run twice  (${out:0:200})"; fi
 out=$(quiet -d hub_v1_again -f $m34 2>&1)
@@ -2630,8 +2634,8 @@ else report "FAIL  migration 0034's undo  (undo: ${undo:0:200}; then: $got_undo;
 # tests/db/tutor_summary.test.sql. Its undo, as the migration's header writes it out, gives a database at 0034 again, and
 # 0035 runs again.
 out=$(quiet -d hub_again -f $m35 2>&1)
-if [[ $out == *"The Sunday summary (migration 0035) is already installed (hub_schema_version() is 38). Nothing was changed."* ]] \
-   && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 38 ]]; then
+if [[ $out == *"The Sunday summary (migration 0035) is already installed (hub_schema_version() is 39). Nothing was changed."* ]] \
+   && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 39 ]]; then
   report "PASS  migration 0035 refuses to run twice"
 else report "FAIL  migration 0035 refuses to run twice  (${out:0:200})"; fi
 out=$(quiet -d hub_v1_again -f $m35 2>&1)
@@ -2690,8 +2694,8 @@ else report "FAIL  migration 0035's undo  (undo: ${undo:0:200}; then: $got_undo;
 # tests/db/mark_points.test.sql. Its undo, as the migration's header writes it out, gives a database at 0035 again, and
 # 0036 runs again.
 out=$(quiet -d hub_again -f $m36 2>&1)
-if [[ $out == *"Points from the school's marks (migration 0036) are already installed (hub_schema_version() is 38). Nothing was changed."* ]] \
-   && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 38 ]]; then
+if [[ $out == *"Points from the school's marks (migration 0036) are already installed (hub_schema_version() is 39). Nothing was changed."* ]] \
+   && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 39 ]]; then
   report "PASS  migration 0036 refuses to run twice"
 else report "FAIL  migration 0036 refuses to run twice  (${out:0:200})"; fi
 out=$(quiet -d hub_v1_again -f $m36 2>&1)
@@ -2748,8 +2752,8 @@ else report "FAIL  migration 0036's undo  (undo: ${undo:0:200}; then: $got_undo;
 # why, and changes nothing. What it adds is in tests/db/school_missing.test.sql. Its undo, as the header writes it out
 # (its drop line, 0036's mark_points and hub_schema_version), gives a database at 0036 again, and 0037 runs again.
 out=$(quiet -d hub_again -f $m37 2>&1)
-if [[ $out == *"The school's missing-assignment emails (migration 0037) are already installed (hub_schema_version() is 38). Nothing was changed."* ]] \
-   && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 38 ]]; then
+if [[ $out == *"The school's missing-assignment emails (migration 0037) are already installed (hub_schema_version() is 39). Nothing was changed."* ]] \
+   && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 39 ]]; then
   report "PASS  migration 0037 refuses to run twice"
 else report "FAIL  migration 0037 refuses to run twice  (${out:0:200})"; fi
 out=$(quiet -d hub_v1_again -f $m37 2>&1)
@@ -2805,8 +2809,8 @@ else report "FAIL  migration 0037's undo  (undo: ${undo:0:200}; then: $got_undo;
 # nothing. What it adds is in tests/db/test_prep.test.sql. Its undo, as the header writes it out (its drop, alter lines
 # and 0037's hub_schema_version), gives a database at 0037 again, and 0038 runs again.
 out=$(quiet -d hub_again -f $m38 2>&1)
-if [[ $out == *"Study before tests (migration 0038) is already installed (hub_schema_version() is 38). Nothing was changed."* ]] \
-   && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 38 ]]; then
+if [[ $out == *"Study before tests (migration 0038) is already installed (hub_schema_version() is 39). Nothing was changed."* ]] \
+   && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 39 ]]; then
   report "PASS  migration 0038 refuses to run twice"
 else report "FAIL  migration 0038 refuses to run twice  (${out:0:200})"; fi
 out=$(quiet -d hub_v1_again -f $m38 2>&1)
@@ -2849,11 +2853,69 @@ sql -d postgres -c 'create database hub_undo_38 template hub_38_on37'
 undo=$(quiet -d hub_undo_38 -f "$dir/undo_0038.sql" 2>&1)
 got_undo="$(quiet -d hub_undo_38 -A -t -c "select public.hub_schema_version()" 2>&1) $([[ $(catalog_of hub_undo_38) == "$(catalog_of hub_37_on36)" && $(columns_of hub_undo_38) == "$(columns_of hub_37_on36)" && $(policies_of hub_undo_38) == "$(policies_of hub_37_on36)" ]] && echo same-as-0037)"
 out=$(quiet -d hub_undo_38 -f $m38 2>&1)
-got_again="$(quiet -d hub_undo_38 -A -t -c "select public.hub_schema_version()") $([[ $(catalog_of hub_undo_38) == "$(catalog_of hub)" && $(columns_of hub_undo_38) == "$(columns_of hub)" ]] && echo same-as-0038)"
+got_again="$(quiet -d hub_undo_38 -A -t -c "select public.hub_schema_version()") $([[ $(catalog_of hub_undo_38) == "$(catalog_of hub_38_on37)" && $(columns_of hub_undo_38) == "$(columns_of hub_38_on37)" ]] && echo same-as-0038)"
 if [[ $(grep -c '^drop \|^alter ' "$dir/undo_0038.sql") == 7 && $(grep -c '^create or replace function ' "$dir/undo_0038.sql") == 1 \
       && -z $undo && $got_undo == "37 same-as-0037" && -z $out && $got_again == "38 same-as-0038" ]]; then
-  report "PASS  migration 0038's undo (as its header says): as at 0037 (0030's school_apply back); then 0038 runs again, as on a fresh install"
+  report "PASS  migration 0038's undo (as its header says): as at 0037 (0030's school_apply back); then 0038 runs again, as at 0038"
 else report "FAIL  migration 0038's undo  (undo: ${undo:0:200}; then: $got_undo; again: ${out:0:150} $got_again)"; fi
+
+# 0039 (Paste grades and the weekly limit on grade bonuses, docs/v1.3-homework.md §40) refuses to run twice, on a v1
+# database, without 0038 (at 0037), on a database set back to 38, and on a database at 0038 that isn't as 0038 left
+# it: each says why, and changes nothing. What it adds is in tests/db/paste_grades.test.sql. Its undo, as the header
+# writes it out (its drop and alter lines, 0037's mark_points and 0038's hub_schema_version), gives a database at 0038
+# again, and 0039 runs again.
+out=$(quiet -d hub_again -f $m39 2>&1)
+if [[ $out == *"Paste grades (migration 0039) is already installed (hub_schema_version() is 39). Nothing was changed."* ]] \
+   && [[ $(quiet -d hub_again -A -t -c "select public.hub_schema_version()") == 39 ]]; then
+  report "PASS  migration 0039 refuses to run twice"
+else report "FAIL  migration 0039 refuses to run twice  (${out:0:200})"; fi
+out=$(quiet -d hub_v1_again -f $m39 2>&1)
+if [[ $out == *"Home Hub v2 (migration 0002) isn't installed. Run 0002 to 0038 first. Nothing was changed."* ]] \
+   && [[ -z $(quiet -d hub_v1_again -A -t -c "select to_regprocedure('public.hub_schema_version()')") ]]; then
+  report "PASS  migration 0039 refuses to run on a v1 database (0002 isn't installed), and changes nothing"
+else report "FAIL  migration 0039 refuses to run on a v1 database  (${out:0:200})"; fi
+sql -d postgres -c 'create database hub_37_again39 template hub_37_on36'
+before="$(catalog_of hub_37_again39) $(columns_of hub_37_again39)"
+out=$(quiet -d hub_37_again39 -f $m39 2>&1)
+if [[ $out == *"Study before tests (migration 0038) isn't installed (hub_schema_version() is 37). Run 0038_test_prep.sql first. Nothing was changed."* ]] \
+   && [[ "$(catalog_of hub_37_again39) $(columns_of hub_37_again39)" == "$before" && $(quiet -d hub_37_again39 -A -t -c "select public.hub_schema_version()") == 37 ]]; then
+  report "PASS  migration 0039 refuses to run without 0038 (a database at 0037), and changes nothing"
+else report "FAIL  migration 0039 refuses to run without 0038  (${out:0:200})"; fi
+sql -d postgres -c 'create database hub_set_back_38 template hub'
+quiet -d hub_set_back_38 -c "create or replace function public.hub_schema_version() returns int language sql immutable set search_path = '' as \$\$ select 38 \$\$" >/dev/null
+before="$(catalog_of hub_set_back_38) $(columns_of hub_set_back_38)"
+out=$(quiet -d hub_set_back_38 -f $m39 2>&1)
+if [[ $out == *"Paste grades (migration 0039) is already installed, but hub_schema_version() was set back to 38. To switch it on again, make hub_schema_version() return 39 (docs/v1.3-homework.md §40). Nothing was changed."* ]] \
+   && [[ "$(catalog_of hub_set_back_38) $(columns_of hub_set_back_38)" == "$before" && $(quiet -d hub_set_back_38 -A -t -c "select public.hub_schema_version()") == 38 ]]; then
+  report "PASS  migration 0039 on a database set back to 38: says so (\"set back to 38\"), and changes nothing"
+else report "FAIL  migration 0039 on a database set back to 38  (${out:0:200})"; fi
+n=0
+for broken in 'drop function private.test_prep(uuid) cascade' \
+              'drop trigger assignments_mark_points on public.assignments'; do
+  n=$((n + 1))
+  sql -d postgres -c "create database hub_38_shape$n template hub_38_on37"
+  quiet -d "hub_38_shape$n" -c "$broken" >/dev/null 2>&1
+  before="$(catalog_of "hub_38_shape$n") $(columns_of "hub_38_shape$n")"
+  out=$(quiet -d "hub_38_shape$n" -f $m39 2>&1)
+  if [[ $out == *"This database isn't as migration 0038 left it. Nothing was changed."* ]] && [[ "$(catalog_of "hub_38_shape$n") $(columns_of "hub_38_shape$n")" == "$before" ]] \
+     && [[ $(quiet -d "hub_38_shape$n" -A -t -c "select public.hub_schema_version()") == 38 ]]; then
+    report "PASS  migration 0039 refuses a database at 0038 not as 0038 left it (${broken:0:90}), and changes nothing"
+  else report "FAIL  migration 0039 refuses a database at 0038 not as 0038 left it (${broken:0:90})  (${out:0:200})"; fi
+done
+sql -d postgres -c 'create database hub_undo_39 template hub_39_on38'
+{ sed -n '/^-- Undo (not needed/,/^-- =====/p' $m39 | sed -n 's/^--   \(drop .*;\|delete .*;\|alter .*;\|grant .*;\)$/\1/p'
+  sed -n '/^create or replace function private.mark_points/,/^\$\$;/p' $m37
+  sed -n '/^create or replace function public.hub_schema_version()/,/^\$\$;/p' $m38
+} >"$dir/undo_0039.sql"
+undo=$(quiet -d hub_undo_39 -f "$dir/undo_0039.sql" 2>&1)
+fn37() { quiet -d "$1" -A -t -c "select md5(prosrc) from pg_proc where oid = 'private.mark_points(uuid)'::regprocedure"; }
+got_undo="$(quiet -d hub_undo_39 -A -t -c "select public.hub_schema_version()" 2>&1) $([[ $(catalog_of hub_undo_39) == "$(catalog_of hub_38_on37)" && $(columns_of hub_undo_39) == "$(columns_of hub_38_on37)" && $(fn37 hub_undo_39) == "$(fn37 hub_38_on37)" ]] && echo same-as-0038)"
+out=$(quiet -d hub_undo_39 -f $m39 2>&1)
+got_again="$(quiet -d hub_undo_39 -A -t -c "select public.hub_schema_version()") $([[ $(catalog_of hub_undo_39) == "$(catalog_of hub)" && $(columns_of hub_undo_39) == "$(columns_of hub)" && $(fn37 hub_undo_39) == "$(fn37 hub)" ]] && echo same-as-0039)"
+if [[ $(grep -c '^drop \|^alter ' "$dir/undo_0039.sql") == 3 && $(grep -c '^create or replace function ' "$dir/undo_0039.sql") == 2 \
+      && -z $undo && $got_undo == "38 same-as-0038" && -z $out && $got_again == "39 same-as-0039" ]]; then
+  report "PASS  migration 0039's undo (as its header says): as at 0038 (0037's mark_points back); then 0039 runs again, as on a fresh install"
+else report "FAIL  migration 0039's undo  (undo: ${undo:0:200}; then: $got_undo; again: ${out:0:150} $got_again)"; fi
 
 # 5. preflight.sql's promise, "nothing migration 0002 creates exists yet", covers everything the
 #    migration creates that a live database could already have under the same name (which would

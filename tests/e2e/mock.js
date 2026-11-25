@@ -2411,6 +2411,8 @@ function hwKidProblem(r) {
     if (b36) return hwCheck('homework_kids', `homework_kids_${b36}_check`);
     if (r.grade_floor >= r.grade_top) return hwCheck('homework_kids', 'homework_kids_grade_order');
   }
+  // 0039: the grade bonuses' weekly limit, 0 to 500.
+  if (r.pts_bonus_week !== undefined && !(Number.isInteger(r.pts_bonus_week) && r.pts_bonus_week >= 0 && r.pts_bonus_week <= 500)) return hwCheck('homework_kids', 'homework_kids_pts_bonus_week_check');
   // 0038: 0 to 7 days before a test.
   if (r.test_prep_days !== undefined && !(Number.isInteger(r.test_prep_days) && r.test_prep_days >= 0 && r.test_prep_days <= 7)) return hwCheck('homework_kids', 'homework_kids_test_prep_days_check');
   // 0032: at most 20 classes, 1 to 40 characters each.
@@ -2438,7 +2440,7 @@ function homeworkTables(db, table, method, body, member, rows) {
   try {
     if (method === 'GET') return { rows: ['tutor_links', 'ai_runs'].includes(table) && !admin ? [] : rows };
     if (table === 'homework_kids') {
-      if (method !== 'PATCH' || !only(HW_KID_UPDATE.concat(db.clarity32 ? ['portal_classes'] : [], db.starts34 ? ['pts_start'] : [], db.marks36 ? ['pts_missing', 'pts_low_grade', 'grade_floor', 'pts_high_grade', 'grade_top', 'pts_mark_week'] : [], db.prep38 ? ['test_prep_days'] : []))) return denied;   // 0032: portal_classes; 0034: pts_start; 0038: test_prep_days
+      if (method !== 'PATCH' || !only(HW_KID_UPDATE.concat(db.clarity32 ? ['portal_classes'] : [], db.starts34 ? ['pts_start'] : [], db.marks36 ? ['pts_missing', 'pts_low_grade', 'grade_floor', 'pts_high_grade', 'grade_top', 'pts_mark_week'] : [], db.prep38 ? ['test_prep_days'] : [], db.bonus39 ? ['pts_bonus_week'] : []))) return denied;   // 0032: portal_classes; 0034: pts_start; 0038: test_prep_days; 0039: pts_bonus_week
       if (!admin) return { status: 200, rows: [] };
       const next = rows.map((r) => Object.assign({}, r, body, { updated_at: foodStamp(db), updated_by: email }));
       next.forEach((n) => { const bad = hwKidProblem(n); if (bad) throw bad; });

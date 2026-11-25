@@ -2082,3 +2082,23 @@ alter table public.assignments add column test_prep_at timestamptz;
 
 ### Going live
 The site first (the Homework page shows the row only on 38), then 0038, then a parent sets the days. No Edge Function and no `cron.sql` change. Undoing it isn't needed (set the days to 0; steps already put on stay, as any plan). If wanted, as the migration's header writes it out: drop the trigger, its function, `private.school_apply` and `private.test_prep`, rename `private.school_apply_v37` back, drop the two columns, then 0037's `hub_schema_version()`.
+
+## 45. v1.3: Paste grades, and a weekly limit on grade bonuses
+
+The school's grade report, pasted on the Homework page, marks his homework Graded so §42's points follow; grade bonuses get a weekly limit. Its migration is `supabase/migrations/0039_paste_grades.sql` (after 0038); the plan is `docs/v1.3-homework.md` §40. One transaction; it refuses to run without 0038 ("Study before tests (migration 0038) isn't installed"), twice ("already installed"), on a database set back to 38 ("set back to 38"), or on one that isn't as 0038 left it (`private.mark_points`, `private.test_prep`, `private.grade_number`, `private.is_coach`, the trigger `assignments_mark_points`, `points_ledger.assignment_id`).
+
+### Columns
+```sql
+alter table public.homework_kids add column pts_bonus_week int not null default 50 check (pts_bonus_week between 0 and 500);
+alter table public.points_ledger add column bonus int;
+```
+- `homework_kids.pts_bonus_week`: the most the grade bonuses give in a household week (Mon–Sun). A parent changes it (a column grant).
+- `points_ledger.bonus`: the grade-bonus part of a mark line, + given, − taken back; null on every other line.
+
+### Functions
+- `public.paste_grades(p_kid uuid, p_rows jsonb, p_apply boolean) returns jsonb` (signed in; a definer; a parent or the coach, 42501 otherwise; 22023 for a kid without homework, nothing pasted, or over 400 rows). Each row `{title, class, due, grade}`: `bad` (no title or date, or a grade `private.grade_number` can't read), else his assignments of kind `'assignment'`, not dropped, with that title (case and spaces ignored), that class (the hub's subject, or the class starting with it and a space) or no subject, due within 7 days: none `not_found`, two at the same distance `many`, due before today − 14 `older`, already Graded with that grade `same`, else `graded`, and with `p_apply` it sets `school_mark 'graded'` and `grade`, so the trigger moves the points. Answers `{rows: [{i, status, assignment_id, title, subject, due, grade, was, points}], applied, counts}`: `was` is the earlier grade or "Missing", `points` what the change moved (on apply).
+- `private.mark_points(p_assignment uuid)`: §43's, but a positive change is split into points given back (up to 0, never limited) and a bonus (above 0), limited by what is left of the week's `pts_bonus_week` (the sum of this week's `bonus`); a taking change takes from a bonus first. Each line records its `bonus` part.
+- `hub_schema_version()` returns 39.
+
+### Going live
+The site first (the Homework page shows the row and the limit only on 39), then 0039. No Edge Function and no `cron.sql` change. Undoing it isn't needed. If wanted, as the migration's header writes it out: drop `paste_grades`, the two columns, then 0037's `private.mark_points` and 0038's `hub_schema_version()`.
