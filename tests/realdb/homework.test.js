@@ -397,8 +397,7 @@ const PAT_WHO = 'Pat Lee, tutor (tutor link)';
     await page.click('.hw-sheet [data-act="hw-sheet-send"]');
     await until(async () => (await one(`select question from homework_steps where id = '${later.id}'`)).question === 'Does the poster need a title?', 4000);
     check('ask: his question is on the step (step_by_token ask)', (await one(`select question from homework_steps where id = '${later.id}'`)).question === 'Does the poster need a title?');
-    // From earlier: Monday's two steps not done; Re-plan places them again from today.
-    await page.click('.hw-earlier summary');
+    // From earlier: Monday's two steps not done (open by itself); Re-plan places them again from today.
     const earlier = await texts(page, '.hw-earlier .hw-step-title');
     const before = await steps(sci);
     const rev0 = (await one(`select plan_rev from assignments where id = '${sci}'`)).plan_rev;

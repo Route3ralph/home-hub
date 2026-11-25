@@ -180,7 +180,7 @@
       hw_remind_turn_on: 'Turn on reminders', hw_remind_turn_off: 'Turn off', hw_remind_add: 'To get a reminder of tomorrow\'s homework on this phone: tap Share, then Add to Home Screen. Open My day from the Home Screen and turn reminders on here.',
       hw_remind_denied: 'Reminders are blocked for My day. Turn them on in the phone\'s Settings, Notifications.',
       hw_remind_failed: 'Reminders couldn\'t be turned on. Try again.', hw_remind_done_on: 'Reminders on', hw_remind_done_off: 'Reminders off',
-      hw_school_more: '{n} more', hw_school_gone: 'No longer on the school site', hw_school_moved: 'The school moved it to {day}',
+      hw_school_more: '{n} more', hw_school_gone: 'No longer on the school site', hw_late_was: 'Still open · was due {day}', hw_school_moved: 'The school moved it to {day}',
       hw_count: '{d} of {g} done', hw_count_plus: 'One more done: {title}', hw_count_minus: 'One less: {title}', hw_count_all: 'All {g} done!',
       hw_school_not_yours: "That isn't on your list from school any more.", hw_school_already: 'That one is on your homework already.',
       // 0015: an item whose school date is the day it was assigned asks for its due date.
@@ -331,7 +331,7 @@
       hw_remind_turn_on: 'Activar recordatorios', hw_remind_turn_off: 'Desactivar', hw_remind_add: 'Para recibir un recordatorio de la tarea de mañana en este teléfono: toca Compartir y luego Agregar a inicio. Abre Mi día desde la pantalla de inicio y activa los recordatorios aquí.',
       hw_remind_denied: 'Los recordatorios están bloqueados para Mi día. Actívalos en Ajustes del teléfono, Notificaciones.',
       hw_remind_failed: 'No se pudieron activar los recordatorios. Inténtalo de nuevo.', hw_remind_done_on: 'Recordatorios activados', hw_remind_done_off: 'Recordatorios desactivados',
-      hw_school_more: '{n} más', hw_school_gone: 'Ya no está en el sitio de la escuela', hw_school_moved: 'La escuela la pasó a {day}',
+      hw_school_more: '{n} más', hw_school_gone: 'Ya no está en el sitio de la escuela', hw_late_was: 'Sigue abierta · era para {day}', hw_school_moved: 'La escuela la pasó a {day}',
       hw_count: '{d} de {g} hechos', hw_count_plus: 'Uno más hecho: {title}', hw_count_minus: 'Uno menos: {title}', hw_count_all: '¡Los {g} hechos!',
       hw_school_not_yours: 'Eso ya no está en tu lista de la escuela.', hw_school_already: 'Esa ya está en tu tarea.',
       hw_school_assigned: 'asignada {day}', hw_school_due: 'Para', hw_school_need_due: 'Elige primero la fecha de entrega.',
@@ -1647,7 +1647,7 @@
   let menuOpen = null;      // the step whose ⋯ is open
   let quickOpen = null;     // the assignment whose Quick minutes are showing
   let addOpen = false;      // the + Homework form
-  let earlierOpen = false;  // From earlier unfolded
+  let earlierOpen = true;   // From earlier unfolded: open until he folds it, so a step left from an earlier day is seen
   let schoolMoreOpen = false;   // New from school's folded rest unfolded (0006)
   let pathsMoreOpen = false;    // Your path's folded rest unfolded (§21)
   const schoolBusy = new Set(); // New from school: the items with a Quick, Plan with Pat or Hide on its way
@@ -2178,10 +2178,13 @@
     await countCall(id, Number(a.count.done) || 0, delta);
     renderHomework(true);
   }
+  const isLate = (a) => !!(a && a.status === 'open' && hv && hv.today && a.due_date && a.due_date < hv.today);
   function dueRowHTML(a) {
     const bits = [a.subject, a.title];
     if (a.kind === 'lesson') bits.push(plan.t('lesson_tag', null, lang));
-    bits.push(plan.t(a.kind === 'lesson' ? 'do_by' : 'due_on', { day: hwRel(a.due_date) }, lang));
+    // Past its date and still open: "Still open · was due Sun", plain text (never red or "late", §7), first under Due soon.
+    const late = isLate(a);
+    bits.push(late ? hw('hw_late_was', { day: hwRel(a.due_date) }) : plan.t(a.kind === 'lesson' ? 'do_by' : 'due_on', { day: hwRel(a.due_date) }, lang));
     const passed = a.behind && a.behind.milestone;
     if (a.status === 'open' && a.state === 'given' && a.next_milestone && !(passed && passed.title === a.next_milestone.title && passed.day === a.next_milestone.day)) {
       bits.push(`◆ ${a.next_milestone.title} ${hwRel(a.next_milestone.day)}`);
@@ -2202,7 +2205,7 @@
     if (given && a.ai_help === true) bits.push(hw(a.given_by === 'tutor' ? 'hw_ai_help' : 'hw_ai_help_family'));
     const notes = given ? (a.steps || []).filter((s) => s.kind === 'milestone' && s.coach && s.coach.text)
       .map((s) => `<p class="hw-note">${esc(s.not_yet ? plan.t('not_yet', { note: s.coach.text }, lang) : plan.t('coach_note', { who: whoOf(s.coach.by), note: s.coach.text }, lang))}</p>`).join('') : '';
-    return `<div class="hw-asg${a.status !== 'open' ? ' is-closed' : ''}" data-asg="${esc(a.id)}">
+    return `<div class="hw-asg${a.status !== 'open' ? ' is-closed' : ''}${late ? ' is-past' : ''}" data-asg="${esc(a.id)}">
       <p class="hw-asg-line">${esc(bits.filter(Boolean).join(' · '))}${tail}</p>
       ${whatHTML(a)}
       ${countHTML(a)}
@@ -2465,6 +2468,7 @@
     const open = (hv.assignments || []).filter((a) => a.status === 'open');
     const quick = open.filter((a) => a.state === 'none' && quickDue(a));
     const due = (hv.assignments || []).filter((a) => !quick.includes(a));
+    due.sort((x, y) => Number(isLate(y)) - Number(isLate(x)));   // past-due ones first, the rest in the view's order (sort is stable)
     const tonightHead = hv.window ? hw('hw_tonight_line', { p: hv.load ? hv.load.planned : 0, f: hv.load ? hv.load.free : 0 }) : hw('tonight');
     const earlierMin = earlier.reduce((n, s) => n + (Number(s.minutes) || 0), 0);
     const earlierHTML = earlier.length ? `<details class="hw-earlier"${earlierOpen ? ' open' : ''}>
