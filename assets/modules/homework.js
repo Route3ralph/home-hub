@@ -799,6 +799,120 @@
     });
   }
 
+  // ---------- Paste grades (0039, docs/v1.3-homework.md §40): pages only read the paste; nothing pasted is kept.
+  // The school portal's grade report (Assignments → Reports → View Assignment Grades), copied as text, from the page
+  // or its PDF. A class starts at the line before "Cum. Grade: …" (its name up to " (", the section and teacher
+  // dropped); a row is a title, the assigned and due dates, the points possible, then the points earned with their
+  // percentage ("93 (93% )"), the title sometimes wrapping onto the lines after the dates (some PDF readers put all of
+  // it after them). A row with no points earned yet is skipped. Each row goes to paste_grades as {title, class, due,
+  // grade: "93%"}.
+  const GRADE_ROW = /^(.*?)\s*(\d{1,2})\/(\d{1,2})\/(\d{4})\s+(\d{1,2})\/(\d{1,2})\/(\d{4})\s+(\d+(?:\.\d+)?)\s*(.*)$/;
+  const GRADE_EARNED = /\(\s*(\d+(?:\.\d+)?)\s*%\s*\)/;   // "93 (93% )" on the page, "(93% )" alone from some PDF readers
+  function readGradeReport(text) {
+    const lines = String(text || '').replace(/\r\n?/g, '\n').split('\n').map((l) => l.replace(/\s+/g, ' ').trim()).filter(Boolean);
+    const rows = [];
+    let klass = '';
+    let open = null;
+    const pct = (p) => `${Number(p)}%`;
+    const finish = (earned) => {
+      if (open && earned) rows.push({ title: open.title.replace(/\s+/g, ' ').trim(), class: klass, due: open.due, grade: pct(earned[1]) });
+      open = null;
+    };
+    lines.forEach((line, n) => {
+      if (/^Cum\. Grade:/i.test(line)) {
+        finish(null);
+        const head = (lines[n - 1] || '').replace(/\s*continued from previous page\.*\s*$/i, '');
+        klass = head.split(' (')[0].trim().slice(0, 40);
+        return;
+      }
+      const m = GRADE_ROW.exec(line);
+      if (m) {
+        finish(null);
+        const two = (x) => String(x).padStart(2, '0');
+        open = { title: m[1], due: `${m[7]}-${two(m[5])}-${two(m[6])}` };
+        const earned = GRADE_EARNED.exec(m[9]);
+        if (earned) finish(earned);
+        return;
+      }
+      if (!open) return;
+      const earned = GRADE_EARNED.exec(line);
+      if (earned) {
+        // Before the percentage: the points earned ("93"), or the title's last words ("Density Problems (93% )").
+        const before = line.slice(0, earned.index).trim();
+        if (before && !/^\d+(\.\d+)?$/.test(before)) open.title += ` ${before}`;
+        finish(earned);
+      }
+      else if (/^(Weight|Average|Points|Page \d|Assignment Date)/i.test(line)) open = null;
+      else if (open.title.length < 160) open.title += ` ${line}`;
+    });
+    finish(null);
+    return rows.filter((r) => r.title && r.title.length <= 200);
+  }
+  function gradesRowHTML(st) {
+    const kid = kidName(st);
+    if (!st.grades) {
+      return `<div class="hw-switch-row" data-row="grades"><p class="hw-switch-title">Grades from school</p>
+        <small class="hw-switch-line">${esc(`Paste the school's grade report and ${kid}'s homework due in the last 14 days is marked Graded, so his points follow. Older grades are left alone.`)}</small>
+        ${btn('grades-open', 'Paste grades')}</div>`;
+    }
+    const r = st.grades.read;
+    let found = '';
+    if (r) {
+      const by = (s) => r.rows.filter((x) => x.status === s);
+      const line = (x) => [x.subject, x.title, x.was ? `${x.was} → ${x.grade}` : x.grade].filter(Boolean).join(' · ');
+      const list = (cls, head, xs, open) => (xs.length ? `<details class="hw-grades-${cls}"${open ? ' open' : ''}><summary>${esc(`${head} (${xs.length})`)}</summary>
+        <ul class="hw-grades-rows">${xs.map((x) => `<li>${esc(line(x))}</li>`).join('')}</ul></details>` : '');
+      const will = by('graded');
+      found = `<p class="hw-switch-line hw-grades-found" role="status">${esc(will.length
+        ? `${plural(will.length, 'grade')} to mark on ${kid}'s homework.` : `Nothing to mark: none of the ${plural(r.rows.length, 'grade')} matches homework due in the last 14 days that isn't graded already.`)}</p>
+        ${list('will', 'Will be marked Graded', will, true)}${list('same', 'Already graded', by('same'))}${list('older', 'Older than 14 days, left alone', by('older'))}
+        ${list('many', 'More than one match, left alone', by('many'))}${list('missing', 'Not on the hub', by('not_found'))}${list('bad', 'Not a grade', by('bad'))}`;
+    }
+    const n = r ? r.rows.filter((x) => x.status === 'graded').length : 0;
+    return `<div class="hw-switch-row" data-row="grades"><form class="hw-grades" data-form="gradespaste" novalidate autocomplete="off">
+      <p class="hw-switch-title">Paste grades</p>
+      <ol class="hw-paste-how"><li>${esc(`On a computer, open ${kid}'s Assignments on the school's site, then Reports → View Assignment Grades, and pick the marking period.`)}</li>
+        <li>Press Ctrl+A, then Ctrl+C (⌘A, ⌘C on a Mac), and paste it here. A PDF of the report works the same way.</li></ol>
+      <label class="field"><span>The grade report</span><textarea name="paste" rows="4" spellcheck="false">${esc(st.grades.text)}</textarea></label>
+      <small class="hw-switch-line">Only the grades you mark are saved. Nothing else you paste is kept or sent.</small>
+      ${found}<p class="form-error" role="alert" hidden></p>
+      <div class="form-actions"><button type="button" class="btn" data-act="grades-cancel">Cancel</button><button type="submit" class="btn${r ? '' : ' btn-primary'}">Read the grades</button>${r
+        ? `<button type="button" class="btn btn-primary" data-act="grades-apply"${n ? '' : ' disabled'}>${esc(n ? `Mark ${plural(n, 'grade')}` : 'Mark grades')}</button>` : ''}</div></form></div>`;
+  }
+  async function readGrades(st, form) {
+    const err = form.querySelector('.form-error');
+    const text = form.elements.paste.value;
+    st.grades.text = text;
+    const rows = readGradeReport(text);
+    if (!rows.length) {
+      err.textContent = 'No grades found. Paste the whole report (View Assignment Grades). If you copied it from a PDF, copy it from the report page in the browser instead.'; err.hidden = false;
+      return;
+    }
+    if (rows.length > 400) { err.textContent = 'That\'s more than 400 grades. Paste one report at a time.'; err.hidden = false; return; }
+    try {
+      const res = await run(sb().rpc('paste_grades', { p_kid: st.kid, p_rows: rows, p_apply: false }));
+      if (!st.grades) return;
+      st.grades.rows = rows;
+      st.grades.read = res;
+      draw(st);
+    } catch (e) {
+      err.textContent = friendly(e); err.hidden = false;
+    }
+  }
+  function applyGrades(st) {
+    const g = st.grades;
+    if (!g || !g.rows) return null;
+    let res = null;
+    return write(st, async () => {
+      res = await run(sb().rpc('paste_grades', { p_kid: st.kid, p_rows: g.rows, p_apply: true }));
+      st.grades = null;
+    }, () => {
+      const done = ((res && res.rows) || []).filter((x) => x.status === 'graded');
+      const pts = done.reduce((s, x) => s + (Number(x.points) || 0), 0);
+      toast(`${plural(done.length, 'grade')} marked${pts ? ` · ${pts > 0 ? '+' : '−'}${Math.abs(pts)} points` : ''}`);
+    });
+  }
+
   function portalForm(st) {
     const classes = classesOf(st);
     if (!classes.length) { toast('No classes yet: they come from his assignments.'); return; }
@@ -1225,7 +1339,9 @@
       // 0036 (§36.2): the school's marks move points as soon as an assignment is marked Missing or Graded.
       .concat(core.schemaVersion >= 36 ? [['pts_missing', 'Work marked Missing (points off)', 0, 100], ['pts_low_grade', 'A grade below the line (points off)', 0, 100],
         ['grade_floor', 'The line: grades below this lose points (out of 100)', 0, 100], ['pts_high_grade', 'A grade at the top (bonus)', 0, 100],
-        ['grade_top', 'The top: grades from this earn the bonus (out of 100)', 0, 100], ['pts_mark_week', 'Most the marks take a week', 0, 500]] : []);
+        ['grade_top', 'The top: grades from this earn the bonus (out of 100)', 0, 100], ['pts_mark_week', 'Most the marks take a week', 0, 500]] : [])
+      // 0039 (§40.3): the grade bonuses have a weekly limit too.
+      .concat(core.schemaVersion >= 39 && 'pts_bonus_week' in k ? [['pts_bonus_week', 'Most the grade bonuses give a week', 0, 500]] : []);
     const rows = [];
     rows.push(`<div class="hw-switch-row" data-row="kid"><label class="hw-switch"><input type="checkbox" data-act="kid-on"${k.active ? ' checked' : ''}${off}><span>Homework for ${esc(kid)}</span></label>
       <small class="hw-switch-line">Homework on ${esc(kid)}'s My day, and ${esc(tutor ? `${tutor}'s` : 'the tutor\'s')} link. Off hides them; nothing is deleted.</small>
@@ -1248,6 +1364,7 @@
       if (core.schemaVersion >= 19) rows.push(routineRowHTML(st));
       if (core.schemaVersion >= 32 && admin) rows.push(portalRowHTML(st));
       if (core.schemaVersion >= 38 && 'test_prep_days' in k) rows.push(testPrepRowHTML(st, admin));
+      if (core.schemaVersion >= 39 && canCoach()) rows.push(gradesRowHTML(st));
       // The coach (0021): his New from school, to add or hide; the links themselves stay the parents'.
       if (!admin && canCoach() && core.schemaVersion >= 6 && st.school && st.school.feeds && st.school.feeds.length) {
         rows.push(`<div class="hw-switch-row" data-row="school"><p class="hw-switch-title">New from school</p>${schoolItemsHTML(st)
@@ -1887,6 +2004,7 @@
     const limits = { pts_focus: 5, pts_on_time: 50, pts_milestone: 100, pts_day_cap: 300, pts_milestone_week: 400, instant_day: 10 };
     if (core.schemaVersion >= 34 && f.pts_start) limits.pts_start = 20;
     if (core.schemaVersion >= 36 && f.pts_missing) Object.assign(limits, { pts_missing: 100, pts_low_grade: 100, grade_floor: 100, pts_high_grade: 100, grade_top: 100, pts_mark_week: 500 });
+    if (core.schemaVersion >= 39 && f.pts_bonus_week) limits.pts_bonus_week = 500;
     for (const name of Object.keys(limits)) {
       const v = Number(f[name].value);
       if (!Number.isInteger(v) || v < 0 || v > limits[name]) { err.textContent = `Use a whole number from 0 to ${limits[name]}.`; err.hidden = false; f[name].focus(); return null; }
@@ -2597,6 +2715,9 @@
       case 'school-auto': autoSchool(st, d.feed, d.on === '1'); break;
       case 'portal-classes': portalForm(st); break;
       case 'test-prep': testPrepForm(st); break;
+      case 'grades-open': st.grades = { text: '', read: null, focus: true }; draw(st); break;
+      case 'grades-cancel': st.grades = null; draw(st); break;
+      case 'grades-apply': applyGrades(st); break;
       case 'school-now': checkNow(st); break;
       case 'school-off': st.schoolOff = true; draw(st); break;
       case 'school-redate': st.schoolRedate = !st.schoolRedate; st.schoolOff = false; draw(st); break;
@@ -2661,6 +2782,7 @@
     else if (form.dataset.form === 'school') saveSchool(st, form);
     else if (form.dataset.form === 'schooldue') schoolAddDue(st, form);
     else if (form.dataset.form === 'schoolpaste') { if (st.paste) readPaste(st, form); }
+    else if (form.dataset.form === 'gradespaste') { if (st.grades) readGrades(st, form); }
     else if (form.dataset.form === 'never') addNever(st, form);
     else if (form.dataset.form === 'routine') saveRoutine(st, form);
     else if (form.classList.contains('hw-afields')) saveFields(st, form);

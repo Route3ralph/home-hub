@@ -2934,6 +2934,86 @@ const emailOf = (req) => {
     await page.context().close();
   }
 
+  // =====================================================================
+  // 22. Paste grades (schema 39, 0039; docs/v1.3-homework.md §40.2): a "Grades from school" row under Switches; the
+  // school's grade report pasted is read in the page (classes without their section and teacher, titles that wrap,
+  // rows with no points yet left out) and sent to paste_grades to preview, then to apply; the bonus limit with the
+  // points values. None on 38. Every class, title and teacher here is made up.
+  // =====================================================================
+  {
+    const LATER = { routine_status: () => ({ points: 0, sections: [], today: null }), can_coach: () => false };
+    const preview = [
+      { i: 1, status: 'graded', assignment_id: 'a1', title: 'Lab Report', subject: 'Science 6', due: '2026-11-04', grade: '93%' },
+      { i: 2, status: 'graded', assignment_id: 'a2', title: 'Fractions Quiz', subject: 'Math 7', due: '2026-11-03', grade: '72%', was: 'Missing' },
+      { i: 3, status: 'older', assignment_id: 'a3', title: 'River Poster', subject: 'Science 6', due: '2026-10-01', grade: '88%' },
+      { i: 4, status: 'not_found', title: 'Spelling Check', subject: 'English', due: '2026-11-02', grade: '100%' },
+    ];
+    const RPC39 = Object.assign({}, RPC8, LATER, { hub_schema_version: () => 39, task_week: homeworkRpc.task_week,
+      paste_grades: (db, body) => ({ applied: !!body.p_apply, rows: body.p_apply
+        ? preview.map((x) => Object.assign({}, x, x.i === 1 ? { points: 10 } : x.i === 2 ? { points: 5 } : {})) : preview }) });
+    const RPC38g = Object.assign({}, RPC39, { hub_schema_version: () => 38 });
+    const gdb = (v39) => {
+      const d = withCoach(withSchoolCheck(fullDb()));
+      d.clarity32 = true;
+      d.starts34 = { week: {} };
+      d.tutor_summary_log = [];
+      d.marks36 = true;
+      d.prep38 = true;
+      d.homework_kids.forEach((k) => Object.assign(k, { pts_start: 5, pts_missing: 10, pts_low_grade: 5, grade_floor: 75, pts_high_grade: 10, grade_top: 90, pts_mark_week: 50, test_prep_days: 0 }));
+      if (v39) { d.bonus39 = true; d.homework_kids.forEach((k) => { k.pts_bonus_week = 50; }); }
+      return d;
+    };
+    const REPORT = [
+      'Grades - By Student with Comments:', 'Total Points with Weight Wednesday, November 25, 2026', 'Example School',
+      'Example, Jordan', 'Science 6 (A) Pat Teacher', 'Cum. Grade: 95.00%',
+      'Assignment Date Assigned Date Due Max Pts Points Earned Included in Cum. Grade Comments Extra Credit',
+      'Preparation', 'Weight: 10.00', 'Average: 90.50%', 'Points: 181.00 (200.00)',
+      'Lab Report 11/02/2026 11/04/2026 100.00 93 (93% ) Yes No',
+      'River 09/28/2026 10/01/2026 100.00', 'Poster', '88 (88% ) Yes No',
+      'Not Graded Yet 11/20/2026 11/24/2026 100.00 Yes No',
+      'Math 7 (E) Sam Teacher continued from previous page...', 'Cum. Grade: 90.00%',
+      '10/30/2026 11/03/2026 100.00', 'Fractions Quiz (72% )', '72 Yes No',
+      'English (B) Lee Teacher', 'Cum. Grade: 99.00%', 'Spelling Check 11/01/2026 11/02/2026 100.00 100 (100% ) Yes No',
+    ].join('\n');
+    ({ page, db } = await open({ label: 'grades-39', db: gdb(true), rpc: RPC39 }));
+    await page.waitForSelector('[data-row="grades"]');
+    check('schema 39: a "Grades from school" row with Paste grades', /Grades from school/.test(await tc(page, '[data-row="grades"]'))
+      && /due in the last 14 days is marked Graded/.test(await tc(page, '[data-row="grades"]')) && !!(await page.$('[data-row="grades"] [data-act="grades-open"]')), await tc(page, '[data-row="grades"]'));
+    const vals = await page.$$eval('form[data-form="values"] input', (xs) => Object.fromEntries(xs.filter((x) => x.name).map((x) => [x.name, x.value])));
+    check('... and the bonus limit with the points values (50)', vals.pts_bonus_week === '50' && /Most the grade bonuses give a week/.test(await tc(page, 'form[data-form="values"]')), JSON.stringify(vals));
+    await page.click('[data-act="grades-open"]');
+    await page.waitForSelector('form[data-form="gradespaste"] textarea');
+    await page.click('form[data-form="gradespaste"] [type="submit"]');
+    await sleep(200);
+    check('nothing pasted: "No grades found", no call', /^No grades found\./.test(await tc(page, 'form[data-form="gradespaste"] .form-error')) && !calls(db, 'paste_grades').length,
+      await tc(page, 'form[data-form="gradespaste"] .form-error'));
+    await page.fill('form[data-form="gradespaste"] textarea', REPORT);
+    await page.click('form[data-form="gradespaste"] [type="submit"]');
+    await page.waitForSelector('.hw-grades-will');
+    const sent = calls(db, 'paste_grades')[0] || {};
+    check('Read the grades: paste_grades previews the rows read in the page (the class without its section and teacher, a wrapped title, the other layout, none without points)',
+      sent.body && sent.body.p_apply === false && same(sent.body.p_rows, [
+        { title: 'Lab Report', class: 'Science 6', due: '2026-11-04', grade: '93%' },
+        { title: 'River Poster', class: 'Science 6', due: '2026-10-01', grade: '88%' },
+        { title: 'Fractions Quiz', class: 'Math 7', due: '2026-11-03', grade: '72%' },
+        { title: 'Spelling Check', class: 'English', due: '2026-11-02', grade: '100%' }]), JSON.stringify(sent.body));
+    check('... the preview: what will be marked, open, and the rest folded', (await tc(page, '.hw-grades-found')) === '2 grades to mark on Jordan\'s homework.'
+      && same(await page.$$eval('.hw-grades-will li', (xs) => xs.map((x) => x.textContent.trim())), ['Science 6 · Lab Report · 93%', 'Math 7 · Fractions Quiz · Missing → 72%'])
+      && /Older than 14 days, left alone \(1\)/.test(await tc(page, '.hw-grades-older summary')) && /Not on the hub \(1\)/.test(await tc(page, '.hw-grades-missing summary'))
+      && (await page.$eval('.hw-grades-will', (d) => d.open)) && !(await page.$eval('.hw-grades-older', (d) => d.open)), await tc(page, '[data-row="grades"]'));
+    check('... and "Mark 2 grades"', (await tc(page, '[data-act="grades-apply"]')) === 'Mark 2 grades');
+    await page.click('[data-act="grades-apply"]');
+    await settle(page);
+    check('Mark: paste_grades applies the same rows; "2 grades marked · +15 points"; the box closes',
+      lastCall(db, 'paste_grades').body.p_apply === true && same(lastCall(db, 'paste_grades').body.p_rows, sent.body.p_rows)
+      && /2 grades marked · \+15 points/.test(await lastToast(page)) && !(await page.$('form[data-form="gradespaste"]')), await lastToast(page));
+    await page.context().close();
+    ({ page, db } = await open({ label: 'grades-38', db: gdb(false), rpc: RPC38g }));
+    await page.waitForSelector('[data-row="test-prep"]');
+    check('schema 38: no Grades from school row and no bonus limit', !(await page.$('[data-row="grades"]')) && !(await page.$('form[data-form="values"] [name="pts_bonus_week"]')));
+    await page.context().close();
+  }
+
   console.log(results.join('\n'));
   console.log(`\n${results.filter((r) => r.startsWith('PASS')).length}/${results.length} passed`);
   console.log('PAGE ERRORS:', errors.length ? '\n' + errors.join('\n') : 'none');

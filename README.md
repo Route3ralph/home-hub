@@ -284,6 +284,14 @@ A tutor whose link runs his rewards can take points off too: **Take points** aft
 1. `tests/run.sh` ends with `0 failed`; merge. Nothing changes until step 2.
 2. **About 2 minutes:** run [`supabase/migrations/0033_tutor_take.sql`](supabase/migrations/0033_tutor_take.sql) in the Supabase SQL editor, after 0032. "isn't installed" means 0032 is missing; "already installed" means it's done; either way nothing was changed.
 
+### Paste grades (v1.3, migration 0039)
+
+The school's feed has no grades, but its portal has a grade report. On a computer: your kid's Assignments on the school's site → **Reports → View Assignment Grades** → pick the marking period → Ctrl+A, Ctrl+C. Then **Homework → Switches → Grades from school → Paste grades**, paste, and **Read the grades**: it shows what it will mark Graded, what is older than 14 days (left alone) and what isn't on the hub. **Mark** them and the points follow (a grade below 75 takes 5, 90 or more gives a 10-point bonus). Grade bonuses now have a weekly limit too, **Most the grade bonuses give a week** (50), with the other points values.
+
+**Turning it on** (no Edge Function and no `cron.sql` change):
+1. `tests/run.sh` ends with `0 failed`; merge.
+2. **About 2 minutes:** run [`supabase/migrations/0039_paste_grades.sql`](supabase/migrations/0039_paste_grades.sql) in the Supabase SQL editor, after 0038.
+
 ### Study before tests (v1.3, migration 0038)
 
 Under **Homework → Switches → Study before tests**, pick how many days before each test the studying starts (Off, or 2 to 5 days). From then on, every test on your kid's list that has no plan of its own gets five short study steps on the days before it (list what the test covers, make a study list, practice the first half, practice the second half, quiz yourself), on their My day within the hour, each as long as their first focus length. A "Take the test" step already there stays as the last step. A plan someone wrote is never changed, and if you delete the study steps they don't come back.

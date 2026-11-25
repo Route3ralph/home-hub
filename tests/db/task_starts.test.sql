@@ -35,7 +35,7 @@ create function pg_temp.balance() returns int language sql stable security defin
   select coalesce(sum(l.delta), 0)::int from public.points_ledger l where l.kid_id = test.person('Taylor')
 $$;
 
-select test.is(hub_schema_version(), 38, 'hub_schema_version is 38');
+select test.is(hub_schema_version(), 39, 'hub_schema_version is 39');
 
 :as_admin
 select save_homework_kid(test.person('Taylor'), true);
