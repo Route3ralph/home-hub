@@ -2070,9 +2070,9 @@ const HW_AUDIO_DROP = `(${HW_STUBS})(); (${HW_CLOCKED})(); (${HW_WAKE_DROP})();`
     check('Tonight: homework with no plan, due soon: "Math · Worksheet 5.1 · due Wed" with Quick and Start',
       (await hwText(page, `.hw-noplan[data-asg="${H.ws51}"] .hw-noplan-title`)) === 'Math · Worksheet 5.1 · due Wed'
       && same(await hwTexts(page, `.hw-noplan[data-asg="${H.ws51}"] button`), ['Quick', 'Start']), await hwText(page, '.hw-tonight'));
-    check('From earlier: folded into one line with Re-plan', (await hwText(page, '.hw-earlier summary')) === 'From earlier · 2 steps · 35 min · Re-plan ›'
-      && !(await page.$eval('.hw-earlier', (d) => d.open)), await hwText(page, '.hw-earlier summary'));
-    await page.click('.hw-earlier summary');
+    // Open by itself (it was folded until the past-due change): a step left from an earlier day is seen without a tap.
+    check('From earlier: one line with Re-plan, open by itself', (await hwText(page, '.hw-earlier summary')) === 'From earlier · 2 steps · 35 min · Re-plan ›'
+      && (await page.$eval('.hw-earlier', (d) => d.open)), await hwText(page, '.hw-earlier summary'));
     check('From earlier, opened: each step with Start and Not today (none on a checkpoint), and Re-plan; the Not yet note under the milestone',
       same(await hwTexts(page, '.hw-earlier .hw-step-title'), ['Vocabulary project · List the 20 words', 'Vocabulary project · Flashcards made'])
       && (await page.$$(`.hw-earlier .hw-step[data-step="${H.v1}"] [data-act="hw-not-today"]`)).length === 1
@@ -2751,10 +2751,27 @@ const HW_AUDIO_DROP = `(${HW_STUBS})(); (${HW_CLOCKED})(); (${HW_WAKE_DROP})();`
     await page.context().close();
   }
   {
+    // Past its due date and still open: first under Due soon, "Late · was due Fri", in red (docs/v1.3-homework.md §39,
+    // a parent's choice; steps from earlier days stay plain). Folding From earlier closes it until the next load.
+    const d = hwDb();
+    Object.assign(d.assignments.find((a) => a.id === H.span), { due_date: '2026-10-30' });
+    ({ page, db } = await open({ label: 'hw-past-due', path: `/day.html?t=${JORDAN}#homework`, db: d, device: HW_DEVICE, init: HW_STUBS, ctx: phone() }));
+    await page.waitForSelector('.hw-due .hw-asg');
+    const rows = await page.$$eval('.hw-due .hw-asg', (rs) => rs.map((r) => r.textContent.replace(/\s+/g, ' ').trim()));
+    check('past due: first under Due soon, "Spanish · Vocabulary project · Late · was due Fri"',
+      /^Spanish · Vocabulary project · Late · was due Fri ·/.test(rows[0] || '') && !rows.slice(1).some((x) => /Late ·/.test(x)), JSON.stringify(rows));
+    check('... in red', (await page.$eval(`.hw-asg[data-asg="${H.span}"] .hw-asg-line`, (e) => getComputedStyle(e).color)) === (await page.evaluate(() => {
+      const x = document.createElement('span'); x.style.color = 'var(--danger)'; document.body.appendChild(x); const c = getComputedStyle(x).color; x.remove(); return c; }))
+      && !!(await page.$(`.hw-asg.is-late[data-asg="${H.span}"]`)));
+    check('... and From earlier stays plain: no "late", not red', !/late/i.test(await hwText(page, '.hw-earlier')));
+    await page.click('.hw-earlier summary');
+    check('folding From earlier closes it', !(await page.$eval('.hw-earlier', (e) => e.open)));
+    await page.context().close();
+  }
+  {
     // A milestone ticked from From earlier: half its points at once (40 → +20 now, +20 when checked).
     ({ page, db } = await open({ label: 'hw-milestone-now', path: `/day.html?t=${JORDAN}#homework`, db: hwDb(), device: HW_DEVICE, init: HW_STUBS, ctx: phone() }));
     await page.waitForSelector('.hw-now-card');
-    await page.click('.hw-earlier summary');
     await page.click(`.hw-step[data-step="${H.v2}"] .hw-box`);
     await until(() => calls(db, 'step_by_token').length === 1 && !!calls(db, 'step_by_token')[0].done);
     check('a milestone ticked: half its points at once, "+20 now · +20 more when Pat checks it"',
