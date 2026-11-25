@@ -86,11 +86,11 @@ create table public.watch_items (
   place         text not null default 'netflix' check (place in ('netflix', 'streaming', 'cinema', 'theatre')),
   service       text check (service is null or char_length(service) between 1 and 40),   -- "Disney+", "AMC", "Lyric Theatre"
   url           text check (url is null or (url ~ '^https://[!#-;=?-~]{4,}$' and char_length(url) <= 508)),   -- as recipes.url
-  note          text check (note is null or char_length(note) between 1 and 200),   -- "PG-13 · Max and Leo"
+  note          text check (note is null or char_length(note) between 1 and 200),   -- "PG-13 · Alex and Sam"
   showing_until date,                                                               -- the cinema's or theatre's last day
   watched_at    timestamptz,                                                        -- null: still to watch
   created_at    timestamptz not null default now(),
-  created_by    text,                                                               -- an email, or "Max (My day)"
+  created_by    text,                                                               -- an email, or "Alex (My day)"
   updated_at    timestamptz not null default now(),
   updated_by    text
 );

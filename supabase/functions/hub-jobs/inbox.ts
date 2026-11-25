@@ -18,7 +18,7 @@
 //   5. At most INBOX_DAY_MAX events added by email in 24 hours (the created_by "… (email)" rows); past that, an answer
 //      that says so and nothing added.
 //   6. Claude (INBOX_MODEL, effort low, a JSON schema) reads the subject and the text and gives up to five events, each
-//      with the words the email used for people ("Max", "the kids" stays unmatched). No family name, address or id is
+//      with the words the email used for people ("Alex", "the kids" stays unmatched). No family name, address or id is
 //      sent: today's date, the time zone and the email are all it sees. Each event is checked here (a real date from
 //      yesterday to 400 days ahead, times HH:MM, an end after the start or on the next day, a title of 1 to 100).
 //   7. The events go in (service role) with created_by "<first name> (email)": the person in charge is the first person
@@ -57,9 +57,9 @@ Rules:
 - No time given: leave start_time and end_time empty (an all-day event). A start with no end: leave end_time empty.
 - end_date only for an all-day event over several days (a trip, a camp); otherwise empty.
 - ends_next_day is true only when the event ends after midnight.
-- title: short, as the family would write it ("Dinner at the Parks", "Max dentist"). Up to 100 characters.
+- title: short, as the family would write it ("Dinner at the Parks", "Alex dentist"). Up to 100 characters.
 - location: a place if the email gives one, else empty.
-- people: the people the event is for or who go, exactly as the email names them ("Max", "Sam"), not words like "we", "us" or "the kids". Empty if none.
+- people: the people the event is for or who go, exactly as the email names them ("Alex", "Sam"), not words like "we", "us" or "the kids". Empty if none.
 - If nothing can go on the calendar (no date can be worked out, or the email isn't asking for an event), give no events and say why in problem, in one short friendly sentence the sender will read. Otherwise problem is empty.
 - At most ${INBOX_EVENTS_MAX} events.`;
 
