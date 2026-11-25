@@ -79,7 +79,7 @@ select test.throws($$update public.household set weekly_sheets = '[{"who": "fami
 select test.throws($$update public.household set weekly_sheets = '[{"who": 7, "lang": "en"}]'$$, 'each sheet is', 'refused: who isn''t text');
 select test.throws($$update public.household set weekly_sheets = '[{"who": "00000000-0000-4000-8000-000000000000", "lang": "en"}]'$$,
                    'a sheet is for someone who isn''t on the family list', 'refused: someone not on the family list');
-select test.throws($$update public.household set weekly_sheets = '[{"who": "Max", "lang": "en"}]'$$,
+select test.throws($$update public.household set weekly_sheets = '[{"who": "Someone", "lang": "en"}]'$$,
                    'a sheet is for someone who isn''t on the family list', 'refused: a name, not an id');
 select test.throws($$update public.household set weekly_sheets = '[{"who": "family", "lang": "en"}, {"who": "family", "lang": "es"}]'$$,
                    'a sheet is listed twice', 'refused: the same sheet twice');

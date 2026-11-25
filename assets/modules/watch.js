@@ -36,7 +36,7 @@
   }
   const clean = (s, max) => String(s || '').replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max);
 
-  // Who added it: a member's first name from their email, or the kid's name from "Max (My day)".
+  // Who added it: a member's first name from their email, or the kid's name from "Alex (My day)".
   function whoAdded(row) {
     const by = String(row.created_by || '');
     const kid = /^(.+) \(My day\)$/.exec(by);
@@ -114,7 +114,7 @@
         { name: 'showing_until', label: 'Showing until (optional)', type: 'date', value: r && r.showing_until ? r.showing_until : '',
           help: 'For the cinema or a theatre: the last day it\'s on.' },
         { name: 'url', label: 'Link (optional)', type: 'url', value: r && r.url ? r.url : '', placeholder: 'https://…', help: 'The trailer, its Netflix page or the tickets.' },
-        { name: 'note', label: 'Note (optional)', type: 'textarea', value: r && r.note ? r.note : '', placeholder: 'PG · Max and Leo want to see it' },
+        { name: 'note', label: 'Note (optional)', type: 'textarea', value: r && r.note ? r.note : '', placeholder: 'PG · the kids want to see it' },
       ],
       submitLabel: r ? 'Save' : 'Add',
       extraActions: r ? [{ label: 'Delete', danger: true, onClick: async () => {

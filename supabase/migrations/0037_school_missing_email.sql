@@ -16,7 +16,7 @@
 --     title, that class (without its section: "Science 6 - A" is "Science 6") and a due date within 14 days of p_due;
 --     then for an item from school not yet made one; else, with one kid only, adds it as his homework. Then it marks it
 --     Missing (once: marked already answers 'already').
---   • private.mark_points: 0036's, with the mark's line written as p_by ("Ralph (email)") when no one is signed in.
+--   • private.mark_points: 0036's, with the mark's line written as p_by ("Pat (email)") when no one is signed in.
 --   • hub_schema_version() (37). hub-jobs reads the notices only on 37.
 --
 -- Rules

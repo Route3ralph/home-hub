@@ -94,7 +94,7 @@ const jordanSheet = (): Sheet => ({
 }
 {
   const c = sheetChoices([
-    { who: 'family', lang: 'en' }, { who: TAYLOR, lang: 'es' }, { who: 'family', lang: 'es' }, { who: 'Max', lang: 'en' },
+    { who: 'family', lang: 'en' }, { who: TAYLOR, lang: 'es' }, { who: 'family', lang: 'es' }, { who: 'Someone', lang: 'en' },
     { who: JORDAN, lang: 'fr' }, null, 'family', { who: JORDAN.toUpperCase(), lang: 'en' },
   ]);
   check('sheetChoices: keeps family and people\'s ids with en or es, once each, in order',
