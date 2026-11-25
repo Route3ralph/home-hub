@@ -2751,18 +2751,19 @@ const HW_AUDIO_DROP = `(${HW_STUBS})(); (${HW_CLOCKED})(); (${HW_WAKE_DROP})();`
     await page.context().close();
   }
   {
-    // Past its due date and still open: first under Due soon, "Still open · was due Fri", plain text: never red or
-    // "late" on his screen (docs/v1.3-homework.md §7). Folding From earlier closes it until the next load.
+    // Past its due date and still open: first under Due soon, "Late · was due Fri", in red (docs/v1.3-homework.md §39,
+    // a parent's choice; steps from earlier days stay plain). Folding From earlier closes it until the next load.
     const d = hwDb();
     Object.assign(d.assignments.find((a) => a.id === H.span), { due_date: '2026-10-30' });
     ({ page, db } = await open({ label: 'hw-past-due', path: `/day.html?t=${JORDAN}#homework`, db: d, device: HW_DEVICE, init: HW_STUBS, ctx: phone() }));
     await page.waitForSelector('.hw-due .hw-asg');
     const rows = await page.$$eval('.hw-due .hw-asg', (rs) => rs.map((r) => r.textContent.replace(/\s+/g, ' ').trim()));
-    check('past due: first under Due soon, "Spanish · Vocabulary project · Still open · was due Fri"',
-      /^Spanish · Vocabulary project · Still open · was due Fri ·/.test(rows[0] || '') && !rows.slice(1).some((x) => /Still open/.test(x)), JSON.stringify(rows));
-    check('... plain text: no "late", not red', !/late/i.test(rows[0] || '')
-      && (await page.$eval(`.hw-asg[data-asg="${H.span}"] .hw-asg-line`, (e) => getComputedStyle(e).color)) !== 'rgb(220, 38, 38)'
-      && !!(await page.$(`.hw-asg.is-past[data-asg="${H.span}"]`)));
+    check('past due: first under Due soon, "Spanish · Vocabulary project · Late · was due Fri"',
+      /^Spanish · Vocabulary project · Late · was due Fri ·/.test(rows[0] || '') && !rows.slice(1).some((x) => /Late ·/.test(x)), JSON.stringify(rows));
+    check('... in red', (await page.$eval(`.hw-asg[data-asg="${H.span}"] .hw-asg-line`, (e) => getComputedStyle(e).color)) === (await page.evaluate(() => {
+      const x = document.createElement('span'); x.style.color = 'var(--danger)'; document.body.appendChild(x); const c = getComputedStyle(x).color; x.remove(); return c; }))
+      && !!(await page.$(`.hw-asg.is-late[data-asg="${H.span}"]`)));
+    check('... and From earlier stays plain: no "late", not red', !/late/i.test(await hwText(page, '.hw-earlier')));
     await page.click('.hw-earlier summary');
     check('folding From earlier closes it', !(await page.$eval('.hw-earlier', (e) => e.open)));
     await page.context().close();

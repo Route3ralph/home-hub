@@ -275,6 +275,7 @@
 .hw-asg { padding: 10px 0; border-bottom: 1px solid var(--line); }
 .hw-asg:last-child { border-bottom: 0; }
 .hw-asg.is-closed { color: var(--text-3); }
+.hw-asg.is-late .hw-asg-line { color: var(--danger); }
 .hw-asg-line { margin: 0; font-weight: 600; overflow-wrap: anywhere; }
 .hw-asg .plan-bars { margin: 8px 0 4px; }
 .hw-asg .hw-note, .hw-talk, .hw-stretch { margin: 6px 0 0; font-size: 14px; }
