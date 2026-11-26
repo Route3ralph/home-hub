@@ -1,0 +1,15 @@
+/* The Birthdays page (schema 40, docs/v2-design.md §46), and the Today page's birthday card. */
+.bday-list { list-style: none; margin: 0; padding: 0; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
+.bday-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 12px; border-top: 1px solid var(--border); }
+.bday-row:first-child { border-top: 0; }
+.bday-main { min-width: 0; display: grid; gap: 2px; }
+.bday-name { font-weight: 650; overflow-wrap: anywhere; display: flex; align-items: center; gap: 6px; }
+.bday-sub { color: var(--text-3); }
+.bday-row.is-soon .bday-sub { color: var(--text-2); font-weight: 600; }
+.bday-note { margin-top: 10px; }
+.today-bdays { display: grid; gap: 6px; margin: 0 0 14px; }
+.today-bday { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
+.today-bday-text { min-width: 0; overflow-wrap: anywhere; }
+.today-bday-text small { display: block; color: var(--text-3); }
+.today-bday.is-bought .today-bday-text { color: var(--text-3); }
+.today-bday .btn { flex: none; }

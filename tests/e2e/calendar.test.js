@@ -1602,6 +1602,48 @@ const emailOf = (req) => {
   }
 
   // =====================================================================
+  // 7j. Birthdays (0040, docs/v2-design.md §46): on 40 each birthday in view is an all-day "🎂 Sam turns 12" (or "🎂 Pat's
+  //     birthday" with no year) under every person filter, with no checkbox; a tap opens the Birthdays page. One
+  //     birthdays_between read for the days on screen. On 39 none, and no read.
+  // =====================================================================
+  {
+    const db = Object.assign(withCalendars(calDb()), { birthdays: [] });   // the Birthdays page a tap opens reads the table
+    db.tasks.forEach((t) => { t.on_calendar = true; });
+    const bRpc = (v) => Object.assign({ hub_schema_version: () => v }, calendarRpc, {
+      birthdays_between: (d, b) => [{ id: 'bd-1', name: 'Sam', day: '2026-10-29', turns: 12, person_id: null }, { id: 'bd-2', name: 'Pat', day: '2026-10-29', turns: null, person_id: null }]
+        .filter((x) => x.day >= b.p_from && x.day <= b.p_to),
+    });
+    let log;
+    ({ page, log } = await open({ label: 'birthdays', db, rpc: bRpc(40) }));
+    const reads = (db.rpcCalls || []).filter((c) => c.name === 'birthdays_between');
+    check('birthdays (40): one birthdays_between read, for the days the month shows', reads.length === 1 && reads[0].body.p_from <= '2026-10-01' && reads[0].body.p_to >= '2026-10-31',
+      JSON.stringify(reads.map((c) => c.body)));
+    await page.click('.cal-cell[data-day="2026-10-29"]');
+    await settle(page);
+    let panel = await rows(page, '.cal-panel');
+    check('... Oct 29: "🎂 Pat\'s birthday" and "🎂 Sam turns 12" among the day\'s', panel.some((r) => r.title === '🎂 Sam turns 12') && panel.some((r) => r.title === '🎂 Pat\'s birthday'),
+      JSON.stringify(panel.map((r) => r.title)));
+    const bRow = page.locator('.cal-panel .irow.k-birthday', { hasText: 'Sam turns 12' });
+    check('... all day, with no checkbox', /All day/.test(await bRow.locator('.irow-time').innerText()) && !(await bRow.locator('.irow-check').count()));
+    await page.click(`.cal-people .pchip[data-person="${(db.people.find((p) => p.role === 'kid') || db.people[0]).id}"]`).catch(() => {});
+    await settle(page);
+    panel = await rows(page, '.cal-panel');
+    check('... still there under a person filter', panel.some((r) => r.title === '🎂 Sam turns 12'), JSON.stringify(panel.map((r) => r.title)));
+    await bRow.locator('.irow-main').click();
+    await page.waitForTimeout(300);
+    check('... a tap opens the Birthdays page', /#\/birthdays$/.test(page.url()), page.url());
+    await page.context().close();
+    const db39 = withCalendars(calDb());
+    ({ page, log } = await open({ label: 'birthdays-39', db: db39, rpc: bRpc(39) }));
+    await page.click('.cal-cell[data-day="2026-10-29"]');
+    await settle(page);
+    panel = await rows(page, '.cal-panel');
+    check('birthdays (39): none, and never read', !panel.some((r) => /🎂/.test(r.title)) && !(db39.rpcCalls || []).some((c) => c.name === 'birthdays_between'),
+      JSON.stringify(panel.map((r) => r.title)));
+    await page.context().close();
+  }
+
+  // =====================================================================
   // 8. Dark mode uses the dark colours
   // =====================================================================
   for (const dark of [false, true]) {
