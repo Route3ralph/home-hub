@@ -1373,6 +1373,53 @@ const emailOf = (req) => {
   }
 
   // =====================================================================
+  // 9e. Birthdays (schema 40, migration 0040, docs/v2-design.md §46): today's ("🎂 Taylor turns 12 today", "Happy
+  //     birthday!" on your own), and a parent's gifts due with Mark bought (set_birthday_gift with the birthday's
+  //     year), which Bought ✓ takes back. Sam (not an admin) gets no gifts from gift_heads_up; on 39 nothing is read.
+  // =====================================================================
+  {
+    const until = async (fn) => { for (let i = 0; i < 40; i++) { if (await fn().catch(() => false)) return true; await page.waitForTimeout(100); } return false; };
+    const gRpc40 = (v) => Object.assign({ hub_schema_version: () => v }, calendarRpc, homeworkRpc, {
+      tomorrow_text: () => 'tomorrow',
+      birthdays_between: (d, b) => d.bdays.filter((x) => x.day >= b.p_from && x.day <= b.p_to),
+      gift_heads_up: (d, b, email) => (email === 'alex@example.com' ? d.gifts.map((g) => Object.assign({}, g)) : []),
+      set_birthday_gift: (d, b) => { const g = d.gifts.find((x) => x.id === b.p_id); if (g) g.bought = !!b.p_bought; return null; },
+    });
+    const gDb = () => Object.assign(withHearth(withHomework(withFood(withCalendars(todayDb(), { auth: 'service_account' })))), {
+      bdays: [{ id: 'bd-taylor', name: 'Taylor', day: TODAY, turns: 12, person_id: null }, { id: 'bd-alex', name: 'Alex Example', day: TODAY, turns: 46, person_id: ID.alex }],
+      gifts: [{ id: 'bd-sam', name: 'Sam', birthday: '2026-10-28', turns: null, year: 2026, bought: false }],
+      task_nudges: [],
+    });
+    ({ page, db, log } = await open({ label: 'birthdays', db: gDb(), rpc: gRpc40(40) }));
+    await page.waitForSelector('.today-bdays');
+    const bt = await texts(page, '.today-bday .today-bday-text');
+    check('birthdays (40): today\'s ("🎂 Taylor turns 12 today"), "🎂 Happy birthday!" on your own, then the gift with its day',
+      same(bt, ['🎂 Taylor turns 12 today', '🎂 Happy birthday!', '🎁 Gift for Sam\nBirthday Wed Oct 28 · in 3 days']), JSON.stringify(bt));
+    check('birthdays: one read of each, for today', same(calls(db, 'birthdays_between').map((c) => c.body), [{ p_from: TODAY, p_to: TODAY }])
+      && same(calls(db, 'gift_heads_up').map((c) => c.body), [{ p_day: TODAY }]));
+    const giftBtn = () => page.locator('.today-bday [data-act="gift"]');
+    check('the gift: Mark bought, labelled', (await giftBtn().innerText()) === 'Mark bought' && (await giftBtn().getAttribute('aria-label')) === 'Mark the gift for Sam bought');
+    await giftBtn().click();
+    await until(async () => (await giftBtn().innerText()) === 'Bought ✓');
+    check('Mark bought: set_birthday_gift with the birthday\'s year; Bought ✓ and a toast', same(calls(db, 'set_birthday_gift').map((c) => c.body), [{ p_id: 'bd-sam', p_year: 2026, p_bought: true }])
+      && (await giftBtn().innerText()) === 'Bought ✓' && (await lastToast(page)) === 'Bought: gift for Sam', `${await giftBtn().innerText()} / ${await lastToast(page)}`);
+    await giftBtn().click();
+    await until(async () => (await giftBtn().innerText()) === 'Mark bought');
+    check('Bought ✓ again: not bought (p_bought false)', calls(db, 'set_birthday_gift').length === 2 && calls(db, 'set_birthday_gift')[1].body.p_bought === false
+      && (await giftBtn().innerText()) === 'Mark bought');
+    await page.context().close();
+    ({ page, db, log } = await open({ label: 'birthdays-sam', db: gDb(), rpc: gRpc40(40), email: 'sam@example.com' }));
+    await page.waitForSelector('.today-bdays');
+    check('birthdays: Sam sees the day\'s birthdays but no gifts', same(await texts(page, '.today-bday .today-bday-text'), ['🎂 Taylor turns 12 today', '🎂 Alex Example turns 46 today'])
+      && !(await page.$('[data-act="gift"]')), JSON.stringify(await texts(page, '.today-bday .today-bday-text')));
+    await page.context().close();
+    ({ page, db, log } = await open({ label: 'birthdays-39', db: gDb(), rpc: gRpc40(39) }));
+    await page.waitForTimeout(300);
+    check('birthdays: on 39 no card and nothing read', !(await page.$('.today-bdays')) && !calls(db, 'birthdays_between').length && !calls(db, 'gift_heads_up').length);
+    await page.context().close();
+  }
+
+  // =====================================================================
   // 10. v1 mode: no Today page, no v2 reads
   // =====================================================================
   ({ page, log } = await open({ label: 'v1', v1: true, db: makeDb() }));

@@ -2102,3 +2102,61 @@ alter table public.points_ledger add column bonus int;
 
 ### Going live
 The site first (the Homework page shows the row and the limit only on 39), then 0039. No Edge Function and no `cron.sql` change. Undoing it isn't needed. If wanted, as the migration's header writes it out: drop `paste_grades`, the two columns, then 0037's `private.mark_points` and 0038's `hub_schema_version()`.
+
+## 46. v2: Birthdays
+
+The family's birthdays in one list (their own **Birthdays** page), each on the Calendar on the day ("🎂 Sam turns 12") and in the morning email, and a "🎁 Gift for Sam" reminder for the parents from 7 days before, with a **Bought** tick. Neither reaches the person whose birthday it is. Its migration is `supabase/migrations/0040_birthdays.sql` (after 0039). One transaction; it refuses to run without 0039 ("Paste grades (migration 0039) isn't installed"), twice ("already installed"), on a database set back to 39 ("set back to 39", the table already there), or on one that isn't as 0039 left it (`public.digest_for`, `public.paste_grades`, `private.is_admin`, `private.is_member`, `private.stamp`, `private.clean_text`, `private.day_label`, `private.word`, `public.today_local`; no `private.digest_for_v39` or `birthday_gifts` yet).
+
+### 46.1 What shows where
+- **The Birthdays page** (`#/birthdays`, schema 40): every birthday, the next one first (today counts), with its day, "turns N" when the year is known, and "in N days". An admin (a parent who signs in) adds, changes and deletes them (+ Add, Edit, Delete); everyone else who signs in reads the list.
+- **The Calendar page**: on its day, all day, "🎂 Sam turns 12" or "🎂 Pat's birthday" (no year), under every person filter, with no checkbox; a tap opens the Birthdays page. Not on the printed sheets.
+- **The Today page**: today's birthdays ("🎂 Sam turns 12 today"; "🎂 Happy birthday!" on your own), then for an admin each gift due, "🎁 Gift for Sam · Birthday Mon Nov 30 · in 4 days", with **Mark bought** (Bought ✓ takes it back).
+- **The morning email** (`digest_for`, no hub-jobs change): "🎂 …" first in Today on the day, for everyone but that person; for a parent, each gift not yet bought in Heads-up, from 7 days before to the day, never their own.
+- **Never** on My day, the wall, the family board, Google Calendar, the tutor link, the share link or a guest's page.
+- 29 February is on the 28th in other years.
+
+### 46.2 Tables
+```sql
+create table public.birthdays (
+  id          uuid primary key default gen_random_uuid(),
+  name        text not null check (char_length(name) between 1 and 60),
+  month       int not null check (month between 1 and 12),
+  day         int not null check (day between 1 and 31),
+  born_year   int check (born_year is null or born_year between 1900 and 2100),
+  person_id   uuid references public.people (id) on delete set null,
+  created_at  timestamptz not null default now(),
+  created_by  text,
+  updated_at  timestamptz not null default now(),
+  updated_by  text,
+  check (day <= case when month = 2 then 29 when month in (4, 6, 9, 11) then 30 else 31 end),
+  check (born_year is null or not (month = 2 and day = 29)
+         or (born_year % 4 = 0 and (born_year % 100 <> 0 or born_year % 400 = 0)))
+);
+
+create table public.birthday_gifts (
+  birthday_id uuid not null references public.birthdays (id) on delete cascade,
+  year        int not null check (year between 1900 and 2100),
+  bought_at   timestamptz not null default now(),
+  bought_by   text,
+  primary key (birthday_id, year)
+);
+```
+- `birthdays`: a name (cleaned to one line by `private.birthday_tidy()`, a trigger), a month and day, an optional `born_year` (for "turns 12"), and optionally `person_id`, the person on the family list it is for (one birthday each: `birthdays_person`, a unique index), whose own gift reminder is then kept from them. Deleting the person keeps the birthday. `private.stamp()` writes the audit columns.
+- `birthday_gifts`: one row per birthday and the year of that birthday once a parent ticks Bought; deleting the birthday deletes it.
+
+### 46.3 Row-level security and grants
+- `birthdays`: members select (`private.is_member()`); admins insert, update and delete (`private.is_admin()`); never a guest. Signed-in users get select, delete and the list's own columns (never the audit columns); service_role select (the email); anon nothing.
+- `birthday_gifts`: RLS on, no policies and no grants: read and written only through the functions below.
+
+### 46.4 Functions
+- `public.birthdays_between(p_from date, p_to date) returns jsonb` (signed in; security invoker, so the list's RLS applies; 22023 for more than 400 days or a range that runs backwards): `[{id, name, day, turns, person_id}]`, by day then name; `turns` is null without a year.
+- `public.gift_heads_up(p_day date) returns jsonb` (signed in; a definer): an admin's gifts due, `[{id, name, birthday, turns, year, bought}]`, each birthday from `p_day` to 7 days ahead, except the caller's own; anyone else `[]`.
+- `public.set_birthday_gift(p_id uuid, p_year int, p_bought boolean) returns void` (signed in; a definer): an admin ticks or unticks Bought for that birthday's year (42501 for anyone else, or for their own birthday; 22023 for an unknown birthday or a year other than this one, the last or the next).
+- `private.birthday_on(p_month int, p_day int, p_year int) returns date`: the day in that year (29 February on the 28th in other years).
+- `private.birthday_word(p_key text, p_lang text) returns text`: "🎁 Gift for {name}", "birthday {d}", "🎂 {name}'s birthday", "🎂 {name} turns {n}", in English and Spanish.
+- `private.gifts_for(p_day date, p_except uuid)`: the gifts due on `p_day` (7 days ahead), except `p_except`'s own; for `gift_heads_up` and `digest_for`.
+- `public.digest_for(p_person uuid, p_local_date date) returns jsonb` (service_role, as before): 0004's, renamed `digest_for_v39` and moved to `private` (`private.digest_for_v39`, service_role), kept as it is; the new one adds the birthday rows (`kind 'birthday'`, time "All day") at the top of `today` and, for a parent, the gifts not yet bought (`kind 'gift'`) at the end of `heads_up`, names a day 0039 called "Nothing planned" by its first birthday line, and makes such a day not empty. With no birthday near, every email is exactly 0039's.
+- `hub_schema_version()` returns 40.
+
+### 46.5 Going live
+The site first (the Birthdays page, the Calendar's 🎂 and the Today card show only on 40), then 0040. No Edge Function and no `cron.sql` change. Undoing it isn't needed. If wanted, as the migration's header writes it out: put 0039's `digest_for` back, drop the three page functions, the private helpers and both tables, then 0039's `hub_schema_version()`.

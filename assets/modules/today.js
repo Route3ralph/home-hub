@@ -249,10 +249,21 @@
       .then((text) => ({ person: p, text }), (err) => ({ person: p, error: friendly(err) }))));
   }
 
+  // Birthdays (schema 40; docs/v2-design.md §46): today's, and for an admin the gifts due (gift_heads_up: from 7 days
+  // before to the day, never their own). Never throws: without them the page still shows.
+  async function loadBirthdays(today) {
+    if (!(core.schemaVersion >= 40)) return { today: [], gifts: [] };
+    const [days, gifts] = await Promise.all([
+      call('birthdays_between', { p_from: today, p_to: today }).catch(() => []),
+      call('gift_heads_up', { p_day: today }).catch(() => []),
+    ]);
+    return { today: Array.isArray(days) ? days : [], gifts: Array.isArray(gifts) ? gifts : [] };
+  }
+
   async function load() {
     const today = dates.today();
     const projects = loadProjects();
-    const [agenda, late, heads, setup, texts, , google, notice, dinners, homework, tomorrowTexts, nudges] = await Promise.all([
+    const [agenda, late, heads, setup, texts, , google, notice, dinners, homework, tomorrowTexts, nudges, birthdays] = await Promise.all([
       call('agenda', { p_from: today, p_to: today }),
       call('late_items'),
       call('heads_up', { p_day: today }),
@@ -265,6 +276,7 @@
       loadHomework(today),
       loadTomorrowTexts(),
       loadNudges(today),
+      loadBirthdays(today),
     ]);
     const p = await projects;
     return {
@@ -283,6 +295,7 @@
       dinners,
       homework,
       nudges,
+      birthdays,
     };
   }
 
@@ -667,6 +680,40 @@
   // The parents' homework lines (schema 5), the same under every chip: each waiting ask with Yes · Not now,
   // today's instant cash-ins (nothing to decide: he took them on the spot, the points already taken), then
   // what waits to be answered or checked, to the Homework page.
+  // Today's birthdays ("🎂 Sam turns 12 today"; "Happy birthday" on your own), then a parent's gifts due, each with
+  // Mark bought (or Bought ✓, which a tap takes back). Nothing when there's neither.
+  function birthdaysHTML(d) {
+    const b = d.birthdays || { today: [], gifts: [] };
+    if (!b.today.length && !b.gifts.length) return '';
+    const me = v2.mePerson ? v2.mePerson.id : null;
+    const days = b.today.map((x) => `<div class="today-bday"><span class="today-bday-text">${esc(x.person_id && x.person_id === me
+      ? '🎂 Happy birthday!' : x.turns ? `🎂 ${x.name} turns ${x.turns} today` : `🎂 ${x.name}'s birthday is today`)}</span></div>`);
+    const gifts = b.gifts.map((g) => {
+      const left = core.G.parseDate(g.birthday) - core.G.parseDate(d.today);
+      const when = left === 0 ? 'today' : left === 1 ? 'tomorrow' : `in ${left} days`;
+      return `<div class="today-bday${g.bought ? ' is-bought' : ''}"><span class="today-bday-text">${esc(`🎁 Gift for ${g.name}`)}<small>${esc(`Birthday ${fmt.day(g.birthday)} · ${when}`)}</small></span>
+        <button type="button" class="btn btn-sm${g.bought ? '' : ' btn-primary'}" data-act="gift" data-id="${esc(g.id)}" data-year="${esc(String(g.year))}" data-on="${g.bought ? '0' : '1'}"
+          aria-pressed="${g.bought}" aria-label="${esc(g.bought ? `Bought: gift for ${g.name}. Tap if it isn't` : `Mark the gift for ${g.name} bought`)}">${g.bought ? 'Bought ✓' : 'Mark bought'}</button></div>`;
+    });
+    return `<section class="today-bdays" aria-label="Birthdays">${days.concat(gifts).join('')}</section>`;
+  }
+
+  async function setGift(st, btn) {
+    const on = btn.dataset.on === '1';
+    btn.disabled = true;
+    try {
+      await call('set_birthday_gift', { p_id: btn.dataset.id, p_year: Number(btn.dataset.year), p_bought: on });
+      const g = ((st.data.birthdays || {}).gifts || []).find((x) => x.id === btn.dataset.id);
+      toast(on ? `Bought${g ? `: gift for ${g.name}` : ''}` : `Not bought yet${g ? `: gift for ${g.name}` : ''}`);
+    } catch (err) {
+      toast(friendly(err), { error: true });
+    }
+    const fresh = await loadBirthdays(st.data.today);
+    if (st.ctx.stale()) return;
+    st.data.birthdays = fresh;
+    draw(st);
+  }
+
   function homeworkHTML(d) {
     const h = d.homework;
     if (!h || (!h.asks.length && !h.cashed.length && !h.questions && !h.milestones)) return '';
@@ -802,6 +849,7 @@
       <div class="today-chips" role="group" aria-label="Whose day">${chipsHTML(v)}</div>
       ${dinnerHTML(d)}
       ${homeworkHTML(d)}
+      ${birthdaysHTML(d)}
       <div class="today-grid${side ? ' has-side' : ''}">
         <div class="today-col">
           <section class="today-sec" aria-label="${esc(dayTitle)}">${ui.sectionHeading(dayTitle, dayItems.length)}
@@ -875,6 +923,7 @@
       if (act.dataset.act === 'add-event') openAdd('event');
       else if (act.dataset.act === 'hw-yes' || act.dataset.act === 'hw-not-now') decide(st, act.dataset.ask, act.dataset.act === 'hw-yes', act);
       else if (act.dataset.act === 'link-me') linkMe(st, act);
+      else if (act.dataset.act === 'gift') setGift(st, act);
       else if (act.dataset.act === 'close-notice') {
         closeNotice();
         const box = act.closest('.today-gnotice');

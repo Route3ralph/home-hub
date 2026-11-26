@@ -796,6 +796,31 @@ const emptyLists = (b) => !!b && typeof b === 'object' && !Array.isArray(b)
       wAdd.status === 201 && (wAnon.status >= 400 || (Array.isArray(wAnon.body) && !wAnon.body.length)) && kidAdd.status === 200 && kidAdd.body.items.length === 2
       && (await sql("select created_by from watch_items where title = 'Wild Robot'"))[0].created_by === 'Jordan (My day)' && kidDay.body.watch === 2,
     [wAdd.status, wAnon.status, kidAdd.status, kidDay.body && kidDay.body.watch]);
+
+    // Birthdays (0040, docs/v2-design.md §46): Alex adds (the admin policy), Sam can't; both read; signed out nothing.
+    // gift_heads_up gives Alex the gift 3 days ahead and Sam none; Bought is Alex's (set_birthday_gift), not Sam's.
+    const day0 = (await sql('select public.today_local()::text as d'))[0].d;
+    const soon = new Date(`${day0}T12:00:00Z`);
+    soon.setUTCDate(soon.getUTCDate() + 3);
+    const bAdd = await ask('/rest/v1/birthdays', admin, { name: 'Grandma Pat', month: soon.getUTCMonth() + 1, day: soon.getUTCDate(), born_year: 1952 }, 'POST');
+    const bSam = await ask('/rest/v1/birthdays', member, { name: 'Sam\'s friend', month: 1, day: 2 }, 'POST');
+    const bRead = await ask('/rest/v1/birthdays?select=name', member);
+    const bAnon = await ask('/rest/v1/birthdays?select=*', null);
+    check('birthdays: Alex adds one (201); Sam can\'t (4xx) but reads it; signed out reads nothing',
+      bAdd.status === 201 && bSam.status >= 400 && Array.isArray(bRead.body) && bRead.body.length === 1 && bRead.body[0].name === 'Grandma Pat'
+      && (bAnon.status >= 400 || (Array.isArray(bAnon.body) && !bAnon.body.length)), [bAdd.status, bSam.status, bRead.body, bAnon.status]);
+    const gAlex = await fn('gift_heads_up', admin, { p_day: day0 });
+    const gSam = await fn('gift_heads_up', member, { p_day: day0 });
+    const gift = Array.isArray(gAlex.body) ? gAlex.body.find((g) => g.name === 'Grandma Pat') : null;
+    const buySam = gift ? await fn('set_birthday_gift', member, { p_id: gift.id, p_year: gift.year, p_bought: true }) : null;
+    const buyAlex = gift ? await fn('set_birthday_gift', admin, { p_id: gift.id, p_year: gift.year, p_bought: true }) : null;
+    const gAfter = await fn('gift_heads_up', admin, { p_day: day0 });
+    check('birthdays: Alex\'s gift_heads_up has Grandma Pat in 3 days, Sam\'s none; Sam can\'t tick Bought (403), Alex can; then bought',
+      !!gift && gift.bought === false && gSam.status === 200 && Array.isArray(gSam.body) && !gSam.body.length && buySam.status === 403 && buyAlex.status < 300
+      && gAfter.body.find((g) => g.name === 'Grandma Pat').bought === true, [gAlex.status, gAlex.body, gSam.body, buySam && buySam.status, buyAlex && buyAlex.status]);
+    const between = await fn('birthdays_between', member, { p_from: day0, p_to: soon.toISOString().slice(0, 10) });
+    check('birthdays: birthdays_between for Sam lists Grandma Pat on her day', between.status === 200 && Array.isArray(between.body) && between.body.length === 1
+      && between.body[0].day === soon.toISOString().slice(0, 10), [between.status, between.body]);
   });
 
   // Recipes (migration 0013, docs/v1.2-kitchen.md §19), with a row in the table and a Recipes folder set: signed out,

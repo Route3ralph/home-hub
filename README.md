@@ -470,6 +470,16 @@ There is nothing to switch off. The design's §16.9 has the undo, if ever wanted
 - **The school links** are never shown again once saved, not even to the parents: only "…a1b2". An assignment's description from the school is its teacher's text: for the grown-ups and Pat, never on Jordan's screen.
 - **How long things are kept:** the teacher's text until 30 days after the due date; done and dropped assignments, focus blocks, questions and notes 180 days; points until **Erase**.
 
+## Birthdays (migration 0040)
+
+A page of its own, **Birthdays**, for the family's birthdays and anyone else you buy presents for: a name, the day, the year of birth if you know it (for "turns 12"), and who it is when they're on the family list. A parent (an admin) adds, changes and deletes them; everyone else who signs in sees the list, the next one first.
+
+- **On the day:** "🎂 Sam turns 12" on the Calendar page (all day, under every person filter) and at the top of Today in the morning email, for everyone but Sam. Today says "🎂 Happy birthday!" to the person themselves.
+- **A week before:** a parent's Today page and morning email show "🎁 Gift for Sam" every day until someone taps **Mark bought**. Tapping **Bought ✓** takes it back. The reminder never reaches the person whose birthday it is, which is why "Who is it" matters for the family.
+- **Not shown** on My day, the wall, the family board, Google Calendar, a tutor link or a guest's page. A 29 February birthday is on the 28th in other years.
+
+To turn it on: the site first, then paste `supabase/migrations/0040_birthdays.sql` into the SQL editor. No Edge Function or `cron.sql` change (`docs/v2-design.md` §46).
+
 ## The family board (migration 0020)
 
 One screen for the whole house, made for a monitor on the wall (an old computer or a mini PC with Chrome, or a tablet), with no sign-in. It shows today: the date and the time, today's meals, a **Family** column (anything with four or more of the family, or nobody, and tasks nobody is in charge of, as on the Hearth wall), and a column for each person on the family list with their events and tasks, and their late tasks. A kid with a routine has it at the top of his column, the same as on his My day.

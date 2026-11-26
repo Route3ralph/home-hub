@@ -91,6 +91,12 @@
   // person filter; any other under its people's. A private one is stored without its title.
   const isGoogle = (it) => it.kind === 'google';
   const sharedGoogle = (it) => isGoogle(it) && !it.responsible_id && (!(it.participant_ids || []).length || it.category === 'family');
+  // Birthdays (kind 'birthday', schema 40; docs/v2-design.md §46): "🎂 Sam turns 12" all day, under every person filter,
+  // with no checkbox; a tap opens the Birthdays page. Never on the printed sheets.
+  const isBirthday = (it) => it.kind === 'birthday';
+  const birthdayTitle = (b) => (b.turns ? `🎂 ${b.name} turns ${b.turns}` : `🎂 ${b.name}'s birthday`);
+  const asBirthday = (b) => ({ kind: 'birthday', item_id: b.id, occurrence: b.day, day: b.day, all_day: true, title: birthdayTitle(b),
+    status: 'open', responsible_id: null, participant_ids: [] });
   const asGoogle = (it) => Object.assign({}, it, { title: it.private ? 'Private item' : String(it.title || '').trim() || '(No title)' });
   const pcStyle = (c) => (c ? `--pc:${c};` : '');
   const others = (respId, ids) => (ids || []).filter((id) => id && id !== respId);
@@ -116,7 +122,7 @@
   const spans = (it) => it.kind === 'project' || (!!it.all_day && endOf(it) > it.day);
   const covers = (it, day) => it.day <= day && day <= endOf(it);
   // As private.item_order: timed items, then all-day events, project tasks, tasks without a time.
-  const rank = (it) => (it.local_start ? 0 : it.kind === 'event' || isGoogle(it) ? 1 : it.kind === 'project' ? 2 : 3);
+  const rank = (it) => (it.local_start ? 0 : it.kind === 'event' || isGoogle(it) || isBirthday(it) ? 1 : it.kind === 'project' ? 2 : 3);
   const byTime = (a, b) => rank(a) - rank(b) || String(a.local_start || '').localeCompare(String(b.local_start || ''))
     || String(a.title || '').localeCompare(String(b.title || ''));
   const barLabel = (it) => (it.kind === 'project' ? `${it.project_name || 'Project'}: ${it.title}` : it.title);
@@ -130,7 +136,7 @@
 
   // The person filter: nobody chosen = everyone. An item matches when someone chosen is in charge or with;
   // a shared Google event (sharedGoogle) matches everyone.
-  const matches = (it, chosen) => !chosen.size || sharedGoogle(it) || chosen.has(it.responsible_id) || (it.participant_ids || []).some((id) => chosen.has(id));
+  const matches = (it, chosen) => !chosen.size || sharedGoogle(it) || isBirthday(it) || chosen.has(it.responsible_id) || (it.participant_ids || []).some((id) => chosen.has(id));
 
   // Project work in a day's list. A job that lasts days shows in full on the day it starts
   // ('starts') and the day it finishes ('finishes'); a milestone or a one-day job on its day ('on').
@@ -350,6 +356,14 @@
       return { items: (Array.isArray(rows) ? rows : []).map(asGoogle), failed: false };
     } catch (err) { return { items: [], failed: true }; }
   }
+  // Birthdays for the same days (schema 40). Never throws: without them the calendar still shows.
+  async function loadBirthdays(range) {
+    if (!(core.schemaVersion >= 40)) return [];
+    try {
+      const rows = await v2.call('birthdays_between', { p_from: range.from, p_to: range.to });
+      return (Array.isArray(rows) ? rows : []).map(asBirthday);
+    } catch (err) { return []; }
+  }
   // Which days Google events are read for (the job's window), or null before the job has signed in.
   async function loadWindow() {
     try {
@@ -361,12 +375,14 @@
   async function load(st) {
     const range = rangeOf(st);
     const google = loadGoogle(range);
+    const birthdays = loadBirthdays(range);
     const rows = await calendarTasks(await v2.withBring(await v2.call('agenda', { p_from: range.from, p_to: range.to }), range.from, range.to));
     const g = await google;
+    const bdays = await birthdays;
     st.window = await st.windowLoad;
     if (st.ctx.stale()) return;
     st.range = range;
-    st.items = rows.concat(g.items);
+    st.items = rows.concat(g.items, bdays);
     st.googleFailed = g.failed;
     if (!(st.selected >= range.from && st.selected <= range.to)) st.selected = st.anchor;
     draw(st);
@@ -437,9 +453,10 @@
   // checkbox and no who dots: an outlined dot in its person's colour, and "Google" on its second line.
   function itemRowFor(st, it, shownAs) {
     const google = isGoogle(it);
+    const plain = google || isBirthday(it);
     const row = ui.itemRow(shownAs || shown(it, st.today), {
-      checkbox: !google,
-      showWho: !google,
+      checkbox: !plain,
+      showWho: !plain,
       onOpen: () => openItem(st, it),
       onToggle: () => tick(it),
       onUntick: () => untick(it),
@@ -730,6 +747,7 @@
     if (it.kind === 'event') openEventDetails(st, it.item_id, it.occurrence, it);
     else if (it.kind === 'task') openTaskDetails(st, it);
     else if (isGoogle(it)) openGoogleDetails(st, it);
+    else if (isBirthday(it)) location.hash = '#/birthdays';
     else if (it.kind === 'project') location.hash = `#/projects/${encodeURIComponent(it.project_id || it.item_id)}`;
   }
 

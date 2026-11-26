@@ -613,6 +613,16 @@ const detailOf = (s: ReturnType<typeof setup>) => JSON.parse(s.runs()[0]?.detail
     !links.some((l) => l.includes('day.html')) && !alexMailR.html.includes(TOKEN.alex) && !alexMailR.text.includes(TOKEN.alex) && !alexMailR.text.includes('day.html'), links.join(' '));
   check('a parent who can sign in (an admin): "Stop these emails" opens the Family page, where their morning email is set (behind sign-in)',
     links.includes(hubFamily) && alexMailR.text.includes(`Stop these emails: ${hubFamily}`) && !links.includes(hubSettings), links.join(' '));
+  // Birthdays (migration 0040): digest_for puts "🎂 …" in Today and "🎁 Gift for …" in Heads-up; the renderer lays them
+  // out as any other row (no box: they aren't tasks), escaped.
+  const bdayD = alexDigest();
+  (bdayD as any).today = [item('birthday', 'All day', '🎂 Taylor turns 12'), ...bdayD.today];
+  (bdayD as any).heads_up = [...bdayD.heads_up, item('gift', null, '🎁 Gift for <Sam>', 'birthday Mon Nov 30', 'open', '2026-11-30')];
+  const bdayMail = renderDigest(bdayD as any, SITE, { canSignIn: true });
+  check('birthdays: "🎂 Taylor turns 12" all day in Today, "🎁 Gift for …" in Heads-up with its day, escaped, with no task box',
+    bdayMail.html.includes('🎂 Taylor turns 12') && bdayMail.html.includes('🎁 Gift for &lt;Sam&gt;') && !bdayMail.html.includes('<Sam>')
+    && bdayMail.text.includes('All day  🎂 Taylor turns 12') && bdayMail.text.includes('🎁 Gift for <Sam> · birthday Mon Nov 30')
+    && !bdayMail.text.includes('☐ 🎁'), bdayMail.text.slice(0, 400));
   const samMailR = renderDigest(samDigest() as any, SITE, { canSignIn: true });
   check('an adult who can sign in (a member): "Stop these emails" opens Settings, whose Morning email card says to ask an admin',
     hrefs(samMailR.html).includes(hubSettings) && !hrefs(samMailR.html).includes(hubFamily) && !samMailR.html.includes('day.html'), hrefs(samMailR.html).join(' '));
