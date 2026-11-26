@@ -34,7 +34,7 @@ create function pg_temp.balance() returns int language sql stable security defin
 $$;
 grant execute on function pg_temp.balance() to authenticated;
 
-select test.is(hub_schema_version(), 39, 'hub_schema_version is 39');
+select test.is(hub_schema_version(), 40, 'hub_schema_version is 40');
 
 -- ---------------------------------------------------------------------
 -- The schema and its grants
