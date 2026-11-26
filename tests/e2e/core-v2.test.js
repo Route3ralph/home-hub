@@ -193,13 +193,13 @@ const emailOf = (req) => {
   // v1.3 adds plan.js after shoplist.js and homework.js after food.js (on purpose); 0022 watch.js between them.
   check('index.html: core first, then shoplist.js and plan.js, the v1 modules, the v2 modules, Food, Watch and Homework, in order',
     same(order, ['config.js', 'supabase-js', 'assets/gantt.js', 'assets/hub.js', 'assets/shoplist.js', 'assets/plan.js', ...v1Mods, ...v2Mods,
-      'assets/modules/food.js', 'assets/modules/watch.js', 'assets/modules/homework.js']), order.join(', '));
+      'assets/modules/food.js', 'assets/modules/watch.js', 'assets/modules/birthdays.js', 'assets/modules/homework.js']), order.join(', '));
   check('index.html: no script is async or deferred', head.scripts.every((s) => !s.async));
   // Then projects.css: the Projects page is a v1 page and a v2 page; its styles apply to the v2 one only.
-  // Then food.css (schema 4), plan.css and homework.css (schema 5), and watch.css (schema 22).
+  // Then food.css (schema 4), plan.css and homework.css (schema 5), watch.css (schema 22) and birthdays.css (schema 40).
   check('index.html: page styles load after styles.css, in order',
     same(head.styles.map((h) => h.replace(/\?.*$/, '')), ['assets/styles.css', ...V2_PAGES.map((m) => `assets/css/${m}.css`), 'assets/css/projects.css', 'assets/css/food.css',
-      'assets/css/plan.css', 'assets/css/homework.css', 'assets/css/watch.css']), head.styles.join(', '));
+      'assets/css/plan.css', 'assets/css/homework.css', 'assets/css/watch.css', 'assets/css/birthdays.css']), head.styles.join(', '));
   const vers = new Set([...head.scripts.map((s) => s.src), ...head.styles].map((u) => (u.match(/[?&]v=([^&]+)/) || [])[1]));
   check(`index.html: every script and stylesheet carries ?v=${V}`, vers.size === 1 && vers.has(V), [...vers].join(', '));
   check('index.html: manifest, apple-touch-icon, theme-color and iPhone web-app tags',
