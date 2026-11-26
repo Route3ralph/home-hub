@@ -161,6 +161,44 @@ const RPC = (v) => ({ hub_schema_version: () => v, clock: (db) => Object.assign(
   check('Delete (asks first): gone', !db.birthdays.some((x) => x.id === B.pat) && !(await names(page)).includes('Grandma Pat'));
   await page.context().close();
 
+  // The gift switch (0041, docs/v2-design.md §47): on 41 the form has "Remind me to buy a gift", ticked for a new one and
+  // as saved for an old one; off reads "no gift reminder" on the row. On 40 there is no box, and gift is never sent.
+  ({ page, db } = await open({ label: 'gift-41', version: 41, db: Object.assign(bdayDb(), {}) }));
+  db.birthdays.forEach((b) => { b.gift = true; });
+  db.birthdays.find((b) => b.id === B.pat).gift = false;
+  await page.reload();
+  await page.waitForSelector('#main .bday-row');
+  check('gift (41): Grandma Pat\'s row says "no gift reminder", Jordan\'s doesn\'t', /no gift reminder$/.test(await tc(page, `${row(B.pat)} .bday-sub`))
+    && !/no gift reminder/.test(await tc(page, `${row(B.jordan)} .bday-sub`)), await tc(page, `${row(B.pat)} .bday-sub`));
+  await page.click('[data-act="add"]');
+  check('gift: a new birthday\'s box is ticked', await page.isChecked('#formDialog input[name="gift"]'));
+  await page.fill('#formDialog input[name="name"]', 'Neighbour Kim');
+  await page.selectOption('#formDialog select[name="month"]', '3');
+  await page.selectOption('#formDialog select[name="day"]', '3');
+  await page.uncheck('#formDialog input[name="gift"]');
+  await page.click('#formDialog [type="submit"]');
+  await sleep(500);
+  const kim = db.birthdays.find((x) => x.name === 'Neighbour Kim');
+  check('gift: unticked on Add saves gift false', !!kim && kim.gift === false, JSON.stringify(kim));
+  await page.click(`${row(B.pat)} [data-act="edit"]`);
+  check('gift: Edit shows the saved switch (off for Grandma Pat)', !(await page.isChecked('#formDialog input[name="gift"]')));
+  await page.check('#formDialog input[name="gift"]');
+  await page.click('#formDialog [type="submit"]');
+  await sleep(500);
+  check('gift: ticked on Edit saves gift true', db.birthdays.find((x) => x.id === B.pat).gift === true);
+  await page.context().close();
+  ({ page, db } = await open({ label: 'gift-40' }));
+  await page.click('[data-act="add"]');
+  check('gift (40): no box on the form', !(await page.$('#formDialog input[name="gift"]')));
+  await page.fill('#formDialog input[name="name"]', 'Neighbour Lee');
+  await page.selectOption('#formDialog select[name="month"]', '3');
+  await page.selectOption('#formDialog select[name="day"]', '4');
+  await page.click('#formDialog [type="submit"]');
+  await sleep(500);
+  const lee = db.birthdays.find((x) => x.name === 'Neighbour Lee');
+  check('gift (40): gift is never sent', !!lee && !('gift' in lee), JSON.stringify(lee));
+  await page.context().close();
+
   // An adult who isn't an admin reads it, with no + Add or Edit.
   ({ page, db } = await open({ label: 'adult', email: 'sam@example.com' }));
   check('Sam (an adult): the list, no + Add or Edit, "Only a parent can change the list."', (await names(page)).length === 4 && !(await page.$('[data-act="add"]'))

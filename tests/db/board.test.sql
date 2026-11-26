@@ -85,7 +85,7 @@ select color as tcolor from people where name = 'Taylor' \gset
 -- ---------------------------------------------------------------------
 -- The schema, the signatures, their grants and row-level security
 -- ---------------------------------------------------------------------
-select test.is(hub_schema_version(), 40, 'hub_schema_version is 40 (0020 made it 20, 0021 21, 0022 22, 0023 23, 0024 24, 0025 25, 0026 26, 0027 27, 0028 28, 0029 29, 0030 30, 0031 31, 0032 32, 0033 33, 0034 34, 0035 35, 0036 36, 0037 37, 0038 38, 0039 39, 0040 40)');
+select test.is(hub_schema_version(), 41, 'hub_schema_version is 41 (0020 made it 20, 0021 21, 0022 22, 0023 23, 0024 24, 0025 25, 0026 26, 0027 27, 0028 28, 0029 29, 0030 30, 0031 31, 0032 32, 0033 33, 0034 34, 0035 35, 0036 36, 0037 37, 0038 38, 0039 39, 0040 40, 0041 41)');
 select test.ok((select bool_and(has_function_privilege('anon', f, 'execute') and has_function_privilege('authenticated', f, 'execute')
                                 and not has_function_privilege('service_role', f, 'execute'))
                 from unnest(array['public.board_by_token(text, text)', 'public.board_tick_by_token(text, uuid, date, text)',

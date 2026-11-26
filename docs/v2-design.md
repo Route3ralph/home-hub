@@ -2160,3 +2160,20 @@ create table public.birthday_gifts (
 
 ### 46.5 Going live
 The site first (the Birthdays page, the Calendar's 🎂 and the Today card show only on 40), then 0040. No Edge Function and no `cron.sql` change. Undoing it isn't needed. If wanted, as the migration's header writes it out: put 0039's `digest_for` back, drop the three page functions, the private helpers and both tables, then 0039's `hub_schema_version()`.
+
+## 47. v2: the gift switch
+
+A birthday can have its gift reminder turned off ("Remind me to buy a gift", on the Birthdays page's form), so a long list doesn't bury the reminders that matter. Off, the birthday still shows on its day (the Calendar, Today, the morning email); it never shows as "🎁 Gift for …". Its migration is `supabase/migrations/0041_birthday_gift_switch.sql` (after 0040). One transaction; it refuses to run without 0040 ("Birthdays (migration 0040) isn't installed"), twice ("already installed"), on a database set back to 40 ("set back to 40", the column already there), or on one that isn't as 0040 left it (`private.gifts_for`, `public.gift_heads_up`, `private.digest_for_v39`, `private.birthday_on`, `birthday_gifts`).
+
+### 47.2 Column
+```sql
+alter table public.birthdays add column gift boolean not null default true;
+```
+- `birthdays.gift`: "Remind me to buy a gift". True for every birthday (those added on 40 too) until a parent turns it off; signed-in users get insert and update on it, and RLS keeps writes to admins. The Birthdays page reads and sends it only on 41, and a row with it off reads "no gift reminder".
+
+### 47.3 Functions
+- `private.gifts_for(p_day date, p_except uuid)`: §46's, for birthdays with `gift` on only (create or replace, so its grants stay). `gift_heads_up` and `digest_for` call it by name, so a reminder turned off leaves the Today page and the morning email's Heads-up with no change of their own; `birthdays_between` and the email's 🎂 line are unchanged.
+- `hub_schema_version()` returns 41.
+
+### 47.4 Going live
+The site first (the Birthdays page shows the switch only on 41), then 0041. No Edge Function and no `cron.sql` change. Undoing it isn't needed. If wanted, as the migration's header writes it out: 0040's `private.gifts_for`, drop the column, then 0040's `hub_schema_version()`.

@@ -477,8 +477,9 @@ A page of its own, **Birthdays**, for the family's birthdays and anyone else you
 - **On the day:** "🎂 Sam turns 12" on the Calendar page (all day, under every person filter) and at the top of Today in the morning email, for everyone but Sam. Today says "🎂 Happy birthday!" to the person themselves.
 - **A week before:** a parent's Today page and morning email show "🎁 Gift for Sam" every day until someone taps **Mark bought**. Tapping **Bought ✓** takes it back. The reminder never reaches the person whose birthday it is, which is why "Who is it" matters for the family.
 - **Not shown** on My day, the wall, the family board, Google Calendar, a tutor link or a guest's page. A 29 February birthday is on the 28th in other years.
+- **Remind me to buy a gift** (migration 0041): ticked for every birthday. Untick it for anyone you don't buy for, such as cousins or friends: their 🎂 still shows on the day, with no gift reminder.
 
-To turn it on: the site first, then paste `supabase/migrations/0040_birthdays.sql` into the SQL editor. No Edge Function or `cron.sql` change (`docs/v2-design.md` §46).
+To turn it on: the site first, then paste `supabase/migrations/0040_birthdays.sql` and then `0041_birthday_gift_switch.sql` into the SQL editor. No Edge Function or `cron.sql` change (`docs/v2-design.md` §46, §47).
 
 ## The family board (migration 0020)
 
