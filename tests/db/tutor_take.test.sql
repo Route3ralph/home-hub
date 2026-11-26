@@ -42,7 +42,7 @@ create function pg_temp.free() returns text language sql stable as $$
 $$;
 grant execute on function pg_temp.free() to anon;
 
-select test.is(hub_schema_version(), 40, 'hub_schema_version is 40');
+select test.is(hub_schema_version(), 41, 'hub_schema_version is 41');
 
 :as_admin
 select save_homework_kid(test.person('Taylor'), true);

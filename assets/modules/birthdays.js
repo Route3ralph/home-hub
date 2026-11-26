@@ -15,6 +15,10 @@
   const { fmt, dates, ui } = v2;
 
   const COLS = 'id,name,month,day,born_year,person_id';
+  // The gift switch (0041, docs/v2-design.md §47): "Remind me to buy a gift", on for every birthday until a parent turns
+  // one off. Off, the 🎂 still shows on the day; no "🎁 Gift for …" a week before. Read and sent only on 41.
+  const hasGift = () => core.schemaVersion >= 41;
+  const cols = () => (hasGift() ? `${COLS},gift` : COLS);
   const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
   const DAYS_IN = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
   const isAdmin = () => !!(core.me && core.me.role === 'admin');
@@ -40,7 +44,7 @@
   function rowHTML(st, b) {
     const n = next(b, st.today);
     const p = b.person_id ? v2.person(b.person_id) : null;
-    const bits = [`${fmt.day(n.day)}`, n.turns ? `turns ${n.turns}` : null, whenText(n)].filter(Boolean);
+    const bits = [`${fmt.day(n.day)}`, n.turns ? `turns ${n.turns}` : null, whenText(n), hasGift() && b.gift === false ? 'no gift reminder' : null].filter(Boolean);
     return `<li class="bday-row${n.inDays <= 7 ? ' is-soon' : ''}" data-id="${esc(b.id)}">
       <div class="bday-main"><span class="bday-name">${p ? `<span aria-hidden="true">${ui.personDot(p)}</span>` : ''}<span class="bday-n">${esc(b.name)}</span></span>
         <small class="bday-sub">${esc(bits.join(' · '))}</small></div>
@@ -63,7 +67,7 @@
 
   async function load(st) {
     try {
-      st.rows = (await q(core.sb.from('birthdays').select(COLS).order('month').order('day').order('name'))) || [];
+      st.rows = (await q(core.sb.from('birthdays').select(cols()).order('month').order('day').order('name'))) || [];
       st.failed = false;
     } catch (err) {
       st.failed = true;
@@ -87,7 +91,9 @@
       if (month === 2 && day === 29 && !leap(born)) throw new Error(`${born} had no 29 February.`);
     }
     const who = String(v.person_id || '');
-    return { name, month, day, born_year: born, person_id: who && v2.person(who) ? who : null };
+    const row = { name, month, day, born_year: born, person_id: who && v2.person(who) ? who : null };
+    if (hasGift()) row.gift = v.gift === true;
+    return row;
   }
 
   function openItem(st, b) {
@@ -106,7 +112,9 @@
         { name: 'person_id', label: 'Who is it (optional)', type: 'select', value: b && b.person_id ? b.person_id : '',
           options: [['', 'Someone not on the family list']].concat(people.filter((p) => !taken.has(p.id)).map((p) => [p.id, p.name])),
           help: 'Pick them if they\'re on the family list: their own gift reminder is then kept from them.' },
-      ],
+      ].concat(hasGift() ? [
+        { name: 'gift', label: 'Remind me to buy a gift (a week before)', type: 'checkbox', value: b ? b.gift !== false : true },
+      ] : []),
       submitLabel: b ? 'Save' : 'Add',
       extraActions: b ? [{ label: 'Delete', danger: true, onClick: async () => {
         if (!window.confirm(`Delete ${b.name}'s birthday?`)) return false;

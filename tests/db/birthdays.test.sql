@@ -43,7 +43,7 @@ grant execute on function pg_temp.bid(text) to anon, authenticated, service_role
 -- ---------------------------------------------------------------------
 -- The schema, the signatures, their grants and row-level security
 -- ---------------------------------------------------------------------
-select test.is(hub_schema_version(), 40, 'hub_schema_version is 40');
+select test.is(hub_schema_version(), 41, 'hub_schema_version is 41');
 select test.ok((select bool_and(c.relrowsecurity) from pg_class c where c.oid in ('public.birthdays'::regclass, 'public.birthday_gifts'::regclass)),
                'birthdays and birthday_gifts have row-level security');
 select test.ok(has_function_privilege('authenticated', 'public.birthdays_between(date, date)', 'execute')

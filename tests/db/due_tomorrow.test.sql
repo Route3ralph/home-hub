@@ -38,7 +38,7 @@ grant execute on function pg_temp.due() to service_role;
 -- ---------------------------------------------------------------------
 -- The columns, the check, the functions and their grants
 -- ---------------------------------------------------------------------
-select test.is(hub_schema_version(), 40, 'hub_schema_version is 40');
+select test.is(hub_schema_version(), 41, 'hub_schema_version is 41');
 select test.is((select string_agg(a.attname || ':' || format_type(a.atttypid, a.atttypmod) || ':' || (not a.attnotnull)::text
                                   || ':' || coalesce(pg_get_expr(d.adbin, d.adrelid), '-'), ',' order by a.attname)
                 from pg_attribute a left join pg_attrdef d on d.adrelid = a.attrelid and d.adnum = a.attnum

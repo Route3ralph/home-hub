@@ -29,7 +29,7 @@ create function pg_temp.planned() returns text language sql stable security defi
 $$;
 grant execute on function pg_temp.planned() to anon, authenticated, service_role;
 
-select test.is(hub_schema_version(), 40, 'hub_schema_version is 40');
+select test.is(hub_schema_version(), 41, 'hub_schema_version is 41');
 
 -- ---------------------------------------------------------------------
 -- The setting, the mark and the grants

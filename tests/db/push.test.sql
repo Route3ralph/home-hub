@@ -45,7 +45,7 @@ grant execute on function pg_temp.due() to service_role;
 -- ---------------------------------------------------------------------
 -- The table, the column, the functions and their grants
 -- ---------------------------------------------------------------------
-select test.is(hub_schema_version(), 40, 'hub_schema_version is 40');
+select test.is(hub_schema_version(), 41, 'hub_schema_version is 41');
 select test.ok((select relrowsecurity from pg_class where oid = 'public.push_subscriptions'::regclass)
                and not exists (select 1 from pg_policies where tablename = 'push_subscriptions'),
                'push_subscriptions: RLS on, no policies');
